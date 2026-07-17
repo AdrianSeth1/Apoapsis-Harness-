@@ -12,6 +12,7 @@ from pathlib import Path
 from pydantic import ValidationError
 
 from sol.config import (
+    FrontierProviderConfig,
     GitHubResearchSourceConfig,
     LocalResearchProviderConfig,
     ProviderPricing,
@@ -177,6 +178,14 @@ class SecurityPolicyTests(unittest.TestCase):
             LocalResearchProviderConfig(
                 model="research-model",
                 base_url="http://token@127.0.0.1:11434",
+            )
+
+    def test_native_ollama_frontier_is_restricted_to_loopback(self) -> None:
+        with self.assertRaisesRegex(ValidationError, "loopback"):
+            FrontierProviderConfig(
+                provider="ollama",
+                base_url="https://models.example.invalid",
+                model="coding-model",
             )
 
     def test_official_docs_use_a_source_specific_allowlist(self) -> None:

@@ -15,8 +15,8 @@ bounded frontier-model patch flow, and a quarantined local Research Mode.
 - TOML-configured verification commands with timeouts, restricted environment,
   bounded logs, and structured results.
 - A dependency-light CLI and standard-library test suite.
-- One OpenAI-compatible frontier adapter with token, cache, latency, and
-  configured-price telemetry.
+- Native loopback-only Ollama and authenticated OpenAI-compatible frontier
+  adapters with token, cache, latency, and configured-price telemetry.
 - Model-assisted specification extraction with exact hard-constraint source
   validation and explicit user approval.
 - Reproducible Git/ripgrep/symbol/import/test context packages with line-level
@@ -35,8 +35,9 @@ bounded frontier-model patch flow, and a quarantined local Research Mode.
 See [ADR 0001](docs/adr/0001-mvp-deterministic-substrate.md) for the substrate
 and [ADR 0002](docs/adr/0002-frontier-vertical-slice.md) for the frontier flow.
 [ADR 0003](docs/adr/0003-local-research-mode.md) records the Research Mode trust
-boundary, and [the Research Mode guide](docs/research-mode.md) covers setup and
-operation.
+boundary, [ADR 0004](docs/adr/0004-native-ollama-frontier.md) records the native
+all-local proposal path, and [the Research Mode guide](docs/research-mode.md)
+covers setup and operation.
 
 ## Install for development
 
@@ -53,7 +54,7 @@ On macOS or Linux, use `.venv/bin/python` instead.
 Run the tests:
 
 ```bash
-python -m unittest discover -s tests -t . -v
+python -m unittest discover -s tests -v
 ```
 
 ## Current CLI workflow
@@ -95,25 +96,40 @@ sol rollback TASK-ABC123 --delete-branch
 `PATCH_READY`. `rollback` is explicit and may discard uncommitted task-worktree
 changes. Normal cleanup APIs refuse dirty worktrees unless force is requested.
 
-## Complete frontier flow
+## Complete all-local flow
 
-After `sol init`, configure `.sol/config.toml`:
+`sol init` now creates a conservative configuration for the models used by the
+first local evaluation:
 
 ```toml
 [models.frontier]
-provider = "openai_compatible"
-base_url = "https://api.openai.com/v1"
-model = "your-frontier-model"
-api_key_env = "OPENAI_API_KEY"
-timeout_seconds = 120
+provider = "ollama"
+base_url = "http://127.0.0.1:11434"
+model = "qwen3-coder:30b"
+timeout_seconds = 900
+max_output_tokens = 8192
+context_window_tokens = 16384
+think = false
+specification_think = false
 
 [models.frontier.pricing]
 input_per_million_usd = 0
 output_per_million_usd = 0
 cached_input_per_million_usd = 0
+
+[models.local_research]
+provider = "ollama"
+base_url = "http://127.0.0.1:11434"
+model = "qwen3.6:27b"
+timeout_seconds = 600
+max_output_tokens = 8192
+context_window_tokens = 16384
 ```
 
-Use the provider's current pricing for the three rates. Then run one command:
+Both native Ollama endpoints must be loopback URLs. No fake API key is needed.
+For a hosted model, switch `provider` back to `openai_compatible`, configure the
+base URL and `api_key_env`, and enter the provider's current pricing. Then run
+one command:
 
 ```bash
 sol run "Add resumable downloads without changing the public API"
@@ -130,7 +146,9 @@ returns the persisted state/events and embeds that report when present.
 
 The controlled download-service fixture and direct-versus-SOL procedure are in
 [`examples/download-service`](examples/download-service) and
-[`docs/evaluation/direct-vs-sol.md`](docs/evaluation/direct-vs-sol.md).
+[`docs/evaluation/direct-vs-sol.md`](docs/evaluation/direct-vs-sol.md). The first
+measured local Qwen smoke results are in
+[`docs/evaluation/local-qwen-smoke.md`](docs/evaluation/local-qwen-smoke.md).
 
 ## Research Mode
 
@@ -188,7 +206,7 @@ output_limit_chars = 100000
 [[verification.commands]]
 name = "unit-tests"
 category = "tests"
-argv = ["python", "-m", "unittest", "discover", "-s", "tests", "-t", ".", "-v"]
+argv = ["python", "-m", "unittest", "discover", "-s", "tests", "-v"]
 timeout_seconds = 120
 required = true
 ```

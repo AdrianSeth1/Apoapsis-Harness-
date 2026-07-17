@@ -41,10 +41,11 @@ audit artifacts. Reddit uses its approved OAuth API and is disabled by default.
 [models.local_research]
 provider = "ollama"
 base_url = "http://127.0.0.1:11434"
-model = "sol-qwen36-27b"
+model = "qwen3.6:27b"
 api_key_env = "SOL_LOCAL_RESEARCH_API_KEY"
 timeout_seconds = 600
 max_output_tokens = 8192
+context_window_tokens = 16384
 max_structured_retries = 1
 
 [models.local_research.modes.extraction]
@@ -157,7 +158,7 @@ and clear commands to manage local storage.
 The default suite is entirely offline:
 
 ```bash
-python -m unittest discover -s tests -t . -v
+python -m unittest discover -s tests -v
 ```
 
 It includes malicious source fixtures, fake GitHub and Reddit adapters, cache and

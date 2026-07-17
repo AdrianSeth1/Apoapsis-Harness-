@@ -107,14 +107,23 @@ class PatchPolicyValidator:
                         path=path,
                     )
                 )
-            if item.is_deleted and self._is_test(path):
-                violations.append(
-                    PatchViolation(
-                        code="deleted_test",
-                        message=f"test deletion is not allowed: {path}",
-                        path=path,
+            if self._is_test(path):
+                if item.is_deleted:
+                    violations.append(
+                        PatchViolation(
+                            code="deleted_test",
+                            message=f"test deletion is not allowed: {path}",
+                            path=path,
+                        )
                     )
-                )
+                elif not self.config.allow_test_changes:
+                    violations.append(
+                        PatchViolation(
+                            code="unexpected_test_change",
+                            message=f"unexpected test-file change: {path}",
+                            path=path,
+                        )
+                    )
             if self._matches(path, self.config.verification_files):
                 violations.append(
                     PatchViolation(

@@ -16,6 +16,7 @@ from sol.config import (
     ProviderPricing,
     SolConfig,
 )
+from sol.models.local import OllamaProvider
 from sol.models.telemetry import InstrumentedModelProvider
 from sol.reporting.report import TaskOutcome
 from sol.verification.runner import VerificationCommand, VerificationConfig
@@ -146,6 +147,45 @@ REPAIR_PATCH = (
              for chunk in response.iter_chunks():
                  handle.write(chunk)
 """
+)
+
+
+NON_APPLYING_PATCH = (
+    "diff --git a/src/download_service/downloader.py "
+    "b/src/download_service/downloader.py\n"
+    "--- a/src/download_service/downloader.py\n"
+    "+++ b/src/download_service/downloader.py\n"
+    "@@ -1 +1 @@\n"
+    "-this line is not in the repository\n"
+    "+replacement\n"
+)
+
+
+COMPLETE_PATCH = (
+    "diff --git a/src/download_service/downloader.py "
+    "b/src/download_service/downloader.py\n"
+    "--- a/src/download_service/downloader.py\n"
+    "+++ b/src/download_service/downloader.py\n"
+    "@@ -9,13 +9,18 @@ class Downloader:\n"
+    "         self.jobs = jobs\n"
+    " \n"
+    "     def download(self, url: str, destination: Path) -> int:\n"
+    "-        response = self.transport.get(url, headers={})\n"
+    "+        offset = self.jobs.get_offset(url)\n"
+    '+        headers = {"Range": f"bytes={offset}-"} if offset else {}\n'
+    "+        response = self.transport.get(url, headers=headers)\n"
+    "         destination.parent.mkdir(parents=True, exist_ok=True)\n"
+    "-        downloaded = 0\n"
+    '-        with destination.open("wb") as handle:\n'
+    "+        should_append = offset > 0 and response.status_code == 206\n"
+    '+        mode = "ab" if should_append else "wb"\n'
+    "+        downloaded = offset if should_append else 0\n"
+    "+        with destination.open(mode) as handle:\n"
+    "             for chunk in response.iter_chunks():\n"
+    "                 handle.write(chunk)\n"
+    "                 downloaded += len(chunk)\n"
+    "                 self.jobs.set_offset(url, downloaded)\n"
+    "         return downloaded\n"
 )
 
 
@@ -311,6 +351,185 @@ class FrontierVerticalSliceTests(unittest.TestCase):
         self.assertIn("test_server_ignores_range", repair_request["prompt"])
         for constraint in task.specification.hard_constraints:
             self.assertIn(constraint.verbatim_source, repair_request["prompt"])
+
+    def test_native_ollama_provider_runs_the_verified_repair_flow(self) -> None:
+        class StubOllama(OllamaProvider):
+            def __init__(self, config: FrontierProviderConfig) -> None:
+                super().__init__(config)
+                self.responses = [
+                    specification_response(),
+                    IMPLEMENTATION_PATCH,
+                    REPAIR_PATCH,
+                ]
+                self.payloads: list[dict[str, object]] = []
+
+            def _request_json(
+                self,
+                path: str,
+                payload: dict[str, object] | None,
+                *,
+                method: str = "POST",
+                timeout_seconds: float | None = None,
+            ) -> dict[str, object]:
+                self.assert_chat_request(path, payload)
+                assert payload is not None
+                self.payloads.append(payload)
+                content = self.responses.pop(0)
+                if len(self.payloads) == 1:
+                    messages = payload["messages"]
+                    assert isinstance(messages, list)
+                    prompt = messages[0]["content"]
+                    assert isinstance(prompt, str)
+                    task_id = prompt.split('task_id to "', 1)[1].split('"', 1)[0]
+                    specification = json.loads(content)
+                    specification["task_id"] = task_id
+                    content = json.dumps(specification)
+                return {
+                    "model": self.config.model,
+                    "created_at": f"response-{len(self.payloads)}",
+                    "message": {"content": content},
+                    "done_reason": "stop",
+                    "prompt_eval_count": 100,
+                    "eval_count": 20,
+                    "model_digest": "sha256:local-coder",
+                }
+
+            @staticmethod
+            def assert_chat_request(
+                path: str, payload: dict[str, object] | None
+            ) -> None:
+                if path != "/api/chat" or payload is None:
+                    raise AssertionError("expected one native Ollama chat request")
+
+        frontier = FrontierProviderConfig(
+            provider="ollama",
+            base_url="http://127.0.0.1:11434",
+            model="qwen3-coder:30b",
+            context_window_tokens=16384,
+            think=False,
+        )
+        adapter = StubOllama(frontier)
+        config = SolConfig(
+            models=ModelsConfig(frontier=frontier),
+            context=ContextCompilerConfig(
+                max_files=10,
+                max_excerpt_lines=200,
+                max_total_chars=50_000,
+            ),
+            patch=PatchPolicyConfig(max_changed_lines=100),
+            verification=VerificationConfig(
+                commands=[
+                    VerificationCommand(
+                        name="download-tests",
+                        category="tests",
+                        argv=[
+                            sys.executable,
+                            "-m",
+                            "unittest",
+                            "discover",
+                            "-s",
+                            "tests",
+                            "-v",
+                        ],
+                        timeout_seconds=30,
+                    )
+                ]
+            ),
+        )
+
+        report = VerticalSliceRunner(
+            self.root,
+            self.store,
+            InstrumentedModelProvider(adapter),
+            config,
+        ).run(REQUEST, approve=lambda specification: True)
+
+        self.assertEqual(report.outcome, TaskOutcome.COMPLETE)
+        self.assertEqual(report.number_of_calls, 3)
+        self.assertEqual(len(report.models_used), 1)
+        self.assertEqual(report.models_used[0].provider, "ollama")
+        self.assertEqual(report.models_used[0].model, "qwen3-coder:30b")
+        self.assertEqual(len(adapter.payloads), 3)
+        self.assertTrue(all(payload["think"] is False for payload in adapter.payloads))
+        self.assertTrue(
+            all(
+                payload["options"]["num_ctx"] == 16384
+                for payload in adapter.payloads
+            )
+        )
+
+    def test_non_applying_patch_uses_the_single_repair_budget(self) -> None:
+        fake = FakeModelProvider(
+            [specification_response(), NON_APPLYING_PATCH, COMPLETE_PATCH]
+        )
+        original_complete = fake.complete
+
+        def complete_with_task_id(invocation):
+            output = original_complete(invocation)
+            if len(fake.invocations) == 1:
+                task_id = invocation.prompt.split('task_id to "', 1)[1].split('"', 1)[0]
+                raw = json.loads(output.content)
+                raw["task_id"] = task_id
+                return output.model_copy(update={"content": json.dumps(raw)})
+            return output
+
+        fake.complete = complete_with_task_id  # type: ignore[method-assign]
+        config = SolConfig(
+            models=ModelsConfig(
+                frontier=FrontierProviderConfig(
+                    base_url="https://provider.invalid/v1",
+                    model=fake.model_name,
+                )
+            ),
+            context=ContextCompilerConfig(
+                max_files=10,
+                max_excerpt_lines=200,
+                max_total_chars=50_000,
+            ),
+            patch=PatchPolicyConfig(max_changed_lines=100),
+            verification=VerificationConfig(
+                commands=[
+                    VerificationCommand(
+                        name="download-tests",
+                        category="tests",
+                        argv=[
+                            sys.executable,
+                            "-m",
+                            "unittest",
+                            "discover",
+                            "-s",
+                            "tests",
+                            "-v",
+                        ],
+                        timeout_seconds=30,
+                    )
+                ]
+            ),
+        )
+
+        report = VerticalSliceRunner(
+            self.root,
+            self.store,
+            InstrumentedModelProvider(fake),
+            config,
+        ).run(REQUEST, approve=lambda specification: True)
+
+        self.assertEqual(report.outcome, TaskOutcome.COMPLETE)
+        self.assertEqual(report.number_of_calls, 3)
+        self.assertEqual(len(report.verification_results), 1)
+        self.assertEqual(report.verification_results[0].status.value, "passed")
+        audit_root = self.root / ".sol" / "tasks" / report.task_id
+        self.assertTrue((audit_root / "patch-failure-001.json").is_file())
+        replacement_request = json.loads(
+            (audit_root / "call-003-request.json").read_text(encoding="utf-8")
+        )
+        self.assertIn("REJECTED_PATCH", replacement_request["prompt"])
+        self.assertIn("EXACT_PATCH_REJECTION", replacement_request["prompt"])
+        events = self.store.events(report.task_id)
+        self.assertIn(
+            "targeted_patch_repair_required",
+            [event.event_type for event in events],
+        )
 
     def test_unapproved_specification_stops_before_worktree_or_patch(self) -> None:
         fake = FakeModelProvider([specification_response()])

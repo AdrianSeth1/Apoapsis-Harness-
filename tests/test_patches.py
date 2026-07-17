@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import tempfile
+import subprocess
 import unittest
 from pathlib import Path
 
 from sol.config import PatchPolicyConfig
-from sol.patches.parser import UnifiedDiffParser
+from sol.patches.apply import GitPatchApplier
+from sol.patches.parser import UnifiedDiffError, UnifiedDiffParser
 from sol.patches.validator import PatchPolicyValidator
 
 
@@ -53,6 +55,10 @@ class PatchPolicyTests(unittest.TestCase):
             "deleted_test",
             self.violations(one_file_patch("tests/test_api.py", deleted=True)),
         )
+        self.assertIn(
+            "unexpected_test_change",
+            self.violations(one_file_patch("tests/test_api.py")),
+        )
 
     def test_detects_binary_and_excessive_diff(self) -> None:
         binary = (
@@ -84,6 +90,69 @@ class PatchPolicyTests(unittest.TestCase):
             self.parser.parse(one_file_patch("src/a.py")), self.root
         )
         self.assertTrue(result.accepted)
+
+    def test_can_explicitly_allow_non_deleted_test_changes(self) -> None:
+        result = PatchPolicyValidator(
+            PatchPolicyConfig(allow_test_changes=True)
+        ).validate(
+            self.parser.parse(one_file_patch("tests/test_api.py")), self.root
+        )
+        self.assertTrue(result.accepted)
+
+    def test_canonicalizes_unmarked_blank_context_inside_hunk(self) -> None:
+        patch = (
+            "diff --git a/src/a.py b/src/a.py\n"
+            "--- a/src/a.py\n"
+            "+++ b/src/a.py\n"
+            "@@ -1,3 +1,3 @@\n"
+            " first\n"
+            "\n"
+            "-old\n"
+            "+new\n"
+        )
+        parsed = self.parser.parse(patch)
+        self.assertIn("\n \n-old\n", parsed.raw)
+
+    def test_canonicalizes_exact_markdown_diff_wrappers(self) -> None:
+        patch = one_file_patch("src/a.py")
+        self.assertEqual(self.parser.parse(f"```diff\n{patch}```").raw, patch)
+        self.assertEqual(self.parser.parse(patch + "```\n").raw, patch)
+
+    def test_rejects_trailing_prose_inside_hunk(self) -> None:
+        with self.assertRaisesRegex(UnifiedDiffError, "non-diff content"):
+            self.parser.parse(one_file_patch("src/a.py") + "explanation\n")
+
+    def test_applier_rebases_only_a_uniquely_matching_hunk_header(self) -> None:
+        source = self.root / "source.py"
+        source.write_text("first\nold\nlast\n", encoding="utf-8")
+        subprocess.run(
+            ["git", "init", "-b", "main"],
+            cwd=self.root,
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(
+            ["git", "add", "source.py"],
+            cwd=self.root,
+            check=True,
+            capture_output=True,
+        )
+        patch = (
+            "diff --git a/source.py b/source.py\n"
+            "--- a/source.py\n"
+            "+++ b/source.py\n"
+            "@@ -99,3 +99,3 @@\n"
+            " first\n"
+            "-old\n"
+            "+new\n"
+            " last\n"
+        )
+        applier = GitPatchApplier()
+        changed = applier.apply(self.parser.parse(patch), self.root)
+
+        self.assertEqual(changed, ["source.py"])
+        self.assertEqual(source.read_text(encoding="utf-8"), "first\nnew\nlast\n")
+        self.assertIn("@@ -1,3 +1,3 @@", applier.last_applied_patch or "")
 
 
 if __name__ == "__main__":

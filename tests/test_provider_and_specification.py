@@ -8,8 +8,8 @@ from unittest.mock import patch
 from sol.config import FrontierProviderConfig, ProviderPricing
 from sol.models.base import ModelOperation
 from sol.models.frontier import OpenAICompatibleFrontierProvider
-from sol.models.provider import ProviderInvocation
-from sol.models.provider import ProviderError
+from sol.models.local import OllamaProvider
+from sol.models.provider import ModelRole, ProviderError, ProviderInvocation
 from sol.models.telemetry import (
     InstrumentedModelProvider,
     InstrumentedProviderError,
@@ -120,6 +120,104 @@ class ProviderTests(unittest.TestCase):
         self.assertEqual(output.response_id, "chat-1")
         self.assertEqual(output.model, "frontier-test-2026")
         self.assertEqual(output.usage.cached_input_tokens, 7)
+
+    def test_native_ollama_frontier_uses_local_generation_controls(self) -> None:
+        class StubOllama(OllamaProvider):
+            def __init__(self, config: FrontierProviderConfig) -> None:
+                super().__init__(config)
+                self.payload: dict[str, object] | None = None
+
+            def _request_json(
+                self,
+                path: str,
+                payload: dict[str, object] | None,
+                *,
+                method: str = "POST",
+                timeout_seconds: float | None = None,
+            ) -> dict[str, object]:
+                if path == "/api/chat":
+                    self.payload = payload
+                    return {
+                        "model": self.config.model,
+                        "created_at": "now",
+                        "message": {"content": "diff --git a/a.py b/a.py\n"},
+                        "done_reason": "stop",
+                        "prompt_eval_count": 40,
+                        "eval_count": 8,
+                        "model_digest": "sha256:frontier-model",
+                    }
+                return {"models": []}
+
+        adapter = StubOllama(
+            FrontierProviderConfig(
+                provider="ollama",
+                base_url="http://127.0.0.1:11434",
+                model="qwen3-coder:30b",
+                max_output_tokens=8192,
+                context_window_tokens=16384,
+                think=False,
+            )
+        )
+        call = InstrumentedModelProvider(adapter).complete(
+            ProviderInvocation(
+                request_id="MRQ-LOCAL-FRONTIER",
+                operation=ModelOperation.IMPLEMENT_PATCH,
+                prompt="patch",
+                role=ModelRole.FRONTIER_IMPLEMENTATION,
+            )
+        )
+
+        assert adapter.payload is not None
+        options = adapter.payload["options"]
+        assert isinstance(options, dict)
+        self.assertEqual(options["num_predict"], 8192)
+        self.assertEqual(options["num_ctx"], 16384)
+        self.assertFalse(adapter.payload["think"])
+        self.assertEqual(call.telemetry.provider, "ollama")
+        self.assertEqual(call.telemetry.model_digest, "sha256:frontier-model")
+        self.assertEqual(call.telemetry.input_tokens, 40)
+        self.assertEqual(call.telemetry.output_tokens, 8)
+
+    def test_native_ollama_can_disable_thinking_only_for_specification(self) -> None:
+        class StubOllama(OllamaProvider):
+            def __init__(self, config: FrontierProviderConfig) -> None:
+                super().__init__(config)
+                self.payload: dict[str, object] | None = None
+
+            def _request_json(
+                self,
+                path: str,
+                payload: dict[str, object] | None,
+                *,
+                method: str = "POST",
+                timeout_seconds: float | None = None,
+            ) -> dict[str, object]:
+                self.payload = payload
+                return {
+                    "message": {"content": "{}"},
+                    "done_reason": "stop",
+                    "model_digest": "sha256:model",
+                }
+
+        adapter = StubOllama(
+            FrontierProviderConfig(
+                provider="ollama",
+                base_url="http://127.0.0.1:11434",
+                model="qwen3.6:27b",
+                think=True,
+                specification_think=False,
+            )
+        )
+        adapter.complete(
+            ProviderInvocation(
+                request_id="MRQ-SPEC-THINK",
+                operation=ModelOperation.DRAFT_SPECIFICATION,
+                prompt="extract",
+            )
+        )
+
+        assert adapter.payload is not None
+        self.assertFalse(adapter.payload["think"])
 
 
 class SpecificationExtractorTests(unittest.TestCase):

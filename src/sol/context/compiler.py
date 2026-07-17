@@ -6,7 +6,7 @@ import hashlib
 import json
 import re
 import subprocess
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -259,17 +259,20 @@ class ContextCompiler:
         return "\n".join(parts)
 
     def _query_terms(self, text: str) -> list[str]:
-        candidates = {
+        words = [
             word.lower()
             for word in _WORD.findall(text)
             if len(word) >= 4 and word.lower() not in _STOP_WORDS
-        }
-        candidates.update(
-            word[:-1]
-            for word in list(candidates)
-            if word.endswith("s") and len(word) > 5
-        )
-        return sorted(candidates, key=lambda item: (-len(item), item))[
+        ]
+        frequencies = Counter(words)
+        for word, count in list(frequencies.items()):
+            if word.endswith("s") and len(word) > 5:
+                stem = word[:-1]
+                frequencies[stem] = max(frequencies[stem], count)
+        return sorted(
+            frequencies,
+            key=lambda item: (-frequencies[item], -len(item), item),
+        )[
             : self.config.max_search_terms
         ]
 

@@ -36,9 +36,13 @@ class CLITests(unittest.TestCase):
         self.assertTrue(initialized["initialized"])
         self.assertTrue((self.root / ".sol" / "sol.db").is_file())
         config = SolConfig.from_toml(self.root / ".sol" / "config.toml")
-        self.assertEqual(config.models.frontier.provider, "openai_compatible")
+        self.assertEqual(config.models.frontier.provider, "ollama")
+        self.assertEqual(config.models.frontier.model, "qwen3-coder:30b")
+        self.assertEqual(config.models.frontier.context_window_tokens, 16384)
         self.assertEqual(config.models.local_research.provider, "ollama")
+        self.assertEqual(config.models.local_research.model, "qwen3.6:27b")
         self.assertFalse(config.research.sources.reddit.enabled)
+        self.assertNotIn("-t", config.verification.commands[0].argv)
 
         task = self.invoke(
             "task",

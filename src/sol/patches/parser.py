@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import shlex
+import re
 from dataclasses import dataclass
 
 
@@ -43,10 +44,20 @@ class UnifiedDiffParser:
         normalized = content.replace("\r\n", "\n").replace("\r", "\n").strip()
         if not normalized:
             raise UnifiedDiffError("provider returned an empty patch")
-        if normalized.startswith("```") or not normalized.startswith("diff --git "):
+        fenced = re.fullmatch(
+            r"```(?:diff|patch)?[ \t]*\n(.*?)\n```",
+            normalized,
+            re.DOTALL | re.IGNORECASE,
+        )
+        if fenced:
+            normalized = fenced.group(1).strip()
+        elif normalized.startswith("diff --git ") and normalized.endswith("\n```"):
+            normalized = normalized[:-4].rstrip()
+        if not normalized.startswith("diff --git "):
             raise UnifiedDiffError(
                 "patch must contain only a Git unified diff beginning with diff --git"
             )
+        normalized = self._canonicalize_blank_context_lines(normalized)
         normalized += "\n"
         starts = [
             index
@@ -81,7 +92,15 @@ class UnifiedDiffParser:
             line.startswith(("new file mode 120000", "new mode 120000"))
             for line in lines
         )
+        in_hunk = False
         for line in lines:
+            if line.startswith("@@ "):
+                in_hunk = True
+            elif in_hunk and not line.startswith((" ", "+", "-", "\\")):
+                raise UnifiedDiffError(
+                    "patch contains non-diff content inside a hunk: "
+                    f"{line.rstrip()!r}"
+                )
             if line.startswith("--- ") and line[4:].strip() == "/dev/null":
                 old_path = None
                 is_new = True
@@ -118,3 +137,24 @@ class UnifiedDiffParser:
         if not path.startswith(prefix):
             raise UnifiedDiffError(f"diff path must begin with {prefix}: {path}")
         return path[len(prefix) :]
+
+    @staticmethod
+    def _canonicalize_blank_context_lines(content: str) -> str:
+        """Repair the only unambiguous formatting omission inside a hunk.
+
+        Models sometimes emit an empty physical line for unchanged blank context.
+        A valid unified diff represents that line with one leading space. No code
+        meaning is inferred or changed by adding that required context marker.
+        """
+
+        result: list[str] = []
+        in_hunk = False
+        for line in content.split("\n"):
+            if line.startswith("diff --git "):
+                in_hunk = False
+            elif line.startswith("@@ "):
+                in_hunk = True
+            if in_hunk and line == "":
+                line = " "
+            result.append(line)
+        return "\n".join(result)

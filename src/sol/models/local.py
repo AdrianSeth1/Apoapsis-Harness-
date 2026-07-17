@@ -6,8 +6,8 @@ import urllib.error
 import urllib.request
 from typing import Any
 
-from sol.config import LocalResearchProviderConfig
-from sol.models.base import TokenUsage
+from sol.config import FrontierProviderConfig, LocalResearchProviderConfig
+from sol.models.base import ModelOperation, TokenUsage
 from sol.models.provider import (
     ModelProvider,
     ProviderError,
@@ -16,12 +16,14 @@ from sol.models.provider import (
 )
 
 
-class OllamaLocalProvider(ModelProvider):
-    """Native Ollama adapter for structured, tool-free local research calls."""
+class OllamaProvider(ModelProvider):
+    """Native Ollama adapter that returns untrusted, tool-free proposals."""
 
-    def __init__(self, config: LocalResearchProviderConfig) -> None:
+    def __init__(
+        self, config: FrontierProviderConfig | LocalResearchProviderConfig
+    ) -> None:
         if config.provider != "ollama":
-            raise ValueError(f"unsupported native local provider: {config.provider}")
+            raise ValueError(f"unsupported native Ollama provider: {config.provider}")
         self.config = config
         self._model_digest: str | None = None
         self._digest_checked = False
@@ -40,21 +42,36 @@ class OllamaLocalProvider(ModelProvider):
             invocation.timeout_seconds or self.config.timeout_seconds,
         )
         deadline = time.monotonic() + timeout_seconds
+        options: dict[str, Any] = {
+            "temperature": 0,
+            "num_predict": (
+                invocation.max_output_tokens or self.config.max_output_tokens
+            ),
+        }
+        if self.config.context_window_tokens is not None:
+            options["num_ctx"] = self.config.context_window_tokens
         payload: dict[str, Any] = {
             "model": self.config.model,
             "messages": [{"role": "user", "content": invocation.prompt}],
             "stream": False,
-            "options": {
-                "temperature": 0,
-                "num_predict": (
-                    invocation.max_output_tokens or self.config.max_output_tokens
-                ),
-            },
+            "options": options,
         }
         if invocation.response_schema is not None:
             payload["format"] = invocation.response_schema
-        if invocation.think is not None:
-            payload["think"] = invocation.think
+        configured_think = getattr(self.config, "think", None)
+        if (
+            invocation.operation == ModelOperation.DRAFT_SPECIFICATION
+            and isinstance(self.config, FrontierProviderConfig)
+            and self.config.specification_think is not None
+        ):
+            configured_think = self.config.specification_think
+        think = (
+            invocation.think
+            if invocation.think is not None
+            else configured_think
+        )
+        if think is not None:
+            payload["think"] = think
         raw = self._request_json(
             "/api/chat", payload, timeout_seconds=timeout_seconds
         )
@@ -154,3 +171,7 @@ class OllamaLocalProvider(ModelProvider):
     @staticmethod
     def _nanoseconds(value: Any) -> float | None:
         return float(value) / 1_000_000_000 if value is not None else None
+
+
+# Backward-compatible role-specific name retained for Research Mode callers.
+OllamaLocalProvider = OllamaProvider

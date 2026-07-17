@@ -54,10 +54,12 @@ Install SOL Harness, initialize metadata, and edit `.sol/config.toml`:
 sol init
 ```
 
-Set `[models.frontier]` to the same endpoint and model used by the direct run.
-Set all three pricing rates so the cost report is meaningful. Set the
-verification command's first argument to the desired Python executable if
-`python` is not on `PATH`.
+For the first all-local run, use the generated native Ollama configuration with
+`qwen3-coder:30b`; it requires no API key. Set `[models.local_research].model`
+to `qwen3.6:27b`. For a hosted comparison, set `[models.frontier]` to the same
+endpoint and model used by the direct run and enter all three pricing rates.
+Set the verification command's first argument to the desired Python executable
+if `python` is not on `PATH`.
 
 Export the configured credential environment variable, then run one command:
 
@@ -103,3 +105,5 @@ Compare the same outcome fields for both runs:
 The primary comparison is cost per accepted, non-regressing patch—not token count
 alone.
 
+See [`local-qwen-smoke.md`](local-qwen-smoke.md) for the first measured run on
+the controlled repository and the model-specific findings it exposed.

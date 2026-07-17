@@ -13,7 +13,7 @@ from sol.models.provider import (
     ProviderInvocation,
     ProviderOutput,
 )
-from sol.models.local import OllamaLocalProvider
+from sol.models.local import OllamaLocalProvider, OllamaProvider
 from sol.models.telemetry import (
     InstrumentedCall,
     InstrumentedModelProvider,
@@ -28,6 +28,7 @@ __all__ = [
     "ModelProvider",
     "ModelRole",
     "OllamaLocalProvider",
+    "OllamaProvider",
     "ModelRequest",
     "ModelResponse",
     "ProviderCallTelemetry",

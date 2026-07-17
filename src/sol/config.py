@@ -13,6 +13,23 @@ from sol.specification.schema import StrictModel
 from sol.verification.runner import VerificationConfig
 
 
+def _require_loopback_http_url(value: str, label: str) -> None:
+    parsed = urlparse(value)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise ValueError(f"{label} base_url must be an HTTP(S) URL")
+    if parsed.username or parsed.password:
+        raise ValueError(f"{label} base_url must not contain credentials")
+    hostname = parsed.hostname.lower()
+    loopback = hostname == "localhost"
+    if not loopback:
+        try:
+            loopback = ipaddress.ip_address(hostname).is_loopback
+        except ValueError:
+            loopback = False
+    if not loopback:
+        raise ValueError(f"{label} base_url must use a loopback host")
+
+
 class ProviderPricing(StrictModel):
     input_per_million_usd: float = Field(default=0.0, ge=0)
     output_per_million_usd: float = Field(default=0.0, ge=0)
@@ -20,12 +37,24 @@ class ProviderPricing(StrictModel):
 
 
 class FrontierProviderConfig(StrictModel):
-    provider: str = "openai_compatible"
+    provider: Literal["openai_compatible", "ollama"] = "openai_compatible"
     base_url: str = Field(min_length=1)
     model: str = Field(min_length=1)
     api_key_env: str = Field(default="OPENAI_API_KEY", min_length=1)
-    timeout_seconds: float = Field(default=120.0, gt=0, le=600)
+    timeout_seconds: float = Field(default=120.0, gt=0, le=3600)
+    max_output_tokens: int = Field(default=8192, ge=256, le=131_072)
+    context_window_tokens: int | None = Field(
+        default=None, ge=2048, le=1_048_576
+    )
+    think: bool | None = None
+    specification_think: bool | None = None
     pricing: ProviderPricing = Field(default_factory=ProviderPricing)
+
+    @model_validator(mode="after")
+    def restrict_native_ollama_to_loopback(self) -> FrontierProviderConfig:
+        if self.provider == "ollama":
+            _require_loopback_http_url(self.base_url, "frontier Ollama")
+        return self
 
 
 class LocalResearchModeConfig(StrictModel):
@@ -49,25 +78,15 @@ class LocalResearchProviderConfig(StrictModel):
     api_key_env: str = "SOL_LOCAL_RESEARCH_API_KEY"
     timeout_seconds: float = Field(default=600.0, gt=0, le=3600)
     max_output_tokens: int = Field(default=8192, ge=256, le=131_072)
+    context_window_tokens: int | None = Field(
+        default=16_384, ge=2048, le=1_048_576
+    )
     max_structured_retries: int = Field(default=1, ge=0, le=3)
     modes: LocalResearchModesConfig = Field(default_factory=LocalResearchModesConfig)
 
     @model_validator(mode="after")
     def require_loopback_endpoint(self) -> LocalResearchProviderConfig:
-        parsed = urlparse(self.base_url)
-        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
-            raise ValueError("local research base_url must be an HTTP(S) URL")
-        if parsed.username or parsed.password:
-            raise ValueError("local research base_url must not contain credentials")
-        hostname = parsed.hostname.lower()
-        loopback = hostname == "localhost"
-        if not loopback:
-            try:
-                loopback = ipaddress.ip_address(hostname).is_loopback
-            except ValueError:
-                loopback = False
-        if not loopback:
-            raise ValueError("local research base_url must use a loopback host")
+        _require_loopback_http_url(self.base_url, "local research")
         return self
 
 
@@ -99,6 +118,7 @@ class PatchPolicyConfig(StrictModel):
     max_changed_lines: int = Field(default=500, ge=1, le=100_000)
     max_files: int = Field(default=20, ge=1, le=1000)
     allow_dependency_changes: bool = False
+    allow_test_changes: bool = False
     dependency_files: list[str] = Field(
         default_factory=lambda: [
             "pyproject.toml",
@@ -142,7 +162,7 @@ class GitHubResearchSourceConfig(ResearchSourceConfig):
 class RedditResearchSourceConfig(ResearchSourceConfig):
     client_id_env: str = "REDDIT_CLIENT_ID"
     client_secret_env: str = "REDDIT_CLIENT_SECRET"
-    user_agent: str = "sol-harness-research/0.3"
+    user_agent: str = "sol-harness-research/0.4"
     purposes: list[str] = Field(
         default_factory=lambda: [
             "user_pain_points",

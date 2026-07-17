@@ -12,8 +12,8 @@ from pydantic import ValidationError
 from sol.config import FrontierProviderConfig, SolConfig
 from sol.execution.worktree import WorktreeError, WorktreeManager
 from sol.models.frontier import OpenAICompatibleFrontierProvider
-from sol.models.local import OllamaLocalProvider
-from sol.models.provider import ProviderError
+from sol.models.local import OllamaProvider
+from sol.models.provider import ModelProvider, ProviderError
 from sol.models.telemetry import InstrumentedModelProvider, InstrumentedProviderError
 from sol.research.cache import ResearchCache
 from sol.research.engine import ResearchEngine, ResearchEngineError
@@ -43,11 +43,14 @@ DEFAULT_CONFIG = """# SOL Harness project configuration
 language = "python"
 
 [models.frontier]
-provider = "openai_compatible"
-base_url = "https://api.openai.com/v1"
-model = "configure-me"
-api_key_env = "OPENAI_API_KEY"
-timeout_seconds = 120
+provider = "ollama"
+base_url = "http://127.0.0.1:11434"
+model = "qwen3-coder:30b"
+timeout_seconds = 900
+max_output_tokens = 8192
+context_window_tokens = 16384
+think = false
+specification_think = false
 
 [models.frontier.pricing]
 input_per_million_usd = 0
@@ -57,10 +60,11 @@ cached_input_per_million_usd = 0
 [models.local_research]
 provider = "ollama"
 base_url = "http://127.0.0.1:11434"
-model = "sol-qwen36-27b"
+model = "qwen3.6:27b"
 api_key_env = "SOL_LOCAL_RESEARCH_API_KEY"
 timeout_seconds = 600
 max_output_tokens = 8192
+context_window_tokens = 16384
 max_structured_retries = 1
 
 [models.local_research.modes.extraction]
@@ -85,6 +89,7 @@ cloud_excluded_paths = [
 max_changed_lines = 500
 max_files = 20
 allow_dependency_changes = false
+allow_test_changes = false
 dependency_files = [
   "pyproject.toml", "requirements*.txt", "poetry.lock", "uv.lock",
   "package.json", "package-lock.json", "pnpm-lock.yaml", "yarn.lock"
@@ -98,12 +103,12 @@ verification_files = [
 default_mode = "AUTO"
 
 [research.budget]
-max_queries = 8
-max_candidates = 30
-max_fetched_sources = 12
+max_queries = 4
+max_candidates = 12
+max_fetched_sources = 5
 max_extracted_characters_per_source = 20000
-max_research_context_tokens = 30000
-max_seconds = 180
+max_research_context_tokens = 16000
+max_seconds = 300
 
 [research.sources.official_docs]
 enabled = true
@@ -121,7 +126,7 @@ enabled = false
 priority = 4
 client_id_env = "REDDIT_CLIENT_ID"
 client_secret_env = "REDDIT_CLIENT_SECRET"
-user_agent = "sol-harness-research/0.3"
+user_agent = "sol-harness-research/0.4"
 purposes = ["user_pain_points", "product_expectations", "failure_discovery"]
 
 [research.security]
@@ -159,7 +164,7 @@ environment_allowlist = [
 [[verification.commands]]
 name = "unit-tests"
 category = "tests"
-argv = ["python", "-m", "unittest", "discover", "-s", "tests", "-t", ".", "-v"]
+argv = ["python", "-m", "unittest", "discover", "-s", "tests", "-v"]
 timeout_seconds = 120
 required = true
 """
@@ -403,11 +408,7 @@ def _run_vertical_slice(
     requested_research: str | None,
 ) -> dict[str, object]:
     config = SolConfig.from_toml(root / ".sol" / "config.toml")
-    if config.models.frontier.model == "configure-me":
-        raise TaskStoreError(
-            "configure [models.frontier] in .sol/config.toml before running a task"
-        )
-    adapter = OpenAICompatibleFrontierProvider(config.models.frontier)
+    adapter = _build_frontier_adapter(config.models.frontier)
     provider = InstrumentedModelProvider(
         adapter, config.models.frontier.pricing
     )
@@ -444,6 +445,14 @@ def _run_vertical_slice(
     return report.model_dump(mode="json")
 
 
+def _build_frontier_adapter(config: FrontierProviderConfig) -> ModelProvider:
+    if config.provider == "ollama":
+        return OllamaProvider(config)
+    if config.provider == "openai_compatible":
+        return OpenAICompatibleFrontierProvider(config)
+    raise TaskStoreError(f"unsupported frontier provider: {config.provider}")
+
+
 def _build_research_engine(
     root: Path, config: SolConfig
 ) -> tuple[ResearchEngine, ResearchFetchProcess]:
@@ -451,9 +460,9 @@ def _build_research_engine(
     if local_config is None:
         raise TaskStoreError(
             "Research Mode requires [models.local_research] configuration"
-        )
+    )
     if local_config.provider == "ollama":
-        local_adapter = OllamaLocalProvider(local_config)
+        local_adapter = OllamaProvider(local_config)
     else:
         local_adapter = OpenAICompatibleFrontierProvider(
             FrontierProviderConfig(

@@ -68,7 +68,13 @@ class ContextCompilerTests(unittest.TestCase):
                 self.assertIsNotNone(evidence.start_line)
                 self.assertIsNotNone(evidence.end_line)
 
+    def test_frequent_plural_keeps_its_searchable_stem_with_tight_budget(self) -> None:
+        compiler = ContextCompiler(ContextCompilerConfig(max_search_terms=2))
+        terms = compiler._query_terms(
+            "downloads configuration downloads compatibility"
+        )
+        self.assertEqual(terms, ["downloads", "download"])
+
 
 if __name__ == "__main__":
     unittest.main()
-
