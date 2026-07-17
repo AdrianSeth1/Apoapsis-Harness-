@@ -4,7 +4,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any
 
-from pydantic import Field, model_validator
+from pydantic import ConfigDict, Field, model_validator
 
 from sol.context.provenance import ContextEvidence
 from sol.specification.schema import (
@@ -25,6 +25,14 @@ class ModelOperation(StrEnum):
     DIAGNOSE_FAILURE = "diagnose_failure"
     PROPOSE_REPAIR = "propose_repair"
     SUMMARIZE_DECISION = "summarize_decision"
+    PLAN_RESEARCH_QUESTIONS = "plan_research_questions"
+    GENERATE_SOURCE_QUERIES = "generate_source_queries"
+    RANK_SEARCH_RESULTS = "rank_search_results"
+    EXTRACT_EVIDENCE = "extract_evidence"
+    COMPARE_PATTERNS = "compare_patterns"
+    IDENTIFY_DISAGREEMENTS = "identify_disagreements"
+    SYNTHESIZE_RESEARCH_BRIEF = "synthesize_research_brief"
+    DETECT_PROMPT_INJECTION = "detect_possible_prompt_injection"
 
 
 class ConstraintDisposition(StrEnum):
@@ -82,6 +90,8 @@ class ModelRequest(StrictModel):
 
 
 class ModelResponse(StrictModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=False)
+
     response_id: str = Field(pattern=r"^MRS-[A-Za-z0-9._-]+$")
     request_id: str = Field(pattern=r"^MRQ-[A-Za-z0-9._-]+$")
     provider: str = Field(min_length=1)
@@ -93,4 +103,3 @@ class ModelResponse(StrictModel):
     usage: TokenUsage = Field(default_factory=TokenUsage)
     finish_reason: str = Field(min_length=1)
     created_at: datetime = Field(default_factory=utc_now)
-

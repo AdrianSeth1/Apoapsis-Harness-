@@ -9,6 +9,7 @@ import unittest
 from pathlib import Path
 
 from sol.cli.app import main
+from sol.config import SolConfig
 
 
 class CLITests(unittest.TestCase):
@@ -34,6 +35,10 @@ class CLITests(unittest.TestCase):
         initialized = self.invoke("init")
         self.assertTrue(initialized["initialized"])
         self.assertTrue((self.root / ".sol" / "sol.db").is_file())
+        config = SolConfig.from_toml(self.root / ".sol" / "config.toml")
+        self.assertEqual(config.models.frontier.provider, "openai_compatible")
+        self.assertEqual(config.models.local_research.provider, "ollama")
+        self.assertFalse(config.research.sources.reddit.enabled)
 
         task = self.invoke(
             "task",
@@ -42,6 +47,8 @@ class CLITests(unittest.TestCase):
             "Preserve the current public API.",
             "--acceptance",
             "Downloads continue after reconnecting.",
+            "--research",
+            "full",
         )
         task_id = str(task["task_id"])
         self.assertEqual(task["state"], "SPEC_DRAFTED")
@@ -52,6 +59,13 @@ class CLITests(unittest.TestCase):
 
         inspected = self.invoke("inspect", task_id)
         self.assertEqual(len(inspected["events"]), 2)
+        self.assertEqual(
+            inspected["events"][-1]["payload"]["requested_research_mode"],
+            "FULL",
+        )
+
+        cache = self.invoke("research", "cache", "inspect")
+        self.assertEqual(cache["entries"], [])
 
         approved = self.invoke("approve", task_id, "--version", "2")
         self.assertEqual(approved["state"], "SPEC_APPROVED")
@@ -60,4 +74,3 @@ class CLITests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

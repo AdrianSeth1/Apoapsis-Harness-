@@ -7,6 +7,7 @@ from sol.workflow.engine import (
 )
 from sol.workflow.events import WorkflowActor, WorkflowEvent
 from sol.workflow.states import WorkflowState
+from sol.workflow.vertical_slice import VerticalSliceRunner
 
 __all__ = [
     "ConcurrentTransitionError",
@@ -17,5 +18,5 @@ __all__ = [
     "WorkflowActor",
     "WorkflowEvent",
     "WorkflowState",
+    "VerticalSliceRunner",
 ]
-

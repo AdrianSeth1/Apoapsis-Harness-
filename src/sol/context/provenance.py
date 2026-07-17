@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 from enum import StrEnum
 
-from pydantic import Field, model_validator
+from pydantic import ConfigDict, Field, model_validator
 
 from sol.specification.schema import StrictModel
 
@@ -27,6 +27,8 @@ class TransmissionPolicy(StrEnum):
 
 
 class ContextEvidence(StrictModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=False)
+
     evidence_id: str = Field(pattern=r"^EV-[A-Za-z0-9._-]+$")
     kind: EvidenceKind
     path: str = Field(min_length=1)
@@ -57,4 +59,3 @@ class ContextEvidence(StrictModel):
         elif self.content_sha256 != digest:
             raise ValueError("content_sha256 does not match content")
         return self
-

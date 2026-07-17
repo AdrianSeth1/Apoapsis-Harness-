@@ -3,6 +3,7 @@ from sol.verification.results import (
     VerificationResult,
     VerificationStatus,
 )
+from sol.verification.failures import FailureNormalizer, NormalizedFailure
 from sol.verification.runner import (
     VerificationCommand,
     VerificationConfig,
@@ -16,5 +17,6 @@ __all__ = [
     "VerificationResult",
     "VerificationRunner",
     "VerificationStatus",
+    "FailureNormalizer",
+    "NormalizedFailure",
 ]
-

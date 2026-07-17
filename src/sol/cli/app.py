@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import sys
 import uuid
@@ -8,7 +9,20 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
+from sol.config import FrontierProviderConfig, SolConfig
 from sol.execution.worktree import WorktreeError, WorktreeManager
+from sol.models.frontier import OpenAICompatibleFrontierProvider
+from sol.models.local import OllamaLocalProvider
+from sol.models.provider import ProviderError
+from sol.models.telemetry import InstrumentedModelProvider, InstrumentedProviderError
+from sol.research.cache import ResearchCache
+from sol.research.engine import ResearchEngine, ResearchEngineError
+from sol.research.fetcher import ResearchFetchProcess
+from sol.research.model import LocalResearchModelClient, ResearchModelError
+from sol.research.schemas import ResearchMode, ResearchSourceName
+from sol.research.sources.github import GitHubSource
+from sol.research.sources.official import OfficialDocumentationSource
+from sol.research.sources.reddit import RedditSource
 from sol.repository.git import GitCommandError, GitRepository
 from sol.specification.schema import (
     AcceptanceCriterion,
@@ -21,11 +35,118 @@ from sol.verification.runner import VerificationConfig, VerificationRunner
 from sol.workflow.engine import SQLiteTaskStore, TaskStoreError
 from sol.workflow.events import WorkflowActor
 from sol.workflow.states import WorkflowState
+from sol.workflow.vertical_slice import VerticalSliceRunner
 
 
 DEFAULT_CONFIG = """# SOL Harness project configuration
 [project]
 language = "python"
+
+[models.frontier]
+provider = "openai_compatible"
+base_url = "https://api.openai.com/v1"
+model = "configure-me"
+api_key_env = "OPENAI_API_KEY"
+timeout_seconds = 120
+
+[models.frontier.pricing]
+input_per_million_usd = 0
+output_per_million_usd = 0
+cached_input_per_million_usd = 0
+
+[models.local_research]
+provider = "ollama"
+base_url = "http://127.0.0.1:11434"
+model = "sol-qwen36-27b"
+api_key_env = "SOL_LOCAL_RESEARCH_API_KEY"
+timeout_seconds = 600
+max_output_tokens = 8192
+max_structured_retries = 1
+
+[models.local_research.modes.extraction]
+think = false
+require_structured_output = true
+
+[models.local_research.modes.synthesis]
+think = true
+require_structured_output = true
+
+[context]
+max_files = 12
+max_excerpt_lines = 120
+max_total_chars = 60000
+match_context_lines = 20
+max_search_terms = 12
+cloud_excluded_paths = [
+  ".env", ".env.*", "*.pem", "*.key", "secrets/**", ".sol/**", ".git/**"
+]
+
+[patch]
+max_changed_lines = 500
+max_files = 20
+allow_dependency_changes = false
+dependency_files = [
+  "pyproject.toml", "requirements*.txt", "poetry.lock", "uv.lock",
+  "package.json", "package-lock.json", "pnpm-lock.yaml", "yarn.lock"
+]
+verification_files = [
+  ".sol/config.toml", "pytest.ini", "tox.ini", "mypy.ini", "ruff.toml",
+  ".github/workflows/**"
+]
+
+[research]
+default_mode = "AUTO"
+
+[research.budget]
+max_queries = 8
+max_candidates = 30
+max_fetched_sources = 12
+max_extracted_characters_per_source = 20000
+max_research_context_tokens = 30000
+max_seconds = 180
+
+[research.sources.official_docs]
+enabled = true
+priority = 1
+allowed_domains = ["docs.python.org"]
+
+[research.sources.github]
+enabled = true
+priority = 2
+authentication = "auto"
+require_license_for_code_reuse = true
+
+[research.sources.reddit]
+enabled = false
+priority = 4
+client_id_env = "REDDIT_CLIENT_ID"
+client_secret_env = "REDDIT_CLIENT_SECRET"
+user_agent = "sol-harness-research/0.3"
+purposes = ["user_pain_points", "product_expectations", "failure_discovery"]
+
+[research.security]
+allow_domains = [
+  "docs.python.org", "github.com", "api.github.com", "reddit.com",
+  "www.reddit.com", "oauth.reddit.com"
+]
+allowed_content_types = [
+  "application/json", "text/plain", "text/html", "text/markdown"
+]
+max_response_bytes = 1000000
+max_redirects = 3
+request_timeout_seconds = 20
+execute_downloaded_code = false
+project_write_access = false
+expose_project_secrets = false
+
+[research.synthesis]
+minimum_distinct_sources = 3
+prefer_comparative_patterns = true
+require_provenance = true
+
+[research.cache]
+default_ttl_hours = 168
+reddit_ttl_hours = 24
 
 [verification]
 stop_on_failure = false
@@ -56,6 +177,21 @@ def build_parser() -> argparse.ArgumentParser:
 
     subparsers.add_parser("init", help="initialize SOL metadata")
 
+    run = subparsers.add_parser(
+        "run", help="run the approved frontier-model vertical slice"
+    )
+    run.add_argument("request")
+    run.add_argument(
+        "--yes",
+        action="store_true",
+        help="approve the extracted specification non-interactively",
+    )
+    run.add_argument(
+        "--research",
+        choices=["off", "auto", "github", "community", "full"],
+        help="external-research policy for this task",
+    )
+
     task = subparsers.add_parser("task", help="draft a structured task")
     task.add_argument("request")
     task.add_argument(
@@ -63,6 +199,21 @@ def build_parser() -> argparse.ArgumentParser:
     )
     task.add_argument(
         "--acceptance", action="append", default=[], help="acceptance criterion"
+    )
+    task.add_argument(
+        "--research",
+        choices=["off", "auto", "github", "community", "full"],
+        default="off",
+        help="record the requested research policy",
+    )
+
+    research = subparsers.add_parser(
+        "research", help="run, inspect, refresh, or manage research cache"
+    )
+    research.add_argument("research_args", nargs="+")
+    research.add_argument(
+        "--mode",
+        choices=["off", "auto", "github", "community", "full"],
     )
 
     inspect = subparsers.add_parser("inspect", help="show a task and audit events")
@@ -97,7 +248,16 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
     try:
         result = _dispatch(args)
-    except (TaskStoreError, WorktreeError, GitCommandError, ValidationError) as exc:
+    except (
+        TaskStoreError,
+        WorktreeError,
+        GitCommandError,
+        ValidationError,
+        ResearchEngineError,
+        ResearchModelError,
+        ProviderError,
+        InstrumentedProviderError,
+    ) as exc:
         parser.exit(2, f"error: {exc}\n")
     if result is not None:
         print(json.dumps(result, indent=2, sort_keys=True, default=str))
@@ -109,13 +269,35 @@ def _dispatch(args: argparse.Namespace) -> dict[str, object] | None:
         return _init(root)
     store = _store(root)
     if args.command == "task":
-        return _task(store, args.request, args.constraint, args.acceptance)
+        return _task(
+            store,
+            args.request,
+            args.constraint,
+            args.acceptance,
+            research_mode=args.research,
+        )
+    if args.command == "run":
+        return _run_vertical_slice(
+            root,
+            store,
+            args.request,
+            assume_yes=args.yes,
+            requested_research=args.research,
+        )
+    if args.command == "research":
+        return _research_command(
+            root, store, args.research_args, requested_mode=args.mode
+        )
     if args.command == "inspect":
         record = store.get_task(args.task_id)
-        return {
+        result: dict[str, object] = {
             "task": record.model_dump(mode="json"),
             "events": [event.model_dump(mode="json") for event in store.events(args.task_id)],
         }
+        report_path = root / ".sol" / "tasks" / args.task_id / "report.json"
+        if report_path.is_file():
+            result["report"] = json.loads(report_path.read_text(encoding="utf-8"))
+        return result
     if args.command == "approve":
         record = store.transition(
             args.task_id,
@@ -166,6 +348,7 @@ def _task(
     request: str,
     constraints: list[str],
     acceptance: list[str],
+    research_mode: str = "off",
 ) -> dict[str, object]:
     task_id = f"TASK-{uuid.uuid4().hex[:12].upper()}"
     specification = TaskSpecification(
@@ -203,9 +386,183 @@ def _task(
         WorkflowState.SPEC_DRAFTED,
         actor=WorkflowActor.SYSTEM,
         event_type="deterministic_specification_drafted",
-        payload={"natural_language_extraction_used": False},
+        payload={
+            "natural_language_extraction_used": False,
+            "requested_research_mode": ResearchMode.from_cli(research_mode).value,
+        },
     )
     return record.model_dump(mode="json")
+
+
+def _run_vertical_slice(
+    root: Path,
+    store: SQLiteTaskStore,
+    request: str,
+    *,
+    assume_yes: bool,
+    requested_research: str | None,
+) -> dict[str, object]:
+    config = SolConfig.from_toml(root / ".sol" / "config.toml")
+    if config.models.frontier.model == "configure-me":
+        raise TaskStoreError(
+            "configure [models.frontier] in .sol/config.toml before running a task"
+        )
+    adapter = OpenAICompatibleFrontierProvider(config.models.frontier)
+    provider = InstrumentedModelProvider(
+        adapter, config.models.frontier.pricing
+    )
+
+    def approve(specification: TaskSpecification) -> bool:
+        if assume_yes:
+            return True
+        print("\nExtracted specification:\n")
+        print(specification.model_dump_json(indent=2))
+        answer = input("\nApprove this specification? [y/N] ")
+        return answer.strip().lower() in {"y", "yes"}
+
+    research_mode = (
+        ResearchMode.from_cli(requested_research)
+        if requested_research
+        else config.research.default_mode
+    )
+    research_engine = None
+    fetch_process = None
+    if research_mode != ResearchMode.OFF:
+        research_engine, fetch_process = _build_research_engine(root, config)
+    try:
+        report = VerticalSliceRunner(
+            root,
+            store,
+            provider,
+            config,
+            research_engine=research_engine,
+            research_mode=research_mode,
+        ).run(request, approve=approve)
+    finally:
+        if fetch_process is not None:
+            fetch_process.close()
+    return report.model_dump(mode="json")
+
+
+def _build_research_engine(
+    root: Path, config: SolConfig
+) -> tuple[ResearchEngine, ResearchFetchProcess]:
+    local_config = config.models.local_research
+    if local_config is None:
+        raise TaskStoreError(
+            "Research Mode requires [models.local_research] configuration"
+        )
+    if local_config.provider == "ollama":
+        local_adapter = OllamaLocalProvider(local_config)
+    else:
+        local_adapter = OpenAICompatibleFrontierProvider(
+            FrontierProviderConfig(
+                provider="openai_compatible",
+                base_url=local_config.base_url,
+                model=local_config.model,
+                api_key_env=local_config.api_key_env,
+                timeout_seconds=min(local_config.timeout_seconds, 600),
+            )
+        )
+    local_model = LocalResearchModelClient(
+        InstrumentedModelProvider(local_adapter), local_config
+    )
+    fetch_process = ResearchFetchProcess(config.research.security)
+    sources = {}
+    if config.research.sources.official_docs.enabled:
+        sources[ResearchSourceName.OFFICIAL_DOCS] = OfficialDocumentationSource(
+            fetch_process,
+            config.research.sources.official_docs.allowed_domains,
+        )
+    if config.research.sources.github.enabled:
+        sources[ResearchSourceName.GITHUB] = GitHubSource(
+            fetch_process, config.research.sources.github
+        )
+    if config.research.sources.reddit.enabled:
+        sources[ResearchSourceName.REDDIT] = RedditSource(
+            fetch_process, config.research.sources.reddit
+        )
+    return (
+        ResearchEngine(root, config.research, local_model, sources),
+        fetch_process,
+    )
+
+
+def _research_command(
+    root: Path,
+    store: SQLiteTaskStore,
+    arguments: list[str],
+    *,
+    requested_mode: str | None,
+) -> dict[str, object]:
+    if not arguments:
+        raise TaskStoreError("research command requires a task or cache action")
+    config = SolConfig.from_toml(root / ".sol" / "config.toml")
+    cache = ResearchCache(root / ".sol" / "research-cache.db")
+    if arguments[0] == "cache":
+        if len(arguments) != 2 or arguments[1] not in {"inspect", "clear"}:
+            raise TaskStoreError("use 'sol research cache inspect' or 'clear'")
+        if arguments[1] == "inspect":
+            return {
+                "entries": [
+                    item.model_dump(mode="json") for item in cache.inspect()
+                ]
+            }
+        return {"cleared_entries": cache.clear()}
+    if arguments[0] == "inspect":
+        if len(arguments) != 2:
+            raise TaskStoreError("use 'sol research inspect <task-id>'")
+        task_id = arguments[1]
+        store.get_task(task_id)
+        research_root = root / ".sol" / "tasks" / task_id / "research"
+        if not research_root.is_dir():
+            raise TaskStoreError(f"no research audit exists for {task_id}")
+        result: dict[str, object] = {
+            "task_id": task_id,
+            "audit_directory": research_root.relative_to(root).as_posix(),
+            "artifacts": sorted(path.name for path in research_root.iterdir()),
+        }
+        for filename, key in [
+            ("research-spec.json", "specification"),
+            ("synthesis.json", "synthesis"),
+            ("telemetry.json", "telemetry"),
+        ]:
+            path = research_root / filename
+            if path.is_file():
+                result[key] = json.loads(path.read_text(encoding="utf-8"))
+        brief = research_root / "research-brief.md"
+        if brief.is_file():
+            result["brief"] = brief.read_text(encoding="utf-8")
+        return result
+    refresh = arguments[0] == "refresh"
+    if refresh:
+        if len(arguments) != 2:
+            raise TaskStoreError("use 'sol research refresh <task-id>'")
+        task_id = arguments[1]
+    else:
+        if len(arguments) != 1:
+            raise TaskStoreError("use 'sol research <task-id>'")
+        task_id = arguments[0]
+    record = store.get_task(task_id)
+    if record.state in {
+        WorkflowState.INTAKE,
+        WorkflowState.SPEC_DRAFTED,
+        WorkflowState.HUMAN_REVIEW_REQUIRED,
+    }:
+        raise TaskStoreError("research requires an approved task specification")
+    mode = (
+        ResearchMode.from_cli(requested_mode)
+        if requested_mode
+        else config.research.default_mode
+    )
+    engine, fetch_process = _build_research_engine(root, config)
+    try:
+        execution = asyncio.run(
+            engine.execute(record.specification, mode, refresh=refresh)
+        )
+    finally:
+        fetch_process.close()
+    return execution.model_dump(mode="json")
 
 
 def _verify(
@@ -275,4 +632,3 @@ def _task_slug(task_id: str) -> str:
 
 if __name__ == "__main__":
     main(sys.argv[1:])
-

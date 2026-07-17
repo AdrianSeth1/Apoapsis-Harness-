@@ -1,0 +1,4 @@
+.sol/
+__pycache__/
+*.py[cod]
+

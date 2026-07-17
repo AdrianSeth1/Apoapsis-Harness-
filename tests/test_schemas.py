@@ -25,7 +25,7 @@ from tests.helpers import make_constraint, make_specification
 
 class TaskSpecificationTests(unittest.TestCase):
     def test_hard_constraint_preserves_verbatim_source(self) -> None:
-        exact = "Preserve the current public API -- including aliases."
+        exact = "  Preserve the current public API -- including aliases.\t"
         constraint = make_constraint(text=exact)
         specification = make_specification(constraints=[constraint])
 
@@ -162,4 +162,3 @@ class VerificationSchemaTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

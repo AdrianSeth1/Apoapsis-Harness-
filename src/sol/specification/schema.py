@@ -56,6 +56,8 @@ class AcceptanceCriterion(TraceableStatement):
 class HardConstraint(StrictModel):
     """A hard constraint whose original user wording is immutable evidence."""
 
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=False)
+
     id: str = Field(pattern=r"^HC-[A-Za-z0-9._-]+$")
     text: str = Field(min_length=1)
     verbatim_source: str = Field(min_length=1)
@@ -115,4 +117,3 @@ class TaskSpecification(StrictModel):
             for item in self.hard_constraints
             if item.status == ConstraintStatus.ACTIVE
         ]
-
