@@ -124,7 +124,27 @@ class GitPatchApplier:
             old_start = int(match.group(1))
             matches = self._matching_starts(source_lines, old_lines)
             if len(matches) == 1:
-                old_start = matches[0] + 1
+                match_start = matches[0]
+                old_start = match_start + 1
+                if body and not body[0].startswith(" ") and match_start > 0:
+                    body.insert(0, f" {source_lines[match_start - 1]}")
+                    old_start -= 1
+                content_end = len(body)
+                while content_end and body[content_end - 1].startswith("\\"):
+                    content_end -= 1
+                matched_end = matches[0] + len(old_lines)
+                if (
+                    content_end
+                    and not body[content_end - 1].startswith(" ")
+                    and matched_end < len(source_lines)
+                ):
+                    body.insert(content_end, f" {source_lines[matched_end]}")
+                old_lines = [
+                    item[1:] for item in body if item.startswith((" ", "-"))
+                ]
+                new_lines = [
+                    item[1:] for item in body if item.startswith((" ", "+"))
+                ]
             old_count = len(old_lines)
             new_count = len(new_lines)
             new_start = old_start + line_delta

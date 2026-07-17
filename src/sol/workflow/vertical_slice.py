@@ -550,6 +550,7 @@ class VerticalSliceRunner:
         return {
             "context_window_tokens": frontier.context_window_tokens,
             "max_output_tokens": frontier.max_output_tokens,
+            "temperature": frontier.temperature,
             "think": think,
             "timeout_seconds": frontier.timeout_seconds,
         }

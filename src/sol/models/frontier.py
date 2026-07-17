@@ -44,7 +44,10 @@ class OpenAICompatibleFrontierProvider(ModelProvider):
             {
                 "model": self.config.model,
                 "messages": [{"role": "user", "content": invocation.prompt}],
-                "temperature": 0,
+                "temperature": self.config.temperature,
+                "max_tokens": (
+                    invocation.max_output_tokens or self.config.max_output_tokens
+                ),
             }
         ).encode("utf-8")
         request = urllib.request.Request(

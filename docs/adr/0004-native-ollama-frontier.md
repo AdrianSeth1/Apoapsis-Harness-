@@ -3,7 +3,9 @@
 ## Status
 
 Accepted for SOL Harness 0.4.0; context profiles amended in 0.4.1 and
-deterministic import-neighbor expansion corrected in 0.4.2.
+deterministic import-neighbor expansion corrected in 0.4.2. Configurable,
+audited sampling and unique edge-context patch normalization were added in
+0.4.3.
 
 ## Decision
 
@@ -13,11 +15,14 @@ Native Ollama frontier endpoints are restricted to loopback HTTP(S) URLs and do
 not require placeholder credentials.
 
 The generated development configuration uses `qwen3-coder:30b` for patch
-proposals and `qwen3.6:27b` for Research Mode, with deterministic temperature,
+proposals and `qwen3.6:27b` for Research Mode, with a zero-temperature default,
 bounded output, a 32K context window, and thinking disabled for the coder and
 specification extraction. Frontier runs expose deterministic `16k`, `32k`, and
 `64k` context profiles. Each profile jointly controls the model window and the
 repository excerpt budget so allocating more context can transmit more evidence.
+Sampling temperature defaults to zero but is provider-configurable and included in the
+reproducible request package; this permits an explicitly recorded model-recommended
+sampling comparison without changing deterministic workflow authority.
 
 ## Trust boundary
 
@@ -47,3 +52,6 @@ credential, workflow-transition, or completion authority to the model.
 - Exact Markdown diff wrappers, unmarked blank context, uniquely resolvable hunk
   coordinates, and CRLF worktree line endings are canonicalized deterministically
   and audited; ambiguous or semantic changes remain rejected.
+- A hunk with missing edge context may receive one adjacent unchanged repository
+  line only after its complete old side has exactly one source match. SOL retains
+  strict Git application instead of globally permitting zero-context patches.

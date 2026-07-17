@@ -108,7 +108,9 @@ class ProviderTests(unittest.TestCase):
             }
         )
         with patch.dict(os.environ, {"SOL_TEST_API_KEY": "secret"}):
-            with patch("urllib.request.urlopen", return_value=response):
+            with patch(
+                "urllib.request.urlopen", return_value=response
+            ) as urlopen:
                 output = adapter.complete(
                     ProviderInvocation(
                         request_id="MRQ-1",
@@ -120,6 +122,10 @@ class ProviderTests(unittest.TestCase):
         self.assertEqual(output.response_id, "chat-1")
         self.assertEqual(output.model, "frontier-test-2026")
         self.assertEqual(output.usage.cached_input_tokens, 7)
+        request = urlopen.call_args.args[0]
+        payload = json.loads(request.data.decode("utf-8"))
+        self.assertEqual(payload["temperature"], 0.0)
+        self.assertEqual(payload["max_tokens"], 8192)
 
     def test_native_ollama_frontier_uses_local_generation_controls(self) -> None:
         class StubOllama(OllamaProvider):
@@ -154,6 +160,7 @@ class ProviderTests(unittest.TestCase):
                 base_url="http://127.0.0.1:11434",
                 model="qwen3-coder:30b",
                 max_output_tokens=8192,
+                temperature=1.0,
                 context_window_tokens=16384,
                 think=False,
             )
@@ -171,6 +178,7 @@ class ProviderTests(unittest.TestCase):
         options = adapter.payload["options"]
         assert isinstance(options, dict)
         self.assertEqual(options["num_predict"], 8192)
+        self.assertEqual(options["temperature"], 1.0)
         self.assertEqual(options["num_ctx"], 16384)
         self.assertFalse(adapter.payload["think"])
         self.assertEqual(call.telemetry.provider, "ollama")

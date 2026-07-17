@@ -43,6 +43,7 @@ class FrontierProviderConfig(StrictModel):
     api_key_env: str = Field(default="OPENAI_API_KEY", min_length=1)
     timeout_seconds: float = Field(default=120.0, gt=0, le=3600)
     max_output_tokens: int = Field(default=8192, ge=256, le=131_072)
+    temperature: float = Field(default=0.0, ge=0.0, le=2.0)
     context_window_tokens: int | None = Field(
         default=None, ge=2048, le=1_048_576
     )
@@ -78,6 +79,7 @@ class LocalResearchProviderConfig(StrictModel):
     api_key_env: str = "SOL_LOCAL_RESEARCH_API_KEY"
     timeout_seconds: float = Field(default=600.0, gt=0, le=3600)
     max_output_tokens: int = Field(default=8192, ge=256, le=131_072)
+    temperature: float = Field(default=0.0, ge=0.0, le=2.0)
     context_window_tokens: int | None = Field(
         default=32_768, ge=2048, le=1_048_576
     )

@@ -351,6 +351,7 @@ class FrontierVerticalSliceTests(unittest.TestCase):
             {
                 "context_window_tokens": None,
                 "max_output_tokens": 8192,
+                "temperature": 0.0,
                 "think": None,
                 "timeout_seconds": 120.0,
             },

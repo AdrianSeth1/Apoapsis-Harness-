@@ -108,6 +108,7 @@ base_url = "http://127.0.0.1:11434"
 model = "qwen3-coder:30b"
 timeout_seconds = 900
 max_output_tokens = 8192
+temperature = 0.0
 context_window_tokens = 32768
 think = false
 specification_think = false
@@ -123,6 +124,7 @@ base_url = "http://127.0.0.1:11434"
 model = "qwen3.6:27b"
 timeout_seconds = 600
 max_output_tokens = 8192
+temperature = 0.0
 context_window_tokens = 32768
 
 [context]
@@ -159,6 +161,23 @@ Research Mode retains its separately configured budget. SOL records the active
 window and generation settings in every frontier request package and the exact
 retrieval limits in every context package.
 
+The installed Coder-Next Q4 model can be selected explicitly:
+
+```toml
+[models.frontier]
+provider = "ollama"
+base_url = "http://127.0.0.1:11434"
+model = "qwen3-coder-next:q4_K_M"
+temperature = 1.0
+context_window_tokens = 65536
+think = false
+specification_think = false
+```
+
+Temperature is configurable for native Ollama and hosted providers and is
+recorded in each request package. Zero remains the generated deterministic
+sampling default; Coder-Next's published model settings recommend `1.0`.
+
 SOL displays the extracted Pydantic specification and waits for approval. The
 `--yes` flag is available for controlled non-interactive evaluation. Approval
 does not grant the model workflow authority: SOL deterministically selects
@@ -173,6 +192,8 @@ The controlled download-service fixture and direct-versus-SOL procedure are in
 [`docs/evaluation/direct-vs-sol.md`](docs/evaluation/direct-vs-sol.md). The first
 measured local Qwen smoke results are in
 [`docs/evaluation/local-qwen-smoke.md`](docs/evaluation/local-qwen-smoke.md).
+The installed Coder-Next Q4 evaluation is in
+[`docs/evaluation/qwen3-coder-next-smoke.md`](docs/evaluation/qwen3-coder-next-smoke.md).
 
 ## Research Mode
 

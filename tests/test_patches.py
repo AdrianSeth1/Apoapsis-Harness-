@@ -154,6 +154,38 @@ class PatchPolicyTests(unittest.TestCase):
         self.assertEqual(source.read_text(encoding="utf-8"), "first\nnew\nlast\n")
         self.assertIn("@@ -1,3 +1,3 @@", applier.last_applied_patch or "")
 
+    def test_applier_adds_missing_edge_context_only_after_unique_match(self) -> None:
+        source = self.root / "source.py"
+        source.write_text("first\nold\n\n", encoding="utf-8")
+        subprocess.run(
+            ["git", "init", "-b", "main"],
+            cwd=self.root,
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(
+            ["git", "add", "source.py"],
+            cwd=self.root,
+            check=True,
+            capture_output=True,
+        )
+        patch = (
+            "diff --git a/source.py b/source.py\n"
+            "--- a/source.py\n"
+            "+++ b/source.py\n"
+            "@@ -1,1 +1,1 @@\n"
+            " first\n"
+            "-old\n"
+            "+new\n"
+        )
+        applier = GitPatchApplier()
+
+        changed = applier.apply(self.parser.parse(patch), self.root)
+
+        self.assertEqual(changed, ["source.py"])
+        self.assertEqual(source.read_text(encoding="utf-8"), "first\nnew\n\n")
+        self.assertIn("@@ -1,3 +1,3 @@", applier.last_applied_patch or "")
+
 
 if __name__ == "__main__":
     unittest.main()

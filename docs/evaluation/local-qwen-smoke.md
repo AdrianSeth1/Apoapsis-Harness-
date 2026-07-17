@@ -134,3 +134,6 @@ fast baseline proposer. The next meaningful model comparison is
 at the explicit `16k`, `32k`, and `64k` profiles. Keep SOL policy, verification
 commands, and repair limits fixed, and measure prompt evaluation speed, offload,
 patch acceptance, and verified task success at each context size.
+
+That comparison is now recorded in
+[`qwen3-coder-next-smoke.md`](qwen3-coder-next-smoke.md).

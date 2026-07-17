@@ -43,7 +43,7 @@ class OllamaProvider(ModelProvider):
         )
         deadline = time.monotonic() + timeout_seconds
         options: dict[str, Any] = {
-            "temperature": 0,
+            "temperature": self.config.temperature,
             "num_predict": (
                 invocation.max_output_tokens or self.config.max_output_tokens
             ),
