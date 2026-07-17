@@ -129,6 +129,7 @@ context_window_tokens = 32768
 max_files = 16
 max_excerpt_lines = 160
 max_total_chars = 72000
+max_import_depth = 2
 ```
 
 Both native Ollama endpoints must be loopback URLs. No fake API key is needed.

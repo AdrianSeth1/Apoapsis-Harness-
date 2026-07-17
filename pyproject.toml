@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sol-harness"
-version = "0.4.1"
+version = "0.4.2"
 description = "Local-first deterministic substrate for verified AI coding tasks"
 readme = "README.md"
 requires-python = ">=3.12"

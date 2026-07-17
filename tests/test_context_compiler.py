@@ -75,6 +75,40 @@ class ContextCompilerTests(unittest.TestCase):
         )
         self.assertEqual(terms, ["downloads", "download"])
 
+    def test_plural_stem_is_not_evicted_at_the_search_budget_boundary(self) -> None:
+        compiler = ContextCompiler(ContextCompilerConfig(max_search_terms=12))
+        terms = compiler._query_terms(
+            "dependencies runtime range compatibility configuration "
+            "functionality maintaining downloads implement resumable avoiding"
+        )
+        self.assertIn("downloads", terms)
+        self.assertIn("download", terms)
+        self.assertLessEqual(len(terms), 12)
+
+    def test_import_neighbors_follow_package_reexports(self) -> None:
+        package = self.root / "src" / "download_service"
+        package.mkdir()
+        (package / "__init__.py").write_text(
+            "from .worker import Worker\n", encoding="utf-8"
+        )
+        (package / "worker.py").write_text(
+            "class Worker:\n    pass\n", encoding="utf-8"
+        )
+        (self.root / "tests" / "test_download_service.py").write_text(
+            "from download_service import Worker\n\n"
+            "def test_download_behavior():\n    assert Worker()\n",
+            encoding="utf-8",
+        )
+        compiler = ContextCompiler(
+            ContextCompilerConfig(max_files=20, max_import_depth=2)
+        )
+
+        context = compiler.compile(make_specification(), self.root)
+
+        paths = {item.path for item in context.evidence}
+        self.assertIn("src/download_service/__init__.py", paths)
+        self.assertIn("src/download_service/worker.py", paths)
+
 
 if __name__ == "__main__":
     unittest.main()

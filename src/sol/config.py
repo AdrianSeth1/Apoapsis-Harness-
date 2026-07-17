@@ -101,6 +101,7 @@ class ContextCompilerConfig(StrictModel):
     max_total_chars: int = Field(default=72_000, ge=1_000, le=2_000_000)
     match_context_lines: int = Field(default=20, ge=0, le=200)
     max_search_terms: int = Field(default=12, ge=1, le=50)
+    max_import_depth: int = Field(default=2, ge=0, le=10)
     cloud_excluded_paths: list[str] = Field(
         default_factory=lambda: [
             ".env",

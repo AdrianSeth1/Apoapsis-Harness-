@@ -43,6 +43,7 @@ class CLITests(unittest.TestCase):
         self.assertEqual(config.context.max_files, 16)
         self.assertEqual(config.context.max_excerpt_lines, 160)
         self.assertEqual(config.context.max_total_chars, 72000)
+        self.assertEqual(config.context.max_import_depth, 2)
         self.assertEqual(config.models.local_research.provider, "ollama")
         self.assertEqual(config.models.local_research.model, "qwen3.6:27b")
         self.assertEqual(config.models.local_research.context_window_tokens, 32768)

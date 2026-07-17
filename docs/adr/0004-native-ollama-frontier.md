@@ -2,7 +2,8 @@
 
 ## Status
 
-Accepted for SOL Harness 0.4.0; context profiles amended in 0.4.1.
+Accepted for SOL Harness 0.4.0; context profiles amended in 0.4.1 and
+deterministic import-neighbor expansion corrected in 0.4.2.
 
 ## Decision
 
@@ -36,6 +37,9 @@ credential, workflow-transition, or completion authority to the model.
 - Each audited frontier request records its context window, output limit,
   thinking setting, and timeout; its paired context package records the exact
   file, excerpt-line, and total-character limits.
+- Searchable singular stems remain adjacent to plural query terms at bounded
+  term limits, and Python imports are followed through two deterministic levels
+  so package re-exports lead retrieval back to implementation modules.
 - The authenticated OpenAI-compatible provider remains available for hosted
   comparisons.
 - A 52 GB Q4 Coder-Next model is not made the default; it can be selected later

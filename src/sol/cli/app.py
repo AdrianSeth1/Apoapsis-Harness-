@@ -81,6 +81,7 @@ max_excerpt_lines = 160
 max_total_chars = 72000
 match_context_lines = 20
 max_search_terms = 12
+max_import_depth = 2
 cloud_excluded_paths = [
   ".env", ".env.*", "*.pem", "*.key", "secrets/**", ".sol/**", ".git/**"
 ]

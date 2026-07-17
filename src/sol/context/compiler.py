@@ -269,12 +269,28 @@ class ContextCompiler:
             if word.endswith("s") and len(word) > 5:
                 stem = word[:-1]
                 frequencies[stem] = max(frequencies[stem], count)
-        return sorted(
+        ranked = sorted(
             frequencies,
             key=lambda item: (-frequencies[item], -len(item), item),
-        )[
-            : self.config.max_search_terms
-        ]
+        )
+        selected: list[str] = []
+        for word in ranked:
+            if word in selected:
+                continue
+            variants = [word]
+            if word.endswith("s") and len(word) > 5:
+                stem = word[:-1]
+                if stem in frequencies:
+                    variants.append(stem)
+            remaining = self.config.max_search_terms - len(selected)
+            if len(variants) > remaining and remaining == 1:
+                variants = [variants[-1]]
+            for variant in variants:
+                if variant not in selected:
+                    selected.append(variant)
+                if len(selected) == self.config.max_search_terms:
+                    return selected
+        return selected
 
     @staticmethod
     def _explicit_paths(text: str) -> list[str]:
@@ -376,44 +392,53 @@ class ContextCompiler:
         reasons: dict[str, set[str]],
         cache: dict[str, str],
     ) -> None:
-        selected = sorted(reasons)
-        for path in selected:
-            if not path.endswith(".py"):
-                continue
-            content = self._read_text(root, path, cache)
-            if content is None:
-                continue
-            try:
-                tree = ast.parse(content)
-            except SyntaxError:
-                continue
-            modules: set[tuple[str, int]] = set()
-            for node in ast.walk(tree):
-                if isinstance(node, ast.Import):
-                    modules.update((alias.name, 0) for alias in node.names)
-                elif isinstance(node, ast.ImportFrom) and node.module:
-                    modules.add((node.module, node.level))
-            for module, level in sorted(modules):
-                relative = module.replace(".", "/")
-                if level:
-                    base = PurePosixPath(path).parent
-                    for _ in range(level - 1):
-                        base = base.parent
-                    relative = (base / relative).as_posix()
-                    candidates = [
-                        f"{relative}.py",
-                        f"{relative}/__init__.py",
-                    ]
-                else:
-                    candidates = [
-                        f"{relative}.py",
-                        f"{relative}/__init__.py",
-                        f"src/{relative}.py",
-                        f"src/{relative}/__init__.py",
-                    ]
-                for candidate in candidates:
-                    if candidate in files and not self._excluded(candidate):
-                        reasons[candidate].add(f"imported by {path}")
+        frontier = sorted(path for path in reasons if path.endswith(".py"))
+        visited: set[str] = set()
+        for _ in range(self.config.max_import_depth):
+            next_frontier: set[str] = set()
+            for path in frontier:
+                if path in visited:
+                    continue
+                visited.add(path)
+                content = self._read_text(root, path, cache)
+                if content is None:
+                    continue
+                try:
+                    tree = ast.parse(content)
+                except SyntaxError:
+                    continue
+                modules: set[tuple[str, int]] = set()
+                for node in ast.walk(tree):
+                    if isinstance(node, ast.Import):
+                        modules.update((alias.name, 0) for alias in node.names)
+                    elif isinstance(node, ast.ImportFrom) and node.module:
+                        modules.add((node.module, node.level))
+                for module, level in sorted(modules):
+                    relative = module.replace(".", "/")
+                    if level:
+                        base = PurePosixPath(path).parent
+                        for _ in range(level - 1):
+                            base = base.parent
+                        relative = (base / relative).as_posix()
+                        candidates = [
+                            f"{relative}.py",
+                            f"{relative}/__init__.py",
+                        ]
+                    else:
+                        candidates = [
+                            f"{relative}.py",
+                            f"{relative}/__init__.py",
+                            f"src/{relative}.py",
+                            f"src/{relative}/__init__.py",
+                        ]
+                    for candidate in candidates:
+                        if candidate in files and not self._excluded(candidate):
+                            reasons[candidate].add(f"imported by {path}")
+                            if candidate not in visited:
+                                next_frontier.add(candidate)
+            frontier = sorted(next_frontier)
+            if not frontier:
+                break
 
     def _related_tests(
         self,
