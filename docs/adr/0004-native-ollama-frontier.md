@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted for SOL Harness 0.4.0.
+Accepted for SOL Harness 0.4.0; context profiles amended in 0.4.1.
 
 ## Decision
 
@@ -13,8 +13,10 @@ not require placeholder credentials.
 
 The generated development configuration uses `qwen3-coder:30b` for patch
 proposals and `qwen3.6:27b` for Research Mode, with deterministic temperature,
-bounded output, a 16K context window, and thinking disabled for the coder and
-specification extraction.
+bounded output, a 32K context window, and thinking disabled for the coder and
+specification extraction. Frontier runs expose deterministic `16k`, `32k`, and
+`64k` context profiles. Each profile jointly controls the model window and the
+repository excerpt budget so allocating more context can transmit more evidence.
 
 ## Trust boundary
 
@@ -31,6 +33,9 @@ credential, workflow-transition, or completion authority to the model.
 - A complete vertical slice can run without a hosted model or API key.
 - Native Ollama token, duration, load, thinking, and model-digest metadata flow
   through the existing telemetry report.
+- Each audited frontier request records its context window, output limit,
+  thinking setting, and timeout; its paired context package records the exact
+  file, excerpt-line, and total-character limits.
 - The authenticated OpenAI-compatible provider remains available for hosted
   comparisons.
 - A 52 GB Q4 Coder-Next model is not made the default; it can be selected later

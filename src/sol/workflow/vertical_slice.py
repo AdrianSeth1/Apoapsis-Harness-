@@ -497,6 +497,7 @@ class VerticalSliceRunner:
             evidence=context.evidence,
             active_constraints=constraints,
             constraint_coverage=coverage,
+            inference_parameters=self._inference_parameters(operation),
             requested_output=requested_output,
         )
         self.audit.write_call_package(call_number, request, prompt, context)
@@ -535,6 +536,23 @@ class VerticalSliceRunner:
         )
         self.audit.write_call_result(call_number, response, call.telemetry)
         return response
+
+    def _inference_parameters(
+        self, operation: ModelOperation
+    ) -> dict[str, int | float | bool | None]:
+        frontier = self.config.models.frontier
+        think = frontier.think
+        if (
+            operation == ModelOperation.DRAFT_SPECIFICATION
+            and frontier.specification_think is not None
+        ):
+            think = frontier.specification_think
+        return {
+            "context_window_tokens": frontier.context_window_tokens,
+            "max_output_tokens": frontier.max_output_tokens,
+            "think": think,
+            "timeout_seconds": frontier.timeout_seconds,
+        }
 
     def _validate_apply_and_audit(self, patch: str, *, attempt: int) -> None:
         assert self.audit is not None

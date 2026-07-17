@@ -45,7 +45,7 @@ model = "qwen3.6:27b"
 api_key_env = "SOL_LOCAL_RESEARCH_API_KEY"
 timeout_seconds = 600
 max_output_tokens = 8192
-context_window_tokens = 16384
+context_window_tokens = 32768
 max_structured_retries = 1
 
 [models.local_research.modes.extraction]

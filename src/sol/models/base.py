@@ -64,6 +64,9 @@ class ModelRequest(StrictModel):
     evidence: list[ContextEvidence] = Field(default_factory=list)
     active_constraints: list[HardConstraint] = Field(default_factory=list)
     constraint_coverage: list[ConstraintCoverage] = Field(default_factory=list)
+    inference_parameters: dict[str, int | float | bool | None] = Field(
+        default_factory=dict
+    )
     requested_output: str = Field(min_length=1)
     created_at: datetime = Field(default_factory=utc_now)
 

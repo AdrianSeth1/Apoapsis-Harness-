@@ -98,8 +98,8 @@ changes. Normal cleanup APIs refuse dirty worktrees unless force is requested.
 
 ## Complete all-local flow
 
-`sol init` now creates a conservative configuration for the models used by the
-first local evaluation:
+`sol init` now creates a 32K working configuration for the models used by the
+local evaluation:
 
 ```toml
 [models.frontier]
@@ -108,7 +108,7 @@ base_url = "http://127.0.0.1:11434"
 model = "qwen3-coder:30b"
 timeout_seconds = 900
 max_output_tokens = 8192
-context_window_tokens = 16384
+context_window_tokens = 32768
 think = false
 specification_think = false
 
@@ -123,7 +123,12 @@ base_url = "http://127.0.0.1:11434"
 model = "qwen3.6:27b"
 timeout_seconds = 600
 max_output_tokens = 8192
-context_window_tokens = 16384
+context_window_tokens = 32768
+
+[context]
+max_files = 16
+max_excerpt_lines = 160
+max_total_chars = 72000
 ```
 
 Both native Ollama endpoints must be loopback URLs. No fake API key is needed.
@@ -134,6 +139,24 @@ one command:
 ```bash
 sol run "Add resumable downloads without changing the public API"
 ```
+
+The default is the `32k` working profile. A run can select a reproducible
+comparison profile without editing the project configuration:
+
+| Profile | Ollama window | Files | Lines per excerpt | Total excerpt characters |
+| --- | ---: | ---: | ---: | ---: |
+| `16k` | 16,384 | 10 | 100 | 24,000 |
+| `32k` | 32,768 | 16 | 160 | 72,000 |
+| `64k` | 65,536 | 24 | 240 | 180,000 |
+
+```bash
+sol run "Add resumable downloads without changing the public API" --context-profile 64k
+```
+
+Profiles affect frontier coding calls and deterministic repository retrieval;
+Research Mode retains its separately configured budget. SOL records the active
+window and generation settings in every frontier request package and the exact
+retrieval limits in every context package.
 
 SOL displays the extracted Pydantic specification and waits for approval. The
 `--yes` flag is available for controlled non-interactive evaluation. Approval

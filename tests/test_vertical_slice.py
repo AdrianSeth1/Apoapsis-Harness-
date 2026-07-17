@@ -346,6 +346,15 @@ class FrontierVerticalSliceTests(unittest.TestCase):
             (audit_root / "call-003-request.json").read_text(encoding="utf-8")
         )
         self.assertEqual(len(repair_request["request_package_sha256"]), 64)
+        self.assertEqual(
+            repair_request["model_request"]["inference_parameters"],
+            {
+                "context_window_tokens": None,
+                "max_output_tokens": 8192,
+                "think": None,
+                "timeout_seconds": 120.0,
+            },
+        )
         self.assertIn("CURRENT_DIFF", repair_request["prompt"])
         self.assertIn("EXACT_FAILING_COMMAND", repair_request["prompt"])
         self.assertIn("test_server_ignores_range", repair_request["prompt"])
@@ -457,6 +466,19 @@ class FrontierVerticalSliceTests(unittest.TestCase):
                 for payload in adapter.payloads
             )
         )
+        request_package = json.loads(
+            (
+                self.root
+                / ".sol"
+                / "tasks"
+                / report.task_id
+                / "call-002-request.json"
+            ).read_text(encoding="utf-8")
+        )
+        inference_parameters = request_package["model_request"][
+            "inference_parameters"
+        ]
+        self.assertEqual(inference_parameters["context_window_tokens"], 16384)
 
     def test_non_applying_patch_uses_the_single_repair_budget(self) -> None:
         fake = FakeModelProvider(

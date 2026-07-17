@@ -63,6 +63,29 @@ These are smoke observations, not a statistically meaningful benchmark. The
 harness behaved correctly by rejecting or failing unverified proposals instead
 of declaring success.
 
+## 32K and 64K profile check
+
+SOL 0.4.1 repeated the controlled task with the same installed
+`qwen3-coder:30b` and the new explicit context profiles. Both calls transmitted
+all six relevant fixture files, so this small repository does not measure the
+retrieval benefit of a larger budget.
+
+| Profile | Task | Input / output tokens | Model latency | Result |
+| --- | --- | ---: | ---: | --- |
+| `32k` | `TASK-CD68B3934CB4` | 7,367 / 1,879 | 21.16 s | Failed policy after the repair attempted to modify tests |
+| `64k` | `TASK-571F8C1896FB` | 7,568 / 1,292 | 13.55 s | Applied and verified twice; one resume test still failed after repair |
+
+During the 64K run, `ollama ps` reported a 65,536-token context, 100% GPU
+placement, and a 22 GB loaded allocation. The GPU reported approximately
+23.1 GB used with 1.0 GB free. This confirms the installed Q4 model can run the
+64K profile fully on this 24 GB GPU. It does not establish that 64K improved
+quality: both profiles saw the same repository evidence, and the generated
+specification and patch were separate model samples.
+
+The net coding outcome remained unsuccessful. The 64K attempt was closer—it
+fixed the server-ignores-range behavior during repair—but did not preserve the
+partial file when resuming after a disconnect.
+
 ## Representative local audits
 
 The disposable evaluation repository is ignored by the main Git checkout:
@@ -77,6 +100,8 @@ Representative task reports from the development run include:
 .sol/evaluations/download-service-local/.sol/tasks/TASK-804930F48EF5/report.json
 .sol/evaluations/download-service-local/.sol/tasks/TASK-1D0535EFC4DA/report.json
 .sol/evaluations/download-service-local/.sol/tasks/TASK-51D768D8C530/report.json
+.sol/evaluations/download-service-local/.sol/tasks/TASK-CD68B3934CB4/report.json
+.sol/evaluations/download-service-local/.sol/tasks/TASK-571F8C1896FB/report.json
 ```
 
 The first records a real test failure and targeted repair from the installed
@@ -89,5 +114,6 @@ Keep `qwen3.6:27b` as the local research model and use `qwen3-coder:30b` as the
 fast baseline proposer. The next meaningful model comparison is
 `qwen3-coder-next` Q4, not Q5, because its published Q4 package is already about
 52 GB and will require CPU/RAM offload on this workstation. Run the same task set
-without changing SOL policy, context budgets, verification commands, or repair
-limits.
+at the explicit `16k`, `32k`, and `64k` profiles. Keep SOL policy, verification
+commands, and repair limits fixed, and measure prompt evaluation speed, offload,
+patch acceptance, and verified task success at each context size.

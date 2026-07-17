@@ -79,7 +79,7 @@ class LocalResearchProviderConfig(StrictModel):
     timeout_seconds: float = Field(default=600.0, gt=0, le=3600)
     max_output_tokens: int = Field(default=8192, ge=256, le=131_072)
     context_window_tokens: int | None = Field(
-        default=16_384, ge=2048, le=1_048_576
+        default=32_768, ge=2048, le=1_048_576
     )
     max_structured_retries: int = Field(default=1, ge=0, le=3)
     modes: LocalResearchModesConfig = Field(default_factory=LocalResearchModesConfig)
@@ -96,9 +96,9 @@ class ModelsConfig(StrictModel):
 
 
 class ContextCompilerConfig(StrictModel):
-    max_files: int = Field(default=12, ge=1, le=100)
-    max_excerpt_lines: int = Field(default=120, ge=10, le=1000)
-    max_total_chars: int = Field(default=60_000, ge=1_000, le=2_000_000)
+    max_files: int = Field(default=16, ge=1, le=100)
+    max_excerpt_lines: int = Field(default=160, ge=10, le=1000)
+    max_total_chars: int = Field(default=72_000, ge=1_000, le=2_000_000)
     match_context_lines: int = Field(default=20, ge=0, le=200)
     max_search_terms: int = Field(default=12, ge=1, le=50)
     cloud_excluded_paths: list[str] = Field(

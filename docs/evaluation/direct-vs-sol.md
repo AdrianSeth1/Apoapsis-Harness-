@@ -67,7 +67,7 @@ Export the configured credential environment variable, then run one command:
 sol run "Add resumable downloads.
 Preserve the current public API.
 Do not add runtime dependencies.
-Existing clients must continue working."
+Existing clients must continue working." --context-profile 32k
 ```
 
 SOL prints the extracted specification and pauses for approval. After approval,
@@ -83,6 +83,11 @@ sol inspect TASK-XXXXXXXXXXXX
 The exact prompts, context packages, diffs, policy findings, verification logs,
 telemetry, and final report are under `.sol/tasks/<task-id>/`. Source changes are
 under `.sol/worktrees/<task-slug>/`; the original checkout remains unchanged.
+
+Use `--context-profile 16k`, `32k`, and `64k` for controlled context scaling.
+Keep the selected profile identical between repeated model comparisons and
+record GPU/CPU offload separately; the task report already captures transmitted
+files and lines, prompt tokens, generation tokens, and latency.
 
 ## Comparison
 

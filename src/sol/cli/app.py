@@ -48,7 +48,7 @@ base_url = "http://127.0.0.1:11434"
 model = "qwen3-coder:30b"
 timeout_seconds = 900
 max_output_tokens = 8192
-context_window_tokens = 16384
+context_window_tokens = 32768
 think = false
 specification_think = false
 
@@ -64,7 +64,7 @@ model = "qwen3.6:27b"
 api_key_env = "SOL_LOCAL_RESEARCH_API_KEY"
 timeout_seconds = 600
 max_output_tokens = 8192
-context_window_tokens = 16384
+context_window_tokens = 32768
 max_structured_retries = 1
 
 [models.local_research.modes.extraction]
@@ -76,9 +76,9 @@ think = true
 require_structured_output = true
 
 [context]
-max_files = 12
-max_excerpt_lines = 120
-max_total_chars = 60000
+max_files = 16
+max_excerpt_lines = 160
+max_total_chars = 72000
 match_context_lines = 20
 max_search_terms = 12
 cloud_excluded_paths = [
@@ -196,6 +196,14 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["off", "auto", "github", "community", "full"],
         help="external-research policy for this task",
     )
+    run.add_argument(
+        "--context-profile",
+        choices=["16k", "32k", "64k"],
+        help=(
+            "override the native Ollama window and repository excerpt "
+            "budget for a reproducible comparison"
+        ),
+    )
 
     task = subparsers.add_parser("task", help="draft a structured task")
     task.add_argument("request")
@@ -288,6 +296,7 @@ def _dispatch(args: argparse.Namespace) -> dict[str, object] | None:
             args.request,
             assume_yes=args.yes,
             requested_research=args.research,
+            context_profile=args.context_profile,
         )
     if args.command == "research":
         return _research_command(
@@ -406,8 +415,11 @@ def _run_vertical_slice(
     *,
     assume_yes: bool,
     requested_research: str | None,
+    context_profile: str | None,
 ) -> dict[str, object]:
     config = SolConfig.from_toml(root / ".sol" / "config.toml")
+    if context_profile is not None:
+        config = _apply_context_profile(config, context_profile)
     adapter = _build_frontier_adapter(config.models.frontier)
     provider = InstrumentedModelProvider(
         adapter, config.models.frontier.pricing
@@ -443,6 +455,53 @@ def _run_vertical_slice(
         if fetch_process is not None:
             fetch_process.close()
     return report.model_dump(mode="json")
+
+
+_CONTEXT_PROFILES: dict[str, dict[str, int]] = {
+    "16k": {
+        "context_window_tokens": 16_384,
+        "max_files": 10,
+        "max_excerpt_lines": 100,
+        "max_total_chars": 24_000,
+    },
+    "32k": {
+        "context_window_tokens": 32_768,
+        "max_files": 16,
+        "max_excerpt_lines": 160,
+        "max_total_chars": 72_000,
+    },
+    "64k": {
+        "context_window_tokens": 65_536,
+        "max_files": 24,
+        "max_excerpt_lines": 240,
+        "max_total_chars": 180_000,
+    },
+}
+
+
+def _apply_context_profile(config: SolConfig, profile_name: str) -> SolConfig:
+    """Apply a deterministic coding-context profile without mutating config files."""
+
+    if config.models.frontier.provider != "ollama":
+        raise TaskStoreError(
+            "context profiles require the native Ollama frontier provider"
+        )
+    try:
+        profile = _CONTEXT_PROFILES[profile_name]
+    except KeyError as exc:
+        raise TaskStoreError(f"unsupported context profile: {profile_name}") from exc
+    frontier = config.models.frontier.model_copy(
+        update={"context_window_tokens": profile["context_window_tokens"]}
+    )
+    models = config.models.model_copy(update={"frontier": frontier})
+    context = config.context.model_copy(
+        update={
+            "max_files": profile["max_files"],
+            "max_excerpt_lines": profile["max_excerpt_lines"],
+            "max_total_chars": profile["max_total_chars"],
+        }
+    )
+    return config.model_copy(update={"models": models, "context": context})
 
 
 def _build_frontier_adapter(config: FrontierProviderConfig) -> ModelProvider:
