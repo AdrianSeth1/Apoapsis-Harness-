@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import subprocess
 import time
 import tomllib
 from datetime import datetime, timezone
@@ -9,6 +8,13 @@ from pathlib import Path
 
 from pydantic import Field
 
+from apoapsis.execution.backend import (
+    ExecutionBackend,
+    ExecutionBackendConfig,
+    ExecutionBackendName,
+)
+from apoapsis.execution.docker_backend import DockerExecutionBackend
+from apoapsis.execution.host_backend import HostExecutionBackend
 from apoapsis.specification.schema import StrictModel
 from apoapsis.verification.results import (
     VerificationCommandResult,
@@ -46,6 +52,7 @@ class VerificationConfig(StrictModel):
     environment_allowlist: list[str] = Field(
         default_factory=lambda: list(DEFAULT_ENVIRONMENT_ALLOWLIST)
     )
+    backend: ExecutionBackendConfig = Field(default_factory=ExecutionBackendConfig)
 
     @classmethod
     def from_toml(cls, path: str | Path) -> VerificationConfig:
@@ -57,45 +64,87 @@ class VerificationConfig(StrictModel):
         return cls.model_validate(verification)
 
 
+def build_execution_backend(config: ExecutionBackendConfig) -> ExecutionBackend:
+    if config.backend == ExecutionBackendName.HOST:
+        return HostExecutionBackend()
+    if config.backend == ExecutionBackendName.DOCKER:
+        assert config.docker is not None  # enforced by ExecutionBackendConfig validator
+        return DockerExecutionBackend(config.docker)
+    raise ValueError(f"unsupported execution backend: {config.backend}")
+
+
 class VerificationRunner:
-    def __init__(self, config: VerificationConfig) -> None:
+    def __init__(
+        self, config: VerificationConfig, *, backend: ExecutionBackend | None = None
+    ) -> None:
         self.config = config
+        self.backend = backend or build_execution_backend(config.backend)
 
     def run(
-        self, task_id: str, project_root: str | Path
+        self, task_id: str, project_root: str | Path, *, attempt: int = 1
     ) -> VerificationResult:
-        root = Path(project_root).resolve()
-        if not root.is_dir():
-            raise ValueError(f"project root does not exist: {root}")
         started_at = datetime.now(timezone.utc)
         started_clock = time.monotonic()
+        context = self.backend.prepare(Path(project_root), task_id, attempt)
         results: list[VerificationCommandResult] = []
-        stop = False
-        for command in self.config.commands:
-            if stop:
-                now = datetime.now(timezone.utc)
-                results.append(
-                    VerificationCommandResult(
-                        name=command.name,
-                        category=command.category,
-                        argv=command.argv,
-                        required=command.required,
-                        cwd=str(root),
-                        status=VerificationStatus.SKIPPED,
-                        started_at=now,
-                        finished_at=now,
-                        duration_seconds=0,
+        integrity_violations: list[str] = []
+        try:
+            stop = False
+            for command in self.config.commands:
+                if stop:
+                    now = datetime.now(timezone.utc)
+                    results.append(
+                        VerificationCommandResult(
+                            name=command.name,
+                            category=command.category,
+                            argv=command.argv,
+                            required=command.required,
+                            cwd=context.display_root,
+                            status=VerificationStatus.SKIPPED,
+                            started_at=now,
+                            finished_at=now,
+                            duration_seconds=0,
+                            backend=self.backend.backend_name,
+                        )
                     )
+                    continue
+                environment = {
+                    key: os.environ[key]
+                    for key in self.config.environment_allowlist
+                    if key in os.environ
+                }
+                environment.update(command.environment)
+                outcome = self.backend.run_command(
+                    context, command, environment=environment
                 )
-                continue
-            result = self._run_command(command, root)
-            results.append(result)
-            if (
-                self.config.stop_on_failure
-                and command.required
-                and result.status != VerificationStatus.PASSED
-            ):
-                stop = True
+                stdout, stdout_cut = self._truncate(outcome.stdout)
+                stderr, stderr_cut = self._truncate(outcome.stderr)
+                result = VerificationCommandResult(
+                    name=command.name,
+                    category=command.category,
+                    argv=command.argv,
+                    required=command.required,
+                    cwd=context.display_root,
+                    status=outcome.status,
+                    exit_code=outcome.exit_code,
+                    stdout=stdout,
+                    stderr=stderr,
+                    output_truncated=stdout_cut or stderr_cut,
+                    started_at=outcome.started_at,
+                    finished_at=outcome.finished_at,
+                    duration_seconds=outcome.duration_seconds,
+                    backend=outcome.backend,
+                    backend_metadata=outcome.backend_metadata,
+                )
+                results.append(result)
+                if (
+                    self.config.stop_on_failure
+                    and command.required
+                    and result.status != VerificationStatus.PASSED
+                ):
+                    stop = True
+        finally:
+            integrity_violations = self.backend.finalize(context)
         finished_at = datetime.now(timezone.utc)
         required_failures = [
             result
@@ -104,7 +153,7 @@ class VerificationRunner:
         ]
         status = (
             VerificationStatus.FAILED
-            if required_failures
+            if required_failures or integrity_violations
             else VerificationStatus.PASSED
         )
         return VerificationResult(
@@ -114,68 +163,7 @@ class VerificationRunner:
             started_at=started_at,
             finished_at=finished_at,
             duration_seconds=time.monotonic() - started_clock,
-        )
-
-    def _run_command(
-        self, command: VerificationCommand, root: Path
-    ) -> VerificationCommandResult:
-        started_at = datetime.now(timezone.utc)
-        started_clock = time.monotonic()
-        environment = {
-            key: os.environ[key]
-            for key in self.config.environment_allowlist
-            if key in os.environ
-        }
-        environment.update(command.environment)
-        exit_code: int | None = None
-        stdout = ""
-        stderr = ""
-        status = VerificationStatus.ERROR
-        try:
-            completed = subprocess.run(
-                command.argv,
-                cwd=root,
-                env=environment,
-                check=False,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=command.timeout_seconds,
-                shell=False,
-            )
-            exit_code = completed.returncode
-            stdout = completed.stdout
-            stderr = completed.stderr
-            status = (
-                VerificationStatus.PASSED
-                if completed.returncode == 0
-                else VerificationStatus.FAILED
-            )
-        except subprocess.TimeoutExpired as exc:
-            stdout = self._to_text(exc.stdout)
-            stderr = self._to_text(exc.stderr)
-            status = VerificationStatus.TIMED_OUT
-        except OSError as exc:
-            stderr = str(exc)
-            status = VerificationStatus.ERROR
-        duration = time.monotonic() - started_clock
-        stdout, stdout_cut = self._truncate(stdout)
-        stderr, stderr_cut = self._truncate(stderr)
-        return VerificationCommandResult(
-            name=command.name,
-            category=command.category,
-            argv=command.argv,
-            required=command.required,
-            cwd=str(root),
-            status=status,
-            exit_code=exit_code,
-            stdout=stdout,
-            stderr=stderr,
-            output_truncated=stdout_cut or stderr_cut,
-            started_at=started_at,
-            finished_at=datetime.now(timezone.utc),
-            duration_seconds=duration,
+            integrity_violations=integrity_violations,
         )
 
     def _truncate(self, output: str) -> tuple[str, bool]:
@@ -186,12 +174,3 @@ class VerificationRunner:
         head = (limit - len(marker)) // 2
         tail = limit - len(marker) - head
         return output[:head] + marker + output[-tail:], True
-
-    @staticmethod
-    def _to_text(value: str | bytes | None) -> str:
-        if value is None:
-            return ""
-        if isinstance(value, bytes):
-            return value.decode("utf-8", errors="replace")
-        return value
-

@@ -4,18 +4,15 @@ from apoapsis.verification.results import (
     VerificationStatus,
 )
 from apoapsis.verification.failures import FailureNormalizer, NormalizedFailure
-from apoapsis.verification.runner import (
-    VerificationCommand,
-    VerificationConfig,
-    VerificationRunner,
-)
+
+# `runner` is intentionally not re-exported here: it depends on
+# `apoapsis.execution.backend`, which depends on `results` above, so eagerly
+# importing `runner` from this package `__init__` would be circular. Import
+# `apoapsis.verification.runner` directly instead.
 
 __all__ = [
-    "VerificationCommand",
     "VerificationCommandResult",
-    "VerificationConfig",
     "VerificationResult",
-    "VerificationRunner",
     "VerificationStatus",
     "FailureNormalizer",
     "NormalizedFailure",

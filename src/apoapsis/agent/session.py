@@ -358,7 +358,7 @@ class BoundedAgentSession:
             update={"commands": commands}
         )
         result = VerificationRunner(selected).run(
-            self.specification.task_id, self.worktree
+            self.specification.task_id, self.worktree, attempt=self.verification_runs
         )
         self.verification_results.append(result)
         self.verification_cache[cache_key] = result

@@ -5,6 +5,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import urllib.error
 import urllib.request
 import uuid
@@ -19,6 +20,8 @@ from apoapsis.config import (
     FrontierProviderConfig,
     LocalResearchProviderConfig,
 )
+from apoapsis.execution.backend import ExecutionBackendName, SandboxUnavailableError
+from apoapsis.execution.docker_backend import DockerExecutionBackend
 from apoapsis.models.base import ModelOperation
 from apoapsis.models.frontier import OpenAICompatibleFrontierProvider
 from apoapsis.models.local import OllamaProvider
@@ -26,6 +29,7 @@ from apoapsis.models.provider import ModelProvider, ModelRole, ProviderInvocatio
 from apoapsis.models.telemetry import InstrumentedModelProvider, InstrumentedProviderError
 from apoapsis.repository.git import GitCommandError, GitRepository
 from apoapsis.specification.schema import StrictModel, utc_now
+from apoapsis.verification.runner import VerificationCommand
 
 _MODEL_ROLES = ("frontier", "local_coder", "frontier_coder", "local_research")
 
@@ -93,6 +97,7 @@ def run_doctor(
         checks.extend(_credential_checks(config))
         checks.extend(_ollama_reachability_checks(config))
         checks.extend(_verification_checks(config))
+        checks.extend(_verification_backend_checks(config))
         if probe_providers:
             checks.extend(_probe_checks(config, provider_overrides))
     return DoctorReport(
@@ -402,6 +407,96 @@ def _verification_checks(config: ApoapsisConfig) -> list[DoctorCheck]:
             )
         )
     return checks
+
+
+def _verification_backend_checks(config: ApoapsisConfig) -> list[DoctorCheck]:
+    backend_config = config.verification.backend
+    if backend_config.backend == ExecutionBackendName.HOST:
+        return [
+            DoctorCheck(
+                name="verification_backend",
+                category="verification",
+                status=DoctorCheckStatus.WARNING,
+                detail=(
+                    "host backend selected: verification commands run "
+                    "directly on the host, unsandboxed"
+                ),
+                remediation=(
+                    'configure [verification.backend] with backend = "docker" '
+                    "for sandboxed verification"
+                ),
+            )
+        ]
+    assert backend_config.docker is not None
+    backend = DockerExecutionBackend(backend_config.docker)
+    try:
+        backend.preflight()
+    except SandboxUnavailableError as exc:
+        return [
+            DoctorCheck(
+                name="docker_sandbox",
+                category="verification",
+                status=DoctorCheckStatus.ERROR,
+                detail=str(exc),
+                remediation="resolve the reported Docker issue before relying on the sandbox",
+            )
+        ]
+    return [
+        DoctorCheck(
+            name="docker_sandbox",
+            category="verification",
+            status=DoctorCheckStatus.OK,
+            detail=(
+                "Docker CLI/engine/image preflight passed for "
+                f"{backend_config.docker.image}@{backend_config.docker.image_digest}"
+            ),
+        ),
+        _docker_self_test(backend),
+    ]
+
+
+def _docker_self_test(backend: DockerExecutionBackend) -> DoctorCheck:
+    command = VerificationCommand(
+        name="doctor-self-test",
+        category="sandbox",
+        argv=backend.config.self_test_argv,
+        timeout_seconds=30,
+    )
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            project_root = Path(tmp)
+            (project_root / "probe.txt").write_text(
+                "apoapsis doctor self-test\n", encoding="utf-8"
+            )
+            context = backend.prepare(project_root, "TASK-DOCTORSELFTEST", 1)
+            try:
+                outcome = backend.run_command(context, command, environment={})
+            finally:
+                backend.finalize(context)
+    except Exception as exc:  # noqa: BLE001 - report any failure as a check
+        return DoctorCheck(
+            name="docker_self_test",
+            category="verification",
+            status=DoctorCheckStatus.ERROR,
+            detail=f"sandbox self-test failed: {exc}",
+        )
+    sandboxed = bool(outcome.backend_metadata.get("sandboxed"))
+    if outcome.status.value != "passed" or not sandboxed:
+        return DoctorCheck(
+            name="docker_self_test",
+            category="verification",
+            status=DoctorCheckStatus.ERROR,
+            detail=(
+                "sandbox self-test did not pass as sandboxed "
+                f"(status={outcome.status.value}, sandboxed={sandboxed})"
+            ),
+        )
+    return DoctorCheck(
+        name="docker_self_test",
+        category="verification",
+        status=DoctorCheckStatus.OK,
+        detail=f"self-test container ran in {outcome.duration_seconds:.2f}s",
+    )
 
 
 def _build_probe_adapter(

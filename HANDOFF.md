@@ -14,13 +14,13 @@ must be corrected before the change is considered complete.
 
 | Item | Current value |
 | --- | --- |
-| Last verified | 2026-07-17 |
-| Working-tree version | `0.8.0-dev` |
+| Last verified | 2026-07-18 |
+| Working-tree version | `0.9.0-dev` |
 | Checked-out branch | `main` |
-| Current committed HEAD | `7c6797b` (`Add bounded local-to-frontier coding workflow`) |
+| Current committed HEAD | `0d5e93b` (`Rename Sol to Apoapsis Harness and add doctor/eval tooling`) |
 | Preserved substrate tag | `substrate-v0.1` at `4c2e735` |
-| Working-tree state | Uncommitted Apoapsis 0.7 namespace migration plus uncommitted Apoapsis 0.8 `apoapsis doctor` and `apoapsis eval` tooling |
-| Full deterministic suite | 114 tests, 0 failures, 0 errors, 2 intentional live-network skips |
+| Working-tree state | Uncommitted Apoapsis 0.9 execution sandbox (`ExecutionBackend`, host/Docker backends) on top of the committed 0.7 namespace migration + 0.8 doctor/eval tooling |
+| Full deterministic suite | 133 tests, 0 failures, 0 errors, 3 intentional live-network/Docker skips |
 | Syntax check | `python -m compileall -q src tests` passed |
 | Diff check | `git diff --check` passed; Git reported only expected LF-to-CRLF working-copy warnings |
 | Live local coding result | Qwen3-Coder-Next Q4 completed the controlled download-service task in 10 turns and 3 verification runs |
@@ -270,8 +270,66 @@ plan, compatibility tests, and an ADR.
 - At least one required command is mandatory for the vertical slice.
 - `src/apoapsis/verification/failures.py` extracts a normalized root error and
   relevant failure excerpt for repair or escalation.
-- Host-process verification is deterministic but is not a security sandbox.
-  Configured commands must currently be trusted.
+- `VerificationRunner` no longer runs commands itself; it delegates each one
+  to a configured `ExecutionBackend` (`[verification.backend]`, default
+  `host`) and keeps sequencing, `stop_on_failure`, truncation, and
+  `VerificationCommandResult`/`VerificationResult` construction unchanged
+  regardless of which backend produced a result. See "Execution backends
+  and the sandbox" below and ADR 0009.
+
+### Execution backends and the sandbox
+
+- `src/apoapsis/execution/backend.py` defines the `ExecutionBackend`
+  protocol (`prepare`/`run_command`/`finalize`), `ExecutionBackendConfig`,
+  and `DockerBackendConfig`.
+- `src/apoapsis/execution/host_backend.py` is `HostExecutionBackend`: the
+  pre-0.9 behavior, unchanged, kept only as an **explicitly selected**
+  compatibility backend. Every result it produces is marked
+  `backend_metadata={"sandboxed": False}`.
+- `src/apoapsis/execution/docker_backend.py` is `DockerExecutionBackend`,
+  the preferred sandbox: runs each command in a `docker run` with `--rm
+  --network none --read-only --cap-drop ALL --security-opt
+  no-new-privileges --pids-limit <N> --memory <N>m --cpus <N> --user
+  <non-root numeric> --tmpfs /tmp:...`, exactly one writable mount (a
+  temporary copy of the worktree, never the real one), and the pinned
+  `image@digest` — never a shell. It fails closed (raises
+  `SandboxUnavailableError`) on a missing CLI, unreachable engine,
+  non-Linux container mode, or an absent pinned image, and **never pulls
+  an image automatically**. A host timeout triggers an explicit
+  `docker kill` + `docker rm -f` on the exact container. After the run it
+  diffs a before/after content-hash manifest restricted to files that
+  existed before the run; any change there forces
+  `VerificationResult.status = FAILED` via the new
+  `integrity_violations` field.
+- Example opt-in configuration:
+  ```toml
+  [verification.backend]
+  backend = "docker"
+
+  [verification.backend.docker]
+  image = "python:3.12-slim"
+  image_digest = "sha256:<pinned digest — run `docker pull` then `docker image inspect --format '{{index .RepoDigests 0}}'`>"
+  cpu_limit = 2.0
+  memory_limit_mb = 2048
+  pids_limit = 256
+  tmpfs_size_mb = 256
+  wall_clock_timeout_seconds = 300
+  ```
+- `apoapsis doctor` validates a configured Docker backend (CLI, engine,
+  Linux containers, pinned image present, a real minimal self-test) before
+  anything relies on it, and never pulls an image or starts Docker Desktop
+  itself.
+- **Threat model (ADR 0009):** the sandbox denies network access, forwards
+  no host environment variables by default, enforces CPU/memory/process
+  limits, and confines writes to a throwaway worktree copy. It does **not**
+  defend against a container-runtime or kernel escape — Docker containers
+  materially improve isolation but are not a perfect defense against
+  container-runtime or kernel vulnerabilities. The integrity check is a
+  content-hash heuristic, not exhaustive taint tracking, and does not
+  retain a forensic copy of a flagged run.
+- Host-process verification remains deterministic but is not a security
+  sandbox; that gap is exactly what the Docker backend closes when
+  configured, and what remains open when `backend = "host"` (the default).
 
 ### Routing and escalation
 
@@ -340,7 +398,12 @@ plan, compatibility tests, and an ADR.
   heuristics, and verification-command binary availability. A live
   connectivity/structured-output probe against configured providers only runs
   behind explicit `--probe`, and a hosted (`openai_compatible`) probe result
-  says plainly that it may incur cost.
+  says plainly that it may incur cost. When a Docker execution backend is
+  configured, doctor also checks CLI presence, engine reachability, Linux
+  container mode, the pinned image being present locally, and runs a real
+  minimal sandbox self-test through the actual backend — never pulling an
+  image or starting Docker Desktop. When the backend is `host` (default),
+  doctor reports a single warning noting verification is unsandboxed.
 - `src/apoapsis/evaluation/` implements `apoapsis eval <fixture>`. `lanes.py`
   defines the five lanes (`local`, `hybrid`, `forced-escalation`, `frontier`,
   `one-shot`) as pure `execution`-only configuration overlays over the
@@ -514,16 +577,23 @@ the changed conditions.
 | Opt-in live research | `tests/test_research_live.py` |
 | Diagnostics (`apoapsis doctor`) | `tests/test_doctor.py` |
 | Evaluation lanes/harness (`apoapsis eval`) | `tests/test_evaluation.py` |
+| Execution backend seam / host regression | `tests/test_execution_backend.py` |
+| Docker sandbox backend | `tests/test_docker_backend.py` |
 
 Fake providers are the mandatory regression mechanism. Live model or network
 tests supplement them; they must not replace deterministic coverage.
 
 ## Known limitations and open work
 
-1. **No security sandbox.** Git worktrees isolate source state, not processes.
-   Verification still needs a container or equivalent adapter with network
-   denial, CPU/memory limits, secret controls, and stronger filesystem policy
-   before running untrusted commands broadly.
+1. **Security sandbox exists but is opt-in and not yet live-proven.** A
+   Docker-backed `ExecutionBackend` (ADR 0009) provides network denial,
+   CPU/memory/process limits, and a throwaway-copy filesystem policy, but
+   `backend = "host"` remains the default and Docker Desktop's engine was
+   not running when this was built — the fail-closed "engine unreachable"
+   path is proven for real on this machine; the success path is proven
+   only via injected-process unit tests plus a live-gated integration test
+   (`APOAPSIS_RUN_LIVE_DOCKER_TESTS=1`) that has not yet actually run.
+   It is also not a defense against container-runtime or kernel escapes.
 2. **No live hosted escalation evidence.** A repeatable harness now exists
    (`apoapsis eval download-service --lane forced-escalation` / `--lane
    hybrid`); configure a real `[models.frontier_coder]` and run it while
@@ -569,6 +639,7 @@ for those proofs.
 | `0006` | Deterministic local/frontier roles, routing, and escalation |
 | `0007` | Apoapsis product, package, CLI, state, environment, and branch namespace |
 | `0008` | Evaluation harness (`apoapsis eval`) and diagnostic tooling (`apoapsis doctor`) |
+| `0009` | Execution sandbox: `ExecutionBackend` seam, host compatibility backend, Docker sandbox backend |
 
 Add a new ADR for a new architectural decision. Do not rewrite history to make
 old decisions appear current; mark an ADR superseded and link its replacement

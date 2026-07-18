@@ -30,6 +30,8 @@ class VerificationCommandResult(StrictModel):
     started_at: datetime = Field(default_factory=utc_now)
     finished_at: datetime = Field(default_factory=utc_now)
     duration_seconds: float = Field(ge=0)
+    backend: str = "host"
+    backend_metadata: dict[str, object] = Field(default_factory=dict)
 
 
 class VerificationResult(StrictModel):
@@ -40,6 +42,7 @@ class VerificationResult(StrictModel):
     started_at: datetime
     finished_at: datetime
     duration_seconds: float = Field(ge=0)
+    integrity_violations: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_aggregate_status(self) -> VerificationResult:

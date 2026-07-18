@@ -1003,7 +1003,7 @@ class VerticalSliceRunner:
         assert self.specification is not None
         assert self.worktree_path is not None
         result = VerificationRunner(self.config.verification).run(
-            self.specification.task_id, self.worktree_path
+            self.specification.task_id, self.worktree_path, attempt=attempt
         )
         self.verification_results.append(result)
         self.audit.write_json(

@@ -67,8 +67,10 @@ records the agent action boundary,
 routing and escalation, [ADR 0007](docs/adr/0007-apoapsis-namespace.md) records
 the product/runtime namespace migration, and
 [ADR 0008](docs/adr/0008-evaluation-and-diagnostic-tooling.md) records the
-evaluation harness and diagnostic tooling contract, and
-[the Research Mode guide](docs/research-mode.md) covers setup and operation.
+evaluation harness and diagnostic tooling contract,
+[ADR 0009](docs/adr/0009-execution-sandbox.md) records the execution
+sandbox, and [the Research Mode guide](docs/research-mode.md) covers setup
+and operation.
 
 ## Install for development
 
@@ -401,9 +403,38 @@ timeout_seconds = 120
 required = true
 ```
 
-The runner is deterministic but is not yet a container sandbox. Network denial,
-CPU/memory enforcement, secret redaction, and approval gates must be supplied by
-the future sandbox adapter before untrusted or model-selected commands are run.
+By default (`backend = "host"`, implicit) commands run directly on the host —
+deterministic, but not a security sandbox. Opt into the Docker-based sandbox
+(ADR 0009) for network denial, CPU/memory/process limits, and a throwaway
+worktree copy instead of the real one:
+
+```toml
+[verification.backend]
+backend = "docker"
+
+[verification.backend.docker]
+image = "python:3.12-slim"
+image_digest = "sha256:<pin this — see below>"
+cpu_limit = 2.0
+memory_limit_mb = 2048
+pids_limit = 256
+tmpfs_size_mb = 256
+wall_clock_timeout_seconds = 300
+```
+
+Apoapsis never pulls an image automatically. Pull and pin one yourself, then
+run `apoapsis doctor` to validate the whole preflight (CLI, engine, Linux
+containers, image presence, a real minimal self-test) before relying on it:
+
+```bash
+docker pull python:3.12-slim
+docker image inspect --format '{{index .RepoDigests 0}}' python:3.12-slim
+apoapsis doctor
+```
+
+The Docker backend materially improves isolation but is not a defense
+against container-runtime or kernel vulnerabilities; see ADR 0009's threat
+model for exactly what it does and does not cover.
 
 ## Repository layout
 
@@ -412,7 +443,7 @@ src/apoapsis/
   agent/            bounded typed inspect-edit-test sessions
   cli/              CLI entry points
   context/          provenance-aware evidence schemas
-  execution/        managed Git worktrees
+  execution/        managed Git worktrees; host/Docker execution backends
   models/           provider-neutral model request/response schemas
   repository/       deterministic Git inspection
   specification/    task and constraint schemas
