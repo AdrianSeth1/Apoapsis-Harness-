@@ -6,9 +6,10 @@ import sys
 import tempfile
 import threading
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 
-from apoapsis.cli.app import _eval_download_service
+from apoapsis.cli.app import _aggregate_eval_reports, _eval_download_service
 from apoapsis.config import (
     AgentLoopConfig,
     AgentRoute,
@@ -23,14 +24,28 @@ from apoapsis.config import (
 from apoapsis.evaluation.fixture import prepare_fixture_repository
 from apoapsis.evaluation.harness import run_eval_lane
 from apoapsis.evaluation.lanes import apply_lane_overlay, requires_frontier_coder
-from apoapsis.evaluation.report import render_markdown, write_comparison
+from apoapsis.evaluation.aggregate import aggregate_evaluations
+from apoapsis.evaluation.oracle import HeldOutOracleDefinition
+from apoapsis.evaluation.report import (
+    render_aggregate_markdown,
+    render_markdown,
+    write_aggregate,
+    write_comparison,
+)
 from apoapsis.evaluation.schemas import (
     EvalComparisonReport,
+    EvalEvidenceKind,
     EvalLane,
     EvalLaneResult,
+    HeldOutOracleResult,
+    MetricStatus,
+    OracleStatus,
 )
+from apoapsis.models.base import ModelOperation
+from apoapsis.models.provider import ModelRole
+from apoapsis.models.telemetry import ProviderCallTelemetry
 from apoapsis.models.telemetry import InstrumentedModelProvider
-from apoapsis.reporting.report import TaskOutcome
+from apoapsis.reporting.report import FinalTaskReport, TaskOutcome
 from apoapsis.verification.runner import VerificationCommand, VerificationConfig
 from tests.fakes import FakeModelProvider
 from tests.test_vertical_slice import (
@@ -42,6 +57,7 @@ from tests.test_vertical_slice import (
 )
 
 _FIXTURE = Path(__file__).resolve().parents[1] / "examples" / "download-service"
+_HOLDOUT = _FIXTURE / "tests" / "test_resumable_acceptance.py"
 
 
 def action(name: str, **values: object) -> str:
@@ -191,6 +207,26 @@ class FixtureRepositoryTests(unittest.TestCase):
             with self.assertRaises(FileExistsError):
                 prepare_fixture_repository(_FIXTURE, destination)
 
+    def test_can_exclude_held_out_file_without_mutating_source(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            destination = Path(tmp) / "copy"
+            prepare_fixture_repository(
+                _FIXTURE,
+                destination,
+                excluded_relative_files=["tests/test_resumable_acceptance.py"],
+            )
+            self.assertFalse(
+                (destination / "tests" / "test_resumable_acceptance.py").exists()
+            )
+            self.assertTrue(_HOLDOUT.is_file())
+            with self.assertRaises(ValueError):
+                prepare_fixture_repository(
+                    _FIXTURE,
+                    Path(tmp) / "unsafe",
+                    excluded_relative_files=["../outside.py"],
+                )
+            self.assertFalse((Path(tmp) / "unsafe").exists())
+
 
 class RunEvalLaneIntegrationTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -202,6 +238,24 @@ class RunEvalLaneIntegrationTests(unittest.TestCase):
         destination = self.output_root / name / "download-service"
         prepare_fixture_repository(_FIXTURE, destination)
         return destination
+
+    def _fixture_without_holdout(self, name: str) -> Path:
+        destination = self.output_root / name / "download-service"
+        prepare_fixture_repository(
+            _FIXTURE,
+            destination,
+            excluded_relative_files=["tests/test_resumable_acceptance.py"],
+        )
+        return destination
+
+    @staticmethod
+    def _oracle() -> HeldOutOracleDefinition:
+        return HeldOutOracleDefinition(
+            oracle_id="download-service-resumable-v1",
+            version="1.0",
+            source_path=_HOLDOUT,
+            withheld_relative_path="tests/test_resumable_acceptance.py",
+        )
 
     def test_local_lane_completes_after_one_repair(self) -> None:
         fake = FakeModelProvider(
@@ -439,6 +493,86 @@ class RunEvalLaneIntegrationTests(unittest.TestCase):
         self.assertEqual(result.report.outcome, TaskOutcome.COMPLETE)
         self.assertEqual(result.report.number_of_calls, 3)
 
+    def test_held_out_oracle_passes_without_entering_model_context(self) -> None:
+        fake = FakeModelProvider(
+            [
+                specification_response(),
+                action("propose_patch", unified_diff=COMPLETE_PATCH),
+                action("run_check", command_name="download-tests"),
+            ]
+        )
+        _inject_task_id(fake)
+        fixture = self._fixture_without_holdout("oracle-pass")
+
+        result = run_eval_lane(
+            fixture,
+            EvalLane.LOCAL,
+            _base_config(),
+            InstrumentedModelProvider(fake),
+            task_text=REQUEST,
+            held_out_oracle=self._oracle(),
+        )
+
+        self.assertEqual(result.report.outcome, TaskOutcome.COMPLETE)
+        self.assertEqual(result.held_out_oracle.status, OracleStatus.PASSED)
+        self.assertTrue(result.held_out_oracle.audit_artifact)
+        self.assertFalse(
+            any(
+                "test_server_ignores_range" in invocation.prompt
+                or "test_resumable_acceptance.py" in invocation.prompt
+                for invocation in fake.invocations
+            )
+        )
+        self.assertFalse(
+            any(Path(result.report.worktree_path).glob(".apoapsis_holdout_*.py"))
+        )
+        audit = (
+            fixture
+            / ".apoapsis"
+            / "tasks"
+            / result.report.task_id
+            / "held-out-oracle.json"
+        )
+        self.assertTrue(audit.is_file())
+
+    def test_held_out_oracle_detects_false_success(self) -> None:
+        fake = FakeModelProvider(
+            [
+                specification_response(),
+                action("propose_patch", unified_diff=IMPLEMENTATION_PATCH),
+                action("run_check", command_name="download-tests"),
+            ]
+        )
+        _inject_task_id(fake)
+
+        result = run_eval_lane(
+            self._fixture_without_holdout("oracle-fail"),
+            EvalLane.LOCAL,
+            _base_config(),
+            InstrumentedModelProvider(fake),
+            task_text=REQUEST,
+            held_out_oracle=self._oracle(),
+        )
+
+        self.assertEqual(result.report.outcome, TaskOutcome.COMPLETE)
+        self.assertEqual(result.held_out_oracle.status, OracleStatus.FAILED)
+
+    def test_oracle_must_be_absent_before_any_model_call(self) -> None:
+        fake = FakeModelProvider([specification_response()])
+        fixture = self._fixture("oracle-visible-rejected")
+
+        with self.assertRaisesRegex(ValueError, "agent-visible"):
+            run_eval_lane(
+                fixture,
+                EvalLane.LOCAL,
+                _base_config(),
+                InstrumentedModelProvider(fake),
+                task_text=REQUEST,
+                held_out_oracle=self._oracle(),
+            )
+
+        self.assertEqual(fake.invocations, [])
+
 
 class ComparisonReportTests(unittest.TestCase):
     def test_render_and_write_round_trip(self) -> None:
@@ -468,6 +602,214 @@ class ComparisonReportTests(unittest.TestCase):
                 json.loads((output_dir / "comparison.json").read_text(encoding="utf-8"))
             )
             self.assertEqual(round_tripped.run_id, "EVAL-TEST")
+
+
+class AggregateReportTests(unittest.TestCase):
+    @staticmethod
+    def _telemetry(
+        *, input_tokens: int = 100, output_tokens: int = 20, cost: float = 1.0
+    ) -> ProviderCallTelemetry:
+        now = datetime.now(timezone.utc)
+        return ProviderCallTelemetry(
+            request_id="MRQ-EVAL",
+            response_id="MRS-EVAL",
+            operation=ModelOperation.AGENT_STEP,
+            role=ModelRole.FRONTIER_CODING_AGENT,
+            provider="synthetic-hosted",
+            model="synthetic-frontier",
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cached_input_tokens=0,
+            cache_hit=False,
+            estimated_cost_usd=cost,
+            started_at=now,
+            finished_at=now,
+            latency_seconds=1.0,
+        )
+
+    @staticmethod
+    def _report(
+        outcome: TaskOutcome,
+        *,
+        calls: list[ProviderCallTelemetry] | None = None,
+        escalation: bool = False,
+        latency: float = 2.0,
+    ) -> FinalTaskReport:
+        calls = calls or []
+        return FinalTaskReport(
+            task_id="TASK-AGGREGATE",
+            outcome=outcome,
+            escalation_triggered=escalation,
+            provider_calls=calls,
+            number_of_calls=len(calls),
+            input_tokens=sum(item.input_tokens for item in calls),
+            output_tokens=sum(item.output_tokens for item in calls),
+            cached_input_tokens=sum(item.cached_input_tokens for item in calls),
+            estimated_cost_usd=sum(item.estimated_cost_usd for item in calls),
+            latency_seconds=latency,
+            transmitted_files=3,
+            transmitted_lines=30,
+        )
+
+    @staticmethod
+    def _oracle(status: OracleStatus) -> HeldOutOracleResult:
+        return HeldOutOracleResult(
+            oracle_id="oracle",
+            oracle_version="1",
+            source_sha256="a" * 64,
+            status=status,
+        )
+
+    def test_aggregate_formulas_and_hosted_pairing(self) -> None:
+        direct_call = self._telemetry(input_tokens=1000, output_tokens=200, cost=2.0)
+        hybrid_call = self._telemetry(input_tokens=400, output_tokens=80, cost=0.8)
+        comparison = EvalComparisonReport(
+            run_id="EVAL-SYNTHETIC",
+            fixture_source="fixture",
+            task_text=REQUEST,
+            context_profile="64k",
+            lanes=[
+                EvalLaneResult(
+                    lane=EvalLane.LOCAL,
+                    report=self._report(TaskOutcome.COMPLETE, latency=2),
+                    evidence_kind=EvalEvidenceKind.LIVE_LOCAL,
+                    patch_attempts=2,
+                    unsafe_patch_rejections=1,
+                    held_out_oracle=self._oracle(OracleStatus.FAILED),
+                ),
+                EvalLaneResult(
+                    lane=EvalLane.HYBRID,
+                    report=self._report(
+                        TaskOutcome.COMPLETE,
+                        calls=[hybrid_call],
+                        escalation=True,
+                        latency=4,
+                    ),
+                    evidence_kind=EvalEvidenceKind.LIVE_HOSTED,
+                    patch_attempts=1,
+                ),
+                EvalLaneResult(
+                    lane=EvalLane.FRONTIER,
+                    report=self._report(
+                        TaskOutcome.COMPLETE, calls=[direct_call], latency=5
+                    ),
+                    evidence_kind=EvalEvidenceKind.LIVE_HOSTED,
+                ),
+                EvalLaneResult(
+                    lane=EvalLane.ONE_SHOT,
+                    report=self._report(TaskOutcome.FAILED, latency=1),
+                    evidence_kind=EvalEvidenceKind.LIVE_LOCAL,
+                ),
+            ],
+        )
+
+        aggregate = aggregate_evaluations(
+            [comparison], aggregate_id="EVAL-AGG-SYNTHETIC"
+        )
+
+        self.assertEqual(aggregate.false_success_rate.value, 1.0)
+        self.assertEqual(aggregate.frontier_rescue_rate.value, 1.0)
+        self.assertEqual(aggregate.unsafe_patch_rejection_rate.value, 1 / 3)
+        self.assertEqual(aggregate.hosted_savings.status, MetricStatus.MEASURED)
+        self.assertEqual(aggregate.hosted_savings.hosted_calls_avoided, 1)
+        self.assertEqual(aggregate.hosted_savings.hosted_input_tokens_saved, 1000)
+        self.assertEqual(aggregate.local_vs_one_shot.completion_rate_delta, 1.0)
+        self.assertEqual(aggregate.context_profiles[0].profile, "64k")
+
+        markdown = render_aggregate_markdown(aggregate)
+        self.assertIn("False success", markdown)
+        self.assertIn("Hosted calls avoided", markdown)
+        with tempfile.TemporaryDirectory() as tmp:
+            write_aggregate(Path(tmp), aggregate)
+            self.assertTrue((Path(tmp) / "aggregate.json").is_file())
+            self.assertTrue((Path(tmp) / "aggregate.md").is_file())
+
+    def test_hosted_and_false_success_metrics_are_unmeasured_without_evidence(self) -> None:
+        comparison = EvalComparisonReport(
+            run_id="EVAL-FAKE",
+            fixture_source="fixture",
+            task_text=REQUEST,
+            lanes=[
+                EvalLaneResult(
+                    lane=EvalLane.LOCAL,
+                    report=self._report(TaskOutcome.COMPLETE),
+                    evidence_kind=EvalEvidenceKind.DETERMINISTIC_FAKE,
+                )
+            ],
+        )
+
+        aggregate = aggregate_evaluations(
+            [comparison], aggregate_id="EVAL-AGG-FAKE"
+        )
+
+        self.assertEqual(aggregate.frontier_rescue_rate.status, MetricStatus.UNMEASURED)
+        self.assertIsNone(aggregate.frontier_rescue_rate.value)
+        self.assertEqual(aggregate.false_success_rate.status, MetricStatus.UNMEASURED)
+        self.assertIsNone(aggregate.false_success_rate.value)
+        self.assertEqual(aggregate.hosted_savings.status, MetricStatus.UNMEASURED)
+
+    def test_invalid_evidence_cannot_populate_real_world_metrics(self) -> None:
+        comparison = EvalComparisonReport(
+            run_id="EVAL-MIXED-EVIDENCE",
+            fixture_source="fixture",
+            task_text=REQUEST,
+            lanes=[
+                EvalLaneResult(
+                    lane=EvalLane.LOCAL,
+                    report=self._report(TaskOutcome.FAILED),
+                    evidence_kind=EvalEvidenceKind.DETERMINISTIC_FAKE,
+                    held_out_oracle=self._oracle(OracleStatus.FAILED),
+                ),
+                EvalLaneResult(
+                    lane=EvalLane.FRONTIER,
+                    report=self._report(
+                        TaskOutcome.COMPLETE,
+                        calls=[
+                            self._telemetry(
+                                input_tokens=100, output_tokens=20, cost=0.5
+                            )
+                        ],
+                    ),
+                    evidence_kind=EvalEvidenceKind.LIVE_HOSTED,
+                ),
+            ],
+        )
+
+        aggregate = aggregate_evaluations(
+            [comparison], aggregate_id="EVAL-AGG-MIXED-EVIDENCE"
+        )
+
+        self.assertEqual(aggregate.false_success_rate.status, MetricStatus.UNMEASURED)
+        self.assertEqual(aggregate.false_success_rate.denominator, 0)
+        self.assertEqual(aggregate.hosted_savings.status, MetricStatus.UNMEASURED)
+
+    def test_aggregate_cli_path_reads_persisted_reports_without_a_provider(self) -> None:
+        comparison = EvalComparisonReport(
+            run_id="EVAL-PERSISTED",
+            fixture_source="fixture",
+            task_text=REQUEST,
+            lanes=[
+                EvalLaneResult(
+                    lane=EvalLane.LOCAL,
+                    report=self._report(TaskOutcome.COMPLETE),
+                    evidence_kind=EvalEvidenceKind.LIVE_LOCAL,
+                    held_out_oracle=self._oracle(OracleStatus.PASSED),
+                )
+            ],
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "source"
+            output = root / "aggregate"
+            write_comparison(source, comparison)
+
+            payload = _aggregate_eval_reports(
+                root, [source / "comparison.json"], output
+            )
+
+            self.assertEqual(payload["source_run_ids"], ["EVAL-PERSISTED"])
+            self.assertTrue((output / "aggregate.json").is_file())
+            self.assertTrue((output / "aggregate.md").is_file())
 
 
 class _FakeOllamaChatServer:

@@ -18,6 +18,16 @@ _ROOT_MARKER = re.compile(
     r"(?:AssertionError|[A-Za-z]+(?:Error|Exception)\b|\bFAILED\b|\berror:)",
     re.IGNORECASE,
 )
+_TRACEBACK_LOCATION = re.compile(r'File "(?P<path>[^"]+)", line (?P<line>\d+)')
+_COLON_LOCATION = re.compile(
+    r"(?m)(?:^|\s)(?P<path>[A-Za-z0-9_./\\-]+\.py):"
+    r"(?P<line>\d+)(?::\d+)?(?:\b|:)"
+)
+
+
+class FailureLocation(StrictModel):
+    path: str = Field(min_length=1)
+    line: int = Field(ge=1)
 
 
 class NormalizedFailure(StrictModel):
@@ -27,6 +37,7 @@ class NormalizedFailure(StrictModel):
     exit_code: int | None
     root_error: str
     relevant_error: str
+    locations: list[FailureLocation] = Field(default_factory=list)
 
 
 class FailureNormalizer:
@@ -49,6 +60,7 @@ class FailureNormalizer:
             raise ValueError("verification result has no failed required command")
         combined = "\n".join(part for part in [failed.stdout, failed.stderr] if part)
         normalized = _ANSI.sub("", combined).replace("\r\n", "\n").replace("\r", "\n")
+        locations = self._locations(normalized, Path(worktree).resolve())
         normalized = normalized.replace(str(Path(worktree).resolve()), "<WORKTREE>")
         lines: list[str] = []
         previous = None
@@ -78,5 +90,36 @@ class FailureNormalizer:
             exit_code=failed.exit_code,
             root_error=root_error,
             relevant_error=relevant,
+            locations=locations,
         )
 
+    @staticmethod
+    def _locations(output: str, worktree: Path) -> list[FailureLocation]:
+        """Extract validated repository-relative traceback locations.
+
+        Locations are retrieval hints only. Every candidate is resolved below
+        the task worktree before it can influence context selection, so an
+        error mentioning an arbitrary absolute path cannot request that file.
+        """
+
+        raw_locations: list[tuple[str, str]] = []
+        for pattern in (_TRACEBACK_LOCATION, _COLON_LOCATION):
+            raw_locations.extend(
+                (match.group("path"), match.group("line"))
+                for match in pattern.finditer(output)
+            )
+        selected: list[FailureLocation] = []
+        seen: set[tuple[str, int]] = set()
+        for raw_path, raw_line in raw_locations:
+            candidate = Path(raw_path)
+            resolved = candidate.resolve() if candidate.is_absolute() else (worktree / candidate).resolve()
+            try:
+                relative = resolved.relative_to(worktree).as_posix()
+            except ValueError:
+                continue
+            key = (relative, int(raw_line))
+            if key in seen:
+                continue
+            seen.add(key)
+            selected.append(FailureLocation(path=relative, line=key[1]))
+        return selected

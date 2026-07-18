@@ -130,6 +130,10 @@ class ContextMeasurementIntegrationTests(unittest.TestCase):
         # report.json itself round-trips the measurements too.
         report_on_disk = json.loads((audit / "report.json").read_text(encoding="utf-8"))
         self.assertEqual(len(report_on_disk["context_measurements"]), 2)
+        self.assertIsNotNone(report.context_attribution)
+        self.assertTrue(report.context_attribution.accepted_patch)
+        self.assertIsNotNone(report.context_attribution.signal_density_ratio)
+        self.assertTrue((audit / "context-attribution.json").is_file())
 
 
 if __name__ == "__main__":

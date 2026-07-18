@@ -7,6 +7,7 @@ import json
 import re
 import subprocess
 from collections import Counter, defaultdict
+from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -26,6 +27,13 @@ _WORD = re.compile(r"[A-Za-z_][A-Za-z0-9_]{2,}")
 _PATH = re.compile(
     r"(?<![A-Za-z0-9_])(?:[A-Za-z0-9_.-]+[/\\])+"
     r"[A-Za-z0-9_.-]+\.[A-Za-z0-9]+"
+)
+_DIFF_HUNK = re.compile(
+    r"^@@ -(?P<old_start>\d+)(?:,(?P<old_count>\d+))? "
+    r"\+(?P<new_start>\d+)(?:,(?P<new_count>\d+))? @@"
+)
+_PYTHON_DEFINITION = re.compile(
+    r"^\s*(?:async\s+def|def|class)\s+([A-Za-z_][A-Za-z0-9_]*)\b"
 )
 _STOP_WORDS = {
     "add",
@@ -70,9 +78,15 @@ _TEXT_SUFFIXES = {
 }
 
 
+@dataclass
+class _ChangedFile:
+    current_lines: set[int] = field(default_factory=set)
+    changed_text: list[str] = field(default_factory=list)
+
+
 class ContextPackage(StrictModel):
     package_version: str = "1.0"
-    compiler_version: str = "deterministic-python-v1"
+    compiler_version: str = "deterministic-python-v2"
     task_id: str
     specification: TaskSpecification
     head_commit: str
@@ -134,6 +148,7 @@ class ContextCompiler:
         *,
         extra_queries: list[str] | None = None,
         preferred_paths: list[str] | None = None,
+        preferred_line_anchors: dict[str, int] | None = None,
         external_research_brief: str | None = None,
         research_evidence_ids: list[str] | None = None,
     ) -> ContextPackage:
@@ -145,6 +160,22 @@ class ContextCompiler:
         reasons: dict[str, set[str]] = defaultdict(set)
         combined = self._combined_task_text(specification, extra_queries or [])
         terms = self._query_terms(combined)
+        current_diff = repository.run(
+            ["diff", "--no-ext-diff", "--unified=3", "HEAD"]
+        ).stdout
+        changed_files = self._parse_changed_files(current_diff)
+        changed_paths = {
+            self._normalize_relative(line)
+            for line in repository.run(["diff", "--name-only", "HEAD"])
+            .stdout.splitlines()
+            if line.strip()
+        }
+        changed_paths = {
+            path for path in changed_paths if path in files and not self._excluded(path)
+        }
+        changed_symbols = self._changed_python_symbols(
+            root, files, changed_files, text_cache
+        )
 
         for path in self._explicit_paths(combined):
             if path in files and not self._excluded(path):
@@ -153,21 +184,34 @@ class ContextCompiler:
             normalized = self._normalize_relative(path)
             if normalized in files and not self._excluded(normalized):
                 reasons[normalized].add("preferred path from current patch")
+        line_anchors: dict[str, int] = {}
+        for path, line in (preferred_line_anchors or {}).items():
+            normalized = self._normalize_relative(path)
+            if normalized in files and not self._excluded(normalized) and line >= 1:
+                line_anchors[normalized] = line
+                reasons[normalized].add(
+                    f"normalized failure location at line {line}"
+                )
+        for path in changed_paths:
+            reasons[path].add("current Git diff")
 
         ripgrep_used = self._ripgrep_search(root, terms, files, reasons)
-        self._symbol_search(root, files, terms, reasons, text_cache)
+        selected_symbols = self._symbol_search(
+            root, files, terms, reasons, text_cache
+        )
+        reference_symbols = selected_symbols | changed_symbols
+        reference_files = self._symbol_reference_neighbors(
+            root, files, reference_symbols, reasons, text_cache
+        )
         self._import_neighbors(root, files, reasons, text_cache)
-        self._related_tests(root, files, terms, reasons, text_cache)
-
-        changed = repository.run(["diff", "--name-only", "HEAD"]).stdout
-        changed_paths = {
-            self._normalize_relative(line)
-            for line in changed.splitlines()
-            if line.strip()
-        }
-        for path in changed_paths:
-            if path in files and not self._excluded(path):
-                reasons[path].add("current Git diff")
+        self._related_tests(
+            root,
+            files,
+            terms,
+            reasons,
+            text_cache,
+            symbol_names=reference_symbols,
+        )
 
         candidate_file_count = len(reasons)
         ordered = sorted(
@@ -182,7 +226,9 @@ class ContextCompiler:
             content = self._read_text(root, path, text_cache)
             if content is None:
                 continue
-            excerpt = self._excerpt(content, terms)
+            excerpt = self._excerpt(
+                content, terms, preferred_line=line_anchors.get(path)
+            )
             if excerpt is None:
                 continue
             start_line, end_line, excerpt_text = excerpt
@@ -211,9 +257,6 @@ class ContextCompiler:
             )
             total_chars += len(excerpt_text)
 
-        current_diff = repository.run(
-            ["diff", "--no-ext-diff", "--unified=3", "HEAD"]
-        ).stdout
         if current_diff and total_chars < self.config.max_total_chars:
             remaining = self.config.max_total_chars - total_chars
             diff_excerpt = current_diff[:remaining]
@@ -229,7 +272,16 @@ class ContextCompiler:
                 )
             )
 
-        tools = ["git", "python_ast_symbols", "python_imports", "test_discovery"]
+        tools = [
+            "git",
+            "git_diff_symbols",
+            "python_ast_symbols",
+            "python_ast_references",
+            "python_imports",
+            "test_discovery",
+        ]
+        if line_anchors:
+            tools.append("failure_line_anchors")
         tools.append("ripgrep" if ripgrep_used else "lexical_fallback")
         parameters = self.config.model_dump(mode="json")
         parameters["candidate_file_count"] = candidate_file_count
@@ -240,6 +292,9 @@ class ContextCompiler:
         parameters["excerpts_truncated_for_char_budget"] = (
             excerpts_truncated_for_char_budget
         )
+        parameters["changed_symbol_names"] = sorted(changed_symbols)
+        parameters["symbol_reference_file_count"] = len(reference_files)
+        parameters["failure_line_anchor_count"] = len(line_anchors)
         return ContextPackage(
             task_id=specification.task_id,
             specification=specification,
@@ -382,8 +437,9 @@ class ContextCompiler:
         terms: list[str],
         reasons: dict[str, set[str]],
         cache: dict[str, str],
-    ) -> None:
+    ) -> set[str]:
         term_set = set(terms)
+        selected_symbols: set[str] = set()
         for path in sorted(item for item in files if item.endswith(".py")):
             content = self._read_text(root, path, cache)
             if content is None:
@@ -397,9 +453,53 @@ class ContextCompiler:
                     words = {part.lower() for part in node.name.split("_")}
                     matched = sorted(words & term_set)
                     if matched:
+                        selected_symbols.add(node.name)
                         reasons[path].add(
                             f"Python symbol {node.name} matches {matched[0]}"
                         )
+        return selected_symbols
+
+    def _symbol_reference_neighbors(
+        self,
+        root: Path,
+        files: set[str],
+        symbol_names: set[str],
+        reasons: dict[str, set[str]],
+        cache: dict[str, str],
+    ) -> set[str]:
+        """Add a deterministic one-hop neighborhood of Python call sites.
+
+        Only actual ``ast.Call`` targets are considered; an identifier merely
+        appearing in a string, comment, assignment, or import is not a call
+        edge. Attribute calls use the terminal attribute name so
+        ``client.download()`` can reference ``download`` without pretending
+        to resolve Python's dynamic dispatch.
+        """
+
+        if not symbol_names:
+            return set()
+        reference_files: set[str] = set()
+        for path in sorted(item for item in files if item.endswith(".py")):
+            content = self._read_text(root, path, cache)
+            if content is None:
+                continue
+            try:
+                tree = ast.parse(content)
+            except SyntaxError:
+                continue
+            called: set[str] = set()
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                if isinstance(node.func, ast.Name):
+                    called.add(node.func.id)
+                elif isinstance(node.func, ast.Attribute):
+                    called.add(node.func.attr)
+            matched = sorted(called & symbol_names)
+            if matched:
+                reasons[path].add(f"Python call reference to {matched[0]}")
+                reference_files.add(path)
+        return reference_files
 
     def _import_neighbors(
         self,
@@ -463,13 +563,19 @@ class ContextCompiler:
         terms: list[str],
         reasons: dict[str, set[str]],
         cache: dict[str, str],
+        *,
+        symbol_names: set[str] | None = None,
     ) -> None:
         selected_stems = {
             PurePosixPath(path).stem.lower()
             for path in reasons
             if not self._is_test(path)
         }
-        needles = selected_stems | set(terms)
+        symbol_needles = {
+            value.lower() for name in (symbol_names or set()) for value in [name, *name.split("_")]
+            if len(value) >= 3
+        }
+        needles = selected_stems | set(terms) | symbol_needles
         for path in sorted(item for item in files if self._is_test(item)):
             content = self._read_text(root, path, cache)
             if content is None:
@@ -502,7 +608,11 @@ class ContextCompiler:
         return content
 
     def _excerpt(
-        self, content: str, terms: list[str]
+        self,
+        content: str,
+        terms: list[str],
+        *,
+        preferred_line: int | None = None,
     ) -> tuple[int, int, str] | None:
         lines = content.splitlines(keepends=True)
         if not lines:
@@ -512,7 +622,11 @@ class ContextCompiler:
             for index, line in enumerate(lines)
             if any(term in line.lower() for term in terms)
         ]
-        anchor = matches[0] if matches else 0
+        anchor = (
+            min(len(lines) - 1, max(0, preferred_line - 1))
+            if preferred_line is not None
+            else (matches[0] if matches else 0)
+        )
         start = max(0, anchor - self.config.match_context_lines)
         end = min(len(lines), start + self.config.max_excerpt_lines)
         return start + 1, end, "".join(lines[start:end])
@@ -531,8 +645,10 @@ class ContextCompiler:
         for index, marker in enumerate(
             [
                 "explicit path",
+                "failure location",
                 "preferred path",
                 "current Git diff",
+                "Python call reference",
                 "symbol",
                 "ripgrep",
                 "imported",
@@ -542,6 +658,99 @@ class ContextCompiler:
             if marker in joined:
                 return index
         return 99
+
+    @classmethod
+    def _parse_changed_files(cls, diff: str) -> dict[str, _ChangedFile]:
+        """Parse changed current-line locations and text from a Git diff.
+
+        This is intentionally narrower than the unified-diff patch parser: it
+        consumes Git's own trusted ``git diff`` output solely for retrieval
+        hints and never applies a change.
+        """
+
+        changed: dict[str, _ChangedFile] = {}
+        current_path: str | None = None
+        old_path: str | None = None
+        current_line: int | None = None
+        for raw in diff.splitlines():
+            if raw.startswith("diff --git "):
+                current_path = None
+                old_path = None
+                current_line = None
+                continue
+            if current_line is None and raw.startswith("--- "):
+                value = raw[4:]
+                old_path = (
+                    cls._normalize_relative(value[2:])
+                    if value.startswith("a/")
+                    else None
+                )
+                continue
+            if current_line is None and raw.startswith("+++ "):
+                value = raw[4:]
+                current_path = (
+                    cls._normalize_relative(value[2:])
+                    if value.startswith("b/")
+                    else old_path
+                )
+                current_line = None
+                continue
+            hunk = _DIFF_HUNK.match(raw)
+            if hunk:
+                current_line = int(hunk.group("new_start"))
+                continue
+            if current_path is None or current_line is None or not raw:
+                continue
+            marker, text = raw[0], raw[1:]
+            if marker == " ":
+                current_line += 1
+            elif marker == "+":
+                item = changed.setdefault(current_path, _ChangedFile())
+                item.current_lines.add(max(1, current_line))
+                item.changed_text.append(text)
+                current_line += 1
+            elif marker == "-":
+                item = changed.setdefault(current_path, _ChangedFile())
+                item.current_lines.add(max(1, current_line))
+                item.changed_text.append(text)
+            elif marker == "\\":
+                continue
+        return changed
+
+    def _changed_python_symbols(
+        self,
+        root: Path,
+        files: set[str],
+        changed_files: dict[str, _ChangedFile],
+        cache: dict[str, str],
+    ) -> set[str]:
+        symbols: set[str] = set()
+        for path, changed in sorted(changed_files.items()):
+            if not path.endswith(".py") or self._excluded(path):
+                continue
+            for text in changed.changed_text:
+                match = _PYTHON_DEFINITION.match(text)
+                if match:
+                    symbols.add(match.group(1))
+            if path not in files:
+                continue
+            content = self._read_text(root, path, cache)
+            if content is None:
+                continue
+            try:
+                tree = ast.parse(content)
+            except SyntaxError:
+                continue
+            for node in ast.walk(tree):
+                if not isinstance(
+                    node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
+                ):
+                    continue
+                start = getattr(node, "lineno", 0)
+                end = getattr(node, "end_lineno", start)
+                if any(start <= line <= end for line in changed.current_lines):
+                    symbols.add(node.name)
+        return symbols
 
     @staticmethod
     def _evidence_kind(path: str) -> EvidenceKind:

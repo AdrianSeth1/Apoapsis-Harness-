@@ -19,7 +19,11 @@ from apoapsis.config import (
     ApoapsisConfig,
 )
 from apoapsis.context.compiler import ContextCompiler, ContextPackage
-from apoapsis.context.measurement import ContextMeasurement, measure_context
+from apoapsis.context.measurement import (
+    ContextMeasurement,
+    attribute_context_to_patch,
+    measure_context,
+)
 from apoapsis.execution.worktree import WorktreeManager
 from apoapsis.models.base import (
     ConstraintCoverage,
@@ -475,6 +479,9 @@ class VerticalSliceRunner:
                 self.worktree_path,
                 extra_queries=[failure.root_error, failure.relevant_error],
                 preferred_paths=self.files_changed,
+                preferred_line_anchors={
+                    location.path: location.line for location in failure.locations
+                },
                 external_research_brief=research_brief,
                 research_evidence_ids=research_ids,
             )
@@ -718,6 +725,11 @@ class VerticalSliceRunner:
             self.worktree_path,
             extra_queries=queries,
             preferred_paths=self.files_changed,
+            preferred_line_anchors={
+                location.path: location.line
+                for failure in failures
+                for location in failure.locations
+            },
             external_research_brief=(
                 self.research_outcome.brief if self.research_outcome else None
             ),
@@ -1087,6 +1099,16 @@ class VerticalSliceRunner:
                         content_sha256=evidence.content_sha256 or "0" * 64,
                     )
                 )
+        context_attribution = attribute_context_to_patch(
+            [context for _call_number, context in self.contexts],
+            changed_files=self.files_changed,
+            accepted_patch=outcome == TaskOutcome.COMPLETE,
+        )
+        self.audit.write_json(
+            "context-attribution.json",
+            context_attribution,
+            kind="context_attribution",
+        )
         predicted_report = (
             self.audit.root / "report.json"
         ).relative_to(self.project_root).as_posix()
@@ -1208,6 +1230,7 @@ class VerticalSliceRunner:
                 else None
             ),
             context_measurements=self.context_measurements,
+            context_attribution=context_attribution,
         )
         self.audit.write_json("report.json", report, kind="final_report")
         return report

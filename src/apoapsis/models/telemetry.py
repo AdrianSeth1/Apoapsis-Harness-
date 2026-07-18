@@ -8,7 +8,12 @@ from pydantic import Field
 
 from apoapsis.config import ProviderPricing
 from apoapsis.models.base import ModelOperation, TokenUsage
-from apoapsis.models.provider import ModelProvider, ProviderInvocation, ProviderOutput
+from apoapsis.models.provider import (
+    ModelProvider,
+    ModelRole,
+    ProviderInvocation,
+    ProviderOutput,
+)
 from apoapsis.specification.schema import StrictModel
 
 
@@ -16,6 +21,7 @@ class ProviderCallTelemetry(StrictModel):
     request_id: str
     response_id: str | None = None
     operation: ModelOperation
+    role: ModelRole | None = None
     provider: str
     model: str
     input_tokens: int = Field(ge=0)
@@ -81,6 +87,7 @@ class InstrumentedModelProvider:
             telemetry = ProviderCallTelemetry(
                 request_id=invocation.request_id,
                 operation=invocation.operation,
+                role=invocation.role,
                 provider=self.provider_name,
                 model=self.model_name,
                 input_tokens=0,
@@ -120,6 +127,7 @@ class InstrumentedModelProvider:
                 request_id=invocation.request_id,
                 response_id=output.response_id,
                 operation=invocation.operation,
+                role=invocation.role,
                 provider=self.provider_name,
                 model=output.model,
                 input_tokens=priced_usage.input_tokens,

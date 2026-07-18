@@ -5,7 +5,7 @@ from enum import StrEnum
 from pydantic import Field, model_validator
 
 from apoapsis.config import AgentRoute, ExecutionMode
-from apoapsis.context.measurement import ContextMeasurement
+from apoapsis.context.measurement import ContextAttribution, ContextMeasurement
 from apoapsis.models.base import ConstraintCoverage
 from apoapsis.models.telemetry import ProviderCallTelemetry
 from apoapsis.research.schemas import ResearchMode, ResearchTelemetry
@@ -75,6 +75,7 @@ class FinalTaskReport(StrictModel):
     research_audit_directory: str | None = None
     research_telemetry: ResearchTelemetry | None = None
     context_measurements: list[ContextMeasurement] = Field(default_factory=list)
+    context_attribution: ContextAttribution | None = None
 
     @model_validator(mode="after")
     def validate_totals(self) -> FinalTaskReport:

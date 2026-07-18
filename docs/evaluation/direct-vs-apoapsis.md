@@ -22,8 +22,12 @@ git commit -m "Controlled download-service baseline"
 git rev-parse HEAD
 ```
 
-The baseline has two intentionally failing resumable-download acceptance tests.
-The existing new-download test must remain passing.
+The source fixture has two intentionally failing resumable-download acceptance
+tests and one passing existing-behavior test. `apoapsis eval` withholds the
+acceptance-test file before initializing each lane repository, then runs it as a
+post-completion oracle. Direct manual comparisons must likewise keep that oracle
+outside the coding model's repository/context and run it only after the direct
+tool claims completion.
 
 ## Direct frontier run
 
@@ -88,7 +92,7 @@ The exact prompts, context packages, diffs, policy findings, verification logs,
 telemetry, and final report are under `.apoapsis/tasks/<task-id>/`. Source changes are
 under `.apoapsis/worktrees/<task-slug>/`; the original checkout remains unchanged.
 
-Use `--context-profile 16k`, `32k`, and `64k` for controlled context scaling.
+Use `--context-profile 16k`, `32k`, `64k`, `128k`, and `256k` for controlled context scaling.
 Keep the selected profile identical between repeated model comparisons and
 record GPU/CPU offload separately; the task report already captures transmitted
 files and lines, prompt tokens, generation tokens, and latency.
@@ -114,6 +118,20 @@ Compare the same outcome fields for both runs:
 
 The primary comparison is cost per accepted, non-regressing patch—not token count
 alone.
+
+After two or more `apoapsis eval` runs, aggregate their persisted reports without
+making another provider call:
+
+```bash
+apoapsis eval-aggregate run-1/comparison.json run-2/comparison.json \
+  --output-dir aggregate
+```
+
+An oracle-evaluated completion that fails the withheld test is a false success.
+If no valid oracle ran, the rate is unmeasured rather than zero. Hosted rescue,
+token, and cost deltas are likewise unmeasured until the inputs contain paired
+real hosted-frontier evidence; deterministic fake-provider reports validate the
+math but are not model-quality evidence.
 
 See [`local-qwen-smoke.md`](local-qwen-smoke.md) for the first measured run on
 the controlled repository and the model-specific findings it exposed.

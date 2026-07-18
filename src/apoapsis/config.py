@@ -122,6 +122,9 @@ class AgentLoopConfig(StrictModel):
     max_observation_chars: int = Field(
         default=48_000, ge=1_000, le=1_000_000
     )
+    max_transmitted_observation_chars: int = Field(
+        default=24_000, ge=1_000, le=1_000_000
+    )
 
 
 class ExecutionConfig(StrictModel):

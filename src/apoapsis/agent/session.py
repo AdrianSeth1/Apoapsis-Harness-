@@ -60,6 +60,9 @@ class AgentTurnRecord(StrictModel):
     patch_attempt: int | None = Field(default=None, ge=1)
     verification_run: int | None = Field(default=None, ge=1)
     verification_status: VerificationStatus | None = None
+    observation_ledger: list[ContextEvidence] = Field(default_factory=list)
+    observation_ledger_chars: int = Field(default=0, ge=0)
+    transmitted_observation_chars: int = Field(default=0, ge=0)
 
 
 class AgentSessionResult(StrictModel):
@@ -75,6 +78,63 @@ class AgentSessionResult(StrictModel):
 
 AgentModelCall = Callable[..., ModelResponse]
 PatchApply = Callable[[str, int], None]
+
+
+def _observation_slot(item: ContextEvidence) -> tuple[object, ...]:
+    if item.kind in {EvidenceKind.FAILURE, EvidenceKind.DIFF}:
+        return (item.kind, item.path)
+    return (item.kind, item.path, item.start_line, item.end_line)
+
+
+def _truncate_evidence(item: ContextEvidence, max_chars: int) -> ContextEvidence:
+    content = item.content[:max_chars]
+    payload = item.model_dump(mode="python")
+    payload["content"] = content
+    payload["content_sha256"] = None
+    if item.start_line is not None:
+        payload["end_line"] = item.start_line + content.count("\n")
+    return ContextEvidence.model_validate(payload)
+
+
+def compact_observations(
+    observations: list[ContextEvidence], *, max_chars: int
+) -> list[ContextEvidence]:
+    """Select a deterministic, bounded current view of an append-only ledger.
+
+    The latest failure and diff are considered first, then the newest bounded
+    reads/searches. Older entries for the same semantic slot remain in the
+    audit ledger but are not retransmitted. The selected entries are restored
+    to chronological order before prompt construction.
+    """
+
+    if max_chars <= 0:
+        return []
+    ranked = sorted(
+        enumerate(observations),
+        key=lambda pair: (
+            0
+            if pair[1].kind == EvidenceKind.FAILURE
+            else 1
+            if pair[1].kind == EvidenceKind.DIFF
+            else 2,
+            -pair[0],
+        ),
+    )
+    selected: list[tuple[int, ContextEvidence]] = []
+    seen_slots: set[tuple[object, ...]] = set()
+    used = 0
+    for index, item in ranked:
+        slot = _observation_slot(item)
+        if slot in seen_slots:
+            continue
+        remaining = max_chars - used
+        if remaining <= 0:
+            break
+        candidate = item if len(item.content) <= remaining else _truncate_evidence(item, remaining)
+        selected.append((index, candidate))
+        seen_slots.add(slot)
+        used += len(candidate.content)
+    return [item for _index, item in sorted(selected, key=lambda pair: pair[0])]
 
 
 class BoundedAgentSession:
@@ -132,7 +192,10 @@ class BoundedAgentSession:
                 verification_commands=[
                     item.name for item in self.verification_config.commands
                 ],
-                history=[item.model_dump(mode="json") for item in self.records],
+                history=[
+                    item.model_dump(mode="json", exclude={"observation_ledger"})
+                    for item in self.records
+                ],
             )
             response = self.model_call(
                 ModelOperation.AGENT_STEP,
@@ -392,6 +455,9 @@ class BoundedAgentSession:
                 self.worktree,
                 extra_queries=[failure.root_error, failure.relevant_error],
                 preferred_paths=self.inspector.changed_paths(),
+                preferred_line_anchors={
+                    location.path: location.line for location in failure.locations
+                },
                 external_research_brief=self.base_context.external_research_brief,
                 research_evidence_ids=self.base_context.research_evidence_ids,
             )
@@ -472,13 +538,7 @@ class BoundedAgentSession:
                 break
             selected = item
             if len(item.content) > remaining:
-                content = item.content[:remaining]
-                payload = item.model_dump(mode="python")
-                payload["content"] = content
-                payload["content_sha256"] = None
-                if item.start_line is not None:
-                    payload["end_line"] = item.start_line + content.count("\n")
-                selected = ContextEvidence.model_validate(payload)
+                selected = _truncate_evidence(item, remaining)
             self.observations.append(selected)
             self.observation_chars += len(selected.content)
             added.append(selected.evidence_id)
@@ -493,9 +553,16 @@ class BoundedAgentSession:
         return added
 
     def _context_for_turn(self, turn: int) -> ContextPackage:
+        transmitted_observations = compact_observations(
+            self.observations,
+            max_chars=min(
+                self.config.max_observation_chars,
+                self.config.max_transmitted_observation_chars,
+            ),
+        )
         unique: list[ContextEvidence] = []
         seen: set[tuple[str, int | None, int | None, str | None]] = set()
-        for item in [*self.base_context.evidence, *self.observations]:
+        for item in [*self.base_context.evidence, *transmitted_observations]:
             key = (item.path, item.start_line, item.end_line, item.content_sha256)
             if key in seen:
                 continue
@@ -506,6 +573,17 @@ class BoundedAgentSession:
         parameters = dict(self.base_context.compiler_parameters)
         parameters["agent_turn"] = turn
         parameters["agent_loop"] = self.config.model_dump(mode="json")
+        transmitted_chars = sum(len(item.content) for item in transmitted_observations)
+        parameters["observation_ledger_items"] = len(self.observations)
+        parameters["observation_ledger_chars"] = self.observation_chars
+        parameters["observation_transmitted_items"] = len(transmitted_observations)
+        parameters["observation_transmitted_chars"] = transmitted_chars
+        parameters["observations_compacted_count"] = max(
+            0, len(self.observations) - len(transmitted_observations)
+        )
+        parameters["observations_compacted_chars"] = max(
+            0, self.observation_chars - transmitted_chars
+        )
         return ContextPackage(
             task_id=self.base_context.task_id,
             specification=self.base_context.specification,
@@ -540,6 +618,22 @@ class BoundedAgentSession:
         }
 
     def _record(self, record: AgentTurnRecord) -> None:
+        record = record.model_copy(
+            update={
+                "observation_ledger": list(self.observations),
+                "observation_ledger_chars": self.observation_chars,
+                "transmitted_observation_chars": sum(
+                    len(item.content)
+                    for item in compact_observations(
+                        self.observations,
+                        max_chars=min(
+                            self.config.max_observation_chars,
+                            self.config.max_transmitted_observation_chars,
+                        ),
+                    )
+                ),
+            }
+        )
         self.records.append(record)
         self.audit.write_json(
             f"{self.audit_prefix}agent-turn-{record.turn:03d}.json",

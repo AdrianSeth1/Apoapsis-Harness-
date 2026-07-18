@@ -109,6 +109,92 @@ class ContextCompilerTests(unittest.TestCase):
         self.assertIn("src/download_service/__init__.py", paths)
         self.assertIn("src/download_service/worker.py", paths)
 
+    def test_changed_symbol_expands_one_hop_callers_and_tests(self) -> None:
+        (self.root / "src" / "cursor.py").write_text(
+            "def reconcile_cursor(value: int) -> int:\n"
+            "    adjusted = value\n"
+            "    return adjusted\n",
+            encoding="utf-8",
+        )
+        (self.root / "src" / "consumer.py").write_text(
+            "from src.cursor import reconcile_cursor\n\n"
+            "def consume(value: int) -> int:\n"
+            "    return reconcile_cursor(value)\n",
+            encoding="utf-8",
+        )
+        (self.root / "tests" / "test_cursor.py").write_text(
+            "from src.cursor import reconcile_cursor\n\n"
+            "def test_cursor():\n"
+            "    assert reconcile_cursor(1) == 1\n",
+            encoding="utf-8",
+        )
+        (self.root / "src" / "decoy.py").write_text(
+            'DESCRIPTION = "reconcile_cursor is documented here"\n',
+            encoding="utf-8",
+        )
+        self._git("add", ".")
+        self._git("commit", "-m", "add cursor fixture")
+        (self.root / "src" / "cursor.py").write_text(
+            "def reconcile_cursor(value: int) -> int:\n"
+            "    adjusted = max(0, value)\n"
+            "    return adjusted\n",
+            encoding="utf-8",
+        )
+
+        context = ContextCompiler(
+            ContextCompilerConfig(max_files=20, max_total_chars=40_000)
+        ).compile(make_specification(), self.root)
+
+        by_path = {item.path: item for item in context.evidence}
+        self.assertIn("src/cursor.py", by_path)
+        self.assertIn("src/consumer.py", by_path)
+        self.assertIn("tests/test_cursor.py", by_path)
+        self.assertNotIn("src/decoy.py", by_path)
+        self.assertIn(
+            "Python call reference to reconcile_cursor",
+            by_path["src/consumer.py"].reason_included,
+        )
+        self.assertEqual(
+            context.compiler_parameters["changed_symbol_names"],
+            ["reconcile_cursor"],
+        )
+        self.assertGreaterEqual(
+            context.compiler_parameters["symbol_reference_file_count"], 2
+        )
+
+    def test_failure_line_anchor_overrides_earlier_query_match(self) -> None:
+        lines = ["download keyword appears first\n"]
+        lines.extend(f"padding_{index} = {index}\n" for index in range(2, 260))
+        target = self.root / "src" / "long_module.py"
+        target.write_text("".join(lines), encoding="utf-8")
+        self._git("add", ".")
+        self._git("commit", "-m", "add long failure fixture")
+        compiler = ContextCompiler(
+            ContextCompilerConfig(
+                max_files=20,
+                max_excerpt_lines=20,
+                match_context_lines=5,
+                max_total_chars=40_000,
+            )
+        )
+
+        context = compiler.compile(
+            make_specification(),
+            self.root,
+            preferred_line_anchors={"src/long_module.py": 220},
+        )
+
+        evidence = next(
+            item for item in context.evidence if item.path == "src/long_module.py"
+        )
+        self.assertLessEqual(evidence.start_line or 0, 220)
+        self.assertGreaterEqual(evidence.end_line or 0, 220)
+        self.assertGreater(evidence.start_line or 0, 1)
+        self.assertIn("failure location", evidence.reason_included)
+        self.assertEqual(
+            context.compiler_parameters["failure_line_anchor_count"], 1
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

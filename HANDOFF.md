@@ -15,11 +15,11 @@ must be corrected before the change is considered complete.
 | Item | Current value |
 | --- | --- |
 | Last verified | 2026-07-18 |
-| Working-tree version | `1.0a` (Apoapsis 1.0, phase a: context profiles and measurement infrastructure; 1.0b/1.0c not started — see "Apoapsis 1.0 phased plan") |
+| Working-tree version | `1.0` (context measurement, deterministic context-quality improvements, held-out evaluation oracle, and cross-run metrics; see "Apoapsis 1.0 phased plan") |
 | Checked-out branch | `main` |
 | Repository state | Everything described here is committed on `main`. This table intentionally does not embed a commit hash -- a commit that updates this file cannot know its own hash while being written, so a hardcoded hash here is stale the instant it lands. Run `git log -1 --oneline` for the exact current commit. |
 | Preserved substrate tag | `substrate-v0.1` at `4c2e735` |
-| Full deterministic suite | 156 tests, 0 failures, 0 errors, 4 intentional skips (2 live-network, 1 live-Docker, 1 machine currently lacks the Windows privilege to create symlinks) |
+| Full deterministic suite | 171 tests, 0 failures, 0 errors, 4 intentional skips (2 live-network, 1 live-Docker, 1 machine currently lacks the Windows privilege to create symlinks) |
 | Syntax check | `python -m compileall -q src tests` passed |
 | Diff check | `git diff --check` passed; Git reported only expected LF-to-CRLF working-copy warnings |
 | Live local coding result | Qwen3-Coder-Next Q4 completed the controlled download-service task in 10 turns and 3 verification runs |
@@ -152,7 +152,7 @@ architecture.
 - Legacy `.sol/` audit data remains ignored and excluded from every model,
   patch, context, and research surface. It is immutable history, not active
   Apoapsis state, and is not rewritten during the namespace migration.
-- Context profiles `16k`, `32k`, and `64k` jointly change the native Ollama
+- Context profiles `16k`, `32k`, `64k`, `128k`, and `256k` jointly change the native Ollama
   context window and deterministic evidence budget. They do not alter Research
   Mode's separate context budget.
 
@@ -186,8 +186,10 @@ architecture.
   `.apoapsis/worktrees/`, validates task slugs and branches, and refuses normal
   cleanup of dirty worktrees.
 - `src/apoapsis/context/compiler.py` combines tracked/unignored paths, current Git
-  diffs, explicit paths, ripgrep results, deterministic lexical fallback,
-  Python AST symbols/imports, bounded import neighbors, and related tests.
+  diff hunks and changed Python symbols, explicit paths, ripgrep results,
+  deterministic lexical fallback, Python AST definitions/call references/imports,
+  bounded one-hop symbol/import neighbors, related tests, and validated
+  failure-file/line anchors. It remains deterministic and embedding-free.
 - `src/apoapsis/context/provenance.py` gives every excerpt a path, line range,
   commit/worktree provenance, inclusion reason, content digest, evidence kind,
   and transmission policy.
@@ -209,7 +211,10 @@ architecture.
   influences retrieval or ranking. Computed once per model call in
   `VerticalSliceRunner._model_call`, persisted as `call-<NNN>-context-
   measurement.json`, and surfaced on `FinalTaskReport.context_measurements`
-  and in `apoapsis eval`'s comparison Markdown. See ADR 0010 and the
+  and in `apoapsis eval`'s comparison Markdown. Accepted patches also produce
+  conservative file-level `context-attribution.json`; a path counts as signal
+  only when it was both transmitted and changed by the verifier-accepted patch.
+  See ADRs 0010 and 0011 and the
   "Apoapsis 1.0 phased plan" section above.
 
 ### Provider boundary and telemetry
@@ -219,9 +224,9 @@ architecture.
 - Implemented adapters are native loopback-only Ollama in
   `src/apoapsis/models/local.py` and authenticated OpenAI-compatible chat completions
   in `src/apoapsis/models/frontier.py`.
-- `src/apoapsis/models/telemetry.py` owns call timing, prompt hashes, token/cache
-  counts, configured-price cost estimates, model digests, thinking tokens,
-  native duration fields, retry count, and failed-call telemetry.
+- `src/apoapsis/models/telemetry.py` owns call roles, timing, prompt hashes,
+  token/cache counts, configured-price cost estimates, model digests, thinking
+  tokens, native duration fields, retry count, and failed-call telemetry.
 - Provider roles are `FRONTIER_IMPLEMENTATION`, legacy `CODING_AGENT`,
   `LOCAL_CODING_AGENT`, `FRONTIER_CODING_AGENT`, and
   `LOCAL_RESEARCH_MODEL`.
@@ -249,8 +254,11 @@ plan, compatibility tests, and an ADR.
   tracked or unignored text paths. It rejects absolute paths, drive paths,
   parent traversal, `.git`, `.apoapsis`, and binary content.
 - `src/apoapsis/agent/session.py` owns turn, patch, verification, search/read, and
-  observation budgets; evidence accumulation; check de-duplication; and session
-  outcome.
+  observation budgets; evidence accumulation; deterministic transmitted-history
+  compaction; check de-duplication; and session outcome. The complete bounded
+  observation ledger stays in every `agent-turn-*.json`; only a newest-failure,
+  newest-diff, newest-per-evidence-slot view is retransmitted, bounded by
+  `max_transmitted_observation_chars`.
 - `replace_text` is allowed only when the exact old text occurs once. Apoapsis turns
   it into a unified diff and sends it through normal patch validation.
 - A named configured check can be run. The model cannot construct a command.
@@ -282,8 +290,9 @@ plan, compatibility tests, and an ADR.
   with `shell=False`, per-command timeouts, a restricted environment, bounded
   output, and structured statuses.
 - At least one required command is mandatory for the vertical slice.
-- `src/apoapsis/verification/failures.py` extracts a normalized root error and
-  relevant failure excerpt for repair or escalation.
+- `src/apoapsis/verification/failures.py` extracts a normalized root error,
+  relevant failure excerpt, and worktree-contained source locations for
+  failure-directed repair or escalation context.
 - `VerificationRunner` no longer runs commands itself; it delegates each one
   to a configured `ExecutionBackend` (`[verification.backend]`, default
   `host`) and keeps sequencing, `stop_on_failure`, truncation, and
@@ -410,17 +419,19 @@ plan, compatibility tests, and an ADR.
 
 - `src/apoapsis/audit/store.py` writes audit files atomically below
   `.apoapsis/tasks/<task-id>/`.
-- Before every provider call, Apoapsis writes `call-NNN-context.json` and
-  `call-NNN-request.json`. The request records role, response schema, prompt,
-  inference settings through the model request, context digest, and a canonical
-  request-package digest.
+- Before every provider call, Apoapsis writes `call-NNN-context.json`,
+  `call-NNN-context-measurement.json`, and `call-NNN-request.json`. The request
+  records role, response schema, prompt, inference settings through the model
+  request, context digest, and a canonical request-package digest.
 - After a call it writes `call-NNN-response.json` and
   `call-NNN-telemetry.json`.
 - Other important artifacts include approved specification files,
   `routing-decision.json`, numbered proposed/normalized patches and policy
   results, local `agent-turn-*` records, frontier `frontier-agent-turn-*`
   records, numbered verification results/failures,
-  `frontier-escalation-package.json`, and `report.json`.
+  `frontier-escalation-package.json`, `context-attribution.json`, and
+  `report.json`. Evaluation-only task directories may additionally contain
+  `held-out-oracle.json`, written after all model calls and normal completion.
 - `src/apoapsis/reporting/report.py` aggregates both stages while retaining separate
   local/frontier turn, patch, and verification counts.
 - Audit directories are reproducibility evidence, not secret stores. Never put
@@ -451,7 +462,13 @@ plan, compatibility tests, and an ADR.
   `harness.py` runs one lane through the unmodified `VerticalSliceRunner`
   against that isolated copy, with its own fresh task store. `report.py`
   aggregates the resulting `FinalTaskReport`s into one `comparison.json`/
-  `comparison.md`. A lane needing an unconfigured `models.frontier_coder` is
+  `comparison.md`. The download-service acceptance test is withheld before Git
+  initialization and model access, then run once after a normal COMPLETE result
+  as an independent oracle through the configured execution backend. `aggregate.py`
+  and `apoapsis eval-aggregate` combine persisted comparisons into typed cross-run
+  rates/distributions without provider calls; hosted metrics require real hosted
+  evidence and otherwise remain explicitly unmeasured. A lane needing an
+  unconfigured `models.frontier_coder` is
   recorded as skipped, with no fixture copy and no provider built for it, so
   absent credentials never imply unauthorized spend. See ADR 0008.
 
@@ -479,6 +496,8 @@ The generated configuration currently selects:
 - Qwen3-Coder-Next Q4 through native loopback Ollama for specification and local
   coding;
 - a 64K local coding window and 180,000-character repository evidence budget;
+- a 48,000-character complete observation ledger and a 24,000-character
+  retransmission budget for each agent stage;
 - Qwen 3.6 27B through native loopback Ollama for Research Mode;
 - agent execution with `route = "auto"`;
 - no hosted frontier coder credentials.
@@ -561,6 +580,7 @@ that it may incur real cost. Neither form ever prints a credential value.
 apoapsis eval download-service
 apoapsis eval download-service --lane local --lane one-shot
 apoapsis eval download-service --lane forced-escalation --output-dir .apoapsis-eval/run-1
+apoapsis eval-aggregate .apoapsis-eval/run-1/comparison.json --output-dir .apoapsis-eval/aggregate
 ```
 
 Requires `apoapsis init` in this repository first (it reads the same
@@ -569,7 +589,11 @@ of `examples/download-service` in an isolated Git repository; `hybrid`,
 `forced-escalation`, and `frontier` are skipped with a clear reason when
 `[models.frontier_coder]` is not configured. Output is a `comparison.json`/
 `comparison.md` pair under `--output-dir` (default `.apoapsis-eval/<run-id>/`,
-gitignored).
+gitignored). For this fixture the resumable acceptance test is absent from the
+model-visible repository and runs only after normal verification has declared
+completion; its result is recorded per lane. `eval-aggregate` reads one or more
+such persisted JSON reports and writes `aggregate.json`/`aggregate.md` without
+making a model call.
 
 ## Evaluation evidence
 
@@ -601,11 +625,10 @@ the changed conditions.
 
 ## Apoapsis 1.0 phased plan
 
-Apoapsis 1.0 ("context quality and broader evaluation") is scoped in three
-phases, planned together so later phases build on stable interfaces instead
-of redesigning them. **Only 1.0a is implemented.** Do not start 1.0b or 1.0c
-without explicit instruction; this section exists so a future agent can
-continue without re-deriving the design.
+Apoapsis 1.0 ("context quality and broader evaluation") was delivered in three
+phases that build on stable interfaces. All three implementation phases are
+complete. Real cross-profile and hosted-frontier experiments remain evidence
+work, not missing framework code.
 
 ### 1.0a — Context profiles and measurement infrastructure (done, ADR 0010)
 
@@ -620,7 +643,7 @@ continue without re-deriving the design.
   assumption from available VRAM (this machine: RTX 4090, 24GB VRAM, 64GB
   RAM; the installed 79.7B model is a ~48GB file already running GPU+CPU
   split, so "there's VRAM headroom" does not by itself mean a wider window
-  is fast — 1.0b/1.0c is where that gets measured on real tasks).
+  is fast — repeated live profile comparisons are where that is measured).
 - A new deterministic, read-only measurement layer:
   `src/apoapsis/context/measurement.py` (`ContextMeasurement`,
   `measure_context`). Computed once per model call in
@@ -630,139 +653,74 @@ continue without re-deriving the design.
   `FinalTaskReport.context_measurements` and as three extra columns in
   `apoapsis eval`'s comparison Markdown (peak context tokens, peak model-
   window utilization, stable/new evidence totals).
-- **Interface for later phases**: `measure_context(package, *, call_number,
+- **Interface preserved across later phases**: `measure_context(package, *, call_number,
   model_context_window_tokens, agent_observation_budget_chars,
   previous_package)` is a pure function over an already-built
   `ContextPackage` — it never influences retrieval, ranking, or truncation.
-  1.0b's retrieval changes must keep populating the same
+  1.0b's retrieval changes keep populating the same
   `compiler_parameters` keys (`candidate_file_count`,
   `files_truncated_by_limit`, `files_dropped_for_char_budget`,
   `excerpts_truncated_for_char_budget`, plus the full `ContextCompilerConfig`
   dump already there) so measurement keeps working without changes. Stable-
   versus-new evidence is computed from the exact `(path, start_line,
   end_line, content_sha256)` identity key `BoundedAgentSession` already
-  uses — reuse that key, don't invent a second one.
+  uses; future work must reuse that key rather than inventing a second one.
 
-### 1.0b — Deterministic context-quality improvements (not started)
+### 1.0b — Deterministic context-quality improvements (done, ADR 0011)
 
-No embeddings or learned retrieval until a benchmark run under 1.0c
-demonstrates a *repeatable* failure of lexical/symbol/import/test/diff-based
-retrieval — this is a hard precondition, not a preference. Planned pieces,
-each intended to build on the existing `ContextCompiler`/`measurement.py`
-seam rather than replace it:
+- Git diff hunks now recover changed Python functions/classes. Changed and
+  selected symbols expand to one-hop AST call sites and related tests; strings,
+  comments, imports, and unrelated identifier occurrences do not count as calls.
+- Normalized traceback and `path.py:line` locations are accepted only when they
+  resolve within the task worktree, then take precedence as excerpt anchors.
+- Agent observation history is still complete in audit records, while a bounded
+  newest-failure/newest-diff/newest-per-evidence-slot view is transmitted. The
+  full and transmitted sizes are both measured.
+- Every prompt kind has an explicit byte-stable static prefix before dynamic
+  task/context/history data. Provider telemetry, not prompt structure alone,
+  remains the only evidence of actual cache hits.
+- `context-attribution.json` records a conservative file-level signal ratio for
+  the accepted patch. It is an audit heuristic, not semantic relevance scoring.
+- No embeddings, vector store, learned ranker, or model-selected retrieval was
+  added. Those remain prohibited until repeated evaluation demonstrates a
+  concrete failure of the deterministic path.
 
-1. **Change-focused source and test expansion**: today "current Git diff"
-   only contributes a path-level reason; expand it to parse changed hunks
-   for changed symbol names and expand test/source selection around those
-   symbols specifically, not just changed file paths.
-2. **Symbol-reference neighborhoods**: `_symbol_search` today matches
-   symbol *definitions* against query terms. Add a one-hop, AST-based
-   *reference* expansion — files that *call* a selected symbol, not only
-   files that define a similarly-named one.
-3. **Failure-directed excerpts**: `_excerpt()` anchors a file's shown window
-   on the first query-term match. When a `NormalizedFailure` names a
-   specific file:line (a traceback frame), thread that as a preferred
-   anchor so the shown excerpt is centered on the actual failure, not a
-   generic keyword hit.
-4. **Compacted historical observations, complete audit records preserved**:
-   `BoundedAgentSession._context_for_turn`/`_add_evidence` accumulate
-   observations monotonically for the life of a session (bounded only by
-   `max_observation_chars`, after which new evidence is silently dropped
-   while old evidence never shrinks). Add a `compact_observations()` step
-   applied only to what is sent to the model each turn; `agent-turn-*.json`
-   audit files already retain the complete uncompacted history and must
-   keep doing so unconditionally. Use 1.0a's stable/new split to verify
-   compaction actually reduces turn-over-turn growth instead of just
-   trusting it did.
-5. **Stable prompt prefixes for provider caching**: `models/prompts.py`'s
-   builders are single interleaved f-strings today — static instructions
-   and dynamic content (spec/evidence/history) are spliced together, not
-   separated. Restructure each builder so a byte-identical static prefix
-   always comes first, to let Ollama/OpenAI-compatible prompt-prefix
-   caching actually hit. Measure it with the *existing*
-   `ProviderCallTelemetry.cache_hit`/`cached_input_tokens`/
-   `prompt_evaluation_seconds` fields — no new telemetry needed, just a
-   prompt-structure change plus a test asserting prefix byte-stability
-   across consecutive calls in a session.
-6. **Context-density reporting**: mostly satisfied by 1.0a's
-   `ContextMeasurement` already. The remaining piece is a signal/noise
-   density ratio (how much of what was transmitted was actually reflected
-   in the accepted patch) — worth revisiting once patch-attribution data
-   exists, and may fold into 1.0c's metrics instead of standing alone.
-7. Once 1–5 exist, re-run the 1.0a profile/measurement tooling on identical
-   tasks across profiles to actually satisfy "compare each profile on
-   identical tasks" — 1.0a intentionally does not claim this comparison is
-   done yet; it only built the tool to do it with.
+### 1.0c — Broader evaluation and metrics (done, ADR 0012)
 
-### 1.0c — Broader evaluation / metrics framework (not started)
+- The resumable acceptance cases are separated from visible verification.
+  `apoapsis eval download-service` removes that file before initializing each
+  lane repository, verifies its path and exact digest are absent before any
+  model call, and injects it under a reserved temporary name only after normal
+  verification declares COMPLETE. The oracle runs once through the configured
+  `ExecutionBackend`, is removed afterward, never becomes repair context, and
+  cannot change workflow state.
+- A valid oracle failure after COMPLETE is a false success. The denominator is
+  only COMPLETE outcomes with a valid oracle pass/fail. No valid oracle means
+  `null`/unmeasured, never zero; backend/command infrastructure errors are
+  counted separately and invalidate that sample.
+- `EvalLaneResult` records deterministic-fake/live-local/live-hosted evidence,
+  patch attempts, policy rejections, and the held-out result. Provider telemetry
+  records the call role so hosted coding calls/tokens/cost can be isolated.
+- `apoapsis eval-aggregate` reads persisted comparisons and writes typed JSON and
+  Markdown for local-only completion, live-hosted rescue, overall completion,
+  human review, unsafe-patch rejection, false success, latency, transmitted
+  files/lines, context-profile summaries, and local-versus-one-shot results.
+  It never invokes a provider and rejects duplicate run IDs.
+- Hosted calls/tokens/cost saved and direct-frontier deltas require an identical-
+  task pair with real local/local-first evidence and a real hosted-frontier lane.
+  Fake-provider artifacts exercise the formulas only and cannot populate those
+  real-world metrics.
+- Evaluation breadth deliberately remains one controlled fixture. Add another
+  only after repeated profile/lane evidence justifies its own acceptance and
+  oracle design.
 
-Builds on `apoapsis eval`'s existing `EvalComparisonReport` (today: one
-fixture × one task × N lanes) via a new cross-run aggregator, not a
-replacement. Per-run raw data already exists on `FinalTaskReport`
-(`outcome`, `escalation_triggered`, `verification_results`,
-`estimated_cost_usd`/tokens, `transmitted_files`/`transmitted_lines`,
-`latency_seconds`, and now `context_measurements`); what's missing is
-cross-run *rates* and *deltas*, which is what 1.0c adds.
+### Evidence still to collect after 1.0
 
-Exact metrics and how each is computed:
-
-- **Local-only verified completion rate** = COMPLETE outcomes on
-  `local_only`/`local_then_frontier`-without-escalation runs ÷ total
-  local-first attempts.
-- **Frontier rescue rate** = COMPLETE outcomes reached via a triggered
-  escalation ÷ total escalations triggered.
-- **Overall verified completion rate** = COMPLETE ÷ total attempts, any
-  lane.
-- **Human-review rate** = HUMAN_REVIEW_REQUIRED ÷ total attempts.
-- **Unsafe-patch rejection rate** = patch-policy rejections ÷ total patch
-  attempts (raw data already in `patch-*-policy.json`; needs aggregation
-  across runs, not new instrumentation).
-- **False-success rate** — precise definition already fixed (do not
-  redefine it): `claimed_success` = Apoapsis declared COMPLETE after
-  configured verification passed; `oracle_evaluated_success` = a
-  claimed_success for which a **held-out** correctness oracle also ran;
-  `false_success` = configured verification passed but the held-out oracle
-  failed; `false_success_rate = false_successes / oracle_evaluated_
-  successes`. If the denominator is zero or no oracle ran, report
-  `null`/unmeasured, **never** `0`. Infrastructure errors in the oracle
-  itself invalidate that measurement rather than counting as a false
-  success. The oracle's stable identifier, version/hash, result, duration,
-  and audit artifact are recorded; its contents/filename/expected output
-  are never placed in model context, and it grants the model no new
-  authority — it is a harness-only, post-hoc check.
-  **Open design gap to resolve before implementing this**: today
-  `examples/download-service`'s configured `download-tests` command runs
-  `python -m unittest discover -s tests`, which already includes the two
-  resumable-download acceptance tests — the same tests that define
-  correctness are the ones the agent's own verification already sees. A
-  genuine held-out oracle needs those specific tests (or an equivalent set)
-  moved out of the agent-visible `tests/` discovery path (e.g. a
-  `tests_holdout/` directory never referenced by the configured
-  verification command) so the oracle is actually independent, not a
-  restatement of the same check.
-- **Hosted calls avoided**, **hosted tokens/cost saved**, **performance
-  versus direct frontier execution**: typed fields and the delta/comparison
-  formulas should be built now, but populated from **paired real runs**
-  (a local-first run and a real hosted-frontier run of the identical task),
-  never derived from fake-provider data. Report `unmeasured` with an
-  explicit reason whenever no real hosted-frontier run exists for that
-  task. Fake-provider tests may only validate the formulas/reporting
-  states, never stand in for a real measurement or produce a real-world
-  number. No credentials are configured as of this milestone.
-- **End-to-end latency**, **files/lines transmitted externally**: already
-  per-run fields (`latency_seconds`, `transmitted_files`,
-  `transmitted_lines`); 1.0c aggregates them (e.g. median/p95 across runs),
-  it does not need to compute them.
-- **Performance versus local one-shot execution**: already directly
-  comparable via the existing `one-shot` lane in the same
-  `EvalComparisonReport`; 1.0c mainly needs this to hold across more than
-  one task once more fixtures exist.
-
-**Breadth**: stay within `examples/download-service` to start (per explicit
-decision); only add new controlled fixtures once profile/lane data from
-1.0a/1.0b shows it's worth the design cost of a second fixture with its own
-acceptance criteria and, per the false-success design gap above, its own
-held-out oracle split.
+Run identical download-service tasks across selected profiles to measure whether
+the wider window improves completion, density, cache use, latency, and resource
+cost. Separately, configure a real hosted frontier coder and preserve a paired
+local-first/direct-frontier comparison. Until those audited runs exist, hosted
+rescue/savings and cross-profile model-quality claims remain unmeasured.
 
 ## Test map
 
@@ -771,19 +729,19 @@ held-out oracle split.
 | Schemas and constraints | `tests/test_schemas.py`, `tests/test_provider_and_specification.py` |
 | Workflow persistence | `tests/test_workflow.py` |
 | Git repository/worktrees | `tests/test_repository_and_worktree.py` |
-| Context and provenance | `tests/test_context_compiler.py` |
+| Context, provenance, changed-symbol/reference expansion, and failure anchors | `tests/test_context_compiler.py` |
 | Patch parsing/policy/application | `tests/test_patches.py` |
 | Verification/failure normalization | `tests/test_verification.py` |
 | One-shot vertical slice | `tests/test_vertical_slice.py` |
-| Bounded local/frontier flow | `tests/test_agent_loop.py` |
+| Bounded local/frontier flow, observation compaction, and prompt-prefix stability | `tests/test_agent_loop.py` |
 | CLI/configuration | `tests/test_cli.py` |
 | Research units/integration | `tests/test_research_units.py`, `tests/test_research_integration.py` |
 | Opt-in live research | `tests/test_research_live.py` |
 | Diagnostics (`apoapsis doctor`) | `tests/test_doctor.py` |
-| Evaluation lanes/harness (`apoapsis eval`) | `tests/test_evaluation.py` |
+| Evaluation lanes/harness, held-out oracle, cross-run aggregation | `tests/test_evaluation.py` |
 | Execution backend seam / host regression | `tests/test_execution_backend.py` |
 | Docker sandbox backend | `tests/test_docker_backend.py` |
-| Context measurement (`measure_context`, compiler instrumentation) | `tests/test_context_measurement.py` |
+| Context measurement, compaction metrics, and patch attribution | `tests/test_context_measurement.py` |
 | Context measurement wired through the vertical slice/report/audit | `tests/test_context_measurement_integration.py` |
 
 Fake providers are the mandatory regression mechanism. Live model or network
@@ -833,31 +791,24 @@ tests supplement them; they must not replace deterministic coverage.
    response per invocation, and report telemetry through the normal
    `ProviderCallTelemetry` shape. See ADR 0008. Do not implement or invoke it
    without an explicit request.
-10. **1.0c's false-success oracle has an unresolved design gap.** The
-    `download-service` fixture's configured verification command already
-    discovers the exact tests that define acceptance, so today's "verification
-    passed" is not independent of the correctness question it's supposed to
-    check. A real held-out oracle needs those tests (or an equivalent set)
-    moved out of the agent-visible discovery path first. See "Apoapsis 1.0
-    phased plan" above for the exact metric definition already agreed
-    (`false_success_rate`, denominator semantics, never reporting `0` when
-    unmeasured).
-11. **Several 1.0c metrics are structurally blocked without real hosted-
-    frontier credentials**: frontier rescue rate, hosted calls/tokens/cost
-    saved, and performance versus direct frontier execution all require a
-    real paired hosted run, not a fake-provider estimate. The plan is to
-    build the typed fields and formulas and report them as unmeasured until
-    a real run exists — the same posture already taken for the 0.9/0.8
-    hosted-escalation gap above.
+10. **The held-out oracle currently covers one controlled fixture.** The
+    download-service split is independent of normal verification and model
+    context, but a new fixture requires its own acceptance/oracle design and
+    proof that the oracle is absent before any model call. Do not generalize
+    the observed false-success rate beyond fixtures with a valid oracle.
+11. **Hosted and cross-profile model-quality metrics still lack real evidence.**
+    The typed fields, pairing rules, formulas, and unmeasured states are built,
+    but frontier rescue, hosted calls/tokens/cost saved, and direct-frontier
+    deltas require a real paired hosted run. Context-profile comparisons likewise
+    require repeated identical live-model runs; the presence of 128k/256k
+    profiles is not evidence that they improve quality or latency.
 
-The next high-value proof is a real local-failure to hosted-frontier-repair run
-on the controlled fixture. The next context-quality increment is 1.0b
-(deterministic retrieval improvements — no embeddings until a benchmark
-shows a repeatable failure of lexical/symbol/import/test/diff retrieval),
-followed by 1.0c's broader metrics framework. Do not add embeddings, learned
-routing, autonomous agent swarms, a web interface, arbitrary model shell
-access, or general-purpose work automation as an accidental substitute for
-those proofs.
+The next high-value proofs are (1) identical local download-service evaluations
+across selected context profiles and (2) a real local-failure to hosted-frontier-
+repair run paired with direct frontier execution. Use `apoapsis eval` and
+`apoapsis eval-aggregate` and retain every audit artifact. Do not add embeddings,
+learned routing, autonomous agent swarms, a web interface, arbitrary model shell
+access, or general-purpose work automation as a substitute for those proofs.
 
 ## Architecture decisions
 
@@ -873,6 +824,8 @@ those proofs.
 | `0008` | Evaluation harness (`apoapsis eval`) and diagnostic tooling (`apoapsis doctor`) |
 | `0009` | Execution sandbox: `ExecutionBackend` seam, host compatibility backend, Docker sandbox backend |
 | `0010` | Context measurement and wider (128k/256k) context profiles (Apoapsis 1.0a) |
+| `0011` | Deterministic change/reference/failure context, observation compaction, stable prompt prefixes, and patch attribution (Apoapsis 1.0b) |
+| `0012` | Held-out correctness oracle, evidence provenance, and cross-run evaluation aggregation (Apoapsis 1.0c) |
 
 Add a new ADR for a new architectural decision. Do not rewrite history to make
 old decisions appear current; mark an ADR superseded and link its replacement

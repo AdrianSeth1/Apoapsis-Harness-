@@ -71,7 +71,13 @@ evaluation harness and diagnostic tooling contract,
 [ADR 0009](docs/adr/0009-execution-sandbox.md) records the execution
 sandbox, [ADR 0010](docs/adr/0010-context-measurement-and-wider-profiles.md)
 records the 128k/256k context profiles and the deterministic context-
-measurement layer, and [the Research Mode guide](docs/research-mode.md)
+measurement layer,
+[ADR 0011](docs/adr/0011-deterministic-context-quality.md) records change/
+reference/failure-directed retrieval, bounded observation compaction, and
+stable prompt prefixes, and
+[ADR 0012](docs/adr/0012-held-out-oracles-and-evaluation-aggregation.md)
+records held-out correctness checks and cross-run metrics. The
+[Research Mode guide](docs/research-mode.md)
 covers setup and operation.
 
 ## Install for development
@@ -167,6 +173,24 @@ one-turn budget, never by altering the task or the patch. Output is written to
 `--output-dir` (default `.apoapsis-eval/<run-id>/`, already gitignored) as
 `comparison.json` and `comparison.md`.
 
+For `download-service`, the resumable acceptance oracle is removed before each
+lane repository is initialized and is injected only after normal verification
+has already declared completion. A normal pass followed by an oracle failure is
+recorded as a false success; an oracle infrastructure error is not. Aggregate
+one or more persisted comparisons without making model calls:
+
+```bash
+apoapsis eval-aggregate .apoapsis-eval/run-1/comparison.json \
+  .apoapsis-eval/run-2/comparison.json \
+  --output-dir .apoapsis-eval/aggregate
+```
+
+This writes `aggregate.json` and `aggregate.md` with completion, human-review,
+unsafe-patch, false-success, latency, transmission, profile, and paired-lane
+metrics. Hosted rescue and savings remain explicitly `unmeasured` unless the
+loaded artifacts contain a paired real hosted-frontier run; fake providers test
+the formulas but never populate real-world hosted results.
+
 ## Complete all-local agent flow
 
 `apoapsis init` creates a 64K agent configuration for the installed Coder-Next Q4
@@ -215,6 +239,7 @@ max_verification_runs = 4
 max_search_results = 20
 max_read_lines = 240
 max_observation_chars = 48000
+max_transmitted_observation_chars = 24000
 
 [execution.frontier_agent]
 max_turns = 8
@@ -223,6 +248,7 @@ max_verification_runs = 3
 max_search_results = 20
 max_read_lines = 240
 max_observation_chars = 48000
+max_transmitted_observation_chars = 24000
 
 [models.local_research]
 provider = "ollama"
@@ -274,6 +300,15 @@ utilization, composition, and stable-versus-newly-introduced evidence) as
 its own audit artifact, surfaced on the task report and in `apoapsis eval`'s
 comparison output — so a profile's actual effect is something you can read,
 not guess.
+
+The deterministic compiler also expands changed Python symbols to one-hop AST
+call sites and related tests, and centers post-failure excerpts on validated
+traceback locations. Agent observation history remains complete in
+`agent-turn-*.json`, while only a current compacted view (24,000 characters by
+default) is retransmitted. `context-attribution.json` reports the conservative
+fraction of transmitted evidence whose file was actually changed by the
+accepted patch. Prompt builders place a byte-stable instruction prefix first;
+actual provider cache benefit is still reported only from token/cache telemetry.
 
 Profiles affect the native local-coding window and deterministic retrieval;
 Research Mode retains its separately configured budget. Apoapsis records the active

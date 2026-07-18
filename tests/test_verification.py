@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from apoapsis.verification.failures import FailureNormalizer
 from apoapsis.verification.results import VerificationStatus
 from apoapsis.verification.runner import (
     VerificationCommand,
@@ -112,7 +113,39 @@ required = true
         self.assertTrue(config.stop_on_failure)
         self.assertEqual(config.commands[0].argv[-1], "unittest")
 
+    def test_failure_normalizer_extracts_only_worktree_locations(self) -> None:
+        source = self.root / "src" / "broken.py"
+        source.parent.mkdir()
+        source.write_text(
+            "def fail():\n"
+            "    value = 1\n"
+            "    raise RuntimeError('boom')\n\n"
+            "fail()\n",
+            encoding="utf-8",
+        )
+        result = VerificationRunner(
+            VerificationConfig(
+                commands=[
+                    VerificationCommand(
+                        name="failure-location",
+                        category="tests",
+                        argv=[sys.executable, str(source)],
+                    )
+                ]
+            )
+        ).run("TASK-VERIFY-LOCATION", self.root)
+
+        _command, failure = FailureNormalizer().extract(result, self.root)
+
+        self.assertIn(("src/broken.py", 3), {(item.path, item.line) for item in failure.locations})
+        outside = self.root.parent / "outside.py"
+        self.assertEqual(
+            FailureNormalizer._locations(
+                f'File "{outside}", line 9, in outside', self.root
+            ),
+            [],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
-

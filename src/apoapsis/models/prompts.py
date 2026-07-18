@@ -7,30 +7,37 @@ from apoapsis.specification.schema import TaskSpecification
 from apoapsis.verification.results import VerificationCommandResult
 
 
-def agent_step_prompt(
-    context: ContextPackage,
-    *,
-    turn: int,
-    remaining_budgets: dict[str, int],
-    verification_commands: list[str],
-    history: list[dict[str, object]],
-) -> str:
-    specification = context.specification
-    return f"""You are a coding model operating through the bounded Apoapsis Harness.
+_DIFF_CORRECTNESS_RULES = """- Do not emit an `index` line or any Git object hashes.
+- After each `@@` header, every line must begin with exactly one diff marker:
+  one space for unchanged context, `-` for removed source, or `+` for added code.
+- A space-prefixed context line must match the current source byte-for-byte.
+- To replace a source line, emit the exact old line with `-`, immediately
+  followed by the replacement with `+`. Never present replacement text as
+  unchanged context.
+- Prefer a small hunk around the changed method instead of a full-file hunk.
+
+Example: if current source is `response = get(headers={})` and it must become
+`response = get(headers=headers)`, this is INVALID context:
+` response = get(headers=headers)`
+The valid replacement is:
+`-response = get(headers={})`
+`+response = get(headers=headers)`"""
+
+_AGENT_STEP_STATIC_PREFIX = """You are a coding model operating through the bounded Apoapsis Harness.
 
 Return exactly ONE JSON object for one allowed action. Do not return Markdown,
 commentary, multiple actions, or a raw shell command. Apoapsis owns repository access,
 patch application, verification, retry limits, escalation, and completion.
 
 ALLOWED_ACTIONS
-- {{"action":"search_repository","query":"literal text","path_glob":"src/**/*.py"}}
-- {{"action":"read_file","path":"relative/path.py","start_line":1,"end_line":200}}
-- {{"action":"inspect_diff"}}
-- {{"action":"propose_patch","unified_diff":"diff --git ...\\n"}}
-- {{"action":"replace_text","path":"relative/path.py","old_text":"exact current text","new_text":"replacement text"}}
-- {{"action":"run_check","command_name":"configured-command-name"}}
-- {{"action":"submit_for_verification"}}
-- {{"action":"request_escalation","reason":"specific reason"}}
+- {"action":"search_repository","query":"literal text","path_glob":"src/**/*.py"}
+- {"action":"read_file","path":"relative/path.py","start_line":1,"end_line":200}
+- {"action":"inspect_diff"}
+- {"action":"propose_patch","unified_diff":"diff --git ...\\n"}
+- {"action":"replace_text","path":"relative/path.py","old_text":"exact current text","new_text":"replacement text"}
+- {"action":"run_check","command_name":"configured-command-name"}
+- {"action":"submit_for_verification"}
+- {"action":"request_escalation","reason":"specific reason"}
 
 ACTION_RULES
 - Search is literal and read-only. Paths must be repository-relative.
@@ -45,7 +52,81 @@ ACTION_RULES
 - A passing deterministic full verification, not your declaration, completes the task.
 - Request escalation when the task cannot be solved safely within the remaining budget.
 
-TURN
+"""
+
+_IMPLEMENTATION_STATIC_PREFIX = (
+    """You are proposing a patch to an untrusted deterministic harness.
+
+Return ONLY a Git unified diff beginning with `diff --git`. Do not include
+Markdown fences, explanations, commands, or generated binary patches. Do not
+modify dependencies, tests, verification configuration, or files outside the
+repository. Preserve every hard constraint exactly as stated.
+
+UNIFIED_DIFF_CORRECTNESS
+"""
+    + _DIFF_CORRECTNESS_RULES
+    + "\n\n"
+)
+
+_REPAIR_STATIC_PREFIX = (
+    """A proposed patch failed deterministic verification. Produce one
+targeted repair patch.
+
+Return ONLY a Git unified diff beginning with `diff --git`. The diff must apply
+to the CURRENT WORKTREE after CURRENT_DIFF. Do not repeat the entire current
+diff. Do not include Markdown fences, prose, commands, dependency changes, test
+changes, verification configuration changes, or binary patches.
+
+UNIFIED_DIFF_CORRECTNESS
+"""
+    + _DIFF_CORRECTNESS_RULES
+    + "\n\n"
+)
+
+_REJECTED_PATCH_STATIC_PREFIX = (
+    """The first proposed patch was rejected before application by the
+deterministic patch parser, policy, or `git apply --check`. The worktree is
+unchanged. Produce one complete replacement patch against the original files.
+
+Return ONLY a Git unified diff beginning with `diff --git`. Do not include
+Markdown fences, prose, commands, dependency changes, test changes,
+verification configuration changes, or binary patches. Ensure every changed
+source line has the correct `+` or `-` marker and all context lines match the
+provided repository excerpts exactly.
+
+UNIFIED_DIFF_CORRECTNESS
+"""
+    + _DIFF_CORRECTNESS_RULES
+    + "\n\n"
+)
+
+_STATIC_PREFIXES = {
+    "agent_step": _AGENT_STEP_STATIC_PREFIX,
+    "implementation": _IMPLEMENTATION_STATIC_PREFIX,
+    "repair": _REPAIR_STATIC_PREFIX,
+    "rejected_patch_repair": _REJECTED_PATCH_STATIC_PREFIX,
+}
+
+
+def prompt_static_prefix(kind: str) -> str:
+    """Return the byte-stable leading prompt segment used for cache reuse."""
+
+    try:
+        return _STATIC_PREFIXES[kind]
+    except KeyError as exc:
+        raise ValueError(f"unknown prompt kind: {kind}") from exc
+
+
+def agent_step_prompt(
+    context: ContextPackage,
+    *,
+    turn: int,
+    remaining_budgets: dict[str, int],
+    verification_commands: list[str],
+    history: list[dict[str, object]],
+) -> str:
+    specification = context.specification
+    return _AGENT_STEP_STATIC_PREFIX + f"""TURN
 {turn}
 
 REMAINING_BUDGETS_JSON
@@ -77,17 +158,7 @@ Choose the single next action that most efficiently advances a verified solution
 
 def implementation_prompt(context: ContextPackage) -> str:
     specification = context.specification
-    return f"""You are proposing a patch to an untrusted deterministic harness.
-
-Return ONLY a Git unified diff beginning with `diff --git`. Do not include
-Markdown fences, explanations, commands, or generated binary patches. Do not
-modify dependencies, tests, verification configuration, or files outside the
-repository. Preserve every hard constraint exactly as stated.
-
-UNIFIED_DIFF_CORRECTNESS
-{_diff_correctness_rules()}
-
-TASK_SPECIFICATION_JSON
+    return _IMPLEMENTATION_STATIC_PREFIX + f"""TASK_SPECIFICATION_JSON
 {specification.model_dump_json(indent=2)}
 
 ACTIVE_HARD_CONSTRAINTS
@@ -112,18 +183,7 @@ def repair_prompt(
     current_diff: str,
 ) -> str:
     specification = context.specification
-    return f"""A proposed patch failed deterministic verification. Produce one
-targeted repair patch.
-
-Return ONLY a Git unified diff beginning with `diff --git`. The diff must apply
-to the CURRENT WORKTREE after CURRENT_DIFF. Do not repeat the entire current
-diff. Do not include Markdown fences, prose, commands, dependency changes, test
-changes, verification configuration changes, or binary patches.
-
-UNIFIED_DIFF_CORRECTNESS
-{_diff_correctness_rules()}
-
-ORIGINAL_TASK
+    return _REPAIR_STATIC_PREFIX + f"""ORIGINAL_TASK
 {specification.objective.text}
 
 ACTIVE_HARD_CONSTRAINTS
@@ -154,20 +214,7 @@ def rejected_patch_repair_prompt(
     patch_error: str,
 ) -> str:
     specification = context.specification
-    return f"""The first proposed patch was rejected before application by the
-deterministic patch parser, policy, or `git apply --check`. The worktree is
-unchanged. Produce one complete replacement patch against the original files.
-
-Return ONLY a Git unified diff beginning with `diff --git`. Do not include
-Markdown fences, prose, commands, dependency changes, test changes,
-verification configuration changes, or binary patches. Ensure every changed
-source line has the correct `+` or `-` marker and all context lines match the
-provided repository excerpts exactly.
-
-UNIFIED_DIFF_CORRECTNESS
-{_diff_correctness_rules()}
-
-ORIGINAL_TASK
+    return _REJECTED_PATCH_STATIC_PREFIX + f"""ORIGINAL_TASK
 {specification.objective.text}
 
 ACTIVE_HARD_CONSTRAINTS
@@ -188,21 +235,7 @@ smallest complete replacement diff that applies to the unchanged worktree.
 
 
 def _diff_correctness_rules() -> str:
-    return """- Do not emit an `index` line or any Git object hashes.
-- After each `@@` header, every line must begin with exactly one diff marker:
-  one space for unchanged context, `-` for removed source, or `+` for added code.
-- A space-prefixed context line must match the current source byte-for-byte.
-- To replace a source line, emit the exact old line with `-`, immediately
-  followed by the replacement with `+`. Never present replacement text as
-  unchanged context.
-- Prefer a small hunk around the changed method instead of a full-file hunk.
-
-Example: if current source is `response = get(headers={})` and it must become
-`response = get(headers=headers)`, this is INVALID context:
-` response = get(headers=headers)`
-The valid replacement is:
-`-response = get(headers={})`
-`+response = get(headers=headers)`"""
+    return _DIFF_CORRECTNESS_RULES
 
 
 def _constraints(specification: TaskSpecification) -> str:

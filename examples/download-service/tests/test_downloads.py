@@ -46,33 +46,5 @@ class DownloadTests(unittest.TestCase):
         self.assertEqual(self.destination.read_bytes(), b"complete")
         self.assertEqual(transport.headers, {})
 
-    def test_resume_after_disconnect(self) -> None:
-        self.destination.write_bytes(b"hello ")
-        jobs = JobStore()
-        jobs.set_offset(self.url, 6)
-        transport = FakeTransport(FakeResponse(206, b"world"))
-        downloader = Downloader(transport, jobs)
-
-        downloaded = downloader.download(self.url, self.destination)
-
-        self.assertEqual(transport.headers, {"Range": "bytes=6-"})
-        self.assertEqual(self.destination.read_bytes(), b"hello world")
-        self.assertEqual(downloaded, 11)
-
-    def test_server_ignores_range(self) -> None:
-        self.destination.write_bytes(b"stale ")
-        jobs = JobStore()
-        jobs.set_offset(self.url, 6)
-        transport = FakeTransport(FakeResponse(200, b"fresh response"))
-        downloader = Downloader(transport, jobs)
-
-        downloaded = downloader.download(self.url, self.destination)
-
-        self.assertEqual(transport.headers, {"Range": "bytes=6-"})
-        self.assertEqual(self.destination.read_bytes(), b"fresh response")
-        self.assertEqual(downloaded, 14)
-
-
 if __name__ == "__main__":
     unittest.main()
-

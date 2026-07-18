@@ -7,7 +7,7 @@ from pathlib import Path
 
 from apoapsis.config import ContextCompilerConfig
 from apoapsis.context.compiler import ContextCompiler, ContextPackage
-from apoapsis.context.measurement import measure_context
+from apoapsis.context.measurement import attribute_context_to_patch, measure_context
 from apoapsis.context.provenance import ContextEvidence, EvidenceKind, TransmissionPolicy
 from tests.helpers import make_specification
 
@@ -161,6 +161,45 @@ class MeasureContextUnitTests(unittest.TestCase):
         package = _package([_evidence("EV-001")])
         measurement = measure_context(package)
         self.assertIsNone(measurement.agent_observation_budget_chars)
+
+    def test_observation_compaction_counters_pass_through(self) -> None:
+        package = _package(
+            [_evidence("EV-001")],
+            observation_ledger_items=5,
+            observation_ledger_chars=5000,
+            observation_transmitted_items=2,
+            observation_transmitted_chars=1800,
+            observations_compacted_count=3,
+            observations_compacted_chars=3200,
+        )
+
+        measurement = measure_context(package)
+
+        self.assertEqual(measurement.observation_ledger_items, 5)
+        self.assertEqual(measurement.observation_transmitted_chars, 1800)
+        self.assertEqual(measurement.observations_compacted_count, 3)
+        self.assertEqual(measurement.observations_compacted_chars, 3200)
+
+    def test_context_attribution_is_file_level_and_requires_acceptance(self) -> None:
+        package = _package(
+            [
+                _evidence("EV-001", path="src/a.py", content="a" * 20),
+                _evidence("EV-002", path="tests/test_a.py", content="t" * 30),
+            ]
+        )
+
+        accepted = attribute_context_to_patch(
+            [package], changed_files=["src/a.py"], accepted_patch=True
+        )
+        rejected = attribute_context_to_patch(
+            [package], changed_files=["src/a.py"], accepted_patch=False
+        )
+
+        self.assertEqual(accepted.attributed_chars, 20)
+        self.assertEqual(accepted.transmitted_chars, 50)
+        self.assertEqual(accepted.signal_density_ratio, 0.4)
+        self.assertIsNone(rejected.signal_density_ratio)
+        self.assertIn("did not complete", rejected.reason or "")
 
 
 class CompilerInstrumentationIntegrationTests(unittest.TestCase):

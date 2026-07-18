@@ -16,13 +16,16 @@ from apoapsis.config import (
     ApoapsisConfig,
 )
 from apoapsis.doctor import run_doctor
+from apoapsis.evaluation.aggregate import aggregate_evaluations
 from apoapsis.evaluation.fixture import prepare_fixture_repository
 from apoapsis.evaluation.harness import run_eval_lane
 from apoapsis.evaluation.lanes import requires_frontier_coder
-from apoapsis.evaluation.report import write_comparison
+from apoapsis.evaluation.oracle import HeldOutOracleDefinition
+from apoapsis.evaluation.report import write_aggregate, write_comparison
 from apoapsis.evaluation.schemas import (
     DEFAULT_LANE_ORDER,
     EvalComparisonReport,
+    EvalEvidenceKind,
     EvalLane,
     EvalLaneResult,
 )
@@ -102,6 +105,7 @@ max_verification_runs = 4
 max_search_results = 20
 max_read_lines = 240
 max_observation_chars = 48000
+max_transmitted_observation_chars = 24000
 
 [execution.frontier_agent]
 max_turns = 8
@@ -110,6 +114,7 @@ max_verification_runs = 3
 max_search_results = 20
 max_read_lines = 240
 max_observation_chars = 48000
+max_transmitted_observation_chars = 24000
 
 [models.local_research]
 provider = "ollama"
@@ -358,6 +363,21 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         help="directory for fixture copies and the comparison report",
     )
+    aggregate = subparsers.add_parser(
+        "eval-aggregate",
+        help="aggregate one or more persisted evaluation comparison reports",
+    )
+    aggregate.add_argument(
+        "comparisons",
+        nargs="+",
+        type=Path,
+        help="comparison.json files produced by `apoapsis eval`",
+    )
+    aggregate.add_argument(
+        "--output-dir",
+        type=Path,
+        help="directory for aggregate.json and aggregate.md",
+    )
     return parser
 
 
@@ -391,6 +411,8 @@ def _dispatch(args: argparse.Namespace) -> dict[str, object] | None:
         return _eval_download_service(
             root, args.lane, args.context_profile, args.output_dir
         )
+    if args.command == "eval-aggregate":
+        return _aggregate_eval_reports(root, args.comparisons, args.output_dir)
     store = _store(root)
     if args.command == "task":
         return _task(
@@ -698,6 +720,20 @@ _DOWNLOAD_SERVICE_TASK = (
     "Do not add runtime dependencies.\n"
     "Existing clients must continue working."
 )
+_DOWNLOAD_SERVICE_HOLDOUT = "tests/test_resumable_acceptance.py"
+
+
+def _lane_evidence_kind(
+    config: ApoapsisConfig, lane: EvalLane
+) -> EvalEvidenceKind:
+    if requires_frontier_coder(lane):
+        assert config.models.frontier_coder is not None
+        if config.models.frontier_coder.provider == "openai_compatible":
+            return EvalEvidenceKind.LIVE_HOSTED
+    coding = config.models.local_coder or config.models.frontier
+    if coding.provider == "openai_compatible":
+        return EvalEvidenceKind.LIVE_HOSTED
+    return EvalEvidenceKind.LIVE_LOCAL
 
 
 def _eval_download_service(
@@ -735,6 +771,12 @@ def _eval_download_service(
     )
 
     results: list[EvalLaneResult] = []
+    oracle = HeldOutOracleDefinition(
+        oracle_id="download-service-resumable-v1",
+        version="1.0",
+        source_path=fixture_source / _DOWNLOAD_SERVICE_HOLDOUT,
+        withheld_relative_path=_DOWNLOAD_SERVICE_HOLDOUT,
+    )
     for lane in lanes:
         if requires_frontier_coder(lane) and frontier_coder_provider is None:
             results.append(
@@ -749,7 +791,11 @@ def _eval_download_service(
             )
             continue
         fixture_root = resolved_output_dir / lane.value / "download-service"
-        prepare_fixture_repository(fixture_source, fixture_root)
+        prepare_fixture_repository(
+            fixture_source,
+            fixture_root,
+            excluded_relative_files=[_DOWNLOAD_SERVICE_HOLDOUT],
+        )
         results.append(
             run_eval_lane(
                 fixture_root,
@@ -759,6 +805,8 @@ def _eval_download_service(
                 local_coder_provider=local_coder_provider,
                 frontier_coder_provider=frontier_coder_provider,
                 task_text=_DOWNLOAD_SERVICE_TASK,
+                evidence_kind=_lane_evidence_kind(config, lane),
+                held_out_oracle=oracle,
             )
         )
 
@@ -766,10 +814,42 @@ def _eval_download_service(
         run_id=run_id,
         fixture_source=str(fixture_source),
         task_text=_DOWNLOAD_SERVICE_TASK,
+        context_profile=context_profile,
         lanes=results,
     )
     write_comparison(resolved_output_dir, comparison)
     return comparison.model_dump(mode="json")
+
+
+def _aggregate_eval_reports(
+    root: Path,
+    comparison_paths: list[Path],
+    output_dir: Path | None,
+) -> dict[str, object]:
+    comparisons: list[EvalComparisonReport] = []
+    for path in comparison_paths:
+        resolved = path.resolve()
+        if not resolved.is_file():
+            raise TaskStoreError(f"evaluation comparison not found: {resolved}")
+        try:
+            payload = json.loads(resolved.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise TaskStoreError(
+                f"failed to read evaluation comparison {resolved}: {exc}"
+            ) from exc
+        comparisons.append(EvalComparisonReport.model_validate(payload))
+    run_ids = [item.run_id for item in comparisons]
+    if len(run_ids) != len(set(run_ids)):
+        raise TaskStoreError("duplicate evaluation run_id would double-count results")
+    aggregate_id = f"EVAL-AGG-{uuid.uuid4().hex[:12].upper()}"
+    report = aggregate_evaluations(comparisons, aggregate_id=aggregate_id)
+    resolved_output = (
+        output_dir
+        if output_dir is not None
+        else root / ".apoapsis-eval" / aggregate_id
+    )
+    write_aggregate(resolved_output, report)
+    return report.model_dump(mode="json")
 
 
 def _build_research_engine(

@@ -13,6 +13,7 @@ from apoapsis.agent.actions import (
     agent_action_schema,
     parse_agent_action,
 )
+from apoapsis.agent.session import compact_observations
 from apoapsis.agent.inspection import AgentInspectionError, RepositoryInspector
 from apoapsis.config import (
     AgentLoopConfig,
@@ -27,8 +28,22 @@ from apoapsis.config import (
 )
 from apoapsis.models.telemetry import InstrumentedModelProvider
 from apoapsis.models.provider import ProviderError
+from apoapsis.models.prompts import (
+    agent_step_prompt,
+    implementation_prompt,
+    prompt_static_prefix,
+    rejected_patch_repair_prompt,
+    repair_prompt,
+)
+from apoapsis.context.compiler import ContextPackage
+from apoapsis.context.provenance import (
+    ContextEvidence,
+    EvidenceKind,
+    TransmissionPolicy,
+)
 from apoapsis.reporting.report import TaskOutcome
 from apoapsis.specification.schema import RiskLevel
+from apoapsis.verification.results import VerificationCommandResult, VerificationStatus
 from apoapsis.verification.runner import VerificationCommand, VerificationConfig
 from apoapsis.workflow.engine import SQLiteTaskStore
 from apoapsis.workflow.states import WorkflowState
@@ -75,6 +90,101 @@ class AgentActionTests(unittest.TestCase):
             parse_agent_action(
                 action("inspect_diff", shell_command="pytest -q")
             )
+
+    def test_prompt_prefix_is_byte_stable_across_agent_turns(self) -> None:
+        specification = make_specification()
+        context = ContextPackage.specification_only(specification, "deadbeef")
+        first = agent_step_prompt(
+            context,
+            turn=1,
+            remaining_budgets={"turns": 2},
+            verification_commands=["tests"],
+            history=[],
+        )
+        second = agent_step_prompt(
+            context,
+            turn=2,
+            remaining_budgets={"turns": 1},
+            verification_commands=["tests"],
+            history=[{"action": "inspect_diff"}],
+        )
+        prefix = prompt_static_prefix("agent_step")
+        self.assertTrue(first.startswith(prefix))
+        self.assertTrue(second.startswith(prefix))
+        self.assertEqual(
+            first[: len(prefix)].encode("utf-8"),
+            second[: len(prefix)].encode("utf-8"),
+        )
+        failing = VerificationCommandResult(
+            name="tests",
+            category="tests",
+            argv=["python", "-m", "unittest"],
+            cwd=".",
+            status=VerificationStatus.FAILED,
+            duration_seconds=0,
+        )
+        prompts = {
+            "implementation": implementation_prompt(context),
+            "repair": repair_prompt(context, failing, "boom", "diff --git"),
+            "rejected_patch_repair": rejected_patch_repair_prompt(
+                context, "bad diff", "rejected"
+            ),
+        }
+        for kind, prompt in prompts.items():
+            self.assertTrue(prompt.startswith(prompt_static_prefix(kind)))
+
+    def test_observation_compaction_keeps_latest_slots_and_failure(self) -> None:
+        def evidence(
+            identifier: str,
+            *,
+            content: str,
+            kind: EvidenceKind = EvidenceKind.FILE_EXCERPT,
+            path: str = "src/service.py",
+        ) -> ContextEvidence:
+            return ContextEvidence(
+                evidence_id=identifier,
+                kind=kind,
+                path=path,
+                start_line=None if path.startswith("<") else 1,
+                end_line=None if path.startswith("<") else 10,
+                commit="deadbeef",
+                reason_included="test",
+                content=content,
+                transmission_policy=TransmissionPolicy.CLOUD_ALLOWED,
+            )
+
+        observations = [
+            evidence("EV-OLD", content="old source" * 30),
+            evidence("EV-NEW", content="new source" * 30),
+            evidence(
+                "EV-DIFF-OLD",
+                path="<working-tree-diff>",
+                kind=EvidenceKind.DIFF,
+                content="old diff" * 20,
+            ),
+            evidence(
+                "EV-DIFF-NEW",
+                path="<working-tree-diff>",
+                kind=EvidenceKind.DIFF,
+                content="new diff" * 20,
+            ),
+            evidence(
+                "EV-FAIL",
+                path="<verification:tests>",
+                kind=EvidenceKind.FAILURE,
+                content="root failure" * 20,
+            ),
+        ]
+
+        compacted = compact_observations(observations, max_chars=700)
+        identifiers = {item.evidence_id for item in compacted}
+
+        self.assertIn("EV-FAIL", identifiers)
+        self.assertIn("EV-DIFF-NEW", identifiers)
+        self.assertNotIn("EV-DIFF-OLD", identifiers)
+        self.assertNotIn("EV-OLD", identifiers)
+        self.assertIn("EV-NEW", identifiers)
+        self.assertLessEqual(sum(len(item.content) for item in compacted), 700)
 
 
 class DeterministicRoutingTests(unittest.TestCase):
@@ -283,6 +393,11 @@ class BoundedAgentIntegrationTests(unittest.TestCase):
         self.assertTrue((audit / "agent-session.json").is_file())
         self.assertTrue((audit / "agent-turn-007.json").is_file())
         self.assertTrue((audit / "verification-failure-001.json").is_file())
+        final_turn = json.loads(
+            (audit / "agent-turn-007.json").read_text(encoding="utf-8")
+        )
+        self.assertGreater(len(final_turn["observation_ledger"]), 0)
+        self.assertGreater(final_turn["observation_ledger_chars"], 0)
         turn_after_failure = json.loads(
             (audit / "call-007-request.json").read_text(encoding="utf-8")
         )

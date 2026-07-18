@@ -44,6 +44,24 @@ class ContextMeasurement(StrictModel):
     new_evidence_count: int = Field(ge=0)
     stable_evidence_chars: int = Field(ge=0)
     new_evidence_chars: int = Field(ge=0)
+    observation_ledger_items: int = Field(default=0, ge=0)
+    observation_ledger_chars: int = Field(default=0, ge=0)
+    observation_transmitted_items: int = Field(default=0, ge=0)
+    observation_transmitted_chars: int = Field(default=0, ge=0)
+    observations_compacted_count: int = Field(default=0, ge=0)
+    observations_compacted_chars: int = Field(default=0, ge=0)
+
+
+class ContextAttribution(StrictModel):
+    accepted_patch: bool
+    changed_files: list[str] = Field(default_factory=list)
+    transmitted_evidence_count: int = Field(ge=0)
+    transmitted_chars: int = Field(ge=0)
+    attributed_evidence_count: int = Field(ge=0)
+    attributed_chars: int = Field(ge=0)
+    attributed_files: list[str] = Field(default_factory=list)
+    signal_density_ratio: float | None = Field(default=None, ge=0, le=1)
+    reason: str | None = None
 
 
 def _identity_key(
@@ -136,4 +154,65 @@ def measure_context(
         new_evidence_count=new_count,
         stable_evidence_chars=stable_chars,
         new_evidence_chars=new_chars,
+        observation_ledger_items=int(
+            parameters.get("observation_ledger_items", 0) or 0
+        ),
+        observation_ledger_chars=int(
+            parameters.get("observation_ledger_chars", 0) or 0
+        ),
+        observation_transmitted_items=int(
+            parameters.get("observation_transmitted_items", 0) or 0
+        ),
+        observation_transmitted_chars=int(
+            parameters.get("observation_transmitted_chars", 0) or 0
+        ),
+        observations_compacted_count=int(
+            parameters.get("observations_compacted_count", 0) or 0
+        ),
+        observations_compacted_chars=int(
+            parameters.get("observations_compacted_chars", 0) or 0
+        ),
+    )
+
+
+def attribute_context_to_patch(
+    packages: list[ContextPackage],
+    *,
+    changed_files: list[str],
+    accepted_patch: bool,
+) -> ContextAttribution:
+    """Measure file-level context reflected in the accepted patch.
+
+    This is deliberately conservative attribution, not a semantic relevance
+    claim: an evidence item is signal only when its repository path is one of
+    the files in the verifier-accepted patch. Tests and supporting files may be
+    useful yet count as noise under this narrow definition.
+    """
+
+    normalized_changed = sorted({path.replace("\\", "/") for path in changed_files})
+    evidence = [item for package in packages for item in package.evidence]
+    total_chars = sum(len(item.content) for item in evidence)
+    attributed = [
+        item for item in evidence if item.path.replace("\\", "/") in normalized_changed
+    ]
+    attributed_chars = sum(len(item.content) for item in attributed)
+    if not accepted_patch:
+        ratio = None
+        reason = "task did not complete with a verifier-accepted patch"
+    elif total_chars == 0:
+        ratio = None
+        reason = "no context evidence was transmitted"
+    else:
+        ratio = attributed_chars / total_chars
+        reason = None
+    return ContextAttribution(
+        accepted_patch=accepted_patch,
+        changed_files=normalized_changed,
+        transmitted_evidence_count=len(evidence),
+        transmitted_chars=total_chars,
+        attributed_evidence_count=len(attributed),
+        attributed_chars=attributed_chars,
+        attributed_files=sorted({item.path for item in attributed}),
+        signal_density_ratio=ratio,
+        reason=reason,
     )
