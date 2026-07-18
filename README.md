@@ -245,8 +245,44 @@ one-turn budget, never by altering the task or the patch. Output is written to
 For `download-service`, the resumable acceptance oracle is removed before each
 lane repository is initialized and is injected only after normal verification
 has already declared completion. A normal pass followed by an oracle failure is
-recorded as a false success; an oracle infrastructure error is not. Aggregate
-one or more persisted comparisons without making model calls:
+recorded as a false success; an oracle infrastructure error is not.
+
+### The `local-strict` lane (opt-in)
+
+`--lane local-strict` is a deliberately separate, opt-in lane measuring the
+`STRICT` completion policy (ADR 0015/0016/0017) against a model-visible
+acceptance check, not baseline completion:
+
+```bash
+apoapsis eval download-service --lane local-strict --output-dir .apoapsis-eval/strict-1
+```
+
+It is never part of the default lane set and every other lane keeps
+selecting `BASELINE` explicitly regardless of your project's real
+configuration, so historical false-success comparisons stay valid. The
+`download-service` fixture ships a model-visible
+`tests/test_resumable_visible_acceptance.py` (distinct data and test names
+from the held-out oracle) — to use `local-strict` meaningfully, configure a
+specifically named, acceptance-designated command for it in your own
+`.apoapsis/config.toml` (acceptance designation is never generated
+automatically, per ADR 0017):
+
+```toml
+[[verification.commands]]
+name = "resumable-acceptance-check"
+category = "acceptance"
+description = "Model-visible resumable-download acceptance checks."
+argv = ["python", "-m", "unittest", "tests.test_resumable_visible_acceptance", "-v"]
+timeout_seconds = 60
+required = false
+acceptance = true
+```
+
+A model may then propose mapping an extracted acceptance criterion to
+`resumable-acceptance-check` from the real catalog; nothing here injects or
+rewrites that mapping — a missing or invalid one is a genuine result, not
+hidden. Aggregate one or more persisted comparisons without making model
+calls:
 
 ```bash
 apoapsis eval-aggregate .apoapsis-eval/run-1/comparison.json \

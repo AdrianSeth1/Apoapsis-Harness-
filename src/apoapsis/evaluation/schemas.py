@@ -16,6 +16,7 @@ class EvalLane(StrEnum):
     FORCED_ESCALATION = "forced-escalation"
     FRONTIER = "frontier"
     ONE_SHOT = "one-shot"
+    LOCAL_STRICT = "local-strict"
 
 
 class EvalEvidenceKind(StrEnum):
@@ -49,6 +50,12 @@ DEFAULT_LANE_ORDER: tuple[EvalLane, ...] = (
     EvalLane.FRONTIER,
     EvalLane.ONE_SHOT,
 )
+# `LOCAL_STRICT` is deliberately excluded from the default order: it is an
+# opt-in lane (`--lane local-strict`) that measures the ADR 0015/0016/0017
+# strict completion policy against a model-visible acceptance check, not a
+# baseline-completion lane. Every lane in `DEFAULT_LANE_ORDER` above must
+# stay explicitly `BASELINE` (`evaluation/lanes.py`) so historical
+# false-success measurement remains comparable across runs.
 
 
 class EvalLaneResult(StrictModel):

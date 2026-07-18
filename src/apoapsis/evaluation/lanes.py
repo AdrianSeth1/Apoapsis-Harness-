@@ -87,4 +87,21 @@ def apply_lane_overlay(config: ApoapsisConfig, lane: EvalLane) -> ApoapsisConfig
         )
         return config.model_copy(update={"execution": execution})
 
+    if lane is EvalLane.LOCAL_STRICT:
+        # The one deliberate exception: this lane exists specifically to
+        # measure the STRICT completion policy (ADR 0015/0016/0017) against
+        # a model-visible acceptance check, so it explicitly selects STRICT
+        # regardless of what the caller's real project configuration
+        # selects -- the mirror image of every other lane's explicit
+        # BASELINE override above, for the same reason (an explicit,
+        # audited choice, never silent inheritance).
+        execution = config.execution.model_copy(
+            update={
+                "mode": ExecutionMode.AGENT,
+                "route": AgentRoute.LOCAL_ONLY,
+                "completion_policy": CompletionPolicy.STRICT,
+            }
+        )
+        return config.model_copy(update={"execution": execution})
+
     raise ValueError(f"unsupported evaluation lane: {lane}")

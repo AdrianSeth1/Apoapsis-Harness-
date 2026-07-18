@@ -587,11 +587,11 @@ plan, compatibility tests, and an ADR.
   image or starting Docker Desktop. When the backend is `host` (default),
   doctor reports a single warning noting verification is unsandboxed.
 - `src/apoapsis/evaluation/` implements `apoapsis eval <fixture>`. `lanes.py`
-  defines the five lanes (`local`, `hybrid`, `forced-escalation`, `frontier`,
-  `one-shot`) as pure `execution`-only configuration overlays over the
-  caller's real config — no lane ever changes `models.*`. `fixture.py` copies
-  a named fixture into a fresh, isolated, committed Git repository per lane.
-  `harness.py` runs one lane through the unmodified `VerticalSliceRunner`
+  defines the five default lanes (`local`, `hybrid`, `forced-escalation`,
+  `frontier`, `one-shot`) as pure `execution`-only configuration overlays over
+  the caller's real config — no lane ever changes `models.*`. `fixture.py`
+  copies a named fixture into a fresh, isolated, committed Git repository per
+  lane. `harness.py` runs one lane through the unmodified `VerticalSliceRunner`
   against that isolated copy, with its own fresh task store. `report.py`
   aggregates the resulting `FinalTaskReport`s into one `comparison.json`/
   `comparison.md`. The download-service acceptance test is withheld before Git
@@ -603,6 +603,24 @@ plan, compatibility tests, and an ADR.
   unconfigured `models.frontier_coder` is
   recorded as skipped, with no fixture copy and no provider built for it, so
   absent credentials never imply unauthorized spend. See ADR 0008.
+- `EvalLane.LOCAL_STRICT` (`--lane local-strict`) is a sixth, deliberately
+  **opt-in** lane (excluded from `DEFAULT_LANE_ORDER`) that forces
+  `completion_policy = STRICT` regardless of the caller's real project
+  config -- the mirror image of every default lane's explicit `BASELINE`
+  override. It measures whether a model can use the bounded loop and a
+  model-visible acceptance check to reach genuinely correct code, with the
+  held-out oracle still checking independently after completion. The
+  `download-service` fixture carries a second, model-visible acceptance
+  test, `tests/test_resumable_visible_acceptance.py` -- distinct data and
+  test/class names from the held-out
+  `tests/test_resumable_acceptance.py`, present in every lane's copied
+  fixture (not withheld) -- proven through its own specifically named,
+  acceptance-designated verification command (e.g.
+  `resumable-acceptance-check`, configured by the project, never generated
+  automatically). Nothing deterministically injects or rewrites a model's
+  proposed `AcceptanceCriterion.verification_method` mapping; the
+  controlled evaluation's auto-approval step approves the extracted
+  specification as-is, same as every other lane.
 
 ## Current configuration and operation
 

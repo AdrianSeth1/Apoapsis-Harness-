@@ -181,19 +181,28 @@ class LaneOverlayTests(unittest.TestCase):
         overlay = apply_lane_overlay(self.config, EvalLane.ONE_SHOT)
         self.assertEqual(overlay.execution.mode, ExecutionMode.ONE_SHOT)
 
+    def test_local_strict_lane_overlay(self) -> None:
+        overlay = apply_lane_overlay(self.config, EvalLane.LOCAL_STRICT)
+        self.assertEqual(overlay.execution.mode, ExecutionMode.AGENT)
+        self.assertEqual(overlay.execution.route, AgentRoute.LOCAL_ONLY)
+        self.assertEqual(overlay.execution.completion_policy, CompletionPolicy.STRICT)
+
     def test_overlay_never_mutates_models(self) -> None:
         for lane in EvalLane:
             overlay = apply_lane_overlay(self.config, lane)
             self.assertEqual(overlay.models, self.config.models)
 
-    def test_every_lane_explicitly_selects_baseline_even_from_a_strict_project(
+    # Every *baseline-measuring* lane must still explicitly force BASELINE
+    # even when the caller's real project configuration already selects
+    # STRICT (the practical default since ADR 0016) -- historical
+    # false-success measurement must never silently inherit it.
+    _BASELINE_LANES = tuple(
+        lane for lane in EvalLane if lane is not EvalLane.LOCAL_STRICT
+    )
+
+    def test_every_baseline_lane_explicitly_selects_baseline_even_from_a_strict_project(
         self,
     ) -> None:
-        # Ordinary product configuration now defaults to STRICT (ADR 0016).
-        # A real caller's `.apoapsis/config.toml` may therefore already be
-        # STRICT; every evaluation lane must still explicitly force
-        # BASELINE so historical false-success measurement stays
-        # comparable, not silently inherit whatever the project selected.
         strict_execution = self.config.execution.model_copy(
             update={"completion_policy": CompletionPolicy.STRICT}
         )
@@ -203,13 +212,25 @@ class LaneOverlayTests(unittest.TestCase):
         self.assertEqual(
             strict_config.execution.completion_policy, CompletionPolicy.STRICT
         )
-        for lane in EvalLane:
+        for lane in self._BASELINE_LANES:
             overlay = apply_lane_overlay(strict_config, lane)
             self.assertEqual(
                 overlay.execution.completion_policy,
                 CompletionPolicy.BASELINE,
                 f"lane {lane.value} must explicitly select BASELINE",
             )
+
+    def test_local_strict_lane_selects_strict_even_from_a_baseline_project(
+        self,
+    ) -> None:
+        # The mirror image of the above: LOCAL_STRICT is the one lane that
+        # must explicitly select STRICT, even when the caller's real
+        # project configuration is BASELINE (the Pydantic field default).
+        self.assertEqual(
+            self.config.execution.completion_policy, CompletionPolicy.BASELINE
+        )
+        overlay = apply_lane_overlay(self.config, EvalLane.LOCAL_STRICT)
+        self.assertEqual(overlay.execution.completion_policy, CompletionPolicy.STRICT)
 
 
 class FixtureRepositoryTests(unittest.TestCase):
@@ -271,6 +292,24 @@ class RunEvalLaneIntegrationTests(unittest.TestCase):
             _FIXTURE,
             destination,
             excluded_relative_files=["tests/test_resumable_acceptance.py"],
+        )
+        return destination
+
+    def _fixture_without_holdout_or_visible_acceptance(self, name: str) -> Path:
+        """Excludes both the held-out oracle *and* the separate, newer
+        model-visible acceptance test -- used only by pre-existing tests
+        whose whole premise is that agent-visible verification is blind to
+        the range-ignoring-server bug; the visible acceptance test would
+        otherwise correctly catch it too and change their outcome."""
+
+        destination = self.output_root / name / "download-service"
+        prepare_fixture_repository(
+            _FIXTURE,
+            destination,
+            excluded_relative_files=[
+                "tests/test_resumable_acceptance.py",
+                "tests/test_resumable_visible_acceptance.py",
+            ],
         )
         return destination
 
@@ -572,7 +611,7 @@ class RunEvalLaneIntegrationTests(unittest.TestCase):
         _inject_task_id(fake)
 
         result = run_eval_lane(
-            self._fixture_without_holdout("oracle-fail"),
+            self._fixture_without_holdout_or_visible_acceptance("oracle-fail"),
             EvalLane.LOCAL,
             _base_config(),
             InstrumentedModelProvider(fake),
@@ -598,6 +637,199 @@ class RunEvalLaneIntegrationTests(unittest.TestCase):
             )
 
         self.assertEqual(fake.invocations, [])
+
+
+def _strict_config_with_acceptance_command(
+    *, local_turns: int = 8, max_verification_runs: int = 8
+) -> ApoapsisConfig:
+    """A `local-strict` lane config exposing a required general dev command
+    and a separate, specifically named, acceptance-designated command for
+    the visible resumable-download checks -- mirroring the exact shape
+    `.apoapsis/config.toml` uses for the real live evaluation."""
+
+    return ApoapsisConfig(
+        models=ModelsConfig(
+            frontier=FrontierProviderConfig(
+                base_url="https://provider.invalid/v1",
+                model="fake-coder-v1",
+            ),
+        ),
+        execution=ExecutionConfig(
+            mode=ExecutionMode.AGENT,
+            route=AgentRoute.LOCAL_ONLY,
+            agent=AgentLoopConfig(
+                max_turns=local_turns,
+                max_patch_attempts=4,
+                max_verification_runs=max_verification_runs,
+                max_search_results=10,
+                max_read_lines=120,
+                max_observation_chars=20_000,
+            ),
+        ),
+        context=ContextCompilerConfig(
+            max_files=10, max_excerpt_lines=200, max_total_chars=50_000
+        ),
+        patch=PatchPolicyConfig(max_changed_lines=100),
+        verification=VerificationConfig(
+            commands=[
+                VerificationCommand(
+                    name="unit-tests",
+                    category="tests",
+                    description="Runs the project's full test suite.",
+                    argv=[
+                        sys.executable,
+                        "-m",
+                        "unittest",
+                        "discover",
+                        "-s",
+                        "tests",
+                        "-v",
+                    ],
+                    timeout_seconds=30,
+                    required=True,
+                ),
+                VerificationCommand(
+                    name="resumable-acceptance-check",
+                    category="acceptance",
+                    description=(
+                        "Model-visible resumable-download acceptance checks: "
+                        "an interrupted download resumes from the persisted "
+                        "byte offset, and a server that ignores the Range "
+                        "header has its stale partial data replaced rather "
+                        "than appended to."
+                    ),
+                    argv=[
+                        sys.executable,
+                        "-m",
+                        "unittest",
+                        "tests.test_resumable_visible_acceptance",
+                        "-v",
+                    ],
+                    timeout_seconds=30,
+                    required=False,
+                    acceptance=True,
+                ),
+            ]
+        ),
+    )
+
+
+def _specification_with_acceptance_mapping() -> str:
+    payload = json.loads(specification_response())
+    payload["acceptance_criteria"][0]["verification_method"] = (
+        "resumable-acceptance-check"
+    )
+    payload["acceptance_criteria"][1]["verification_method"] = (
+        "resumable-acceptance-check"
+    )
+    return json.dumps(payload)
+
+
+class LocalStrictLaneIntegrationTests(RunEvalLaneIntegrationTests):
+    """Deterministic, fake-provider coverage for the opt-in `local-strict`
+    lane: a model-visible acceptance check, distinct from the held-out
+    oracle, gating strict completion end to end."""
+
+    def test_visible_acceptance_file_enters_fixture_but_held_out_oracle_does_not(
+        self,
+    ) -> None:
+        fixture = self._fixture_without_holdout("local-strict-catalog")
+        self.assertTrue(
+            (fixture / "tests" / "test_resumable_visible_acceptance.py").is_file()
+        )
+        self.assertFalse(
+            (fixture / "tests" / "test_resumable_acceptance.py").exists()
+        )
+
+    def test_local_strict_lane_is_explicitly_strict(self) -> None:
+        fake = FakeModelProvider(
+            [
+                specification_response(),
+                action(
+                    "request_escalation",
+                    reason="need a moment to check this is wired correctly",
+                ),
+            ]
+        )
+        _inject_task_id(fake)
+        result = run_eval_lane(
+            self._fixture_without_holdout("local-strict-policy-check"),
+            EvalLane.LOCAL_STRICT,
+            _strict_config_with_acceptance_command(),
+            InstrumentedModelProvider(fake),
+            task_text=REQUEST,
+        )
+        self.assertEqual(result.report.completion_policy, CompletionPolicy.STRICT)
+
+    def test_failed_visible_acceptance_gives_evidence_and_another_turn_then_completes(
+        self,
+    ) -> None:
+        spec = _specification_with_acceptance_mapping()
+        fake = FakeModelProvider(
+            [
+                spec,
+                action("propose_patch", unified_diff=IMPLEMENTATION_PATCH),
+                action("run_check", command_name="unit-tests"),
+                action("run_check", command_name="resumable-acceptance-check"),
+                action("propose_patch", unified_diff=REPAIR_PATCH),
+                action("run_check", command_name="unit-tests"),
+                action("run_check", command_name="resumable-acceptance-check"),
+            ]
+        )
+        _inject_task_id(fake)
+        fixture = self._fixture_without_holdout("local-strict-repair")
+
+        result = run_eval_lane(
+            fixture,
+            EvalLane.LOCAL_STRICT,
+            _strict_config_with_acceptance_command(),
+            InstrumentedModelProvider(fake),
+            task_text=REQUEST,
+            held_out_oracle=self._oracle(),
+        )
+
+        self.assertEqual(result.report.outcome, TaskOutcome.COMPLETE)
+        self.assertTrue(
+            all(
+                item.status.value == "proven"
+                for item in result.report.acceptance_coverage
+            )
+        )
+        # the session was not terminated by the first failing acceptance
+        # run -- it took further, real bounded turns and repaired.
+        self.assertGreater(result.report.agent_turns, 4)
+        # the held-out oracle -- independent, different data -- only runs
+        # after strict COMPLETE, and the genuinely correct fix passes it.
+        self.assertIsNotNone(result.held_out_oracle)
+        self.assertEqual(result.held_out_oracle.status, OracleStatus.PASSED)
+
+    def test_held_out_oracle_does_not_run_when_strict_lane_stops_short_of_complete(
+        self,
+    ) -> None:
+        fake = FakeModelProvider(
+            [
+                specification_response(),
+                action(
+                    "request_escalation",
+                    reason="Escalating without ever proving acceptance coverage.",
+                ),
+            ]
+        )
+        _inject_task_id(fake)
+        fixture = self._fixture_without_holdout("local-strict-no-complete")
+
+        result = run_eval_lane(
+            fixture,
+            EvalLane.LOCAL_STRICT,
+            _strict_config_with_acceptance_command(),
+            InstrumentedModelProvider(fake),
+            task_text=REQUEST,
+            held_out_oracle=self._oracle(),
+        )
+
+        self.assertEqual(result.report.outcome, TaskOutcome.HUMAN_REVIEW_REQUIRED)
+        self.assertIsNotNone(result.held_out_oracle)
+        self.assertEqual(result.held_out_oracle.status, OracleStatus.NOT_RUN)
 
 
 class ComparisonReportTests(unittest.TestCase):
