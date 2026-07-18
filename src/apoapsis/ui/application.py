@@ -230,6 +230,7 @@ class ApoapsisUIService:
         return {
             "mode": config.execution.mode.value,
             "route": config.execution.route.value,
+            "completion_policy": config.execution.completion_policy.value,
             "verification_backend": config.verification.backend.backend.value,
             "max_turns": config.execution.agent.max_turns,
             "max_patch_attempts": config.execution.agent.max_patch_attempts,

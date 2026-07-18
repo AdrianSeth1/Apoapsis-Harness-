@@ -229,6 +229,86 @@ required = false
             _check(report, "verification_commands").status, DoctorCheckStatus.ERROR
         )
 
+    def test_strict_with_no_acceptance_designated_command_is_a_warning(
+        self,
+    ) -> None:
+        self._write_toml(
+            """
+[models.frontier]
+provider = "ollama"
+base_url = "http://127.0.0.1:11434"
+model = "qwen-test"
+
+[execution]
+mode = "one_shot"
+completion_policy = "strict"
+
+[verification]
+[[verification.commands]]
+name = "tests"
+category = "tests"
+argv = ["git", "--version"]
+required = true
+"""
+        )
+        report = run_doctor(self.root)
+        check = _check(report, "completion_policy_acceptance_commands")
+        self.assertEqual(check.status, DoctorCheckStatus.WARNING)
+        self.assertIn("no verification command is marked", check.detail)
+
+    def test_strict_with_an_acceptance_designated_command_has_no_warning(
+        self,
+    ) -> None:
+        self._write_toml(
+            """
+[models.frontier]
+provider = "ollama"
+base_url = "http://127.0.0.1:11434"
+model = "qwen-test"
+
+[execution]
+mode = "one_shot"
+completion_policy = "strict"
+
+[verification]
+[[verification.commands]]
+name = "tests"
+category = "tests"
+argv = ["git", "--version"]
+required = true
+acceptance = true
+"""
+        )
+        report = run_doctor(self.root)
+        names = [check.name for check in report.checks]
+        self.assertNotIn("completion_policy_acceptance_commands", names)
+        self.assertNotIn("completion_policy_baseline", names)
+
+    def test_baseline_completion_policy_is_a_warning(self) -> None:
+        self._write_toml(
+            """
+[models.frontier]
+provider = "ollama"
+base_url = "http://127.0.0.1:11434"
+model = "qwen-test"
+
+[execution]
+mode = "one_shot"
+completion_policy = "baseline"
+
+[verification]
+[[verification.commands]]
+name = "tests"
+category = "tests"
+argv = ["git", "--version"]
+required = true
+"""
+        )
+        report = run_doctor(self.root)
+        check = _check(report, "completion_policy_baseline")
+        self.assertEqual(check.status, DoctorCheckStatus.WARNING)
+        self.assertIn("completion_policy is baseline", check.detail)
+
     def test_verification_command_missing_binary_is_a_warning(self) -> None:
         self._write_toml(
             """

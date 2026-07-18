@@ -556,12 +556,13 @@ The Docker backend materially improves isolation but is not a defense
 against container-runtime or kernel vulnerabilities; see ADR 0009's threat
 model for exactly what it does and does not cover.
 
-## Acceptance coverage and the completion policy (ADR 0015, ADR 0016)
+## Acceptance coverage and the completion policy (ADR 0015, 0016, 0017)
 
 Configured verification passing is a development signal, not proof that the
-product is done. Mark the subset of commands strong enough to prove an
-acceptance criterion, describe it for the extraction model, and name which
-criterion each proves:
+product is done. `apoapsis init` writes `completion_policy = "strict"`, but
+its generated command is **never** marked `acceptance = true`
+automatically -- acceptance designation is always an explicit decision you
+make once you have decided a command's pass is real product proof:
 
 ```toml
 [[verification.commands]]
@@ -571,37 +572,48 @@ description = "Runs the project's full test suite."
 argv = ["python", "-m", "unittest", "discover", "-s", "tests", "-v"]
 timeout_seconds = 120
 required = true
-acceptance = true   # this command is strong enough to prove a criterion
+acceptance = false   # opt in explicitly once you decide this is real proof
 
 [execution]
-completion_policy = "strict"   # apoapsis init's default; see below
+completion_policy = "strict"   # apoapsis init's default
 ```
 
-`apoapsis init` writes exactly this -- `completion_policy = "strict"` with
-its one default command marked `acceptance = true` -- so a fresh project is
-immediately usable, not stuck failing closed on every task. Specification
-extraction receives a deterministic **acceptance-command catalog** built
-fresh from `[verification.commands]` on every call (name, category,
-`description`, and whether each is `acceptance_designated`); an extracted
-`AcceptanceCriterion.verification_method` may name only a catalog entry or
-stay `null` -- extraction rejects anything else, so a model can propose a
-mapping but never invent one. The user still approves the whole
+Set `acceptance = true` on a command yourself when you're ready, then map
+`AcceptanceCriterion.verification_method` to its name (or let a model
+propose that mapping -- see below). Until you do, `apoapsis doctor` and the
+UI overview both warn that `STRICT` has no acceptance-designated command,
+and tasks with active acceptance criteria correctly stop at
+`HUMAN_REVIEW_REQUIRED` instead of silently reaching `COMPLETE`.
+
+Specification extraction receives a deterministic **acceptance-command
+catalog** built fresh from `[verification.commands]` on every call (name,
+category, `description`, and whether each is `acceptance_designated`); an
+extracted `AcceptanceCriterion.verification_method` may name only a catalog
+entry or stay `null` -- extraction rejects anything else, so a model can
+propose a mapping but never invent one. The user still approves the whole
 specification, mapping included, before it takes effect; the local UI's
 specification view shows each criterion's proposed check.
 
 Under `completion_policy = "strict"`, `COMPLETE` additionally requires
 every active acceptance criterion to be computed as **Proven** -- mapped to
 a command that is both configured and `acceptance = true`, and that has
-actually **passed for the current worktree state**. A pass recorded before
-the worktree changed does not count: coverage is recomputed from each
-command's real execution status scoped to the exact current diff, so
-never-executed, failed, and passed are three distinct, non-stale states.
+actually **passed for the current worktree state**. "Current worktree
+state" is a single shared fingerprint (ADR 0017): HEAD identity, the
+canonical tracked diff, and every permitted untracked file's exact content
+hash -- so a brand-new file a patch created without `git add`ing it (the
+normal result of applying a diff) changes the fingerprint exactly like a
+tracked edit does. A pass recorded before the worktree changed, tracked or
+untracked, does not count: never-executed, failed, and passed are three
+distinct, non-stale states, always scoped to the exact current fingerprint.
 Unmapped, misconfigured, failing, or stale mappings stay
 **Unproven**/**Failed** regardless of what a model claims; only the harness
 computes and grants that status. A gap returns control to the bounded agent
 with evidence (same budget, same loop) or, in one-shot mode, stops at
 `HUMAN_REVIEW_REQUIRED` rather than spending its single repair attempt on
-it.
+it. `inspect_diff` shows a model the same untracked-file state being
+fingerprinted, as a bounded synthetic diff; untracked binary content and
+symlink targets are never rendered, only a path-only placeholder, matching
+existing binary/symlink policy elsewhere.
 
 `apoapsis eval` always explicitly selects `completion_policy = "baseline"`
 for every lane, regardless of what a real project's configuration selects,

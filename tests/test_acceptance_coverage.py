@@ -44,6 +44,17 @@ from tests.test_vertical_slice import (
     specification_response,
 )
 
+NEW_FILE_PATCH = (
+    "diff --git a/src/download_service/new_helper.py "
+    "b/src/download_service/new_helper.py\n"
+    "new file mode 100644\n"
+    "--- /dev/null\n"
+    "+++ b/src/download_service/new_helper.py\n"
+    "@@ -0,0 +1,2 @@\n"
+    "+def helper():\n"
+    "+    return True\n"
+)
+
 REPLACEMENT_OLD_TEXT = (
     '        mode = "ab" if offset else "wb"\n'
     "        downloaded = offset"
@@ -710,6 +721,94 @@ class AcceptanceCoverageTests(unittest.TestCase):
                 for item in report.acceptance_coverage
             )
         )
+
+    # ADR 0017: a brand-new *untracked* file (the common byproduct of a
+    # patch that was never `git add`ed) must invalidate earlier verification
+    # and coverage exactly like a tracked edit would -- this is the exact
+    # gap a `git diff HEAD`-only digest could not see.
+    def test_untracked_new_file_creation_invalidates_earlier_proof(self) -> None:
+        spec = specification_with_mapping(
+            ac1_method="download-tests", ac2_method="download-tests-again"
+        )
+        fake = FakeModelProvider(
+            [
+                spec,
+                action("propose_patch", unified_diff=COMPLETE_PATCH),
+                action("run_check", command_name="sanity"),
+                action("run_check", command_name="download-tests"),
+                action("propose_patch", unified_diff=NEW_FILE_PATCH),
+                action("run_check", command_name="sanity"),
+                action("run_check", command_name="download-tests-again"),
+            ]
+        )
+        report = self._run(self._stale_digest_config(local_turns=6), fake)
+
+        self.assertEqual(report.outcome, TaskOutcome.HUMAN_REVIEW_REQUIRED)
+        self.assertIn(
+            "src/download_service/new_helper.py", report.files_changed
+        )
+        coverage = {item.criterion_id: item for item in report.acceptance_coverage}
+        self.assertEqual(coverage["AC-1"].status, AcceptanceCoverageStatus.UNPROVEN)
+        self.assertIn("has not yet been executed", coverage["AC-1"].reason)
+        self.assertEqual(coverage["AC-2"].status, AcceptanceCoverageStatus.PROVEN)
+
+    # The same script, continued one more turn: re-running the mapped
+    # command against the worktree that now includes the new untracked
+    # file restores proof and reaches COMPLETE.
+    def test_reverifying_after_untracked_file_creation_restores_proof(self) -> None:
+        spec = specification_with_mapping(
+            ac1_method="download-tests", ac2_method="download-tests-again"
+        )
+        fake = FakeModelProvider(
+            [
+                spec,
+                action("propose_patch", unified_diff=COMPLETE_PATCH),
+                action("run_check", command_name="sanity"),
+                action("run_check", command_name="download-tests"),
+                action("propose_patch", unified_diff=NEW_FILE_PATCH),
+                action("run_check", command_name="sanity"),
+                action("run_check", command_name="download-tests-again"),
+                action("run_check", command_name="download-tests"),
+            ]
+        )
+        report = self._run(self._stale_digest_config(local_turns=7), fake)
+
+        self.assertEqual(report.outcome, TaskOutcome.COMPLETE)
+        self.assertTrue(
+            all(
+                item.status == AcceptanceCoverageStatus.PROVEN
+                for item in report.acceptance_coverage
+            )
+        )
+
+    # Inspect-diff must show the model the same untracked-file state the
+    # verification fingerprint is now sensitive to.
+    def test_inspect_diff_exposes_the_new_untracked_file(self) -> None:
+        spec = specification_with_mapping(
+            ac1_method="download-tests", ac2_method="download-tests-again"
+        )
+        fake = FakeModelProvider(
+            [
+                spec,
+                action("propose_patch", unified_diff=NEW_FILE_PATCH),
+                action("inspect_diff"),
+                action("run_check", command_name="sanity"),
+            ]
+        )
+        report = self._run(self._stale_digest_config(local_turns=3), fake)
+
+        audit = self.root / ".apoapsis" / "tasks" / report.task_id
+        second_turn = json.loads(
+            (audit / "agent-turn-002.json").read_text(encoding="utf-8")
+        )
+        ledger = second_turn["observation_ledger"]
+        diff_entries = [
+            item for item in ledger if item["path"] == "<working-tree-diff>"
+        ]
+        self.assertTrue(diff_entries)
+        content = diff_entries[-1]["content"]
+        self.assertIn("src/download_service/new_helper.py", content)
+        self.assertIn("+def helper():", content)
 
 
 class ComputeAcceptanceCoverageUnitTests(unittest.TestCase):

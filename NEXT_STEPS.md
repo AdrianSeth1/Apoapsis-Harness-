@@ -142,12 +142,14 @@ strict evaluation should run, all now fixed:
   direct unit-test class and two integration tests that pass a mapped
   command, edit the worktree, and confirm the criterion reverts to Unproven
   until re-verified at the new digest.
-- `apoapsis init` now writes `completion_policy = "strict"` with its
-  default command marked `acceptance = true` -- the practical default for
-  ordinary product runs. Every `apoapsis eval` lane explicitly forces
-  `BASELINE` regardless of the caller's real project config, recorded on
-  every persisted report and in the comparison Markdown, so false-success
-  measurement stays comparable.
+- `apoapsis init` now writes `completion_policy = "strict"` -- the
+  practical default for ordinary product runs -- with its default command
+  marked `acceptance = true` at the time. (**Superseded below**: ADR 0017
+  reversed the auto-grant; a fresh project's command stays
+  `acceptance = false` until the owner explicitly opts in.) Every
+  `apoapsis eval` lane explicitly forces `BASELINE` regardless of the
+  caller's real project config, recorded on every persisted report and in
+  the comparison Markdown, so false-success measurement stays comparable.
 
 The held-out download-service oracle was deliberately left untouched and
 was not turned into the visible acceptance check for that fixture -- doing
@@ -158,6 +160,37 @@ check the agent may run and repair toward, and the existing held-out oracle
 that stays invisible to the agent. See ADR 0016. The full pre-existing test
 suite (197 tests) was unaffected by these corrections; 13 new tests were
 added (210 total).
+
+### Done — proof-integrity hardening: worktree fingerprint, explicit acceptance designation (ADR 0017)
+
+A further review found two more issues before a live strict evaluation
+should run, both fixed:
+
+- `BoundedAgentSession`'s verification-state digest was `git diff
+  HEAD`-only and blind to **untracked files** -- the ordinary result of a
+  patch that creates a new file without `git add`ing it (`git apply` never
+  stages). A model could create or edit a new file and an earlier
+  verification/acceptance-proof result would still look current. Replaced
+  with `src/apoapsis/repository/fingerprint.py`'s
+  `compute_worktree_fingerprint()`: HEAD identity, the canonical tracked
+  diff, and sorted permitted untracked paths with exact content hashes and
+  type/mode (symlinks hashed by target text, never dereferenced; binaries
+  hashed by raw bytes, never decoded). Used everywhere verification
+  caching, command results, and acceptance proof are scoped. `inspect_diff`
+  now also represents permitted untracked files as bounded synthetic diffs
+  so a model can see the same state being fingerprinted, with binary/
+  symlink content failing closed to a path-only placeholder.
+- `apoapsis init`'s auto-grant of `acceptance = true` (added by the ADR
+  0016 section above) was reversed: acceptance designation must be an
+  explicit owner decision, so the generated command now stays
+  `acceptance = false` with inline setup guidance. `apoapsis doctor` and
+  the UI overview both warn when `STRICT` has no acceptance-designated
+  command, and separately when `BASELINE` is selected at all -- reported
+  facts only, no config file is ever rewritten automatically.
+
+The full pre-existing test suite (210 tests) was unaffected; 17 new tests
+were added (227 total, 6 intentional skips -- 2 new ones for symlink
+creation being unsupported on this Windows machine). See ADR 0017.
 
 ### Priority B — review and resume experience
 

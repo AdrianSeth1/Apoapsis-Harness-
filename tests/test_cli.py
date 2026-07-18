@@ -69,7 +69,7 @@ class CLITests(unittest.TestCase):
         self.assertFalse(config.research.sources.reddit.enabled)
         self.assertNotIn("-t", config.verification.commands[0].argv)
         self.assertEqual(config.execution.completion_policy.value, "strict")
-        self.assertTrue(config.verification.commands[0].acceptance)
+        self.assertFalse(config.verification.commands[0].acceptance)
         self.assertTrue(config.verification.commands[0].description)
 
         task = self.invoke(

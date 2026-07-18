@@ -17,6 +17,7 @@ from pydantic import Field
 
 from apoapsis.config import (
     ApoapsisConfig,
+    CompletionPolicy,
     FrontierProviderConfig,
     LocalResearchProviderConfig,
 )
@@ -99,6 +100,7 @@ def run_doctor(
         checks.extend(_context_window_support_checks(config))
         checks.extend(_verification_checks(config))
         checks.extend(_verification_backend_checks(config))
+        checks.extend(_completion_policy_checks(config))
         if probe_providers:
             checks.extend(_probe_checks(config, provider_overrides))
     return DoctorReport(
@@ -501,6 +503,58 @@ def _verification_checks(config: ApoapsisConfig) -> list[DoctorCheck]:
                 ),
                 remediation=(
                     None if found else f"install {executable!r} or adjust the command"
+                ),
+            )
+        )
+    return checks
+
+
+def _completion_policy_checks(config: ApoapsisConfig) -> list[DoctorCheck]:
+    """Deterministic warnings for the ADR 0015/0016/0017 completion-policy
+    knob -- never a silent migration, only a reported fact plus remediation
+    text; the persisted configuration is never rewritten by Doctor."""
+
+    checks: list[DoctorCheck] = []
+    if config.execution.completion_policy == CompletionPolicy.STRICT:
+        acceptance_commands = [
+            item for item in config.verification.commands if item.acceptance
+        ]
+        if not acceptance_commands:
+            checks.append(
+                DoctorCheck(
+                    name="completion_policy_acceptance_commands",
+                    category="verification",
+                    status=DoctorCheckStatus.WARNING,
+                    detail=(
+                        "completion_policy is strict but no verification "
+                        "command is marked acceptance = true: any task with "
+                        "active acceptance criteria will stop at "
+                        "HUMAN_REVIEW_REQUIRED instead of reaching COMPLETE"
+                    ),
+                    remediation=(
+                        "mark at least one [[verification.commands]] as "
+                        "acceptance = true once you have decided its pass "
+                        "is real product proof (ADR 0017), then map "
+                        "AcceptanceCriterion.verification_method to it"
+                    ),
+                )
+            )
+    else:
+        checks.append(
+            DoctorCheck(
+                name="completion_policy_baseline",
+                category="verification",
+                status=DoctorCheckStatus.WARNING,
+                detail=(
+                    "completion_policy is baseline: COMPLETE is reported "
+                    "whenever configured verification passes, without "
+                    "requiring any acceptance criterion to be proven"
+                ),
+                remediation=(
+                    'set completion_policy = "strict" in [execution] and '
+                    "mark real acceptance commands once ready "
+                    "(ADR 0015/0016/0017); apoapsis eval intentionally "
+                    "keeps baseline for false-success measurement"
                 ),
             )
         )

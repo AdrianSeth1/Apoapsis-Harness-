@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 from difflib import unified_diff
@@ -11,6 +12,7 @@ from apoapsis.context.provenance import (
     EvidenceKind,
     TransmissionPolicy,
 )
+from apoapsis.repository.fingerprint import list_permitted_untracked_paths
 from apoapsis.repository.git import GitRepository
 
 
@@ -171,9 +173,10 @@ class RepositoryInspector:
         )
 
     def diff(self) -> ContextEvidence | None:
-        content = self.repository.run(
+        tracked = self.repository.run(
             ["diff", "--no-ext-diff", "--unified=5", "HEAD"]
         ).stdout
+        content = tracked + self._untracked_diff_text()
         if not content:
             return None
         head = self._head()
@@ -186,6 +189,53 @@ class RepositoryInspector:
             content=content[: self.max_chars],
             transmission_policy=TransmissionPolicy.CLOUD_ALLOWED,
         )
+
+    def _untracked_diff_text(self) -> str:
+        """Represent every permitted untracked file as a bounded, synthetic
+        "new file" unified diff, so a model can `inspect_diff` the exact
+        same untracked-file state the verification-state fingerprint
+        (ADR 0017) is sensitive to -- a common byproduct of an applied
+        patch that added a file without `git add`ing it. Consistent with
+        existing policy elsewhere (`read`, `replacement_patch`): binary
+        content and symlink targets are never rendered as if they were safe
+        text -- only their path and kind are noted, never their bytes."""
+
+        parts: list[str] = []
+        for relative in list_permitted_untracked_paths(self.repository):
+            destination = self.root / Path(*PurePosixPath(relative).parts)
+            if destination.is_symlink():
+                parts.append(
+                    f"diff --git a/{relative} b/{relative}\n"
+                    f"new file mode 120000\n"
+                    f"Symlink /dev/null and b/{relative} differ "
+                    "(symlink target withheld)\n"
+                )
+                continue
+            try:
+                raw = destination.read_bytes()
+            except OSError:
+                continue
+            if b"\0" in raw:
+                parts.append(
+                    f"diff --git a/{relative} b/{relative}\n"
+                    f"new file mode 100644\n"
+                    f"Binary files /dev/null and b/{relative} differ\n"
+                )
+                continue
+            text = raw.decode("utf-8", errors="replace").replace("\r\n", "\n")
+            lines = text.replace("\r", "\n").splitlines()
+            if not lines:
+                continue
+            body = "".join(f"+{line}\n" for line in lines)
+            parts.append(
+                f"diff --git a/{relative} b/{relative}\n"
+                f"new file mode 100644\n"
+                f"--- /dev/null\n"
+                f"+++ b/{relative}\n"
+                f"@@ -0,0 +1,{len(lines)} @@\n"
+                f"{body}"
+            )
+        return "".join(parts)
 
     def replacement_patch(
         self, path: str, old_text: str, new_text: str

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 from enum import StrEnum
 from pathlib import Path
 from typing import Callable
@@ -35,7 +34,7 @@ from apoapsis.models.provider import ModelRole
 from apoapsis.patches.apply import PatchApplicationError
 from apoapsis.patches.parser import UnifiedDiffError
 from apoapsis.patches.validator import PatchPolicyError
-from apoapsis.repository.git import GitRepository
+from apoapsis.repository.fingerprint import compute_worktree_fingerprint
 from apoapsis.specification.schema import StrictModel, TaskSpecification
 from apoapsis.verification.failures import FailureNormalizer, NormalizedFailure
 from apoapsis.verification.results import VerificationResult, VerificationStatus
@@ -474,10 +473,14 @@ class BoundedAgentSession:
         return result
 
     def _verification_state_digest(self) -> str:
-        content = GitRepository(self.worktree).run(
-            ["diff", "--no-ext-diff", "HEAD"]
-        ).stdout
-        return hashlib.sha256(content.encode("utf-8")).hexdigest()
+        """The shared, deterministic worktree fingerprint (ADR 0017):
+        HEAD identity, the canonical tracked diff, and every permitted
+        untracked file's exact content hash. A change to a newly created
+        (untracked) file changes this digest exactly as a tracked edit
+        would, closing a proof-integrity gap where a `git diff HEAD`-only
+        digest could not see a brand-new file a patch had just created."""
+
+        return compute_worktree_fingerprint(self.worktree).digest
 
     def _all_required_checks_passed(self) -> bool:
         required = {

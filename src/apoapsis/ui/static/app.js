@@ -267,6 +267,7 @@ function modelsView() {
       ${metric("Route", overview.execution?.route || "—", "Deterministic routing")}
       ${metric("Turns", overview.execution?.max_turns ?? "—", "Maximum agent turns")}
       ${metric("Verify runs", overview.execution?.max_verification_runs ?? "—", "Hard ceiling")}
+      ${metric("Completion policy", titleCase(overview.execution?.completion_policy || "—"), overview.execution?.completion_policy === "baseline" ? "No acceptance-coverage gate" : "Gates COMPLETE on proven acceptance criteria")}
     </div>
     <p class="section-title">Doctor evidence</p>
     <section class="card card-pad">

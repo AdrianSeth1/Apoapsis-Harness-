@@ -231,7 +231,15 @@ description = "Runs the project's full test suite."
 argv = ["python", "-m", "unittest", "discover", "-s", "tests", "-v"]
 timeout_seconds = 120
 required = true
-acceptance = true
+# Acceptance designation is an explicit owner decision (ADR 0017), never
+# generated automatically: mark acceptance = true only once you have
+# decided this command's pass is strong enough evidence that a criterion
+# is genuinely done, then map AcceptanceCriterion.verification_method to
+# "unit-tests" (or add a separate, stronger acceptance command). Until you
+# do, `apoapsis doctor` will warn that strict has no acceptance-designated
+# command, and tasks with active acceptance criteria correctly stop at
+# HUMAN_REVIEW_REQUIRED instead of silently reaching COMPLETE.
+acceptance = false
 """
 
 

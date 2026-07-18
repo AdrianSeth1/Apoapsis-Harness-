@@ -15,11 +15,11 @@ must be corrected before the change is considered complete.
 | Item | Current value |
 | --- | --- |
 | Last verified | 2026-07-18 |
-| Working-tree version | `1.0` plus ADR 0013 Windows local-model lifecycle, ADR 0014 first local operator-interface slice, ADR 0015 verification layers and acceptance coverage, and its ADR 0016 corrective follow-up |
+| Working-tree version | `1.0` plus ADR 0013 Windows local-model lifecycle, ADR 0014 first local operator-interface slice, ADR 0015 verification layers and acceptance coverage, ADR 0016's corrective follow-up, and ADR 0017's worktree-fingerprint/explicit-acceptance-designation hardening |
 | Checked-out branch | `main` |
-| Repository state | The 1.0/lifecycle baseline, the ADR 0014 UI slice, the ADR 0015 acceptance-coverage milestone, and the ADR 0016 correction are all committed on `main`. `DESIGN.md` is preserved as a separate, committed user-supplied design reference. Run `git status` and `git log -1 --oneline` for the exact current state. |
+| Repository state | The 1.0/lifecycle baseline, the ADR 0014 UI slice, the ADR 0015 acceptance-coverage milestone, the ADR 0016 correction, and the ADR 0017 hardening are all committed on `main`. `DESIGN.md` is preserved as a separate, committed user-supplied design reference. Run `git status` and `git log -1 --oneline` for the exact current state. |
 | Preserved substrate tag | `substrate-v0.1` at `4c2e735` |
-| Full deterministic suite | 210 tests, 0 failures, 0 errors, 4 intentional skips (2 live-network, 1 live-Docker, 1 machine currently lacks the Windows privilege to create symlinks) |
+| Full deterministic suite | 227 tests, 0 failures, 0 errors, 6 intentional skips (2 live-network, 1 live-Docker, 3 machine currently lacks the Windows privilege to create symlinks) |
 | Syntax check | `python -m compileall -q src tests` passed |
 | Diff check | `git diff --check` passed; Git reported only expected LF-to-CRLF working-copy warnings |
 | Live local coding result | Qwen3-Coder-Next Q4 completed the controlled download-service task in 10 turns and 3 verification runs |
@@ -65,7 +65,7 @@ commands, and writes a complete usage and audit report.
 | Apply a patch | Unified-diff parser, policy validator, and Git applier |
 | Decide whether tests passed | Verification runner |
 | Retry or escalate | Fixed configuration and controller rules |
-| Mark a task complete | Verification engine after all required checks pass; under the strict completion policy (ADR 0015/0016, the default for `apoapsis init` projects), additionally only after every active acceptance criterion is deterministically computed as Proven from configured, user-approved acceptance-designated commands that actually passed **for the current worktree digest** -- a model may propose a criterion's mapping only from the harness-published acceptance-command catalog at specification time, but only the harness computes and grants Proven/Failed/Unproven status, and a stale, earlier-digest pass never counts |
+| Mark a task complete | Verification engine after all required checks pass; under the strict completion policy (ADR 0015/0016, the default policy for `apoapsis init` projects, but never with an automatically acceptance-designated command -- ADR 0017), additionally only after every active acceptance criterion is deterministically computed as Proven from configured, user-approved acceptance-designated commands that actually passed **for the current shared worktree fingerprint** (tracked and untracked files, ADR 0017) -- a model may propose a criterion's mapping only from the harness-published acceptance-command catalog at specification time, but only the harness computes and grants Proven/Failed/Unproven status, and a stale, earlier-fingerprint pass never counts |
 | Record evidence and usage | Deterministic audit and reporting layers |
 
 No provider adapter may bypass this boundary. A larger or hosted model receives
@@ -218,20 +218,40 @@ architecture.
   `HUMAN_REVIEW_REQUIRED`, `FAILED`, and `ROLLED_BACK`.
 - Providers never call the transition API.
 
-### Verification layers and acceptance coverage (ADR 0015, corrected by ADR 0016)
+### Verification layers and acceptance coverage (ADR 0015, corrected by ADR 0016, hardened by ADR 0017)
 
+- `src/apoapsis/repository/fingerprint.py` (`compute_worktree_fingerprint()`,
+  ADR 0017) is the single, shared, deterministic notion of "current code"
+  used to scope verification caching, command results, and acceptance
+  proof: HEAD identity, the canonical zero-context tracked diff, and every
+  permitted untracked path's exact content hash and type/mode (regular
+  files hashed by raw bytes; symlinks hashed by their literal target text
+  via `os.readlink()`, never dereferenced). A brand-new untracked file --
+  the ordinary byproduct of a patch that was never `git add`ed -- changes
+  the fingerprint exactly as a tracked edit would, closing a gap where the
+  prior `git diff HEAD`-only digest could not see it. Untracked entries
+  inside `.git`/`.apoapsis`/`.sol` are never fingerprinted, matching
+  existing path-safety policy.
 - `src/apoapsis/workflow/acceptance.py` defines `AcceptanceCoverageStatus`
   (`PROVEN`/`FAILED`/`UNPROVEN`), `AcceptanceCoverage`, and
   `compute_acceptance_coverage()`/`acceptance_coverage_satisfied()` --
   deterministic, stateless functions over a specification, the configured
   verification commands, and a `dict[str, VerificationStatus]` of what each
   command's most recent execution actually did **at the current worktree
-  digest only**. Never executed → Unproven; executed and failed/timed
+  fingerprint only**. Never executed → Unproven; executed and failed/timed
   out/errored → Failed; executed and passed → Proven. A result recorded
-  against an earlier digest is never visible once the worktree changes --
-  `BoundedAgentSession.command_results` and one-shot's per-call
-  `VerificationResult` are both scoped to the exact current diff, so proof
-  cannot outlive the code it was proven against (ADR 0016).
+  against an earlier fingerprint is never visible once the worktree changes
+  (tracked or untracked) -- `BoundedAgentSession.command_results` and
+  one-shot's per-call `VerificationResult` are both scoped to the exact
+  current state, so proof cannot outlive the code it was proven against
+  (ADR 0016, digest scope hardened by ADR 0017).
+- `RepositoryInspector.diff()`/`inspect_diff` (ADR 0017) now also represents
+  every permitted untracked file as a bounded, synthetic "new file" unified
+  diff, so a model can inspect the same untracked-file state the
+  fingerprint is sensitive to. Untracked binary content and symlink targets
+  fail closed -- a path-only placeholder line, never raw bytes or a real
+  symlink target -- consistent with `read`'s existing binary refusal and
+  `patches/validator.py`'s unconditional symlink/binary-change rejection.
 - A model may propose `AcceptanceCriterion.verification_method` at
   specification-drafting time only from the deterministic
   `ACCEPTANCE_COMMAND_CATALOG` supplied with the extraction prompt (name,
@@ -248,10 +268,17 @@ architecture.
   string shown only in the extraction catalog.
 - `config.CompletionPolicy` (`BASELINE`/`STRICT`; Pydantic field default
   stays `BASELINE` for backward compatibility, but `apoapsis init`'s
-  generated config now explicitly writes `STRICT` with its default command
-  marked `acceptance = true` -- the practical default for ordinary product
-  runs, ADR 0016) gates whether `COMPLETE` additionally requires
-  `acceptance_coverage_satisfied()`.
+  generated config now explicitly writes `STRICT` -- the practical default
+  for ordinary product runs, ADR 0016) gates whether `COMPLETE`
+  additionally requires `acceptance_coverage_satisfied()`. Its one
+  generated command is **never** marked `acceptance = true` automatically
+  (ADR 0017 reverses ADR 0016's auto-grant): acceptance designation is
+  always an explicit owner decision, made after deciding a command's pass
+  is real product proof, with inline setup guidance in the generated
+  config. `apoapsis doctor` and the UI overview both warn when `STRICT` has
+  no acceptance-designated command, and separately when `BASELINE` is
+  selected at all -- reported facts only, never a silent migration of an
+  existing configuration.
   `BoundedAgentSession._check_completion` is the single place a turn may
   declare itself complete; under `STRICT` an unsatisfied gap attaches one
   synthetic `EV-ACCEPTANCE-GAP` evidence entry and returns control to the
@@ -274,11 +301,15 @@ architecture.
 - `workflow/` and `agent/` never import `evaluation/oracle.py`; the held-out
   oracle (ADR 0012) remains an eval-only side channel, invisible to every
   prompt and evidence record under either policy, and is not reused as the
-  model-visible acceptance check. See ADRs 0015 and 0016.
+  model-visible acceptance check. See ADRs 0015, 0016, and 0017.
 
 ### Repository isolation and context
 
 - `src/apoapsis/repository/git.py` is the deterministic Git command wrapper.
+  `src/apoapsis/repository/fingerprint.py` is the shared worktree
+  fingerprint (tracked + permitted untracked files) used to scope
+  verification caching and acceptance proof -- see "Verification layers and
+  acceptance coverage" above and ADR 0017.
 - `src/apoapsis/execution/worktree.py` creates managed worktrees below
   `.apoapsis/worktrees/`, validates task slugs and branches, and refuses normal
   cleanup of dirty worktrees.
@@ -349,7 +380,11 @@ plan, compatibility tests, and an ADR.
   `request_escalation`.
 - `src/apoapsis/agent/inspection.py` confines search/read/diff operations to safe,
   tracked or unignored text paths. It rejects absolute paths, drive paths,
-  parent traversal, `.git`, `.apoapsis`, and binary content.
+  parent traversal, `.git`, `.apoapsis`, and binary content. `inspect_diff`
+  (ADR 0017) also represents every permitted untracked file as a bounded,
+  synthetic "new file" diff -- the same untracked-file state the shared
+  worktree fingerprint checks -- with binary content and symlink targets
+  replaced by a path-only placeholder, never rendered as content.
 - `src/apoapsis/agent/session.py` owns turn, patch, verification, search/read, and
   observation budgets; evidence accumulation; deterministic transmitted-history
   compaction; check de-duplication; and session outcome. The complete bounded
@@ -900,6 +935,8 @@ direct-frontier comparison claims remain unmeasured.
 | Context measurement wired through the vertical slice/report/audit | `tests/test_context_measurement_integration.py` |
 | Windows owner lifecycle / loopback model warmup and unload | `tests/test_operator_lifecycle.py` |
 | Local UI service, capability/origin security, static shell, and CLI-equivalent specification approval | `tests/test_ui.py` |
+| Verification layers, acceptance-command catalog, coverage tri-state, completion policy | `tests/test_acceptance_coverage.py` |
+| Shared worktree fingerprint (tracked/untracked/binary/symlink) and `inspect_diff` untracked exposure | `tests/test_worktree_fingerprint.py` |
 
 Fake providers are the mandatory regression mechanism. Live model or network
 tests supplement them; they must not replace deterministic coverage.
@@ -973,18 +1010,25 @@ tests supplement them; they must not replace deterministic coverage.
     specification-drafting failure is not yet attributable to profile width
     versus general model variance.
 12. **Strict acceptance-coverage completion is now the product default but
-    has no live-model evidence yet.** `CompletionPolicy.STRICT` (ADR 0015,
-    corrected by ADR 0016) is fully implemented and covered by 18
-    deterministic fake-provider/unit scenarios
-    (`tests/test_acceptance_coverage.py`), and `apoapsis init` now writes
-    `strict` with its default command marked `acceptance = true`. But the
-    download-service evaluation fixture's specification still has no
+    has no live-model evidence yet, and no command is acceptance-designated
+    out of the box.** `CompletionPolicy.STRICT` (ADR 0015, corrected by ADR
+    0016, hardened by ADR 0017) is fully implemented and covered by 32
+    deterministic fake-provider/unit scenarios across
+    `tests/test_acceptance_coverage.py` and `tests/test_worktree_
+    fingerprint.py`. `apoapsis init` writes `completion_policy = "strict"`
+    but its default command stays `acceptance = false` -- ADR 0017
+    deliberately reversed ADR 0016's auto-grant, since acceptance
+    designation must be an explicit owner decision. A fresh project
+    therefore correctly stops every acceptance-bearing task at
+    `HUMAN_REVIEW_REQUIRED` until the owner marks a real command
+    `acceptance = true` (Doctor and the UI overview both warn about this).
+    The download-service evaluation fixture's specification still has no
     `verification_method` mapping (evaluation lanes explicitly force
     `BASELINE` regardless, so this is not currently blocking measurement),
     and nothing yet measures whether a real local or frontier model can
     productively repair toward a mapped acceptance command, using the new
     extraction-time catalog, rather than merely toward ordinary verification
-    passing -- that is the natural next evaluation once this correction is
+    passing -- that is the natural next evaluation once this hardening is
     reviewed. Do not begin that live evaluation without explicit direction.
 13. **The local application is a first slice, not a complete desktop product.**
     ADR 0014 now defines a capability-protected loopback application and the
@@ -1023,6 +1067,7 @@ automation as a substitute for those proofs.
 | `0014` | Offline local operator interface, capability-protected loopback API, and deterministic specification approval |
 | `0015` | Verification layers (development, user-approved acceptance, held-out oracle) and deterministic acceptance-coverage gating on completion |
 | `0016` | Acceptance-command catalog at extraction time, digest-scoped (non-stale) coverage computation, and STRICT as the practical product default |
+| `0017` | Shared worktree fingerprint (tracked + untracked files) for verification/proof scoping, untracked evidence in `inspect_diff`, and acceptance designation reverted to an explicit owner decision |
 
 Add a new ADR for a new architectural decision. Do not rewrite history to make
 old decisions appear current; mark an ADR superseded and link its replacement
