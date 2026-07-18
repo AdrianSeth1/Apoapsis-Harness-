@@ -1,0 +1,58 @@
+Functional Source License, Version 1.1
+
+Copyright © 2026 [Your Name or Your Project Name]
+
+Specification
+
+Licensor:             Aryamaan Seth
+Software:             Apoapsis-Harness
+License Change Date:  July 18, 2028
+Change License:       Apache License, Version 2.0
+
+
+1. Grants of Rights
+
+1.1. Non-Harmful Use. Effective on the date you accept this License, 
+Licensor grants you a non-exclusive, worldwide, royalty-free, 
+non-transferable, non-sublicensable license to use, copy, distribute, 
+make available, and prepare derivative works of the Software, 
+provided that your use of the Software does not include Harmful Use.
+
+1.2. Change License. Effective on the License Change Date, Licensor 
+grants you a license to the Software under the Change License.
+
+
+2. Definitions
+
+2.1. "Harmful Use" means any use of the Software:
+(a) in a commercial product or service that competes with the 
+    Software or any other product or service offered by Licensor 
+    using the Software; or
+(b) to provide the Software, or functionality of the Software, 
+    as a paid service to third parties.
+
+2.2. "Change License" means the license specified above, which must 
+be an OSI-approved open source license.
+
+2.3. "License Change Date" means the date specified above, which 
+must be no later than two years after the date the Software is first 
+made available under this License.
+
+
+3. Limitations and Conditions
+
+3.1. Attribution. You must include this License, including the 
+Specification above, and any copyright notices provided by Licensor 
+with all copies of the Software or derivative works you distribute 
+or make available.
+
+
+4. Disclaimer of Warranty and Limitation of Liability
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, 
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF 
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. 
+IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY 
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, 
+TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE 
+SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
