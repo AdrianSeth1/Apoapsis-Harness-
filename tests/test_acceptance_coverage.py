@@ -22,8 +22,18 @@ from apoapsis.config import (
 )
 from apoapsis.models.telemetry import InstrumentedModelProvider
 from apoapsis.reporting.report import TaskOutcome
+from apoapsis.specification.schema import (
+    AcceptanceCriterion,
+    SourceKind,
+    TaskSpecification,
+    TraceableStatement,
+)
+from apoapsis.verification.results import VerificationStatus
 from apoapsis.verification.runner import VerificationCommand, VerificationConfig
-from apoapsis.workflow.acceptance import AcceptanceCoverageStatus
+from apoapsis.workflow.acceptance import (
+    AcceptanceCoverageStatus,
+    compute_acceptance_coverage,
+)
 from apoapsis.workflow.engine import SQLiteTaskStore
 from apoapsis.workflow.vertical_slice import VerticalSliceRunner
 from tests.fakes import FakeModelProvider
@@ -544,6 +554,230 @@ class AcceptanceCoverageTests(unittest.TestCase):
                 for item in report.acceptance_coverage
             )
         )
+
+    def _stale_digest_config(self, *, local_turns: int) -> ApoapsisConfig:
+        """Three commands: one required, unmapped "sanity" check that keeps
+        the pre-existing dev-verification gate satisfied, plus two
+        non-required, acceptance-designated commands, one mapped to each
+        acceptance criterion. This isolates acceptance-coverage staleness
+        from the unrelated, pre-existing "all required checks passed"
+        gate."""
+
+        return ApoapsisConfig(
+            models=ModelsConfig(
+                frontier=FrontierProviderConfig(
+                    base_url="https://provider.invalid/v1",
+                    model="fake-coder-v1",
+                ),
+            ),
+            execution=ExecutionConfig(
+                mode=ExecutionMode.AGENT,
+                route=AgentRoute.LOCAL_ONLY,
+                completion_policy=CompletionPolicy.STRICT,
+                agent=AgentLoopConfig(
+                    max_turns=local_turns,
+                    max_patch_attempts=3,
+                    max_verification_runs=8,
+                    max_search_results=10,
+                    max_read_lines=120,
+                    max_observation_chars=20_000,
+                ),
+            ),
+            context=ContextCompilerConfig(
+                max_files=10, max_excerpt_lines=200, max_total_chars=50_000
+            ),
+            patch=PatchPolicyConfig(max_changed_lines=100),
+            verification=VerificationConfig(
+                commands=[
+                    VerificationCommand(
+                        name="sanity",
+                        category="sanity",
+                        argv=[sys.executable, "-c", "pass"],
+                        timeout_seconds=30,
+                        required=True,
+                        acceptance=False,
+                    ),
+                    VerificationCommand(
+                        name="download-tests",
+                        category="tests",
+                        argv=[
+                            sys.executable,
+                            "-m",
+                            "unittest",
+                            "discover",
+                            "-s",
+                            "tests",
+                            "-v",
+                        ],
+                        timeout_seconds=30,
+                        required=False,
+                        acceptance=True,
+                    ),
+                    VerificationCommand(
+                        name="download-tests-again",
+                        category="tests",
+                        argv=[
+                            sys.executable,
+                            "-m",
+                            "unittest",
+                            "discover",
+                            "-s",
+                            "tests",
+                            "-v",
+                        ],
+                        timeout_seconds=30,
+                        required=False,
+                        acceptance=True,
+                    ),
+                ]
+            ),
+        )
+
+    # A digest-bumping edit that does not change behavior, used to move the
+    # worktree to a new state without touching the mapped acceptance checks.
+    _DIGEST_BUMP_OLD_TEXT = (
+        "    def download(self, url: str, destination: Path) -> int:"
+    )
+    _DIGEST_BUMP_NEW_TEXT = (
+        "    def download(self, url: str, destination: Path) -> int:\n"
+        "        # digest-bump-noop"
+    )
+
+    # A result recorded against an earlier worktree digest must not prove
+    # the current one: AC-1's mapped command passes once, the worktree then
+    # changes (a new digest), and AC-1 must go back to UNPROVEN until it is
+    # re-verified at that new digest -- even though nothing about the fix
+    # itself regressed.
+    def test_stale_worktree_digest_result_does_not_prove_current_code(self) -> None:
+        spec = specification_with_mapping(
+            ac1_method="download-tests", ac2_method="download-tests-again"
+        )
+        fake = FakeModelProvider(
+            [
+                spec,
+                action("propose_patch", unified_diff=COMPLETE_PATCH),
+                action("run_check", command_name="sanity"),
+                action("run_check", command_name="download-tests"),
+                action(
+                    "replace_text",
+                    path="src/download_service/downloader.py",
+                    old_text=self._DIGEST_BUMP_OLD_TEXT,
+                    new_text=self._DIGEST_BUMP_NEW_TEXT,
+                ),
+                action("run_check", command_name="sanity"),
+                action("run_check", command_name="download-tests-again"),
+            ]
+        )
+        report = self._run(self._stale_digest_config(local_turns=6), fake)
+
+        self.assertEqual(report.outcome, TaskOutcome.HUMAN_REVIEW_REQUIRED)
+        coverage = {item.criterion_id: item for item in report.acceptance_coverage}
+        self.assertEqual(coverage["AC-1"].status, AcceptanceCoverageStatus.UNPROVEN)
+        self.assertIn(
+            "has not yet been executed", coverage["AC-1"].reason
+        )
+        self.assertEqual(coverage["AC-2"].status, AcceptanceCoverageStatus.PROVEN)
+
+    # The same script, continued one more turn: re-running the mapped
+    # command at the new digest restores proof and reaches COMPLETE.
+    def test_reverifying_at_the_new_digest_restores_proof(self) -> None:
+        spec = specification_with_mapping(
+            ac1_method="download-tests", ac2_method="download-tests-again"
+        )
+        fake = FakeModelProvider(
+            [
+                spec,
+                action("propose_patch", unified_diff=COMPLETE_PATCH),
+                action("run_check", command_name="sanity"),
+                action("run_check", command_name="download-tests"),
+                action(
+                    "replace_text",
+                    path="src/download_service/downloader.py",
+                    old_text=self._DIGEST_BUMP_OLD_TEXT,
+                    new_text=self._DIGEST_BUMP_NEW_TEXT,
+                ),
+                action("run_check", command_name="sanity"),
+                action("run_check", command_name="download-tests-again"),
+                action("run_check", command_name="download-tests"),
+            ]
+        )
+        report = self._run(self._stale_digest_config(local_turns=7), fake)
+
+        self.assertEqual(report.outcome, TaskOutcome.COMPLETE)
+        self.assertTrue(
+            all(
+                item.status == AcceptanceCoverageStatus.PROVEN
+                for item in report.acceptance_coverage
+            )
+        )
+
+
+class ComputeAcceptanceCoverageUnitTests(unittest.TestCase):
+    """Direct, fast unit coverage of the tri-state execution semantics
+    (ADR 0016): never executed, executed-and-failed, and executed-and-passed
+    must never collapse into one another."""
+
+    def setUp(self) -> None:
+        self.specification = TaskSpecification(
+            task_id="TASK-COVERAGE-UNIT",
+            objective=TraceableStatement(
+                text="Add resumable downloads.",
+                source=SourceKind.USER,
+                source_reference="unit-test",
+            ),
+            acceptance_criteria=[
+                AcceptanceCriterion(
+                    id="AC-1",
+                    text="Interrupted downloads resume from the persisted byte.",
+                    source=SourceKind.DERIVED,
+                    source_reference="unit-test",
+                    verification_method="acceptance-check",
+                )
+            ],
+        )
+        self.commands = [
+            VerificationCommand(
+                name="acceptance-check",
+                category="tests",
+                argv=["true"],
+                acceptance=True,
+            )
+        ]
+
+    def _status(self, command_results: dict[str, VerificationStatus]):
+        coverage = compute_acceptance_coverage(
+            self.specification, self.commands, command_results
+        )
+        self.assertEqual(len(coverage), 1)
+        return coverage[0]
+
+    def test_never_executed_is_unproven_not_failed(self) -> None:
+        result = self._status({})
+        self.assertEqual(result.status, AcceptanceCoverageStatus.UNPROVEN)
+        self.assertIn("has not yet been executed", result.reason)
+
+    def test_executed_and_failed_is_failed(self) -> None:
+        result = self._status({"acceptance-check": VerificationStatus.FAILED})
+        self.assertEqual(result.status, AcceptanceCoverageStatus.FAILED)
+
+    def test_executed_and_timed_out_is_failed(self) -> None:
+        result = self._status({"acceptance-check": VerificationStatus.TIMED_OUT})
+        self.assertEqual(result.status, AcceptanceCoverageStatus.FAILED)
+
+    def test_executed_and_errored_is_failed(self) -> None:
+        result = self._status({"acceptance-check": VerificationStatus.ERROR})
+        self.assertEqual(result.status, AcceptanceCoverageStatus.FAILED)
+
+    def test_executed_and_passed_is_proven(self) -> None:
+        result = self._status({"acceptance-check": VerificationStatus.PASSED})
+        self.assertEqual(result.status, AcceptanceCoverageStatus.PROVEN)
+
+    def test_skipped_is_treated_as_never_executed(self) -> None:
+        # A caller must omit SKIPPED entries entirely (they were never
+        # actually executed), but if one leaks through it must still not
+        # count as proof either way.
+        result = self._status({"acceptance-check": VerificationStatus.SKIPPED})
+        self.assertEqual(result.status, AcceptanceCoverageStatus.UNPROVEN)
 
 
 if __name__ == "__main__":

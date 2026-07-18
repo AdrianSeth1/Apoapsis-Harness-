@@ -18,6 +18,7 @@ from apoapsis.specification.extractor import (
     SpecificationExtractionError,
     SpecificationExtractor,
 )
+from apoapsis.verification.runner import VerificationCommand
 from tests.fakes import FakeModelProvider
 
 
@@ -283,6 +284,113 @@ class SpecificationExtractorTests(unittest.TestCase):
                 self.request,
                 "TASK-SPEC-1",
             )
+
+    def proposal_with_mapping(self, verification_method: str | None) -> str:
+        payload = json.loads(self.proposal("Preserve the current public API."))
+        payload["acceptance_criteria"] = [
+            {
+                "id": "AC-1",
+                "text": "Interrupted downloads resume from the persisted byte.",
+                "source": "derived",
+                "source_reference": "user-request",
+                "status": "active",
+                "verification_method": verification_method,
+            }
+        ]
+        return json.dumps(payload)
+
+    def test_build_prompt_includes_the_exact_configured_acceptance_catalog(
+        self,
+    ) -> None:
+        commands = [
+            VerificationCommand(
+                name="unit-tests",
+                category="tests",
+                description="Runs the full test suite.",
+                argv=["python", "-m", "unittest"],
+                acceptance=True,
+            ),
+            VerificationCommand(
+                name="lint",
+                category="lint",
+                description="",
+                argv=["ruff", "check", "."],
+                required=False,
+            ),
+        ]
+        prompt = self.extractor.build_prompt(
+            self.request, "TASK-SPEC-1", commands
+        )
+        self.assertIn("ACCEPTANCE_COMMAND_CATALOG:", prompt)
+        catalog_start = prompt.index("ACCEPTANCE_COMMAND_CATALOG:") + len(
+            "ACCEPTANCE_COMMAND_CATALOG:\n"
+        )
+        catalog_json = prompt[catalog_start:].split("\n", 1)[0]
+        catalog = json.loads(catalog_json)
+        self.assertEqual(
+            catalog,
+            [
+                {
+                    "name": "lint",
+                    "category": "lint",
+                    "description": "",
+                    "acceptance_designated": False,
+                },
+                {
+                    "name": "unit-tests",
+                    "category": "tests",
+                    "description": "Runs the full test suite.",
+                    "acceptance_designated": True,
+                },
+            ],
+        )
+
+    def test_mapping_to_an_unconfigured_command_is_rejected(self) -> None:
+        commands = [
+            VerificationCommand(
+                name="unit-tests", category="tests", argv=["python", "-m", "unittest"]
+            )
+        ]
+        with self.assertRaisesRegex(
+            SpecificationExtractionError, "not in the configured"
+        ):
+            self.extractor.parse(
+                self.proposal_with_mapping("a-made-up-shell-command"),
+                self.request,
+                "TASK-SPEC-1",
+                commands,
+            )
+
+    def test_mapping_to_a_catalog_command_is_accepted(self) -> None:
+        commands = [
+            VerificationCommand(
+                name="unit-tests",
+                category="tests",
+                argv=["python", "-m", "unittest"],
+                acceptance=True,
+            )
+        ]
+        specification = self.extractor.parse(
+            self.proposal_with_mapping("unit-tests"),
+            self.request,
+            "TASK-SPEC-1",
+            commands,
+        )
+        self.assertEqual(
+            specification.acceptance_criteria[0].verification_method,
+            "unit-tests",
+        )
+
+    def test_null_mapping_is_accepted_regardless_of_catalog(self) -> None:
+        specification = self.extractor.parse(
+            self.proposal_with_mapping(None),
+            self.request,
+            "TASK-SPEC-1",
+            [],
+        )
+        self.assertIsNone(
+            specification.acceptance_criteria[0].verification_method
+        )
 
 
 if __name__ == "__main__":

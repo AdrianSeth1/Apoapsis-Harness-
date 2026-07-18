@@ -68,6 +68,9 @@ class CLITests(unittest.TestCase):
         self.assertEqual(config.models.local_research.context_window_tokens, 32768)
         self.assertFalse(config.research.sources.reddit.enabled)
         self.assertNotIn("-t", config.verification.commands[0].argv)
+        self.assertEqual(config.execution.completion_policy.value, "strict")
+        self.assertTrue(config.verification.commands[0].acceptance)
+        self.assertTrue(config.verification.commands[0].description)
 
         task = self.invoke(
             "task",

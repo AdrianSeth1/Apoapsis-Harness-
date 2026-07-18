@@ -43,6 +43,17 @@ class VerificationCommand(StrictModel):
     timeout_seconds: float = Field(default=120.0, gt=0, le=3600)
     required: bool = True
     environment: dict[str, str] = Field(default_factory=dict)
+    description: str = Field(
+        default="",
+        max_length=500,
+        description=(
+            "Human-readable summary of what this command validates. Shown "
+            "to the specification-extraction model as part of the "
+            "deterministic acceptance-command catalog (ADR 0016) so it can "
+            "propose a sensible AcceptanceCriterion.verification_method "
+            "mapping; purely descriptive, never executed."
+        ),
+    )
     acceptance: bool = Field(
         default=False,
         description=(

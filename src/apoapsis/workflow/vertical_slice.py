@@ -158,7 +158,9 @@ class VerticalSliceRunner:
                 ["rev-parse", "HEAD"]
             ).stdout.strip()
             spec_context = ContextPackage.specification_only(preliminary, head)
-            spec_prompt = self.extractor.build_prompt(request, task_id)
+            spec_prompt = self.extractor.build_prompt(
+                request, task_id, self.config.verification.commands
+            )
             spec_response = self._model_call(
                 ModelOperation.DRAFT_SPECIFICATION,
                 spec_prompt,
@@ -166,7 +168,10 @@ class VerticalSliceRunner:
                 requested_output="task_specification_json",
             )
             specification = self.extractor.parse(
-                spec_response.content, request, task_id
+                spec_response.content,
+                request,
+                task_id,
+                self.config.verification.commands,
             )
             self.specification = specification
             self.store.update_specification(
@@ -568,15 +573,15 @@ class VerticalSliceRunner:
 
         assert self.specification is not None
         if self.config.execution.completion_policy == CompletionPolicy.STRICT:
-            passed_command_names = {
-                command.name
+            command_results = {
+                command.name: command.status
                 for command in verification_result.commands
-                if command.status == VerificationStatus.PASSED
+                if command.status != VerificationStatus.SKIPPED
             }
             coverage = compute_acceptance_coverage(
                 self.specification,
                 self.config.verification.commands,
-                passed_command_names,
+                command_results,
             )
             self.acceptance_coverage = coverage
             if not acceptance_coverage_satisfied(coverage):

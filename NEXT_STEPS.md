@@ -122,6 +122,43 @@ merely toward ordinary verification passing. Specification-extraction
 reliability (the one 128k drafting failure noted above) remains a separate,
 not-yet-investigated task.
 
+### Done — corrective follow-up: acceptance catalog, stale-proof fix, strict default (ADR 0016)
+
+A review of the ADR 0015 milestone above found three defects before any live
+strict evaluation should run, all now fixed:
+
+- Specification extraction now receives a deterministic
+  `ACCEPTANCE_COMMAND_CATALOG` (name/category/description/
+  `acceptance_designated`) built from real `[verification.commands]`
+  configuration on every call. A model may propose
+  `AcceptanceCriterion.verification_method` only from that catalog;
+  extraction rejects anything else. The UI specification view now shows the
+  proposed mapping so approval is informed.
+- `compute_acceptance_coverage()` now consumes a `dict[str,
+  VerificationStatus]` scoped to the current worktree digest, not a flat
+  "ever passed" set. Never executed, executed-and-failed, and
+  executed-and-passed are three distinct states; a result recorded against
+  an earlier digest can never prove the current one. Proven by both a
+  direct unit-test class and two integration tests that pass a mapped
+  command, edit the worktree, and confirm the criterion reverts to Unproven
+  until re-verified at the new digest.
+- `apoapsis init` now writes `completion_policy = "strict"` with its
+  default command marked `acceptance = true` -- the practical default for
+  ordinary product runs. Every `apoapsis eval` lane explicitly forces
+  `BASELINE` regardless of the caller's real project config, recorded on
+  every persisted report and in the comparison Markdown, so false-success
+  measurement stays comparable.
+
+The held-out download-service oracle was deliberately left untouched and
+was not turned into the visible acceptance check for that fixture -- doing
+so is explicitly still future evaluation work, described immediately above
+this section, requiring three distinct, separately-scoped checks: the
+existing agent-visible development tests, a new user-approved acceptance
+check the agent may run and repair toward, and the existing held-out oracle
+that stays invisible to the agent. See ADR 0016. The full pre-existing test
+suite (197 tests) was unaffected by these corrections; 13 new tests were
+added (210 total).
+
 ### Priority B — review and resume experience
 
 The highest-value product gap is a polished continuation path for tasks that end

@@ -11,6 +11,7 @@ from pathlib import Path
 
 from apoapsis.cli.app import _init, build_parser
 from apoapsis.specification.schema import (
+    AcceptanceCriterion,
     HardConstraint,
     SourceKind,
     TaskSpecification,
@@ -80,6 +81,15 @@ class UIServiceTests(unittest.TestCase):
                     verification_method="Run API compatibility tests.",
                 )
             ],
+            acceptance_criteria=[
+                AcceptanceCriterion(
+                    id="AC-1",
+                    text="Interrupted downloads resume from the persisted byte.",
+                    source=SourceKind.DERIVED,
+                    source_reference="ui-test",
+                    verification_method="unit-tests",
+                )
+            ],
         )
         self.store.create_task(specification)
         self.store.transition(
@@ -103,6 +113,12 @@ class UIServiceTests(unittest.TestCase):
                 "verbatim_source"
             ],
             "Preserve the public API exactly.",
+        )
+        self.assertEqual(
+            detail["task"]["specification"]["acceptance_criteria"][0][
+                "verification_method"
+            ],
+            "unit-tests",
         )
         self.assertEqual(detail["available_actions"], ["approve_specification"])
         self.assertEqual(detail["events"][-1]["actor"], "system")

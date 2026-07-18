@@ -13,6 +13,7 @@ from apoapsis.cli.app import _aggregate_eval_reports, _eval_download_service
 from apoapsis.config import (
     AgentLoopConfig,
     AgentRoute,
+    CompletionPolicy,
     ContextCompilerConfig,
     ExecutionConfig,
     ExecutionMode,
@@ -184,6 +185,31 @@ class LaneOverlayTests(unittest.TestCase):
         for lane in EvalLane:
             overlay = apply_lane_overlay(self.config, lane)
             self.assertEqual(overlay.models, self.config.models)
+
+    def test_every_lane_explicitly_selects_baseline_even_from_a_strict_project(
+        self,
+    ) -> None:
+        # Ordinary product configuration now defaults to STRICT (ADR 0016).
+        # A real caller's `.apoapsis/config.toml` may therefore already be
+        # STRICT; every evaluation lane must still explicitly force
+        # BASELINE so historical false-success measurement stays
+        # comparable, not silently inherit whatever the project selected.
+        strict_execution = self.config.execution.model_copy(
+            update={"completion_policy": CompletionPolicy.STRICT}
+        )
+        strict_config = self.config.model_copy(
+            update={"execution": strict_execution}
+        )
+        self.assertEqual(
+            strict_config.execution.completion_policy, CompletionPolicy.STRICT
+        )
+        for lane in EvalLane:
+            overlay = apply_lane_overlay(strict_config, lane)
+            self.assertEqual(
+                overlay.execution.completion_policy,
+                CompletionPolicy.BASELINE,
+                f"lane {lane.value} must explicitly select BASELINE",
+            )
 
 
 class FixtureRepositoryTests(unittest.TestCase):

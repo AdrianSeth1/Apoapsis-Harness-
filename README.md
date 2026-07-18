@@ -556,38 +556,60 @@ The Docker backend materially improves isolation but is not a defense
 against container-runtime or kernel vulnerabilities; see ADR 0009's threat
 model for exactly what it does and does not cover.
 
-## Acceptance coverage and the completion policy (ADR 0015)
+## Acceptance coverage and the completion policy (ADR 0015, ADR 0016)
 
 Configured verification passing is a development signal, not proof that the
 product is done. Mark the subset of commands strong enough to prove an
-acceptance criterion, and name which criterion each proves:
+acceptance criterion, describe it for the extraction model, and name which
+criterion each proves:
 
 ```toml
 [[verification.commands]]
 name = "unit-tests"
 category = "tests"
+description = "Runs the project's full test suite."
 argv = ["python", "-m", "unittest", "discover", "-s", "tests", "-v"]
 timeout_seconds = 120
 required = true
 acceptance = true   # this command is strong enough to prove a criterion
 
 [execution]
-completion_policy = "baseline"   # default; set "strict" to gate on coverage
+completion_policy = "strict"   # apoapsis init's default; see below
 ```
 
-An extracted `AcceptanceCriterion` may carry a `verification_method` naming
-one configured command (the model may propose this at specification time;
-the user approves the specification as a whole, same as today). Under
-`completion_policy = "strict"`, `COMPLETE` additionally requires every
-active acceptance criterion to be computed as **Proven** -- mapped to a
-command that is both configured and `acceptance = true`, and that has
-actually passed. Unmapped, misconfigured, or failing mappings stay
+`apoapsis init` writes exactly this -- `completion_policy = "strict"` with
+its one default command marked `acceptance = true` -- so a fresh project is
+immediately usable, not stuck failing closed on every task. Specification
+extraction receives a deterministic **acceptance-command catalog** built
+fresh from `[verification.commands]` on every call (name, category,
+`description`, and whether each is `acceptance_designated`); an extracted
+`AcceptanceCriterion.verification_method` may name only a catalog entry or
+stay `null` -- extraction rejects anything else, so a model can propose a
+mapping but never invent one. The user still approves the whole
+specification, mapping included, before it takes effect; the local UI's
+specification view shows each criterion's proposed check.
+
+Under `completion_policy = "strict"`, `COMPLETE` additionally requires
+every active acceptance criterion to be computed as **Proven** -- mapped to
+a command that is both configured and `acceptance = true`, and that has
+actually **passed for the current worktree state**. A pass recorded before
+the worktree changed does not count: coverage is recomputed from each
+command's real execution status scoped to the exact current diff, so
+never-executed, failed, and passed are three distinct, non-stale states.
+Unmapped, misconfigured, failing, or stale mappings stay
 **Unproven**/**Failed** regardless of what a model claims; only the harness
 computes and grants that status. A gap returns control to the bounded agent
 with evidence (same budget, same loop) or, in one-shot mode, stops at
 `HUMAN_REVIEW_REQUIRED` rather than spending its single repair attempt on
-it. `completion_policy` defaults to `"baseline"` (today's behavior) so
-existing configurations, tests, and evaluation fixtures are unaffected.
+it.
+
+`apoapsis eval` always explicitly selects `completion_policy = "baseline"`
+for every lane, regardless of what a real project's configuration selects,
+so false-success measurement against the held-out oracle stays comparable
+across runs -- this is recorded on every persisted report and as a
+"Completion Policy" column in the comparison Markdown, not silent
+inheritance. The Pydantic configuration default (for code that builds a
+config directly, bypassing `apoapsis init`) remains `"baseline"`.
 
 ## Repository layout
 

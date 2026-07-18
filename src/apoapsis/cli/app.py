@@ -97,7 +97,7 @@ cached_input_per_million_usd = 0
 [execution]
 mode = "agent"
 route = "auto"
-completion_policy = "baseline"
+completion_policy = "strict"
 
 [execution.agent]
 max_turns = 12
@@ -227,9 +227,11 @@ environment_allowlist = [
 [[verification.commands]]
 name = "unit-tests"
 category = "tests"
+description = "Runs the project's full test suite."
 argv = ["python", "-m", "unittest", "discover", "-s", "tests", "-v"]
 timeout_seconds = 120
 required = true
+acceptance = true
 """
 
 

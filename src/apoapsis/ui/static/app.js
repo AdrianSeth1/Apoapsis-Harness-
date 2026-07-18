@@ -330,7 +330,7 @@ function specificationView(detail) {
         ${constraints.length ? constraints.map(constraintCard).join("") : `<div class="notice">No hard constraints are recorded for this specification.</div>`}
       </section>
       <aside>
-        <section class="card"><div class="card-header"><div><h3>Acceptance criteria</h3><p>${criteria.length} recorded</p></div></div><div class="card-body">${criteria.length ? criteria.map((criterion) => `<div class="constraint"><div class="constraint-head"><span class="constraint-id">${e(criterion.id)}</span><span class="pill purple">${e(criterion.status)}</span></div><blockquote>${e(criterion.text)}</blockquote></div>`).join("") : `<p class="muted">No explicit criteria recorded.</p>`}</div></section>
+        <section class="card"><div class="card-header"><div><h3>Acceptance criteria</h3><p>${criteria.length} recorded</p></div></div><div class="card-body">${criteria.length ? criteria.map((criterion) => `<div class="constraint"><div class="constraint-head"><span class="constraint-id">${e(criterion.id)}</span><span class="pill purple">${e(criterion.status)}</span></div><blockquote>${e(criterion.text)}</blockquote><div class="meta mt-14">PROPOSED CHECK: ${criterion.verification_method ? `<code>${e(criterion.verification_method)}</code>` : "none -- unproven under the strict completion policy until mapped"}</div></div>`).join("") : `<p class="muted">No explicit criteria recorded.</p>`}</div></section>
         <p class="section-title">Risk & output</p>
         <section class="card card-pad"><div class="file-item"><span>Risk</span><strong>${e(titleCase(spec.risk_level))}</strong></div><div class="file-item"><span>Requested output</span><strong>${e(titleCase(spec.requested_output))}</strong></div></section>
       </aside>

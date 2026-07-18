@@ -189,7 +189,7 @@ class BoundedAgentSession:
         self.patch_attempts = 0
         self.verification_runs = 0
         self.verification_cache: dict[str, VerificationResult] = {}
-        self.passed_checks: dict[str, set[str]] = {}
+        self.command_results: dict[str, dict[str, VerificationStatus]] = {}
 
     def run(self) -> AgentSessionResult:
         for turn in range(1, self.config.max_turns + 1):
@@ -436,12 +436,11 @@ class BoundedAgentSession:
         )
         self.verification_results.append(result)
         self.verification_cache[cache_key] = result
-        passed = self.passed_checks.setdefault(state_digest, set())
-        passed.update(
-            item.name
-            for item in result.commands
-            if item.status == VerificationStatus.PASSED
-        )
+        digest_results = self.command_results.setdefault(state_digest, {})
+        for item in result.commands:
+            if item.status == VerificationStatus.SKIPPED:
+                continue
+            digest_results[item.name] = item.status
         self.audit.write_json(
             (
                 f"{self.audit_prefix}verification-"
@@ -486,9 +485,13 @@ class BoundedAgentSession:
             for item in self.verification_config.commands
             if item.required
         }
-        return required.issubset(
-            self.passed_checks.get(self._verification_state_digest(), set())
-        )
+        current = self.command_results.get(self._verification_state_digest(), {})
+        passed = {
+            name
+            for name, status in current.items()
+            if status == VerificationStatus.PASSED
+        }
+        return required.issubset(passed)
 
     def _check_completion(self, verification_passed: bool) -> bool:
         """The single place a turn is allowed to declare itself complete.
@@ -499,7 +502,9 @@ class BoundedAgentSession:
         every active acceptance criterion must also be proven by an
         approved acceptance-designated command. A model's own claims never
         factor in; coverage is recomputed deterministically every time from
-        real passed command names.
+        real per-command execution results scoped to the current worktree
+        digest (ADR 0016), so a result from an earlier code state can never
+        count as proof of the current one.
         """
 
         if not verification_passed:
@@ -509,7 +514,7 @@ class BoundedAgentSession:
         coverage = compute_acceptance_coverage(
             self.specification,
             self.verification_config.commands,
-            self.passed_checks.get(self._verification_state_digest(), set()),
+            self.command_results.get(self._verification_state_digest(), {}),
         )
         self.last_acceptance_coverage = coverage
         if acceptance_coverage_satisfied(coverage):

@@ -11,12 +11,12 @@ from apoapsis.evaluation.schemas import (
 )
 
 _HEADER = (
-    "| Lane | Outcome | Calls | Input Tokens | Output Tokens | Cached Tokens | "
-    "Cost USD | Latency s | Files Changed | Escalation | Verification | "
-    "Peak Ctx Tokens | Peak Window Util | Stable/New Evidence | "
+    "| Lane | Completion Policy | Outcome | Calls | Input Tokens | Output Tokens | "
+    "Cached Tokens | Cost USD | Latency s | Files Changed | Escalation | "
+    "Verification | Peak Ctx Tokens | Peak Window Util | Stable/New Evidence | "
     "Unsafe Rejections | Held-out Oracle |\n"
-    "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | "
-    "--- | --- | --- | --- | --- |\n"
+    "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | "
+    "--- | --- | --- | --- |\n"
 )
 
 
@@ -35,8 +35,8 @@ def _render_row(lane_result) -> str:
     if lane_result.skipped or lane_result.report is None:
         reason = lane_result.skip_reason or ""
         return (
-            f"| {lane_result.lane.value} | skipped | - | - | - | - | - | - | - | "
-            f"- | {reason} | - | - | - | - | - |"
+            f"| {lane_result.lane.value} | - | skipped | - | - | - | - | - | - | "
+            f"- | - | {reason} | - | - | - | - |"
         )
     task_report = lane_result.report
     verification = (
@@ -66,7 +66,8 @@ def _render_row(lane_result) -> str:
         else "not configured"
     )
     return (
-        f"| {lane_result.lane.value} | {task_report.outcome.value} | "
+        f"| {lane_result.lane.value} | {task_report.completion_policy.value} | "
+        f"{task_report.outcome.value} | "
         f"{task_report.number_of_calls} | {task_report.input_tokens} | "
         f"{task_report.output_tokens} | {task_report.cached_input_tokens} | "
         f"{task_report.estimated_cost_usd:.4f} | "

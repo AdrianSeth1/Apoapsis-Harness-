@@ -56,10 +56,13 @@ class AcceptanceCriterion(TraceableStatement):
         min_length=1,
         description=(
             "Optional name of a configured, acceptance-designated "
-            "verification command whose pass proves this criterion. "
-            "Must match [[verification.commands]] name with acceptance = "
-            "true, or it never counts as proof, regardless of who proposed "
-            "it."
+            "verification command whose pass proves this criterion. Must "
+            "be one of the names in ACCEPTANCE_COMMAND_CATALOG supplied "
+            "with the extraction prompt (ADR 0016) -- extraction rejects "
+            "any other value. Even a catalog name only counts as proof if "
+            "the harness also has that command configured with "
+            "acceptance = true and it has actually passed for the current "
+            "worktree state; naming it is a proposal, not a grant."
         ),
     )
 
