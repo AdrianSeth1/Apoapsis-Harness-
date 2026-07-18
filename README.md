@@ -496,7 +496,10 @@ The installed Coder-Next Q4 evaluation is in
 The first bounded-agent run to complete the controlled fixture used ten agent
 turns and three verification runs; all three tests passed with one source file
 changed. The earlier one-shot failures remain documented as the comparison
-baseline rather than being discarded.
+baseline rather than being discarded. The first live `--lane local-strict`
+evaluation (3 attempts, 0 completions, and a genuine harness gap it
+surfaced) is in
+[`docs/evaluation/apoapsis-strict-live-evaluation-2026-07-18.md`](docs/evaluation/apoapsis-strict-live-evaluation-2026-07-18.md).
 
 ## Research Mode
 

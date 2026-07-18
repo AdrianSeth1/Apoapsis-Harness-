@@ -192,6 +192,45 @@ The full pre-existing test suite (210 tests) was unaffected; 17 new tests
 were added (227 total, 6 intentional skips -- 2 new ones for symlink
 creation being unsupported on this Windows machine). See ADR 0017.
 
+### Done — first controlled STRICT live evaluation
+
+Added an opt-in `local-strict` evaluation lane (`--lane local-strict`,
+excluded from the default lane set, forcing `completion_policy = STRICT`
+regardless of the caller's real project config) and a second,
+model-visible `tests/test_resumable_visible_acceptance.py` in the
+`download-service` fixture -- distinct data and test/class names from the
+held-out `tests/test_resumable_acceptance.py`, proven through its own
+specifically named `resumable-acceptance-check` acceptance-designated
+command. 244 tests total (full suite unaffected; 17 new).
+
+Then ran three fresh, identical, live `local-strict` attempts
+(Qwen3-Coder-Next Q4, 64k profile, no manual repair between attempts,
+every audit artifact preserved). Result: **0/3 reached `COMPLETE`** (2
+`HUMAN_REVIEW_REQUIRED`, 1 specification-extraction failure unrelated to
+the new mechanism). Full detail:
+`docs/evaluation/apoapsis-strict-live-evaluation-2026-07-18.md`.
+
+**Not an architecture fix, and not done here, per instruction** -- but the
+single highest-priority next step before any further live `local-strict`
+evaluation: the run surfaced a genuine, narrowly-scoped harness gap. A
+failing verification command that is `acceptance = true` but
+`required = false` produces neither informative failure evidence
+(`_verify()`'s trigger in `agent/session.py` keys on the aggregate
+`VerificationResult.status`, which only reflects *required* failures) nor
+an accurate turn summary (`_record_verification()`'s same `required`-only
+check). In both live attempts that reached the mechanism, the model
+proposed a genuinely correct acceptance-catalog mapping and got close to a
+correct fix, but never saw that its one remaining, narrow return-value bug
+had actually failed the acceptance check -- it saw "deterministic
+verification passed" and spent its whole remaining budget re-running an
+unchanged, already-run check. Fixing this (treating `acceptance = true`
+the same as `required = true` for failure-evidence and summary purposes,
+without changing what counts as a required *development*-gating failure)
+is a small, well-scoped, already-diagnosed change -- the natural next step
+before re-running `local-strict` to get a first real completion-rate
+measurement. Do not begin it, or any further live evaluation, without
+explicit direction.
+
 ### Priority B — review and resume experience
 
 The highest-value product gap is a polished continuation path for tasks that end
