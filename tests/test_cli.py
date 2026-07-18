@@ -122,6 +122,20 @@ class CLITests(unittest.TestCase):
         self.assertEqual(large.context.max_excerpt_lines, 240)
         self.assertEqual(large.context.max_total_chars, 180000)
 
+        wide = _apply_context_profile(config, "128k")
+        self.assertEqual(wide.models.frontier.context_window_tokens, 131072)
+        self.assertEqual(wide.context.max_files, 32)
+        self.assertEqual(wide.context.max_excerpt_lines, 320)
+        self.assertEqual(wide.context.max_total_chars, 360000)
+
+        widest = _apply_context_profile(config, "256k")
+        self.assertEqual(widest.models.frontier.context_window_tokens, 262144)
+        self.assertEqual(widest.context.max_files, 40)
+        self.assertEqual(widest.context.max_excerpt_lines, 400)
+        self.assertEqual(widest.context.max_total_chars, 600000)
+
+        # explicit opt-in only: the default project config is untouched by
+        # the mere existence of larger profiles.
         self.assertEqual(config.models.frontier.context_window_tokens, 65536)
         self.assertEqual(config.context.max_total_chars, 180000)
 
@@ -141,6 +155,17 @@ class CLITests(unittest.TestCase):
         self.assertEqual(arguments.context_profile, "64k")
         self.assertEqual(arguments.execution_mode, "one_shot")
         self.assertEqual(arguments.agent_route, "local_only")
+
+    def test_run_and_eval_accept_the_128k_and_256k_profiles(self) -> None:
+        for profile in ("128k", "256k"):
+            run_arguments = build_parser().parse_args(
+                ["run", "Add resumable downloads", "--context-profile", profile]
+            )
+            self.assertEqual(run_arguments.context_profile, profile)
+            eval_arguments = build_parser().parse_args(
+                ["eval", "download-service", "--context-profile", profile]
+            )
+            self.assertEqual(eval_arguments.context_profile, profile)
 
     def test_context_profile_rejects_a_hosted_provider(self) -> None:
         self.invoke("init")

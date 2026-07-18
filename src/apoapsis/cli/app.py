@@ -282,7 +282,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     run.add_argument(
         "--context-profile",
-        choices=["16k", "32k", "64k"],
+        choices=["16k", "32k", "64k", "128k", "256k"],
         help=(
             "override the native Ollama window and repository excerpt "
             "budget for a reproducible comparison"
@@ -350,7 +350,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     evaluate.add_argument(
         "--context-profile",
-        choices=["16k", "32k", "64k"],
+        choices=["16k", "32k", "64k", "128k", "256k"],
         help="override the native Ollama window and repository evidence budget",
     )
     evaluate.add_argument(
@@ -607,6 +607,24 @@ _CONTEXT_PROFILES: dict[str, dict[str, int]] = {
         "max_files": 24,
         "max_excerpt_lines": 240,
         "max_total_chars": 180_000,
+    },
+    # 128k and 256k are explicit, opt-in profiles (ADR 0010). They are not
+    # the default merely because a model or VRAM budget can fit them --
+    # `apoapsis doctor` and per-call ContextMeasurement/model_window_
+    # utilization are how their actual usefulness gets measured, not
+    # assumed. 256k matches qwen3-coder-next's reported native context
+    # length exactly; going further would exceed the installed model.
+    "128k": {
+        "context_window_tokens": 131_072,
+        "max_files": 32,
+        "max_excerpt_lines": 320,
+        "max_total_chars": 360_000,
+    },
+    "256k": {
+        "context_window_tokens": 262_144,
+        "max_files": 40,
+        "max_excerpt_lines": 400,
+        "max_total_chars": 600_000,
     },
 }
 

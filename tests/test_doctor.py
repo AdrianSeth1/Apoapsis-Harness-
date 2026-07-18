@@ -15,21 +15,28 @@ from apoapsis.models.telemetry import InstrumentedModelProvider
 from tests.fakes import FakeModelProvider
 
 
-class _FakeOllamaHandler(http.server.BaseHTTPRequestHandler):
-    def do_GET(self) -> None:  # noqa: N802 - required by BaseHTTPRequestHandler
-        payload = json.dumps({"models": []}).encode("utf-8")
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.end_headers()
-        self.wfile.write(payload)
+def _make_ollama_handler(models: list[dict]) -> type:
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802 - required by BaseHTTPRequestHandler
+            payload = json.dumps({"models": models}).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(payload)
 
-    def log_message(self, format: str, *args: object) -> None:  # noqa: A002
-        return
+        def log_message(self, format: str, *args: object) -> None:  # noqa: A002
+            return
+
+    return Handler
 
 
 class _FakeOllamaServer:
+    def __init__(self, *, models: list[dict] | None = None) -> None:
+        self._models = models or []
+
     def __enter__(self) -> str:
-        self.server = http.server.HTTPServer(("127.0.0.1", 0), _FakeOllamaHandler)
+        handler = _make_ollama_handler(self._models)
+        self.server = http.server.HTTPServer(("127.0.0.1", 0), handler)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
         return f"http://127.0.0.1:{self.server.server_port}"
@@ -340,6 +347,123 @@ required = true
         unreachable_checks = _find(unreachable_report, "ollama_reachability:")
         self.assertEqual(len(unreachable_checks), 1)
         self.assertEqual(unreachable_checks[0].status, DoctorCheckStatus.ERROR)
+
+    def test_context_window_within_native_support_is_ok(self) -> None:
+        with _FakeOllamaServer(
+            models=[
+                {
+                    "name": "qwen-test",
+                    "model": "qwen-test",
+                    "details": {"context_length": 262144},
+                }
+            ]
+        ) as base_url:
+            self._write_toml(
+                f"""
+[models.frontier]
+provider = "ollama"
+base_url = "{base_url}"
+model = "qwen-test"
+context_window_tokens = 131072
+
+[execution]
+mode = "one_shot"
+
+[verification]
+[[verification.commands]]
+name = "tests"
+category = "tests"
+argv = ["git", "--version"]
+required = true
+"""
+            )
+            report = run_doctor(self.root)
+        check = _check(report, "context_window_support:frontier")
+        self.assertEqual(check.status, DoctorCheckStatus.OK)
+        self.assertIn("131072", check.detail)
+        self.assertIn("262144", check.detail)
+
+    def test_context_window_exceeding_native_support_is_an_error(self) -> None:
+        with _FakeOllamaServer(
+            models=[
+                {
+                    "name": "qwen-test",
+                    "model": "qwen-test",
+                    "details": {"context_length": 65536},
+                }
+            ]
+        ) as base_url:
+            self._write_toml(
+                f"""
+[models.frontier]
+provider = "ollama"
+base_url = "{base_url}"
+model = "qwen-test"
+context_window_tokens = 262144
+
+[execution]
+mode = "one_shot"
+
+[verification]
+[[verification.commands]]
+name = "tests"
+category = "tests"
+argv = ["git", "--version"]
+required = true
+"""
+            )
+            report = run_doctor(self.root)
+        check = _check(report, "context_window_support:frontier")
+        self.assertEqual(check.status, DoctorCheckStatus.ERROR)
+        self.assertIsNotNone(check.remediation)
+        self.assertEqual(report.overall_status, DoctorCheckStatus.ERROR)
+
+    def test_context_window_check_is_skipped_when_not_configured(self) -> None:
+        self._write_toml(
+            """
+[models.frontier]
+provider = "ollama"
+base_url = "http://127.0.0.1:11434"
+model = "qwen-test"
+
+[execution]
+mode = "one_shot"
+
+[verification]
+[[verification.commands]]
+name = "tests"
+category = "tests"
+argv = ["git", "--version"]
+required = true
+"""
+        )
+        report = run_doctor(self.root)
+        self.assertEqual(_find(report, "context_window_support:"), [])
+
+    def test_context_window_check_warns_when_model_is_unlisted(self) -> None:
+        with _FakeOllamaServer(models=[]) as base_url:
+            self._write_toml(
+                f"""
+[models.frontier]
+provider = "ollama"
+base_url = "{base_url}"
+model = "qwen-test"
+context_window_tokens = 65536
+
+[execution]
+mode = "one_shot"
+
+[verification]
+[[verification.commands]]
+name = "tests"
+category = "tests"
+argv = ["git", "--version"]
+required = true
+"""
+            )
+            report = run_doctor(self.root)
+        check = _check(report, "context_window_support:frontier")
+        self.assertEqual(check.status, DoctorCheckStatus.WARNING)
 
     def test_probe_is_never_attempted_without_the_flag(self) -> None:
         self._write_toml(

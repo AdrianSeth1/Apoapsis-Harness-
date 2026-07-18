@@ -7,8 +7,10 @@ from apoapsis.evaluation.schemas import EvalComparisonReport
 
 _HEADER = (
     "| Lane | Outcome | Calls | Input Tokens | Output Tokens | Cached Tokens | "
-    "Cost USD | Latency s | Files Changed | Escalation | Verification |\n"
-    "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n"
+    "Cost USD | Latency s | Files Changed | Escalation | Verification | "
+    "Peak Ctx Tokens | Peak Window Util | Stable/New Evidence |\n"
+    "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | "
+    "--- | --- | --- |\n"
 )
 
 
@@ -28,7 +30,7 @@ def _render_row(lane_result) -> str:
         reason = lane_result.skip_reason or ""
         return (
             f"| {lane_result.lane.value} | skipped | - | - | - | - | - | - | - | "
-            f"- | {reason} |"
+            f"- | {reason} | - | - | - |"
         )
     task_report = lane_result.report
     verification = (
@@ -36,6 +38,22 @@ def _render_row(lane_result) -> str:
         if task_report.verification_results
         else "not run"
     )
+    measurements = task_report.context_measurements
+    if measurements:
+        peak_tokens = max(item.estimated_tokens for item in measurements)
+        utilizations = [
+            item.model_window_utilization
+            for item in measurements
+            if item.model_window_utilization is not None
+        ]
+        peak_utilization = f"{max(utilizations):.1%}" if utilizations else "-"
+        stable_total = sum(item.stable_evidence_count for item in measurements)
+        new_total = sum(item.new_evidence_count for item in measurements)
+        stable_vs_new = f"{stable_total}/{new_total}"
+    else:
+        peak_tokens = "-"
+        peak_utilization = "-"
+        stable_vs_new = "-"
     return (
         f"| {lane_result.lane.value} | {task_report.outcome.value} | "
         f"{task_report.number_of_calls} | {task_report.input_tokens} | "
@@ -43,7 +61,8 @@ def _render_row(lane_result) -> str:
         f"{task_report.estimated_cost_usd:.4f} | "
         f"{task_report.latency_seconds:.2f} | "
         f"{len(task_report.files_changed)} | "
-        f"{task_report.escalation_triggered} | {verification} |"
+        f"{task_report.escalation_triggered} | {verification} | "
+        f"{peak_tokens} | {peak_utilization} | {stable_vs_new} |"
     )
 
 

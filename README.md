@@ -69,8 +69,10 @@ the product/runtime namespace migration, and
 [ADR 0008](docs/adr/0008-evaluation-and-diagnostic-tooling.md) records the
 evaluation harness and diagnostic tooling contract,
 [ADR 0009](docs/adr/0009-execution-sandbox.md) records the execution
-sandbox, and [the Research Mode guide](docs/research-mode.md) covers setup
-and operation.
+sandbox, [ADR 0010](docs/adr/0010-context-measurement-and-wider-profiles.md)
+records the 128k/256k context profiles and the deterministic context-
+measurement layer, and [the Research Mode guide](docs/research-mode.md)
+covers setup and operation.
 
 ## Install for development
 
@@ -254,10 +256,24 @@ comparison profile without editing the project configuration:
 | `16k` | 16,384 | 10 | 100 | 24,000 |
 | `32k` | 32,768 | 16 | 160 | 72,000 |
 | `64k` | 65,536 | 24 | 240 | 180,000 |
+| `128k` | 131,072 | 32 | 320 | 360,000 |
+| `256k` | 262,144 | 40 | 400 | 600,000 |
 
 ```bash
 apoapsis run "Add resumable downloads without changing the public API" --context-profile 64k
 ```
+
+`128k`/`256k` exist to be explicitly measured, not assumed safe because a
+model or GPU happens to have the VRAM for them (ADR 0010) — `64k` remains
+the default. `apoapsis doctor` checks a configured `context_window_tokens`
+against the installed Ollama model's actually reported native context
+length (`context_window_support:<role>`) before you rely on a wider
+profile. Every model call also writes a `ContextMeasurement` (model window,
+file/excerpt limits, transmitted chars, estimated tokens, window
+utilization, composition, and stable-versus-newly-introduced evidence) as
+its own audit artifact, surfaced on the task report and in `apoapsis eval`'s
+comparison output — so a profile's actual effect is something you can read,
+not guess.
 
 Profiles affect the native local-coding window and deterministic retrieval;
 Research Mode retains its separately configured budget. Apoapsis records the active
@@ -442,7 +458,7 @@ model for exactly what it does and does not cover.
 src/apoapsis/
   agent/            bounded typed inspect-edit-test sessions
   cli/              CLI entry points
-  context/          provenance-aware evidence schemas
+  context/          provenance-aware evidence schemas; deterministic context measurement
   execution/        managed Git worktrees; host/Docker execution backends
   models/           provider-neutral model request/response schemas
   repository/       deterministic Git inspection

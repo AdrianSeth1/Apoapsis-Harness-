@@ -15,11 +15,11 @@ must be corrected before the change is considered complete.
 | Item | Current value |
 | --- | --- |
 | Last verified | 2026-07-18 |
-| Working-tree version | `0.9.1` (0.9 execution sandbox, security-review follow-up applied) |
+| Working-tree version | `1.0a` (Apoapsis 1.0, phase a: context profiles and measurement infrastructure; 1.0b/1.0c not started — see "Apoapsis 1.0 phased plan") |
 | Checked-out branch | `main` |
 | Repository state | Everything described here is committed on `main`. This table intentionally does not embed a commit hash -- a commit that updates this file cannot know its own hash while being written, so a hardcoded hash here is stale the instant it lands. Run `git log -1 --oneline` for the exact current commit. |
 | Preserved substrate tag | `substrate-v0.1` at `4c2e735` |
-| Full deterministic suite | 137 tests, 0 failures, 0 errors, 4 intentional skips (2 live-network, 1 live-Docker, 1 machine currently lacks the Windows privilege to create symlinks -- junction coverage, the actual security-fix target, still runs and passes) |
+| Full deterministic suite | 156 tests, 0 failures, 0 errors, 4 intentional skips (2 live-network, 1 live-Docker, 1 machine currently lacks the Windows privilege to create symlinks) |
 | Syntax check | `python -m compileall -q src tests` passed |
 | Diff check | `git diff --check` passed; Git reported only expected LF-to-CRLF working-copy warnings |
 | Live local coding result | Qwen3-Coder-Next Q4 completed the controlled download-service task in 10 turns and 3 verification runs |
@@ -196,6 +196,21 @@ architecture.
 - Retrieval is bounded by file count, excerpt lines, total characters, search
   terms, match context, and import depth. More VRAM should be used by raising
   explicit reproducible profiles, never by silently transmitting the repository.
+  `16k`/`32k`/`64k`/`128k`/`256k` are all explicit opt-in profiles (`--context-
+  profile`, `cli/app.py:_CONTEXT_PROFILES`); none is the default merely
+  because a model or VRAM budget can fit it (ADR 0010).
+- `src/apoapsis/context/measurement.py` (`ContextMeasurement`,
+  `measure_context`) is a deterministic, read-only measurement of an
+  already-compiled `ContextPackage`: model context window, repository file
+  limit, excerpt line limit, transmitted chars/lines, agent observation
+  budget, estimated tokens, model-window utilization, composition by
+  `EvidenceKind`, truncation counters, and stable-versus-new evidence
+  (identity-key diff against the previous call's context). It never
+  influences retrieval or ranking. Computed once per model call in
+  `VerticalSliceRunner._model_call`, persisted as `call-<NNN>-context-
+  measurement.json`, and surfaced on `FinalTaskReport.context_measurements`
+  and in `apoapsis eval`'s comparison Markdown. See ADR 0010 and the
+  "Apoapsis 1.0 phased plan" section above.
 
 ### Provider boundary and telemetry
 
@@ -584,6 +599,171 @@ Failed evaluations are valuable evidence. Do not delete or rewrite them merely
 because a later architecture performs better. Add new dated results and explain
 the changed conditions.
 
+## Apoapsis 1.0 phased plan
+
+Apoapsis 1.0 ("context quality and broader evaluation") is scoped in three
+phases, planned together so later phases build on stable interfaces instead
+of redesigning them. **Only 1.0a is implemented.** Do not start 1.0b or 1.0c
+without explicit instruction; this section exists so a future agent can
+continue without re-deriving the design.
+
+### 1.0a — Context profiles and measurement infrastructure (done, ADR 0010)
+
+- `128k`/`256k` added to the existing `_CONTEXT_PROFILES` in `cli/app.py`
+  (`--context-profile`), reusing `_apply_context_profile` unchanged. `256k`
+  matches the installed model's reported native context length exactly.
+  Neither is a default; both require explicit opt-in.
+- `apoapsis doctor` gained `context_window_support:<role>` — queries
+  Ollama's `/api/tags` and compares configured `context_window_tokens`
+  against the model's real reported `details.context_length`. This is the
+  "confirm model and provider support" step — a queried fact, not an
+  assumption from available VRAM (this machine: RTX 4090, 24GB VRAM, 64GB
+  RAM; the installed 79.7B model is a ~48GB file already running GPU+CPU
+  split, so "there's VRAM headroom" does not by itself mean a wider window
+  is fast — 1.0b/1.0c is where that gets measured on real tasks).
+- A new deterministic, read-only measurement layer:
+  `src/apoapsis/context/measurement.py` (`ContextMeasurement`,
+  `measure_context`). Computed once per model call in
+  `VerticalSliceRunner._model_call`, right after the context is recorded;
+  persisted as `call-<NNN>-context-measurement.json` (alongside, not
+  replacing, `call-<NNN>-context.json`); surfaced on
+  `FinalTaskReport.context_measurements` and as three extra columns in
+  `apoapsis eval`'s comparison Markdown (peak context tokens, peak model-
+  window utilization, stable/new evidence totals).
+- **Interface for later phases**: `measure_context(package, *, call_number,
+  model_context_window_tokens, agent_observation_budget_chars,
+  previous_package)` is a pure function over an already-built
+  `ContextPackage` — it never influences retrieval, ranking, or truncation.
+  1.0b's retrieval changes must keep populating the same
+  `compiler_parameters` keys (`candidate_file_count`,
+  `files_truncated_by_limit`, `files_dropped_for_char_budget`,
+  `excerpts_truncated_for_char_budget`, plus the full `ContextCompilerConfig`
+  dump already there) so measurement keeps working without changes. Stable-
+  versus-new evidence is computed from the exact `(path, start_line,
+  end_line, content_sha256)` identity key `BoundedAgentSession` already
+  uses — reuse that key, don't invent a second one.
+
+### 1.0b — Deterministic context-quality improvements (not started)
+
+No embeddings or learned retrieval until a benchmark run under 1.0c
+demonstrates a *repeatable* failure of lexical/symbol/import/test/diff-based
+retrieval — this is a hard precondition, not a preference. Planned pieces,
+each intended to build on the existing `ContextCompiler`/`measurement.py`
+seam rather than replace it:
+
+1. **Change-focused source and test expansion**: today "current Git diff"
+   only contributes a path-level reason; expand it to parse changed hunks
+   for changed symbol names and expand test/source selection around those
+   symbols specifically, not just changed file paths.
+2. **Symbol-reference neighborhoods**: `_symbol_search` today matches
+   symbol *definitions* against query terms. Add a one-hop, AST-based
+   *reference* expansion — files that *call* a selected symbol, not only
+   files that define a similarly-named one.
+3. **Failure-directed excerpts**: `_excerpt()` anchors a file's shown window
+   on the first query-term match. When a `NormalizedFailure` names a
+   specific file:line (a traceback frame), thread that as a preferred
+   anchor so the shown excerpt is centered on the actual failure, not a
+   generic keyword hit.
+4. **Compacted historical observations, complete audit records preserved**:
+   `BoundedAgentSession._context_for_turn`/`_add_evidence` accumulate
+   observations monotonically for the life of a session (bounded only by
+   `max_observation_chars`, after which new evidence is silently dropped
+   while old evidence never shrinks). Add a `compact_observations()` step
+   applied only to what is sent to the model each turn; `agent-turn-*.json`
+   audit files already retain the complete uncompacted history and must
+   keep doing so unconditionally. Use 1.0a's stable/new split to verify
+   compaction actually reduces turn-over-turn growth instead of just
+   trusting it did.
+5. **Stable prompt prefixes for provider caching**: `models/prompts.py`'s
+   builders are single interleaved f-strings today — static instructions
+   and dynamic content (spec/evidence/history) are spliced together, not
+   separated. Restructure each builder so a byte-identical static prefix
+   always comes first, to let Ollama/OpenAI-compatible prompt-prefix
+   caching actually hit. Measure it with the *existing*
+   `ProviderCallTelemetry.cache_hit`/`cached_input_tokens`/
+   `prompt_evaluation_seconds` fields — no new telemetry needed, just a
+   prompt-structure change plus a test asserting prefix byte-stability
+   across consecutive calls in a session.
+6. **Context-density reporting**: mostly satisfied by 1.0a's
+   `ContextMeasurement` already. The remaining piece is a signal/noise
+   density ratio (how much of what was transmitted was actually reflected
+   in the accepted patch) — worth revisiting once patch-attribution data
+   exists, and may fold into 1.0c's metrics instead of standing alone.
+7. Once 1–5 exist, re-run the 1.0a profile/measurement tooling on identical
+   tasks across profiles to actually satisfy "compare each profile on
+   identical tasks" — 1.0a intentionally does not claim this comparison is
+   done yet; it only built the tool to do it with.
+
+### 1.0c — Broader evaluation / metrics framework (not started)
+
+Builds on `apoapsis eval`'s existing `EvalComparisonReport` (today: one
+fixture × one task × N lanes) via a new cross-run aggregator, not a
+replacement. Per-run raw data already exists on `FinalTaskReport`
+(`outcome`, `escalation_triggered`, `verification_results`,
+`estimated_cost_usd`/tokens, `transmitted_files`/`transmitted_lines`,
+`latency_seconds`, and now `context_measurements`); what's missing is
+cross-run *rates* and *deltas*, which is what 1.0c adds.
+
+Exact metrics and how each is computed:
+
+- **Local-only verified completion rate** = COMPLETE outcomes on
+  `local_only`/`local_then_frontier`-without-escalation runs ÷ total
+  local-first attempts.
+- **Frontier rescue rate** = COMPLETE outcomes reached via a triggered
+  escalation ÷ total escalations triggered.
+- **Overall verified completion rate** = COMPLETE ÷ total attempts, any
+  lane.
+- **Human-review rate** = HUMAN_REVIEW_REQUIRED ÷ total attempts.
+- **Unsafe-patch rejection rate** = patch-policy rejections ÷ total patch
+  attempts (raw data already in `patch-*-policy.json`; needs aggregation
+  across runs, not new instrumentation).
+- **False-success rate** — precise definition already fixed (do not
+  redefine it): `claimed_success` = Apoapsis declared COMPLETE after
+  configured verification passed; `oracle_evaluated_success` = a
+  claimed_success for which a **held-out** correctness oracle also ran;
+  `false_success` = configured verification passed but the held-out oracle
+  failed; `false_success_rate = false_successes / oracle_evaluated_
+  successes`. If the denominator is zero or no oracle ran, report
+  `null`/unmeasured, **never** `0`. Infrastructure errors in the oracle
+  itself invalidate that measurement rather than counting as a false
+  success. The oracle's stable identifier, version/hash, result, duration,
+  and audit artifact are recorded; its contents/filename/expected output
+  are never placed in model context, and it grants the model no new
+  authority — it is a harness-only, post-hoc check.
+  **Open design gap to resolve before implementing this**: today
+  `examples/download-service`'s configured `download-tests` command runs
+  `python -m unittest discover -s tests`, which already includes the two
+  resumable-download acceptance tests — the same tests that define
+  correctness are the ones the agent's own verification already sees. A
+  genuine held-out oracle needs those specific tests (or an equivalent set)
+  moved out of the agent-visible `tests/` discovery path (e.g. a
+  `tests_holdout/` directory never referenced by the configured
+  verification command) so the oracle is actually independent, not a
+  restatement of the same check.
+- **Hosted calls avoided**, **hosted tokens/cost saved**, **performance
+  versus direct frontier execution**: typed fields and the delta/comparison
+  formulas should be built now, but populated from **paired real runs**
+  (a local-first run and a real hosted-frontier run of the identical task),
+  never derived from fake-provider data. Report `unmeasured` with an
+  explicit reason whenever no real hosted-frontier run exists for that
+  task. Fake-provider tests may only validate the formulas/reporting
+  states, never stand in for a real measurement or produce a real-world
+  number. No credentials are configured as of this milestone.
+- **End-to-end latency**, **files/lines transmitted externally**: already
+  per-run fields (`latency_seconds`, `transmitted_files`,
+  `transmitted_lines`); 1.0c aggregates them (e.g. median/p95 across runs),
+  it does not need to compute them.
+- **Performance versus local one-shot execution**: already directly
+  comparable via the existing `one-shot` lane in the same
+  `EvalComparisonReport`; 1.0c mainly needs this to hold across more than
+  one task once more fixtures exist.
+
+**Breadth**: stay within `examples/download-service` to start (per explicit
+decision); only add new controlled fixtures once profile/lane data from
+1.0a/1.0b shows it's worth the design cost of a second fixture with its own
+acceptance criteria and, per the false-success design gap above, its own
+held-out oracle split.
+
 ## Test map
 
 | Area | Primary coverage |
@@ -603,6 +783,8 @@ the changed conditions.
 | Evaluation lanes/harness (`apoapsis eval`) | `tests/test_evaluation.py` |
 | Execution backend seam / host regression | `tests/test_execution_backend.py` |
 | Docker sandbox backend | `tests/test_docker_backend.py` |
+| Context measurement (`measure_context`, compiler instrumentation) | `tests/test_context_measurement.py` |
+| Context measurement wired through the vertical slice/report/audit | `tests/test_context_measurement_integration.py` |
 
 Fake providers are the mandatory regression mechanism. Live model or network
 tests supplement them; they must not replace deterministic coverage.
@@ -651,13 +833,31 @@ tests supplement them; they must not replace deterministic coverage.
    response per invocation, and report telemetry through the normal
    `ProviderCallTelemetry` shape. See ADR 0008. Do not implement or invoke it
    without an explicit request.
+10. **1.0c's false-success oracle has an unresolved design gap.** The
+    `download-service` fixture's configured verification command already
+    discovers the exact tests that define acceptance, so today's "verification
+    passed" is not independent of the correctness question it's supposed to
+    check. A real held-out oracle needs those tests (or an equivalent set)
+    moved out of the agent-visible discovery path first. See "Apoapsis 1.0
+    phased plan" above for the exact metric definition already agreed
+    (`false_success_rate`, denominator semantics, never reporting `0` when
+    unmeasured).
+11. **Several 1.0c metrics are structurally blocked without real hosted-
+    frontier credentials**: frontier rescue rate, hosted calls/tokens/cost
+    saved, and performance versus direct frontier execution all require a
+    real paired hosted run, not a fake-provider estimate. The plan is to
+    build the typed fields and formulas and report them as unmeasured until
+    a real run exists — the same posture already taken for the 0.9/0.8
+    hosted-escalation gap above.
 
 The next high-value proof is a real local-failure to hosted-frontier-repair run
-on the controlled fixture, followed by broader task evaluation. The next
-high-value safety increment is an execution sandbox. Do not add embeddings,
-learned routing, autonomous agent swarms, a web interface, arbitrary model
-shell access, or general-purpose work automation as an accidental substitute
-for those proofs.
+on the controlled fixture. The next context-quality increment is 1.0b
+(deterministic retrieval improvements — no embeddings until a benchmark
+shows a repeatable failure of lexical/symbol/import/test/diff retrieval),
+followed by 1.0c's broader metrics framework. Do not add embeddings, learned
+routing, autonomous agent swarms, a web interface, arbitrary model shell
+access, or general-purpose work automation as an accidental substitute for
+those proofs.
 
 ## Architecture decisions
 
@@ -672,6 +872,7 @@ for those proofs.
 | `0007` | Apoapsis product, package, CLI, state, environment, and branch namespace |
 | `0008` | Evaluation harness (`apoapsis eval`) and diagnostic tooling (`apoapsis doctor`) |
 | `0009` | Execution sandbox: `ExecutionBackend` seam, host compatibility backend, Docker sandbox backend |
+| `0010` | Context measurement and wider (128k/256k) context profiles (Apoapsis 1.0a) |
 
 Add a new ADR for a new architectural decision. Do not rewrite history to make
 old decisions appear current; mark an ADR superseded and link its replacement

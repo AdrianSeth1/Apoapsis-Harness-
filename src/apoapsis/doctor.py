@@ -96,6 +96,7 @@ def run_doctor(
         checks.append(_context_check(config))
         checks.extend(_credential_checks(config))
         checks.extend(_ollama_reachability_checks(config))
+        checks.extend(_context_window_support_checks(config))
         checks.extend(_verification_checks(config))
         checks.extend(_verification_backend_checks(config))
         if probe_providers:
@@ -369,6 +370,103 @@ def _probe_ollama_tags(base_url: str) -> DoctorCheck:
         category="model",
         status=DoctorCheckStatus.OK,
         detail=f"reachable at {url}",
+    )
+
+
+def _context_window_support_checks(config: ApoapsisConfig) -> list[DoctorCheck]:
+    """Confirm a configured context_window_tokens (including the 128k/256k
+    profiles) does not exceed what the installed Ollama model actually
+    reports as its native context length -- "explicit and measured," not
+    assumed from VRAM alone."""
+
+    checks: list[DoctorCheck] = []
+    tags_cache: dict[str, dict | None] = {}
+    for role in _MODEL_ROLES:
+        model_config = getattr(config.models, role)
+        if (
+            model_config is None
+            or model_config.provider != "ollama"
+            or model_config.context_window_tokens is None
+        ):
+            continue
+        base_url = model_config.base_url
+        if base_url not in tags_cache:
+            tags_cache[base_url] = _fetch_ollama_tags(base_url)
+        checks.append(
+            _context_window_support_check(role, model_config, tags_cache[base_url])
+        )
+    return checks
+
+
+def _fetch_ollama_tags(base_url: str) -> dict[str, object] | None:
+    url = f"{base_url.rstrip('/')}/api/tags"
+    try:
+        request = urllib.request.Request(url, method="GET")
+        with urllib.request.urlopen(request, timeout=3) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError):
+        return None
+
+
+def _context_window_support_check(
+    role: str,
+    model_config: FrontierProviderConfig | LocalResearchProviderConfig,
+    tags: dict[str, object] | None,
+) -> DoctorCheck:
+    configured = model_config.context_window_tokens
+    name = f"context_window_support:{role}"
+    if tags is None:
+        return DoctorCheck(
+            name=name,
+            category="model",
+            status=DoctorCheckStatus.WARNING,
+            detail=(
+                f"could not query {model_config.base_url} to confirm "
+                f"{model_config.model!r}'s native context length"
+            ),
+        )
+    native_max: int | None = None
+    for item in tags.get("models") or []:
+        if not isinstance(item, dict):
+            continue
+        if item.get("name") == model_config.model or item.get("model") == model_config.model:
+            details = item.get("details")
+            if isinstance(details, dict):
+                native_max = details.get("context_length")
+            break
+    if native_max is None:
+        return DoctorCheck(
+            name=name,
+            category="model",
+            status=DoctorCheckStatus.WARNING,
+            detail=(
+                f"{model_config.model!r} is not currently listed by Ollama, or "
+                "did not report a native context length; cannot confirm support "
+                f"for the configured context_window_tokens={configured}"
+            ),
+        )
+    if configured > native_max:
+        return DoctorCheck(
+            name=name,
+            category="model",
+            status=DoctorCheckStatus.ERROR,
+            detail=(
+                f"configured context_window_tokens={configured} exceeds "
+                f"{model_config.model!r}'s native context length of {native_max}"
+            ),
+            remediation=(
+                "lower context_window_tokens (or the selected --context-profile) "
+                "to at most the model's native context length"
+            ),
+        )
+    return DoctorCheck(
+        name=name,
+        category="model",
+        status=DoctorCheckStatus.OK,
+        detail=(
+            f"configured context_window_tokens={configured} is within "
+            f"{model_config.model!r}'s native context length of {native_max}"
+        ),
     )
 
 

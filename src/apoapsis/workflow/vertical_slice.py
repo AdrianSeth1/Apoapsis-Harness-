@@ -19,6 +19,7 @@ from apoapsis.config import (
     ApoapsisConfig,
 )
 from apoapsis.context.compiler import ContextCompiler, ContextPackage
+from apoapsis.context.measurement import ContextMeasurement, measure_context
 from apoapsis.execution.worktree import WorktreeManager
 from apoapsis.models.base import (
     ConstraintCoverage,
@@ -109,6 +110,7 @@ class VerticalSliceRunner:
         self.failure_normalizer = FailureNormalizer()
         self.telemetry: list[ProviderCallTelemetry] = []
         self.contexts: list[tuple[int, ContextPackage]] = []
+        self.context_measurements: list[ContextMeasurement] = []
         self.verification_results: list[VerificationResult] = []
         self.files_changed: list[str] = []
         self.worktree_path: str | None = None
@@ -909,6 +911,19 @@ class VerticalSliceRunner:
             response_schema=response_schema,
         )
         self.contexts.append((call_number, context))
+        previous_context = self.contexts[-2][1] if len(self.contexts) >= 2 else None
+        measurement = measure_context(
+            context,
+            call_number=call_number,
+            model_context_window_tokens=selected_config.context_window_tokens,
+            previous_package=previous_context,
+        )
+        self.context_measurements.append(measurement)
+        self.audit.write_json(
+            f"call-{call_number:03d}-context-measurement.json",
+            measurement,
+            kind="context_measurement",
+        )
         invocation = ProviderInvocation(
             request_id=request_id,
             operation=operation,
@@ -1192,6 +1207,7 @@ class VerticalSliceRunner:
                 if self.research_outcome
                 else None
             ),
+            context_measurements=self.context_measurements,
         )
         self.audit.write_json("report.json", report, kind="final_report")
         return report

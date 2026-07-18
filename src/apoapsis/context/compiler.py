@@ -169,13 +169,16 @@ class ContextCompiler:
             if path in files and not self._excluded(path):
                 reasons[path].add("current Git diff")
 
+        candidate_file_count = len(reasons)
         ordered = sorted(
             reasons,
             key=lambda path: (self._priority(reasons[path]), path),
         )[: self.config.max_files]
         evidence: list[ContextEvidence] = []
         total_chars = 0
-        for path in ordered:
+        excerpts_truncated_for_char_budget = 0
+        files_dropped_for_char_budget = 0
+        for index, path in enumerate(ordered):
             content = self._read_text(root, path, text_cache)
             if content is None:
                 continue
@@ -185,10 +188,12 @@ class ContextCompiler:
             start_line, end_line, excerpt_text = excerpt
             remaining = self.config.max_total_chars - total_chars
             if remaining <= 0:
+                files_dropped_for_char_budget = len(ordered) - index
                 break
             if len(excerpt_text) > remaining:
                 excerpt_text = excerpt_text[:remaining]
                 end_line = start_line + excerpt_text.count("\n")
+                excerpts_truncated_for_char_budget += 1
             evidence.append(
                 ContextEvidence(
                     evidence_id=f"EV-{len(evidence) + 1:03d}",
@@ -226,13 +231,22 @@ class ContextCompiler:
 
         tools = ["git", "python_ast_symbols", "python_imports", "test_discovery"]
         tools.append("ripgrep" if ripgrep_used else "lexical_fallback")
+        parameters = self.config.model_dump(mode="json")
+        parameters["candidate_file_count"] = candidate_file_count
+        parameters["files_truncated_by_limit"] = max(
+            0, candidate_file_count - self.config.max_files
+        )
+        parameters["files_dropped_for_char_budget"] = files_dropped_for_char_budget
+        parameters["excerpts_truncated_for_char_budget"] = (
+            excerpts_truncated_for_char_budget
+        )
         return ContextPackage(
             task_id=specification.task_id,
             specification=specification,
             head_commit=head,
             query_terms=terms,
             retrieval_tools=tools,
-            compiler_parameters=self.config.model_dump(mode="json"),
+            compiler_parameters=parameters,
             external_research_brief=external_research_brief,
             research_evidence_ids=sorted(research_evidence_ids or []),
             evidence=evidence,
