@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ipaddress
 import tomllib
+from enum import StrEnum
 from pathlib import Path
 from typing import Literal
 from urllib.parse import urlparse
@@ -94,7 +95,49 @@ class LocalResearchProviderConfig(StrictModel):
 
 class ModelsConfig(StrictModel):
     frontier: FrontierProviderConfig
+    local_coder: FrontierProviderConfig | None = None
+    frontier_coder: FrontierProviderConfig | None = None
     local_research: LocalResearchProviderConfig | None = None
+
+
+class ExecutionMode(StrEnum):
+    ONE_SHOT = "one_shot"
+    AGENT = "agent"
+
+
+class AgentRoute(StrEnum):
+    AUTO = "auto"
+    LOCAL_ONLY = "local_only"
+    LOCAL_THEN_FRONTIER = "local_then_frontier"
+    FRONTIER_ONLY = "frontier_only"
+    HUMAN_REVIEW_REQUIRED = "human_review_required"
+
+
+class AgentLoopConfig(StrictModel):
+    max_turns: int = Field(default=12, ge=1, le=50)
+    max_patch_attempts: int = Field(default=4, ge=1, le=20)
+    max_verification_runs: int = Field(default=4, ge=1, le=20)
+    max_search_results: int = Field(default=20, ge=1, le=100)
+    max_read_lines: int = Field(default=240, ge=1, le=2_000)
+    max_observation_chars: int = Field(
+        default=48_000, ge=1_000, le=1_000_000
+    )
+
+
+class ExecutionConfig(StrictModel):
+    mode: ExecutionMode = ExecutionMode.ONE_SHOT
+    route: AgentRoute = AgentRoute.AUTO
+    agent: AgentLoopConfig = Field(default_factory=AgentLoopConfig)
+    frontier_agent: AgentLoopConfig = Field(
+        default_factory=lambda: AgentLoopConfig(
+            max_turns=8,
+            max_patch_attempts=3,
+            max_verification_runs=3,
+            max_search_results=20,
+            max_read_lines=240,
+            max_observation_chars=48_000,
+        )
+    )
 
 
 class ContextCompilerConfig(StrictModel):
@@ -238,22 +281,39 @@ class ResearchConfig(StrictModel):
 
 class SolConfig(StrictModel):
     models: ModelsConfig
+    execution: ExecutionConfig = Field(default_factory=ExecutionConfig)
     context: ContextCompilerConfig = Field(default_factory=ContextCompilerConfig)
     patch: PatchPolicyConfig = Field(default_factory=PatchPolicyConfig)
     verification: VerificationConfig
     research: ResearchConfig = Field(default_factory=ResearchConfig)
 
     @model_validator(mode="after")
-    def separate_frontier_and_local_credentials(self) -> SolConfig:
+    def validate_provider_separation_and_route(self) -> SolConfig:
         local = self.models.local_research
+        if local is not None and local.provider == "openai_compatible":
+            coding_credentials = {
+                item.api_key_env
+                for item in (
+                    self.models.frontier,
+                    self.models.local_coder,
+                    self.models.frontier_coder,
+                )
+                if item is not None and item.provider == "openai_compatible"
+            }
+            if local.api_key_env in coding_credentials:
+                raise ValueError(
+                    "local research and coding providers must use different "
+                    "credential environment variables"
+                )
         if (
-            local is not None
-            and local.provider == "openai_compatible"
-            and local.api_key_env == self.models.frontier.api_key_env
+            self.execution.mode == ExecutionMode.AGENT
+            and self.execution.route
+            in {AgentRoute.LOCAL_THEN_FRONTIER, AgentRoute.FRONTIER_ONLY}
+            and self.models.frontier_coder is None
         ):
             raise ValueError(
-                "local research and frontier providers must use different "
-                "credential environment variables"
+                f"execution route {self.execution.route.value} requires "
+                "[models.frontier_coder] configuration"
             )
         return self
 
@@ -263,7 +323,14 @@ class SolConfig(StrictModel):
             raw = tomllib.load(handle)
         selected = {
             key: raw[key]
-            for key in ("models", "context", "patch", "verification", "research")
+            for key in (
+                "models",
+                "execution",
+                "context",
+                "patch",
+                "verification",
+                "research",
+            )
             if key in raw
         }
         return cls.model_validate(selected)

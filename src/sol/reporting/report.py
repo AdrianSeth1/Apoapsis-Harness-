@@ -4,6 +4,7 @@ from enum import StrEnum
 
 from pydantic import Field, model_validator
 
+from sol.config import AgentRoute, ExecutionMode
 from sol.models.base import ConstraintCoverage
 from sol.models.telemetry import ProviderCallTelemetry
 from sol.research.schemas import ResearchMode, ResearchTelemetry
@@ -37,6 +38,19 @@ class FinalTaskReport(StrictModel):
     outcome: TaskOutcome
     error: str | None = None
     worktree_path: str | None = None
+    execution_mode: ExecutionMode = ExecutionMode.ONE_SHOT
+    agent_route: AgentRoute | None = None
+    agent_turns: int = Field(default=0, ge=0)
+    agent_patch_attempts: int = Field(default=0, ge=0)
+    agent_verification_runs: int = Field(default=0, ge=0)
+    agent_stop_reason: str | None = None
+    local_agent_turns: int = Field(default=0, ge=0)
+    frontier_agent_turns: int = Field(default=0, ge=0)
+    frontier_agent_patch_attempts: int = Field(default=0, ge=0)
+    frontier_agent_verification_runs: int = Field(default=0, ge=0)
+    escalation_triggered: bool = False
+    escalation_reason: str | None = None
+    escalation_package_path: str | None = None
     constraint_coverage: list[ConstraintCoverage] = Field(default_factory=list)
     models_used: list[ModelIdentity] = Field(default_factory=list)
     provider_calls: list[ProviderCallTelemetry] = Field(default_factory=list)

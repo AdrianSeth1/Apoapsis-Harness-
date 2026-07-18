@@ -38,12 +38,25 @@ class CLITests(unittest.TestCase):
         self.assertTrue((self.root / ".sol" / "sol.db").is_file())
         config = SolConfig.from_toml(self.root / ".sol" / "config.toml")
         self.assertEqual(config.models.frontier.provider, "ollama")
-        self.assertEqual(config.models.frontier.model, "qwen3-coder:30b")
+        self.assertEqual(
+            config.models.frontier.model, "qwen3-coder-next:q4_K_M"
+        )
         self.assertEqual(config.models.frontier.temperature, 0.0)
-        self.assertEqual(config.models.frontier.context_window_tokens, 32768)
-        self.assertEqual(config.context.max_files, 16)
-        self.assertEqual(config.context.max_excerpt_lines, 160)
-        self.assertEqual(config.context.max_total_chars, 72000)
+        self.assertEqual(config.models.frontier.context_window_tokens, 65536)
+        self.assertIsNotNone(config.models.local_coder)
+        assert config.models.local_coder is not None
+        self.assertEqual(
+            config.models.local_coder.model, "qwen3-coder-next:q4_K_M"
+        )
+        self.assertEqual(config.models.local_coder.context_window_tokens, 65536)
+        self.assertIsNone(config.models.frontier_coder)
+        self.assertEqual(config.execution.mode.value, "agent")
+        self.assertEqual(config.execution.route.value, "auto")
+        self.assertEqual(config.execution.agent.max_turns, 12)
+        self.assertEqual(config.execution.frontier_agent.max_turns, 8)
+        self.assertEqual(config.context.max_files, 24)
+        self.assertEqual(config.context.max_excerpt_lines, 240)
+        self.assertEqual(config.context.max_total_chars, 180000)
         self.assertEqual(config.context.max_import_depth, 2)
         self.assertEqual(config.models.local_research.provider, "ollama")
         self.assertEqual(config.models.local_research.model, "qwen3.6:27b")
@@ -89,6 +102,8 @@ class CLITests(unittest.TestCase):
 
         control = _apply_context_profile(config, "16k")
         self.assertEqual(control.models.frontier.context_window_tokens, 16384)
+        assert control.models.local_coder is not None
+        self.assertEqual(control.models.local_coder.context_window_tokens, 16384)
         self.assertEqual(control.context.max_total_chars, 24000)
 
         standard = _apply_context_profile(config, "32k")
@@ -103,14 +118,25 @@ class CLITests(unittest.TestCase):
         self.assertEqual(large.context.max_excerpt_lines, 240)
         self.assertEqual(large.context.max_total_chars, 180000)
 
-        self.assertEqual(config.models.frontier.context_window_tokens, 32768)
-        self.assertEqual(config.context.max_total_chars, 72000)
+        self.assertEqual(config.models.frontier.context_window_tokens, 65536)
+        self.assertEqual(config.context.max_total_chars, 180000)
 
     def test_run_accepts_a_context_profile(self) -> None:
         arguments = build_parser().parse_args(
-            ["run", "Add resumable downloads", "--context-profile", "64k"]
+            [
+                "run",
+                "Add resumable downloads",
+                "--context-profile",
+                "64k",
+                "--execution-mode",
+                "one_shot",
+                "--agent-route",
+                "local_only",
+            ]
         )
         self.assertEqual(arguments.context_profile, "64k")
+        self.assertEqual(arguments.execution_mode, "one_shot")
+        self.assertEqual(arguments.agent_route, "local_only")
 
     def test_context_profile_rejects_a_hosted_provider(self) -> None:
         self.invoke("init")
@@ -123,7 +149,7 @@ class CLITests(unittest.TestCase):
         config = config.model_copy(
             update={
                 "models": config.models.model_copy(
-                    update={"frontier": hosted}
+                    update={"frontier": hosted, "local_coder": None}
                 )
             }
         )

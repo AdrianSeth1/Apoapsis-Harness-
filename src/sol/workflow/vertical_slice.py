@@ -5,8 +5,19 @@ import uuid
 from pathlib import Path
 from typing import Callable
 
+from sol.agent.session import (
+    AgentSessionOutcome,
+    AgentSessionResult,
+    BoundedAgentSession,
+)
 from sol.audit.store import TaskAuditStore
-from sol.config import SolConfig
+from sol.config import (
+    AgentLoopConfig,
+    AgentRoute,
+    ExecutionMode,
+    FrontierProviderConfig,
+    SolConfig,
+)
 from sol.context.compiler import ContextCompiler, ContextPackage
 from sol.execution.worktree import WorktreeManager
 from sol.models.base import (
@@ -21,7 +32,7 @@ from sol.models.prompts import (
     rejected_patch_repair_prompt,
     repair_prompt,
 )
-from sol.models.provider import ProviderInvocation
+from sol.models.provider import ModelRole, ProviderInvocation
 from sol.models.telemetry import (
     InstrumentedModelProvider,
     InstrumentedProviderError,
@@ -49,7 +60,12 @@ from sol.verification.failures import FailureNormalizer
 from sol.verification.results import VerificationResult, VerificationStatus
 from sol.verification.runner import VerificationRunner
 from sol.workflow.engine import SQLiteTaskStore
+from sol.workflow.escalation import (
+    EscalationPackage,
+    add_escalation_evidence,
+)
 from sol.workflow.events import WorkflowActor
+from sol.workflow.routing import RoutingDecision, select_agent_route
 from sol.workflow.states import WorkflowState, transition_is_allowed
 
 
@@ -57,7 +73,7 @@ ApprovalCallback = Callable[[TaskSpecification], bool]
 
 
 class VerticalSliceRunner:
-    """One frontier implementation call plus at most one frontier repair call."""
+    """Approved task workflow with one-shot and bounded-agent execution modes."""
 
     def __init__(
         self,
@@ -66,6 +82,8 @@ class VerticalSliceRunner:
         provider: InstrumentedModelProvider,
         config: SolConfig,
         *,
+        local_coder_provider: InstrumentedModelProvider | None = None,
+        frontier_coder_provider: InstrumentedModelProvider | None = None,
         context_compiler: ContextCompiler | None = None,
         research_engine: ResearchEngine | None = None,
         research_mode: ResearchMode = ResearchMode.OFF,
@@ -73,7 +91,14 @@ class VerticalSliceRunner:
         self.project_root = Path(project_root).resolve()
         self.store = store
         self.provider = provider
+        self.local_coder_provider = local_coder_provider or provider
+        self.frontier_coder_provider = frontier_coder_provider
         self.config = config
+        self.provider_config = config.models.frontier
+        self.local_coder_config = (
+            config.models.local_coder or config.models.frontier
+        )
+        self.frontier_coder_config = config.models.frontier_coder
         self.context_compiler = context_compiler or ContextCompiler(config.context)
         self.research_engine = research_engine
         self.research_mode = research_mode
@@ -92,6 +117,13 @@ class VerticalSliceRunner:
         self.research_execution: ResearchExecutionResult | None = None
         self.research_outcome: ResearchOutcome | None = None
         self.research_calls: list[ProviderCallTelemetry] = []
+        self.agent_result: AgentSessionResult | None = None
+        self.local_agent_result: AgentSessionResult | None = None
+        self.frontier_agent_result: AgentSessionResult | None = None
+        self.routing_decision: RoutingDecision | None = None
+        self.escalation_package_path: str | None = None
+        self.escalation_reason: str | None = None
+        self.patch_audit_attempts = 0
 
     def run(
         self, request: str, *, approve: ApprovalCallback
@@ -224,14 +256,48 @@ class VerticalSliceRunner:
                 },
                 expected_version=analyzed.version,
             )
+            if self.config.execution.mode == ExecutionMode.AGENT:
+                self.routing_decision = select_agent_route(
+                    specification,
+                    self.config.execution,
+                    frontier_available=(
+                        self.frontier_coder_provider is not None
+                        and self.frontier_coder_config is not None
+                    ),
+                )
+                route_payload = self.routing_decision.model_dump(mode="json")
+                self.audit.write_json(
+                    "routing-decision.json",
+                    self.routing_decision,
+                    kind="routing_decision",
+                )
+            else:
+                route_payload = {"route": "FRONTIER_IMPLEMENTATION"}
             routed = self.store.transition(
                 task_id,
                 WorkflowState.ROUTED,
                 actor=WorkflowActor.SYSTEM,
                 event_type="rule_based_route_selected",
-                payload={"route": "FRONTIER_IMPLEMENTATION"},
+                payload=route_payload,
                 expected_version=compiled.version,
             )
+            if (
+                self.routing_decision is not None
+                and self.routing_decision.route
+                == AgentRoute.HUMAN_REVIEW_REQUIRED
+            ):
+                self.store.transition(
+                    task_id,
+                    WorkflowState.HUMAN_REVIEW_REQUIRED,
+                    actor=WorkflowActor.SYSTEM,
+                    event_type="deterministic_route_requires_human",
+                    payload={"reason": self.routing_decision.reason},
+                    expected_version=routed.version,
+                )
+                return self._finalize_report(
+                    TaskOutcome.HUMAN_REVIEW_REQUIRED,
+                    error=self.routing_decision.reason,
+                )
             manager = WorktreeManager(self.project_root)
             worktree = manager.create(self._task_slug(task_id), base_ref=head)
             self.worktree_path = worktree.path
@@ -247,6 +313,11 @@ class VerticalSliceRunner:
                 },
                 expected_version=routed.version,
             )
+            if self.config.execution.mode == ExecutionMode.AGENT:
+                return self._run_bounded_agent(
+                    implementation_context,
+                    implementing_version=implementing.version,
+                )
             patch_response = self._model_call(
                 ModelOperation.IMPLEMENT_PATCH,
                 implementation_prompt(implementation_context),
@@ -467,6 +538,327 @@ class VerticalSliceRunner:
         except Exception as exc:
             return self._handle_failure(exc)
 
+    def _run_bounded_agent(
+        self,
+        implementation_context: ContextPackage,
+        *,
+        implementing_version: int,
+    ) -> FinalTaskReport:
+        assert self.audit is not None
+        assert self.specification is not None
+        assert self.worktree_path is not None
+        assert self.routing_decision is not None
+
+        if self.routing_decision.route == AgentRoute.FRONTIER_ONLY:
+            assert self.frontier_coder_provider is not None
+            assert self.frontier_coder_config is not None
+            result = self._run_agent_session(
+                provider=self.frontier_coder_provider,
+                provider_config=self.frontier_coder_config,
+                context=implementation_context,
+                agent_config=self.config.execution.frontier_agent,
+                role=ModelRole.FRONTIER_CODING_AGENT,
+                audit_prefix="frontier-",
+            )
+            self.frontier_agent_result = result
+            self.agent_result = result
+            self._record_agent_result(result)
+            if result.outcome == AgentSessionOutcome.COMPLETE:
+                return self._complete_agent_workflow(
+                    result,
+                    implementing_version=implementing_version,
+                    event_prefix="frontier_agent",
+                )
+            return self._require_human_after_agent(
+                result,
+                implementing_version=implementing_version,
+                event_type="frontier_agent_budget_exhausted",
+            )
+
+        local_result = self._run_agent_session(
+            provider=self.local_coder_provider,
+            provider_config=self.local_coder_config,
+            context=implementation_context,
+            agent_config=self.config.execution.agent,
+            role=ModelRole.LOCAL_CODING_AGENT,
+            audit_prefix="",
+        )
+        self.local_agent_result = local_result
+        self.agent_result = local_result
+        self._record_agent_result(local_result)
+        if local_result.outcome == AgentSessionOutcome.COMPLETE:
+            return self._complete_agent_workflow(
+                local_result,
+                implementing_version=implementing_version,
+                event_prefix="local_agent",
+            )
+
+        escalation = self.store.transition(
+            self.specification.task_id,
+            WorkflowState.ESCALATION_REQUIRED,
+            actor=WorkflowActor.SYSTEM,
+            event_type="bounded_local_agent_escalation_required",
+            payload={
+                "turns": local_result.turns,
+                "patch_attempts": local_result.patch_attempts,
+                "verification_runs": local_result.verification_runs,
+                "reason": local_result.stop_reason,
+            },
+            expected_version=implementing_version,
+        )
+        if (
+            self.routing_decision.route == AgentRoute.LOCAL_THEN_FRONTIER
+            and self.frontier_coder_provider is not None
+            and self.frontier_coder_config is not None
+        ):
+            return self._run_frontier_escalation(
+                local_result,
+                escalation_version=escalation.version,
+            )
+
+        self.escalation_reason = local_result.stop_reason
+        self.store.transition(
+            self.specification.task_id,
+            WorkflowState.HUMAN_REVIEW_REQUIRED,
+            actor=WorkflowActor.SYSTEM,
+            event_type="frontier_escalation_not_configured",
+            payload={"reason": local_result.stop_reason},
+            expected_version=escalation.version,
+        )
+        return self._finalize_report(
+            TaskOutcome.HUMAN_REVIEW_REQUIRED,
+            error=(
+                f"bounded local coding agent requires escalation: "
+                f"{local_result.stop_reason}"
+            ),
+        )
+
+    def _run_agent_session(
+        self,
+        *,
+        provider: InstrumentedModelProvider,
+        provider_config: FrontierProviderConfig,
+        context: ContextPackage,
+        agent_config: AgentLoopConfig,
+        role: ModelRole,
+        audit_prefix: str,
+    ) -> AgentSessionResult:
+        assert self.audit is not None
+        assert self.specification is not None
+        assert self.worktree_path is not None
+
+        def model_call(*args, **kwargs):
+            return self._model_call(
+                *args,
+                **kwargs,
+                provider=provider,
+                provider_config=provider_config,
+            )
+
+        def apply_patch(patch: str, session_attempt: int) -> None:
+            del session_attempt
+            self.patch_audit_attempts += 1
+            self._validate_apply_and_audit(
+                patch, attempt=self.patch_audit_attempts
+            )
+
+        session = BoundedAgentSession(
+            specification=self.specification,
+            worktree=self.worktree_path,
+            initial_context=context,
+            context_compiler=self.context_compiler,
+            config=agent_config,
+            verification_config=self.config.verification,
+            audit=self.audit,
+            model_call=model_call,
+            apply_patch=apply_patch,
+            model_role=role,
+            audit_prefix=audit_prefix,
+        )
+        try:
+            return session.run()
+        except InstrumentedProviderError as exc:
+            return session.interrupted(
+                f"{role.value} provider call failed: {exc}"
+            )
+
+    def _record_agent_result(self, result: AgentSessionResult) -> None:
+        self.files_changed = list(result.changed_files)
+        self.verification_results.extend(result.verification_results)
+
+    def _run_frontier_escalation(
+        self,
+        local_result: AgentSessionResult,
+        *,
+        escalation_version: int,
+    ) -> FinalTaskReport:
+        assert self.audit is not None
+        assert self.specification is not None
+        assert self.worktree_path is not None
+        assert self.frontier_coder_provider is not None
+        assert self.frontier_coder_config is not None
+
+        failures = []
+        for result in local_result.verification_results:
+            if result.status == VerificationStatus.PASSED:
+                continue
+            _, failure = self.failure_normalizer.extract(
+                result, self.worktree_path
+            )
+            failures.append(failure)
+        queries = [
+            text
+            for failure in failures
+            for text in (failure.root_error, failure.relevant_error)
+        ]
+        frontier_context = self.context_compiler.compile(
+            self.specification,
+            self.worktree_path,
+            extra_queries=queries,
+            preferred_paths=self.files_changed,
+            external_research_brief=(
+                self.research_outcome.brief if self.research_outcome else None
+            ),
+            research_evidence_ids=(
+                [item.evidence_id for item in self.research_outcome.evidence]
+                if self.research_outcome
+                else []
+            ),
+        )
+        frontier_context = add_escalation_evidence(
+            frontier_context, local_result, failures
+        )
+        current_diff = GitRepository(self.worktree_path).run(
+            ["diff", "--no-ext-diff", "--unified=5", "HEAD"]
+        ).stdout
+        package = EscalationPackage(
+            task_id=self.specification.task_id,
+            trigger=local_result.stop_reason,
+            local_provider=self.local_coder_provider.provider_name,
+            local_model=self.local_coder_provider.model_name,
+            frontier_provider=self.frontier_coder_provider.provider_name,
+            frontier_model=self.frontier_coder_provider.model_name,
+            specification=self.specification,
+            active_constraints=self.specification.active_hard_constraints,
+            current_diff=current_diff,
+            local_session=local_result,
+            normalized_failures=failures,
+            frontier_context_sha256=frontier_context.context_sha256 or "0" * 64,
+        )
+        artifact = self.audit.write_json(
+            "frontier-escalation-package.json",
+            package,
+            kind="frontier_escalation_package",
+        )
+        self.escalation_package_path = artifact.path
+        self.escalation_reason = local_result.stop_reason
+        implementing = self.store.transition(
+            self.specification.task_id,
+            WorkflowState.IMPLEMENTING,
+            actor=WorkflowActor.SYSTEM,
+            event_type="bounded_frontier_escalation_started",
+            payload={
+                "package": artifact.path,
+                "context_sha256": frontier_context.context_sha256,
+                "frontier_provider": self.frontier_coder_provider.provider_name,
+                "frontier_model": self.frontier_coder_provider.model_name,
+            },
+            expected_version=escalation_version,
+        )
+        frontier_result = self._run_agent_session(
+            provider=self.frontier_coder_provider,
+            provider_config=self.frontier_coder_config,
+            context=frontier_context,
+            agent_config=self.config.execution.frontier_agent,
+            role=ModelRole.FRONTIER_CODING_AGENT,
+            audit_prefix="frontier-",
+        )
+        self.frontier_agent_result = frontier_result
+        self.agent_result = frontier_result
+        self._record_agent_result(frontier_result)
+        if frontier_result.outcome == AgentSessionOutcome.COMPLETE:
+            return self._complete_agent_workflow(
+                frontier_result,
+                implementing_version=implementing.version,
+                event_prefix="frontier_agent",
+            )
+        return self._require_human_after_agent(
+            frontier_result,
+            implementing_version=implementing.version,
+            event_type="frontier_agent_budget_exhausted",
+        )
+
+    def _complete_agent_workflow(
+        self,
+        result: AgentSessionResult,
+        *,
+        implementing_version: int,
+        event_prefix: str,
+    ) -> FinalTaskReport:
+        assert self.specification is not None
+        patch_ready = self.store.transition(
+            self.specification.task_id,
+            WorkflowState.PATCH_READY,
+            actor=WorkflowActor.SYSTEM,
+            event_type=f"{event_prefix}_patch_ready",
+            payload={
+                "turns": result.turns,
+                "patch_attempts": result.patch_attempts,
+                "files_changed": self.files_changed,
+            },
+            expected_version=implementing_version,
+        )
+        verifying = self.store.transition(
+            self.specification.task_id,
+            WorkflowState.VERIFYING,
+            actor=WorkflowActor.VERIFICATION_ENGINE,
+            event_type=f"{event_prefix}_verification_recorded",
+            payload={
+                "verification_runs": result.verification_runs,
+                "final_status": "passed",
+            },
+            expected_version=patch_ready.version,
+        )
+        self.store.transition(
+            self.specification.task_id,
+            WorkflowState.COMPLETE,
+            actor=WorkflowActor.VERIFICATION_ENGINE,
+            event_type=f"{event_prefix}_verification_passed",
+            payload={"stop_reason": result.stop_reason},
+            expected_version=verifying.version,
+        )
+        return self._finalize_report(TaskOutcome.COMPLETE)
+
+    def _require_human_after_agent(
+        self,
+        result: AgentSessionResult,
+        *,
+        implementing_version: int,
+        event_type: str,
+    ) -> FinalTaskReport:
+        assert self.specification is not None
+        self.escalation_reason = result.stop_reason
+        escalation = self.store.transition(
+            self.specification.task_id,
+            WorkflowState.ESCALATION_REQUIRED,
+            actor=WorkflowActor.SYSTEM,
+            event_type=event_type,
+            payload={"reason": result.stop_reason},
+            expected_version=implementing_version,
+        )
+        self.store.transition(
+            self.specification.task_id,
+            WorkflowState.HUMAN_REVIEW_REQUIRED,
+            actor=WorkflowActor.SYSTEM,
+            event_type="bounded_frontier_requires_human",
+            payload={"reason": result.stop_reason},
+            expected_version=escalation.version,
+        )
+        return self._finalize_report(
+            TaskOutcome.HUMAN_REVIEW_REQUIRED,
+            error=f"bounded frontier coding agent stopped: {result.stop_reason}",
+        )
+
     def _model_call(
         self,
         operation: ModelOperation,
@@ -474,8 +866,14 @@ class VerticalSliceRunner:
         context: ContextPackage,
         *,
         requested_output: str,
+        response_schema: dict[str, object] | None = None,
+        role: ModelRole = ModelRole.FRONTIER_IMPLEMENTATION,
+        provider: InstrumentedModelProvider | None = None,
+        provider_config: FrontierProviderConfig | None = None,
     ) -> ModelResponse:
         assert self.audit is not None
+        selected_provider = provider or self.provider
+        selected_config = provider_config or self.provider_config
         call_number = len(self.telemetry) + 1
         request_id = f"MRQ-{uuid.uuid4().hex}"
         constraints = list(context.specification.active_hard_constraints)
@@ -491,24 +889,35 @@ class VerticalSliceRunner:
             request_id=request_id,
             task_id=context.task_id,
             operation=operation,
-            provider=self.provider.provider_name,
-            model=self.provider.model_name,
+            provider=selected_provider.provider_name,
+            model=selected_provider.model_name,
             specification=context.specification,
             evidence=context.evidence,
             active_constraints=constraints,
             constraint_coverage=coverage,
-            inference_parameters=self._inference_parameters(operation),
+            inference_parameters=self._inference_parameters(
+                operation, selected_config
+            ),
             requested_output=requested_output,
         )
-        self.audit.write_call_package(call_number, request, prompt, context)
+        self.audit.write_call_package(
+            call_number,
+            request,
+            prompt,
+            context,
+            provider_role=role.value,
+            response_schema=response_schema,
+        )
         self.contexts.append((call_number, context))
         invocation = ProviderInvocation(
             request_id=request_id,
             operation=operation,
             prompt=prompt,
+            role=role,
+            response_schema=response_schema,
         )
         try:
-            call = self.provider.complete(invocation)
+            call = selected_provider.complete(invocation)
         except InstrumentedProviderError as exc:
             self.telemetry.append(exc.telemetry)
             self.audit.write_json(
@@ -521,7 +930,7 @@ class VerticalSliceRunner:
         response = ModelResponse(
             response_id=f"MRS-{uuid.uuid4().hex}",
             request_id=request_id,
-            provider=self.provider.provider_name,
+            provider=selected_provider.provider_name,
             model=call.output.model,
             operation=operation,
             content=call.output.content,
@@ -538,9 +947,11 @@ class VerticalSliceRunner:
         return response
 
     def _inference_parameters(
-        self, operation: ModelOperation
+        self,
+        operation: ModelOperation,
+        provider_config: FrontierProviderConfig,
     ) -> dict[str, int | float | bool | None]:
-        frontier = self.config.models.frontier
+        frontier = provider_config
         think = frontier.think
         if (
             operation == ModelOperation.DRAFT_SPECIFICATION
@@ -559,7 +970,7 @@ class VerticalSliceRunner:
         assert self.audit is not None
         assert self.worktree_path is not None
         self.audit.write_text(
-            f"patch-{attempt:03d}.diff", patch, kind="frontier_patch"
+            f"patch-{attempt:03d}.diff", patch, kind="model_patch"
         )
         parsed = self.parser.parse(patch)
         proposal = patch.replace("\r\n", "\n").replace("\r", "\n").strip() + "\n"
@@ -567,7 +978,7 @@ class VerticalSliceRunner:
             self.audit.write_text(
                 f"patch-{attempt:03d}-normalized.diff",
                 parsed.raw,
-                kind="normalized_frontier_patch",
+                kind="normalized_model_patch",
             )
         validation = self.validator.validate(parsed, self.worktree_path)
         self.audit.write_json(
@@ -584,7 +995,7 @@ class VerticalSliceRunner:
             self.audit.write_text(
                 f"patch-{attempt:03d}-rebased.diff",
                 self.applier.last_applied_patch,
-                kind="rebased_frontier_patch",
+                kind="rebased_model_patch",
             )
 
     def _run_verification(self, *, attempt: int) -> VerificationResult:
@@ -676,11 +1087,56 @@ class VerticalSliceRunner:
                     if path.is_file()
                 )
         locations.extend([".sol/sol.db", predicted_report])
+        staged_results = [
+            item
+            for item in (
+                self.local_agent_result,
+                self.frontier_agent_result,
+            )
+            if item is not None
+        ]
         report = FinalTaskReport(
             task_id=self.specification.task_id,
             outcome=outcome,
             error=error,
             worktree_path=self.worktree_path,
+            execution_mode=self.config.execution.mode,
+            agent_route=(
+                self.routing_decision.route if self.routing_decision else None
+            ),
+            agent_turns=sum(item.turns for item in staged_results),
+            agent_patch_attempts=sum(
+                item.patch_attempts for item in staged_results
+            ),
+            agent_verification_runs=sum(
+                item.verification_runs for item in staged_results
+            ),
+            agent_stop_reason=(
+                self.agent_result.stop_reason if self.agent_result else None
+            ),
+            local_agent_turns=(
+                self.local_agent_result.turns
+                if self.local_agent_result
+                else 0
+            ),
+            frontier_agent_turns=(
+                self.frontier_agent_result.turns
+                if self.frontier_agent_result
+                else 0
+            ),
+            frontier_agent_patch_attempts=(
+                self.frontier_agent_result.patch_attempts
+                if self.frontier_agent_result
+                else 0
+            ),
+            frontier_agent_verification_runs=(
+                self.frontier_agent_result.verification_runs
+                if self.frontier_agent_result
+                else 0
+            ),
+            escalation_triggered=self.escalation_reason is not None,
+            escalation_reason=self.escalation_reason,
+            escalation_package_path=self.escalation_package_path,
             constraint_coverage=constraint_coverage,
             models_used=[
                 ModelIdentity(provider=provider, model=model)

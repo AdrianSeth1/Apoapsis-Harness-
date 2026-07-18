@@ -9,7 +9,12 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
-from sol.config import FrontierProviderConfig, SolConfig
+from sol.config import (
+    AgentRoute,
+    ExecutionMode,
+    FrontierProviderConfig,
+    SolConfig,
+)
 from sol.execution.worktree import WorktreeError, WorktreeManager
 from sol.models.frontier import OpenAICompatibleFrontierProvider
 from sol.models.local import OllamaProvider
@@ -45,11 +50,11 @@ language = "python"
 [models.frontier]
 provider = "ollama"
 base_url = "http://127.0.0.1:11434"
-model = "qwen3-coder:30b"
+model = "qwen3-coder-next:q4_K_M"
 timeout_seconds = 900
 max_output_tokens = 8192
 temperature = 0.0
-context_window_tokens = 32768
+context_window_tokens = 65536
 think = false
 specification_think = false
 
@@ -57,6 +62,43 @@ specification_think = false
 input_per_million_usd = 0
 output_per_million_usd = 0
 cached_input_per_million_usd = 0
+
+[models.local_coder]
+provider = "ollama"
+base_url = "http://127.0.0.1:11434"
+model = "qwen3-coder-next:q4_K_M"
+api_key_env = "SOL_LOCAL_CODER_API_KEY"
+timeout_seconds = 900
+max_output_tokens = 8192
+temperature = 0.0
+context_window_tokens = 65536
+think = false
+specification_think = false
+
+[models.local_coder.pricing]
+input_per_million_usd = 0
+output_per_million_usd = 0
+cached_input_per_million_usd = 0
+
+[execution]
+mode = "agent"
+route = "auto"
+
+[execution.agent]
+max_turns = 12
+max_patch_attempts = 4
+max_verification_runs = 4
+max_search_results = 20
+max_read_lines = 240
+max_observation_chars = 48000
+
+[execution.frontier_agent]
+max_turns = 8
+max_patch_attempts = 3
+max_verification_runs = 3
+max_search_results = 20
+max_read_lines = 240
+max_observation_chars = 48000
 
 [models.local_research]
 provider = "ollama"
@@ -78,9 +120,9 @@ think = true
 require_structured_output = true
 
 [context]
-max_files = 16
-max_excerpt_lines = 160
-max_total_chars = 72000
+max_files = 24
+max_excerpt_lines = 240
+max_total_chars = 180000
 match_context_lines = 20
 max_search_terms = 12
 max_import_depth = 2
@@ -186,7 +228,7 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("init", help="initialize SOL metadata")
 
     run = subparsers.add_parser(
-        "run", help="run the approved frontier-model vertical slice"
+        "run", help="run an approved verified coding workflow"
     )
     run.add_argument("request")
     run.add_argument(
@@ -198,6 +240,21 @@ def build_parser() -> argparse.ArgumentParser:
         "--research",
         choices=["off", "auto", "github", "community", "full"],
         help="external-research policy for this task",
+    )
+    run.add_argument(
+        "--execution-mode",
+        choices=[item.value for item in ExecutionMode],
+        help="override the configured one-shot or bounded-agent execution mode",
+    )
+    run.add_argument(
+        "--agent-route",
+        choices=[
+            AgentRoute.AUTO.value,
+            AgentRoute.LOCAL_ONLY.value,
+            AgentRoute.LOCAL_THEN_FRONTIER.value,
+            AgentRoute.FRONTIER_ONLY.value,
+        ],
+        help="override deterministic agent provider routing",
     )
     run.add_argument(
         "--context-profile",
@@ -300,6 +357,8 @@ def _dispatch(args: argparse.Namespace) -> dict[str, object] | None:
             assume_yes=args.yes,
             requested_research=args.research,
             context_profile=args.context_profile,
+            execution_mode=args.execution_mode,
+            agent_route=args.agent_route,
         )
     if args.command == "research":
         return _research_command(
@@ -419,14 +478,44 @@ def _run_vertical_slice(
     assume_yes: bool,
     requested_research: str | None,
     context_profile: str | None,
+    execution_mode: str | None,
+    agent_route: str | None,
 ) -> dict[str, object]:
     config = SolConfig.from_toml(root / ".sol" / "config.toml")
+    if execution_mode is not None:
+        config = config.model_copy(
+            update={
+                "execution": config.execution.model_copy(
+                    update={"mode": ExecutionMode(execution_mode)}
+                )
+            }
+        )
+    if agent_route is not None:
+        config = config.model_copy(
+            update={
+                "execution": config.execution.model_copy(
+                    update={"route": AgentRoute(agent_route)}
+                )
+            }
+        )
     if context_profile is not None:
         config = _apply_context_profile(config, context_profile)
     adapter = _build_frontier_adapter(config.models.frontier)
     provider = InstrumentedModelProvider(
         adapter, config.models.frontier.pricing
     )
+    local_coder_provider = provider
+    if config.models.local_coder is not None:
+        local_coder_provider = InstrumentedModelProvider(
+            _build_frontier_adapter(config.models.local_coder),
+            config.models.local_coder.pricing,
+        )
+    frontier_coder_provider = None
+    if config.models.frontier_coder is not None:
+        frontier_coder_provider = InstrumentedModelProvider(
+            _build_frontier_adapter(config.models.frontier_coder),
+            config.models.frontier_coder.pricing,
+        )
 
     def approve(specification: TaskSpecification) -> bool:
         if assume_yes:
@@ -451,6 +540,8 @@ def _run_vertical_slice(
             store,
             provider,
             config,
+            local_coder_provider=local_coder_provider,
+            frontier_coder_provider=frontier_coder_provider,
             research_engine=research_engine,
             research_mode=research_mode,
         ).run(request, approve=approve)
@@ -485,18 +576,25 @@ _CONTEXT_PROFILES: dict[str, dict[str, int]] = {
 def _apply_context_profile(config: SolConfig, profile_name: str) -> SolConfig:
     """Apply a deterministic coding-context profile without mutating config files."""
 
-    if config.models.frontier.provider != "ollama":
+    coding = config.models.local_coder or config.models.frontier
+    if coding.provider != "ollama":
         raise TaskStoreError(
-            "context profiles require the native Ollama frontier provider"
+            "context profiles require the native Ollama local coding provider"
         )
     try:
         profile = _CONTEXT_PROFILES[profile_name]
     except KeyError as exc:
         raise TaskStoreError(f"unsupported context profile: {profile_name}") from exc
-    frontier = config.models.frontier.model_copy(
-        update={"context_window_tokens": profile["context_window_tokens"]}
-    )
-    models = config.models.model_copy(update={"frontier": frontier})
+    model_updates = {}
+    if config.models.frontier.provider == "ollama":
+        model_updates["frontier"] = config.models.frontier.model_copy(
+            update={"context_window_tokens": profile["context_window_tokens"]}
+        )
+    if config.models.local_coder is not None:
+        model_updates["local_coder"] = config.models.local_coder.model_copy(
+            update={"context_window_tokens": profile["context_window_tokens"]}
+        )
+    models = config.models.model_copy(update=model_updates)
     context = config.context.model_copy(
         update={
             "max_files": profile["max_files"],

@@ -20,6 +20,7 @@ class ModelOperation(StrEnum):
     DRAFT_SPECIFICATION = "draft_specification"
     IDENTIFY_AMBIGUITIES = "identify_ambiguities"
     RANK_CONTEXT = "rank_context"
+    AGENT_STEP = "agent_step"
     IMPLEMENT_PATCH = "implement_patch"
     REVIEW_PATCH = "review_patch"
     DIAGNOSE_FAILURE = "diagnose_failure"

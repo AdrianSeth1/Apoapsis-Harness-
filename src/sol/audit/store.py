@@ -34,6 +34,9 @@ class TaskAuditStore:
         request: ModelRequest,
         prompt: str,
         context: ContextPackage,
+        *,
+        provider_role: str = "FRONTIER_IMPLEMENTATION",
+        response_schema: dict[str, Any] | None = None,
     ) -> list[AuditArtifact]:
         prefix = f"call-{call_number:03d}"
         context_path = self.write_json(
@@ -43,6 +46,10 @@ class TaskAuditStore:
             "schema_version": "1.0",
             "call_number": call_number,
             "model_request": request.model_dump(mode="json"),
+            "provider_invocation": {
+                "role": provider_role,
+                "response_schema": response_schema,
+            },
             "prompt": prompt,
             "context_artifact": context_path.path,
             "context_sha256": context.context_sha256,

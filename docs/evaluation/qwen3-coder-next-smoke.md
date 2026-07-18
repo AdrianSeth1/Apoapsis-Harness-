@@ -55,9 +55,46 @@ change that logic.
 The model installs, loads, and runs acceptably at 64K with predictable CPU/GPU
 offload. SOL's workflow and safety boundary also behave correctly. However,
 Coder-Next Q4 produced no accepted, verified solution in these controlled
-samples. More context did not help this small repository because all relevant
-files already fit in every request. Recommended sampling increased variation
-but did not produce a successful patch.
+**one-shot** samples. More context did not help this small repository because
+all relevant files already fit in every request. Recommended sampling increased
+variation but did not produce a successful patch.
+
+These results are retained as the one-shot baseline. SOL 0.5 adds a bounded
+inspect-edit-test action loop specifically because this experiment did not test
+Coder-Next in its intended agentic operating mode. The identical fixture was
+therefore rerun through `--execution-mode agent` to test whether iterative
+evidence requests and exact failure feedback improve the accepted patch rate.
+
+## Bounded-agent results
+
+SOL 0.5 reran the identical fixture at 64K and temperature 1.0. The model could
+request bounded reads and checks, inspect the current worktree diff, and propose
+either unified diffs or exact text replacements. SOL converted replacements to
+unified diffs and retained the same patch policy and verifier-owned completion.
+
+| Task | Agent turns | Patch attempts | Verification runs | Tokens in / out | Model latency | Outcome |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| `TASK-7A745ADAD346` | 12 | 3 | 4 | 75,679 / 2,633 | 210.41 s | Escalated at turn limit; one test remained failing |
+| `TASK-74ED212F94BB` | 10 | 3 | 3 | 51,909 / 1,945 | 149.46 s | Complete; all 3 tests passed |
+
+In the successful run, Coder-Next first ran the baseline test, read the target
+source, and made an exact replacement. The next test exposed resume and
+server-ignore failures. One repair was rejected for whitespace on blank lines;
+the model reread the current file, inspected the diff, made a second exact
+replacement, and requested the configured test again. All three tests passed.
+Only `src/download_service/downloader.py` changed; dependencies, tests, public
+signatures, and verification configuration were untouched.
+
+An earlier diagnostic task (`TASK-C91B0A7ED1E6`) failed before the first agent
+turn because Ollama rejected Pydantic's discriminated-union JSON Schema. The
+wire schema is now a flat conservative JSON object, while SOL still performs
+strict discriminated per-action validation after generation.
+
+The successful result changes the interpretation of the one-shot failures:
+Coder-Next Q4 is usable on this fixture when given a constrained agent loop.
+This is one accepted task, not evidence of broad capability or cost advantage;
+the next evaluation phase must repeat runs across multiple task categories and
+compare accepted-patch cost and time with direct frontier execution.
 
 Reports remain in the ignored controlled repository under:
 

@@ -1,8 +1,14 @@
 # SOL Harness
 
 SOL Harness is a local-first context, research, and verification layer for AI
-coding agents. It contains the deterministic `substrate-v0.1` baseline, one
-bounded frontier-model patch flow, and a quarantined local Research Mode.
+coding agents. It contains the deterministic `substrate-v0.1` baseline, a
+bounded inspect-edit-test coding loop, the original one-shot patch baseline,
+and a quarantined local Research Mode.
+
+Start with [`HANDOFF.md`](HANDOFF.md) for the living architecture, current
+implementation status, known limitations, and the required maintenance contract
+for future coding models. The ADRs remain the decision history; this README is
+the user-facing guide.
 
 ## What works now
 
@@ -21,8 +27,14 @@ bounded frontier-model patch flow, and a quarantined local Research Mode.
   validation and explicit user approval.
 - Reproducible Git/ripgrep/symbol/import/test context packages with line-level
   provenance.
-- Unified-diff parsing, policy validation, safe worktree application, automatic
-  verification, and at most one targeted frontier repair.
+- A typed coding-agent protocol for literal search, bounded reads, diff
+  inspection, incremental patches, configured checks, full verification, and
+  explicit escalation—with no shell or arbitrary command access.
+- Unified-diff parsing, policy validation, safe worktree application, bounded
+  iteration, and verifier-owned completion.
+- Deterministic risk routing across local-only, local-then-frontier,
+  frontier-only, and human-review paths, with a reproducible escalation package
+  and separate budgets for each coding stage.
 - A complete per-task audit directory and aggregate usage/outcome report.
 - Deterministically triggered GitHub, official-documentation, and opt-in Reddit
   research planned and synthesized by a tool-free local model.
@@ -36,8 +48,11 @@ See [ADR 0001](docs/adr/0001-mvp-deterministic-substrate.md) for the substrate
 and [ADR 0002](docs/adr/0002-frontier-vertical-slice.md) for the frontier flow.
 [ADR 0003](docs/adr/0003-local-research-mode.md) records the Research Mode trust
 boundary, [ADR 0004](docs/adr/0004-native-ollama-frontier.md) records the native
-all-local proposal path, and [the Research Mode guide](docs/research-mode.md)
-covers setup and operation.
+all-local proposal path, [ADR 0005](docs/adr/0005-bounded-coding-agent-loop.md)
+records the agent action boundary,
+[ADR 0006](docs/adr/0006-deterministic-frontier-escalation.md) records provider
+routing and escalation, and
+[the Research Mode guide](docs/research-mode.md) covers setup and operation.
 
 ## Install for development
 
@@ -96,20 +111,20 @@ sol rollback TASK-ABC123 --delete-branch
 `PATCH_READY`. `rollback` is explicit and may discard uncommitted task-worktree
 changes. Normal cleanup APIs refuse dirty worktrees unless force is requested.
 
-## Complete all-local flow
+## Complete all-local agent flow
 
-`sol init` now creates a 32K working configuration for the models used by the
-local evaluation:
+`sol init` creates a 64K agent configuration for the installed Coder-Next Q4
+model:
 
 ```toml
 [models.frontier]
 provider = "ollama"
 base_url = "http://127.0.0.1:11434"
-model = "qwen3-coder:30b"
+model = "qwen3-coder-next:q4_K_M"
 timeout_seconds = 900
 max_output_tokens = 8192
 temperature = 0.0
-context_window_tokens = 32768
+context_window_tokens = 65536
 think = false
 specification_think = false
 
@@ -117,6 +132,41 @@ specification_think = false
 input_per_million_usd = 0
 output_per_million_usd = 0
 cached_input_per_million_usd = 0
+
+[models.local_coder]
+provider = "ollama"
+base_url = "http://127.0.0.1:11434"
+model = "qwen3-coder-next:q4_K_M"
+timeout_seconds = 900
+max_output_tokens = 8192
+temperature = 0.0
+context_window_tokens = 65536
+think = false
+
+[models.local_coder.pricing]
+input_per_million_usd = 0
+output_per_million_usd = 0
+cached_input_per_million_usd = 0
+
+[execution]
+mode = "agent"
+route = "auto"
+
+[execution.agent]
+max_turns = 12
+max_patch_attempts = 4
+max_verification_runs = 4
+max_search_results = 20
+max_read_lines = 240
+max_observation_chars = 48000
+
+[execution.frontier_agent]
+max_turns = 8
+max_patch_attempts = 3
+max_verification_runs = 3
+max_search_results = 20
+max_read_lines = 240
+max_observation_chars = 48000
 
 [models.local_research]
 provider = "ollama"
@@ -128,22 +178,21 @@ temperature = 0.0
 context_window_tokens = 32768
 
 [context]
-max_files = 16
-max_excerpt_lines = 160
-max_total_chars = 72000
+max_files = 24
+max_excerpt_lines = 240
+max_total_chars = 180000
 max_import_depth = 2
 ```
 
 Both native Ollama endpoints must be loopback URLs. No fake API key is needed.
-For a hosted model, switch `provider` back to `openai_compatible`, configure the
-base URL and `api_key_env`, and enter the provider's current pricing. Then run
-one command:
+`models.frontier` remains the backwards-compatible specification/one-shot
+provider; `models.local_coder` is the first agent stage. Then run one command:
 
 ```bash
 sol run "Add resumable downloads without changing the public API"
 ```
 
-The default is the `32k` working profile. A run can select a reproducible
+The generated default is the `64k` working profile. A run can select a reproducible
 comparison profile without editing the project configuration:
 
 | Profile | Ollama window | Files | Lines per excerpt | Total excerpt characters |
@@ -156,12 +205,12 @@ comparison profile without editing the project configuration:
 sol run "Add resumable downloads without changing the public API" --context-profile 64k
 ```
 
-Profiles affect frontier coding calls and deterministic repository retrieval;
+Profiles affect the native local-coding window and deterministic retrieval;
 Research Mode retains its separately configured budget. SOL records the active
 window and generation settings in every frontier request package and the exact
 retrieval limits in every context package.
 
-The installed Coder-Next Q4 model can be selected explicitly:
+For sampling comparisons, Coder-Next temperature can be changed explicitly:
 
 ```toml
 [models.frontier]
@@ -180,9 +229,49 @@ sampling default; Coder-Next's published model settings recommend `1.0`.
 
 SOL displays the extracted Pydantic specification and waits for approval. The
 `--yes` flag is available for controlled non-interactive evaluation. Approval
-does not grant the model workflow authority: SOL deterministically selects
-context, records the exact request package, validates the returned diff, applies
-it only in the task worktree, runs configured checks, and allows one repair.
+does not grant the model workflow authority: SOL deterministically mediates
+every search, read, patch, and configured check; records each request package;
+and accepts completion only after full verification.
+
+Use the retained one-shot baseline for a direct controlled comparison:
+
+```bash
+sol run "Add resumable downloads without changing the public API" \
+  --execution-mode one_shot --context-profile 64k
+```
+
+Agent mode is bounded by `[execution.agent]`. With no frontier coder configured,
+an escalation request stops for human review. To enable automatic handoff, add
+a separately authenticated provider:
+
+```toml
+[models.frontier_coder]
+provider = "openai_compatible"
+base_url = "https://provider.example/v1"
+model = "frontier-coder"
+api_key_env = "SOL_FRONTIER_CODER_API_KEY"
+timeout_seconds = 900
+max_output_tokens = 16384
+temperature = 0.0
+
+[models.frontier_coder.pricing]
+input_per_million_usd = 0
+output_per_million_usd = 0
+cached_input_per_million_usd = 0
+```
+
+`route = "auto"` sends low, medium, and unclassified tasks local-first and
+escalates only after the local stage stops. High-risk tasks go directly to the
+frontier coder, while critical-risk tasks require human review. Routes can be
+overridden with `--agent-route local_only`, `local_then_frontier`, or
+`frontier_only`.
+
+Before the first frontier coding call, SOL writes
+`frontier-escalation-package.json` containing the approved task and constraints,
+the exact current diff, complete local action history, verification commands and
+normalized failures, provider identities, and the frontier context digest. The
+frontier agent continues in the same isolated worktree with its own deterministic
+budget. If it cannot verify the task, SOL stops for human review.
 
 Every task writes `.sol/tasks/<task-id>/report.json`. `sol inspect <task-id>`
 returns the persisted state/events and embeds that report when present.
@@ -194,6 +283,10 @@ measured local Qwen smoke results are in
 [`docs/evaluation/local-qwen-smoke.md`](docs/evaluation/local-qwen-smoke.md).
 The installed Coder-Next Q4 evaluation is in
 [`docs/evaluation/qwen3-coder-next-smoke.md`](docs/evaluation/qwen3-coder-next-smoke.md).
+The first bounded-agent run to complete the controlled fixture used ten agent
+turns and three verification runs; all three tests passed with one source file
+changed. The earlier one-shot failures remain documented as the comparison
+baseline rather than being discarded.
 
 ## Research Mode
 
@@ -264,6 +357,7 @@ the future sandbox adapter before untrusted or model-selected commands are run.
 
 ```text
 src/sol/
+  agent/            bounded typed inspect-edit-test sessions
   cli/              CLI entry points
   context/          provenance-aware evidence schemas
   execution/        managed Git worktrees
@@ -277,4 +371,6 @@ src/sol/
   reporting/        aggregate outcome and usage reports
 tests/               deterministic unit and integration tests
 docs/adr/            architectural decisions
+HANDOFF.md           living architecture and project handoff
+AGENTS.md            mandatory upkeep instructions for coding models
 ```

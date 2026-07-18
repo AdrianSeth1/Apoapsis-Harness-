@@ -162,6 +162,11 @@ class OllamaProvider(ModelProvider):
                 timeout=timeout_seconds or self.config.timeout_seconds,
             ) as response:
                 raw = json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")[:2_000]
+            raise ProviderError(
+                f"Ollama request failed with HTTP {exc.code}: {detail}"
+            ) from exc
         except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
             raise ProviderError(f"Ollama request failed: {exc}") from exc
         if not isinstance(raw, dict):

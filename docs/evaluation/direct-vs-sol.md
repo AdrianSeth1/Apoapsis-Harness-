@@ -54,10 +54,11 @@ Install SOL Harness, initialize metadata, and edit `.sol/config.toml`:
 sol init
 ```
 
-For the first all-local run, use the generated native Ollama configuration with
-`qwen3-coder:30b`; it requires no API key. Set `[models.local_research].model`
-to `qwen3.6:27b`. For a hosted comparison, set `[models.frontier]` to the same
-endpoint and model used by the direct run and enter all three pricing rates.
+For the all-local run, use the generated native Ollama configuration with
+`qwen3-coder-next:q4_K_M`; it requires no API key. Set
+`[models.local_research].model` to `qwen3.6:27b`. For the hybrid comparison, add
+`[models.frontier_coder]` with the same endpoint and model used by the direct
+run and enter all three pricing rates.
 Set the verification command's first argument to the desired Python executable
 if `python` is not on `PATH`.
 
@@ -71,8 +72,11 @@ Existing clients must continue working." --context-profile 32k
 ```
 
 SOL prints the extracted specification and pauses for approval. After approval,
-it creates a task worktree, requests a unified diff, validates and applies it,
-runs verification, and permits at most one focused frontier repair.
+it creates a task worktree and runs the bounded local inspect-edit-test loop. Run
+the local-only lane with `--agent-route local_only`; run the automatic escalation
+lane with `--agent-route local_then_frontier`. The latter writes a reproducible
+escalation package and continues in the same worktree only when the local stage
+requests escalation or exhausts its budget.
 
 Inspect the result with the task ID printed in the report:
 
@@ -93,19 +97,20 @@ files and lines, prompt tokens, generation tokens, and latency.
 
 Compare the same outcome fields for both runs:
 
-| Measure | Direct | SOL |
-| --- | ---: | ---: |
-| Accepted without human edits | | |
-| Verification passed | | |
-| Frontier calls | | |
-| Input tokens | | |
-| Output tokens | | |
-| Cached input tokens | | |
-| Estimated cost | | |
-| Total model latency | | |
-| Files and lines transmitted | | |
-| Constraint violations | | |
-| Human review time | | |
+| Measure | Direct frontier | SOL local-only | SOL local + frontier |
+| --- | ---: | ---: | ---: |
+| Accepted without human edits | | | |
+| Verification passed | | | |
+| Local calls | | | |
+| Frontier calls | | | |
+| Input tokens | | | |
+| Output tokens | | | |
+| Cached input tokens | | | |
+| Estimated cost | | | |
+| Total model latency | | | |
+| Files and lines transmitted | | | |
+| Constraint violations | | | |
+| Human review time | | | |
 
 The primary comparison is cost per accepted, non-regressing patch—not token count
 alone.
