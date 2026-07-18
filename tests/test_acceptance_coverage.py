@@ -1,0 +1,550 @@
+from __future__ import annotations
+
+import json
+import shutil
+import subprocess
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+from apoapsis.config import (
+    AgentLoopConfig,
+    AgentRoute,
+    CompletionPolicy,
+    ContextCompilerConfig,
+    ExecutionConfig,
+    ExecutionMode,
+    FrontierProviderConfig,
+    ModelsConfig,
+    PatchPolicyConfig,
+    ApoapsisConfig,
+)
+from apoapsis.models.telemetry import InstrumentedModelProvider
+from apoapsis.reporting.report import TaskOutcome
+from apoapsis.verification.runner import VerificationCommand, VerificationConfig
+from apoapsis.workflow.acceptance import AcceptanceCoverageStatus
+from apoapsis.workflow.engine import SQLiteTaskStore
+from apoapsis.workflow.vertical_slice import VerticalSliceRunner
+from tests.fakes import FakeModelProvider
+from tests.test_vertical_slice import (
+    COMPLETE_PATCH,
+    IMPLEMENTATION_PATCH,
+    REQUEST,
+    specification_response,
+)
+
+REPLACEMENT_OLD_TEXT = (
+    '        mode = "ab" if offset else "wb"\n'
+    "        downloaded = offset"
+)
+REPLACEMENT_NEW_TEXT = (
+    "        should_append = offset > 0 and "
+    "response.status_code == 206\n"
+    '        mode = "ab" if should_append else "wb"\n'
+    "        downloaded = offset if should_append else 0"
+)
+
+
+def action(name: str, **values: object) -> str:
+    return json.dumps({"action": name, **values})
+
+
+def specification_with_mapping(
+    *, ac1_method: str | None, ac2_method: str | None
+) -> str:
+    payload = json.loads(specification_response())
+    payload["acceptance_criteria"][0]["verification_method"] = ac1_method
+    payload["acceptance_criteria"][1]["verification_method"] = ac2_method
+    return json.dumps(payload)
+
+
+def _inject_task_id(fake: FakeModelProvider) -> None:
+    original_complete = fake.complete
+
+    def complete(invocation):
+        output = original_complete(invocation)
+        if len(fake.invocations) == 1:
+            task_id = invocation.prompt.split(
+                'task_id to "', 1
+            )[1].split('"', 1)[0]
+            raw = json.loads(output.content)
+            raw["task_id"] = task_id
+            return output.model_copy(update={"content": json.dumps(raw)})
+        return output
+
+    fake.complete = complete  # type: ignore[method-assign]
+
+
+class AcceptanceCoverageTests(unittest.TestCase):
+    """Verification sufficiency and acceptance coverage (ADR 0015).
+
+    Every scenario runs the real `VerticalSliceRunner` / `BoundedAgentSession`
+    against the download-service fixture used by `tests/test_agent_loop.py` --
+    coverage is never faked at the schema level, it is earned (or not) exactly
+    the way a live task would earn it.
+    """
+
+    def setUp(self) -> None:
+        self.temporary_directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary_directory.cleanup)
+        self.root = Path(self.temporary_directory.name) / "download-service"
+        example = (
+            Path(__file__).resolve().parents[1]
+            / "examples"
+            / "download-service"
+        )
+        shutil.copytree(example, self.root)
+        self._git("init", "-b", "main")
+        self._git("config", "user.email", "tests@example.invalid")
+        self._git("config", "user.name", "Apoapsis Tests")
+        self._git("add", ".")
+        self._git("commit", "-m", "controlled baseline")
+        (self.root / ".apoapsis").mkdir()
+        self.store = SQLiteTaskStore(self.root / ".apoapsis" / "apoapsis.db")
+
+    def _git(self, *arguments: str) -> None:
+        subprocess.run(
+            ["git", *arguments],
+            cwd=self.root,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+    def _config(
+        self,
+        *,
+        completion_policy: CompletionPolicy = CompletionPolicy.STRICT,
+        route: AgentRoute = AgentRoute.LOCAL_ONLY,
+        frontier_coder: FrontierProviderConfig | None = None,
+        local_turns: int = 6,
+        frontier_turns: int = 6,
+        acceptance: bool = True,
+    ) -> ApoapsisConfig:
+        return ApoapsisConfig(
+            models=ModelsConfig(
+                frontier=FrontierProviderConfig(
+                    base_url="https://provider.invalid/v1",
+                    model="fake-coder-v1",
+                ),
+                frontier_coder=frontier_coder,
+            ),
+            execution=ExecutionConfig(
+                mode=ExecutionMode.AGENT,
+                route=route,
+                completion_policy=completion_policy,
+                agent=AgentLoopConfig(
+                    max_turns=local_turns,
+                    max_patch_attempts=3,
+                    max_verification_runs=4,
+                    max_search_results=10,
+                    max_read_lines=120,
+                    max_observation_chars=20_000,
+                ),
+                frontier_agent=AgentLoopConfig(
+                    max_turns=frontier_turns,
+                    max_patch_attempts=3,
+                    max_verification_runs=4,
+                    max_search_results=10,
+                    max_read_lines=120,
+                    max_observation_chars=20_000,
+                ),
+            ),
+            context=ContextCompilerConfig(
+                max_files=10,
+                max_excerpt_lines=200,
+                max_total_chars=50_000,
+            ),
+            patch=PatchPolicyConfig(max_changed_lines=100),
+            verification=VerificationConfig(
+                commands=[
+                    VerificationCommand(
+                        name="download-tests",
+                        category="tests",
+                        argv=[
+                            sys.executable,
+                            "-m",
+                            "unittest",
+                            "discover",
+                            "-s",
+                            "tests",
+                            "-v",
+                        ],
+                        timeout_seconds=30,
+                        acceptance=acceptance,
+                    )
+                ]
+            ),
+        )
+
+    def _run(
+        self, config: ApoapsisConfig, fake: FakeModelProvider, **runner_kwargs
+    ):
+        _inject_task_id(fake)
+        return VerticalSliceRunner(
+            self.root,
+            self.store,
+            InstrumentedModelProvider(fake),
+            config,
+            **runner_kwargs,
+        ).run(REQUEST, approve=lambda specification: True)
+
+    # 1. Strict + visible checks pass but no criterion is proven -> the
+    # budget exhausts and the task ends in human review, not COMPLETE.
+    def test_strict_unmapped_criteria_exhaust_budget_to_human_review(self) -> None:
+        fake = FakeModelProvider(
+            [
+                specification_response(),
+                action("propose_patch", unified_diff=COMPLETE_PATCH),
+                action("run_check", command_name="download-tests"),
+                action("run_check", command_name="download-tests"),
+            ]
+        )
+        report = self._run(self._config(local_turns=3), fake)
+
+        self.assertEqual(report.outcome, TaskOutcome.HUMAN_REVIEW_REQUIRED)
+        self.assertEqual(report.completion_policy, CompletionPolicy.STRICT)
+        self.assertTrue(
+            any(
+                result.status == "passed"
+                for result in report.verification_results
+            )
+        )
+        coverage = {item.criterion_id: item.status for item in report.acceptance_coverage}
+        self.assertEqual(
+            coverage,
+            {
+                "AC-1": AcceptanceCoverageStatus.UNPROVEN,
+                "AC-2": AcceptanceCoverageStatus.UNPROVEN,
+            },
+        )
+
+    # 2. Strict + a mapped, acceptance-designated command passes -> COMPLETE
+    # with every criterion recorded PROVEN.
+    def test_strict_mapped_passing_acceptance_command_reaches_complete(self) -> None:
+        spec = specification_with_mapping(
+            ac1_method="download-tests", ac2_method="download-tests"
+        )
+        fake = FakeModelProvider(
+            [
+                spec,
+                action("propose_patch", unified_diff=COMPLETE_PATCH),
+                action("run_check", command_name="download-tests"),
+            ]
+        )
+        report = self._run(self._config(local_turns=4), fake)
+
+        self.assertEqual(report.outcome, TaskOutcome.COMPLETE)
+        self.assertEqual(len(report.acceptance_coverage), 2)
+        self.assertTrue(
+            all(
+                item.status == AcceptanceCoverageStatus.PROVEN
+                for item in report.acceptance_coverage
+            )
+        )
+        self.assertTrue(
+            all(
+                item.evidence_reference == "download-tests"
+                for item in report.acceptance_coverage
+            )
+        )
+
+    # 3. Strict + the mapped command initially fails -> not complete, the
+    # agent gets another turn within its ceiling, then it passes -> COMPLETE.
+    def test_strict_mapped_command_failing_then_passing_completes(self) -> None:
+        spec = specification_with_mapping(
+            ac1_method="download-tests", ac2_method="download-tests"
+        )
+        fake = FakeModelProvider(
+            [
+                spec,
+                action("propose_patch", unified_diff=IMPLEMENTATION_PATCH),
+                action("run_check", command_name="download-tests"),
+                action(
+                    "replace_text",
+                    path="src/download_service/downloader.py",
+                    old_text=REPLACEMENT_OLD_TEXT,
+                    new_text=REPLACEMENT_NEW_TEXT,
+                ),
+                action("run_check", command_name="download-tests"),
+            ]
+        )
+        report = self._run(self._config(local_turns=4), fake)
+
+        self.assertEqual(report.outcome, TaskOutcome.COMPLETE)
+        self.assertEqual(report.agent_verification_runs, 2)
+        self.assertEqual(report.verification_results[0].status, "failed")
+        self.assertEqual(report.verification_results[1].status, "passed")
+        self.assertTrue(
+            all(
+                item.status == AcceptanceCoverageStatus.PROVEN
+                for item in report.acceptance_coverage
+            )
+        )
+
+    # 4. A criterion mapped to a command the user never designated as an
+    # acceptance check stays UNPROVEN even after that command passes -- a
+    # model's own mapping proposal has zero authority to make it count.
+    def test_mapping_to_non_acceptance_command_has_no_authority(self) -> None:
+        spec = specification_with_mapping(
+            ac1_method="download-tests", ac2_method="download-tests"
+        )
+        fake = FakeModelProvider(
+            [
+                spec,
+                action("propose_patch", unified_diff=COMPLETE_PATCH),
+                action("run_check", command_name="download-tests"),
+                action("run_check", command_name="download-tests"),
+            ]
+        )
+        report = self._run(
+            self._config(local_turns=3, acceptance=False), fake
+        )
+
+        self.assertEqual(report.outcome, TaskOutcome.HUMAN_REVIEW_REQUIRED)
+        self.assertTrue(
+            any(
+                result.status == "passed"
+                for result in report.verification_results
+            )
+        )
+        for item in report.acceptance_coverage:
+            self.assertEqual(item.status, AcceptanceCoverageStatus.UNPROVEN)
+            self.assertIn("not an approved acceptance check", item.reason)
+
+    # 5. Two different valid tool sequences both reach the same COMPLETE /
+    # coverage outcome -- no fixed sequence is enforced.
+    def test_two_valid_tool_sequences_reach_the_same_complete_outcome(self) -> None:
+        spec = specification_with_mapping(
+            ac1_method="download-tests", ac2_method="download-tests"
+        )
+        search_then_check = FakeModelProvider(
+            [
+                spec,
+                action("search_repository", query="get_offset"),
+                action(
+                    "read_file",
+                    path="src/download_service/downloader.py",
+                    start_line=1,
+                    end_line=30,
+                ),
+                action("propose_patch", unified_diff=COMPLETE_PATCH),
+                action("run_check", command_name="download-tests"),
+            ]
+        )
+        read_then_submit = FakeModelProvider(
+            [
+                spec,
+                action(
+                    "read_file",
+                    path="src/download_service/downloader.py",
+                    start_line=1,
+                    end_line=30,
+                ),
+                action("propose_patch", unified_diff=COMPLETE_PATCH),
+                action("submit_for_verification"),
+            ]
+        )
+
+        report_a = self._run(self._config(local_turns=4), search_then_check)
+        report_b = self._run(self._config(local_turns=3), read_then_submit)
+
+        for report in (report_a, report_b):
+            self.assertEqual(report.outcome, TaskOutcome.COMPLETE)
+            self.assertTrue(
+                all(
+                    item.status == AcceptanceCoverageStatus.PROVEN
+                    for item in report.acceptance_coverage
+                )
+            )
+
+    # 6. Repeated inspect -> edit -> test -> diagnose -> repair iterations
+    # across several turns within configured ceilings, ending proven.
+    def test_repeated_inspect_edit_test_diagnose_repair_iterations_end_proven(
+        self,
+    ) -> None:
+        spec = specification_with_mapping(
+            ac1_method="download-tests", ac2_method="download-tests"
+        )
+        fake = FakeModelProvider(
+            [
+                spec,
+                action("search_repository", query="ignore"),
+                action(
+                    "read_file",
+                    path="src/download_service/downloader.py",
+                    start_line=1,
+                    end_line=30,
+                ),
+                action("propose_patch", unified_diff=IMPLEMENTATION_PATCH),
+                action("run_check", command_name="download-tests"),
+                action("inspect_diff"),
+                action(
+                    "replace_text",
+                    path="src/download_service/downloader.py",
+                    old_text=REPLACEMENT_OLD_TEXT,
+                    new_text=REPLACEMENT_NEW_TEXT,
+                ),
+                action("run_check", command_name="download-tests"),
+            ]
+        )
+        report = self._run(self._config(local_turns=7), fake)
+
+        self.assertEqual(report.outcome, TaskOutcome.COMPLETE)
+        self.assertEqual(report.agent_turns, 7)
+        self.assertEqual(report.agent_verification_runs, 2)
+        self.assertTrue(
+            all(
+                item.status == AcceptanceCoverageStatus.PROVEN
+                for item in report.acceptance_coverage
+            )
+        )
+
+    # 7. An unknown run_check command name is rejected without ending the
+    # session -- the task continues normally afterward.
+    def test_unknown_run_check_command_is_rejected_without_ending_session(
+        self,
+    ) -> None:
+        spec = specification_with_mapping(
+            ac1_method="download-tests", ac2_method="download-tests"
+        )
+        fake = FakeModelProvider(
+            [
+                spec,
+                action("run_check", command_name="does-not-exist"),
+                action("propose_patch", unified_diff=COMPLETE_PATCH),
+                action("run_check", command_name="download-tests"),
+            ]
+        )
+        report = self._run(self._config(local_turns=4), fake)
+
+        self.assertEqual(report.outcome, TaskOutcome.COMPLETE)
+        self.assertGreaterEqual(report.rejected_tool_requests, 1)
+        audit = self.root / ".apoapsis" / "tasks" / report.task_id
+        first_turn = json.loads(
+            (audit / "agent-turn-001.json").read_text(encoding="utf-8")
+        )
+        self.assertFalse(first_turn["accepted"])
+        self.assertIn("unknown verification command", first_turn["summary"])
+
+    # 8. A strict-policy run's prompts/context/evidence never contain
+    # "oracle"/"held-out", and `workflow`/`agent` never import the held-out
+    # evaluation oracle -- it stays an eval-harness-only side channel.
+    def test_strict_policy_never_references_the_held_out_oracle(self) -> None:
+        repo_root = Path(__file__).resolve().parents[1]
+        for directory_name in ("workflow", "agent"):
+            directory = repo_root / "src" / "apoapsis" / directory_name
+            for path in directory.rglob("*.py"):
+                text = path.read_text(encoding="utf-8")
+                self.assertNotIn(
+                    "oracle",
+                    text.lower(),
+                    f"{path} must not reference the held-out oracle",
+                )
+
+        spec = specification_with_mapping(
+            ac1_method="download-tests", ac2_method="download-tests"
+        )
+        fake = FakeModelProvider(
+            [
+                spec,
+                action("propose_patch", unified_diff=COMPLETE_PATCH),
+                action("run_check", command_name="download-tests"),
+            ]
+        )
+        report = self._run(self._config(local_turns=4), fake)
+        self.assertEqual(report.outcome, TaskOutcome.COMPLETE)
+
+        audit = self.root / ".apoapsis" / "tasks" / report.task_id
+        for path in audit.rglob("*.json"):
+            text = path.read_text(encoding="utf-8").lower()
+            self.assertNotIn("oracle", text)
+            self.assertNotIn("held-out", text)
+            self.assertNotIn("held_out", text)
+
+    # 9. Baseline policy + unproven coverage still reaches COMPLETE exactly
+    # as today, with the policy explicitly recorded on the report.
+    def test_baseline_policy_ignores_unproven_coverage_and_completes(self) -> None:
+        fake = FakeModelProvider(
+            [
+                specification_response(),
+                action("propose_patch", unified_diff=COMPLETE_PATCH),
+                action("run_check", command_name="download-tests"),
+            ]
+        )
+        report = self._run(
+            self._config(
+                completion_policy=CompletionPolicy.BASELINE, local_turns=4
+            ),
+            fake,
+        )
+
+        self.assertEqual(report.outcome, TaskOutcome.COMPLETE)
+        self.assertEqual(report.completion_policy, CompletionPolicy.BASELINE)
+        self.assertEqual(report.acceptance_coverage, [])
+
+    # 10. Strict + local budget exhausts with coverage unproven ->
+    # ESCALATION_REQUIRED -> frontier configured -> frontier's own check
+    # proves coverage -> COMPLETE. The gate composes with the existing,
+    # unmodified escalation machinery.
+    def test_strict_local_exhaustion_escalates_and_frontier_proves_coverage(
+        self,
+    ) -> None:
+        frontier_config = FrontierProviderConfig(
+            base_url="https://frontier.invalid/v1",
+            model="big-coder-v1",
+        )
+        spec = specification_with_mapping(
+            ac1_method="download-tests", ac2_method="download-tests"
+        )
+        local = FakeModelProvider(
+            [
+                spec,
+                action("search_repository", query="ignore"),
+                action(
+                    "read_file",
+                    path="src/download_service/downloader.py",
+                    start_line=1,
+                    end_line=20,
+                ),
+            ],
+            provider_name="fake_local",
+            model_name="small-coder-v1",
+        )
+        frontier = FakeModelProvider(
+            [
+                action("propose_patch", unified_diff=COMPLETE_PATCH),
+                action("run_check", command_name="download-tests"),
+            ],
+            provider_name="fake_hosted",
+            model_name="big-coder-v1",
+        )
+        _inject_task_id(local)
+        report = VerticalSliceRunner(
+            self.root,
+            self.store,
+            InstrumentedModelProvider(local),
+            self._config(
+                route=AgentRoute.LOCAL_THEN_FRONTIER,
+                frontier_coder=frontier_config,
+                local_turns=2,
+                frontier_turns=4,
+            ),
+            frontier_coder_provider=InstrumentedModelProvider(frontier),
+        ).run(REQUEST, approve=lambda specification: True)
+
+        self.assertEqual(report.outcome, TaskOutcome.COMPLETE)
+        self.assertTrue(report.escalation_triggered)
+        self.assertEqual(report.local_agent_turns, 2)
+        self.assertEqual(report.frontier_agent_turns, 2)
+        self.assertTrue(
+            all(
+                item.status == AcceptanceCoverageStatus.PROVEN
+                for item in report.acceptance_coverage
+            )
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()

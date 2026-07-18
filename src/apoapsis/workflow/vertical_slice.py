@@ -14,6 +14,7 @@ from apoapsis.audit.store import TaskAuditStore
 from apoapsis.config import (
     AgentLoopConfig,
     AgentRoute,
+    CompletionPolicy,
     ExecutionMode,
     FrontierProviderConfig,
     ApoapsisConfig,
@@ -64,6 +65,11 @@ from apoapsis.specification.schema import (
 from apoapsis.verification.failures import FailureNormalizer
 from apoapsis.verification.results import VerificationResult, VerificationStatus
 from apoapsis.verification.runner import VerificationRunner
+from apoapsis.workflow.acceptance import (
+    AcceptanceCoverage,
+    acceptance_coverage_satisfied,
+    compute_acceptance_coverage,
+)
 from apoapsis.workflow.engine import SQLiteTaskStore
 from apoapsis.workflow.escalation import (
     EscalationPackage,
@@ -130,6 +136,7 @@ class VerticalSliceRunner:
         self.escalation_package_path: str | None = None
         self.escalation_reason: str | None = None
         self.patch_audit_attempts = 0
+        self.acceptance_coverage: list[AcceptanceCoverage] = []
 
     def run(
         self, request: str, *, approve: ApprovalCallback
@@ -424,15 +431,13 @@ class VerticalSliceRunner:
             )
             first_result = self._run_verification(attempt=1)
             if first_result.status == VerificationStatus.PASSED:
-                self.store.transition(
+                return self._one_shot_complete_or_gap(
                     task_id,
-                    WorkflowState.COMPLETE,
-                    actor=WorkflowActor.VERIFICATION_ENGINE,
-                    event_type="verification_passed",
-                    payload={"attempt": 1},
-                    expected_version=verifying.version,
+                    first_result,
+                    verifying_version=verifying.version,
+                    attempt=1,
+                    complete_event_type="verification_passed",
                 )
-                return self._finalize_report(TaskOutcome.COMPLETE)
 
             failing_command, failure = self.failure_normalizer.extract(
                 first_result, self.worktree_path
@@ -523,15 +528,13 @@ class VerticalSliceRunner:
             )
             repair_result = self._run_verification(attempt=2)
             if repair_result.status == VerificationStatus.PASSED:
-                self.store.transition(
+                return self._one_shot_complete_or_gap(
                     task_id,
-                    WorkflowState.COMPLETE,
-                    actor=WorkflowActor.VERIFICATION_ENGINE,
-                    event_type="repair_verification_passed",
-                    payload={"attempt": 2},
-                    expected_version=verifying_repair.version,
+                    repair_result,
+                    verifying_version=verifying_repair.version,
+                    attempt=2,
+                    complete_event_type="repair_verification_passed",
                 )
-                return self._finalize_report(TaskOutcome.COMPLETE)
             self.store.transition(
                 task_id,
                 WorkflowState.FAILED,
@@ -546,6 +549,67 @@ class VerticalSliceRunner:
             )
         except Exception as exc:
             return self._handle_failure(exc)
+
+    def _one_shot_complete_or_gap(
+        self,
+        task_id: str,
+        verification_result: VerificationResult,
+        *,
+        verifying_version: int,
+        attempt: int,
+        complete_event_type: str,
+    ) -> FinalTaskReport:
+        """Verification already passed at this call site. Under the
+        strict completion policy, additionally require every active
+        acceptance criterion to be proven before reaching COMPLETE -- one
+        shot's single repair budget is not spent chasing coverage, so an
+        unproven gap here goes straight to human review rather than back
+        through the existing patch-repair path."""
+
+        assert self.specification is not None
+        if self.config.execution.completion_policy == CompletionPolicy.STRICT:
+            passed_command_names = {
+                command.name
+                for command in verification_result.commands
+                if command.status == VerificationStatus.PASSED
+            }
+            coverage = compute_acceptance_coverage(
+                self.specification,
+                self.config.verification.commands,
+                passed_command_names,
+            )
+            self.acceptance_coverage = coverage
+            if not acceptance_coverage_satisfied(coverage):
+                self.store.transition(
+                    task_id,
+                    WorkflowState.HUMAN_REVIEW_REQUIRED,
+                    actor=WorkflowActor.VERIFICATION_ENGINE,
+                    event_type="acceptance_coverage_incomplete",
+                    payload={
+                        "attempt": attempt,
+                        "coverage": [
+                            item.model_dump(mode="json") for item in coverage
+                        ],
+                    },
+                    expected_version=verifying_version,
+                )
+                return self._finalize_report(
+                    TaskOutcome.HUMAN_REVIEW_REQUIRED,
+                    error=(
+                        "configured verification passed but not every "
+                        "active acceptance criterion is proven under the "
+                        "strict completion policy"
+                    ),
+                )
+        self.store.transition(
+            task_id,
+            WorkflowState.COMPLETE,
+            actor=WorkflowActor.VERIFICATION_ENGINE,
+            event_type=complete_event_type,
+            payload={"attempt": attempt},
+            expected_version=verifying_version,
+        )
+        return self._finalize_report(TaskOutcome.COMPLETE)
 
     def _run_bounded_agent(
         self,
@@ -683,6 +747,7 @@ class VerticalSliceRunner:
             apply_patch=apply_patch,
             model_role=role,
             audit_prefix=audit_prefix,
+            completion_policy=self.config.execution.completion_policy,
         )
         try:
             return session.run()
@@ -694,6 +759,8 @@ class VerticalSliceRunner:
     def _record_agent_result(self, result: AgentSessionResult) -> None:
         self.files_changed = list(result.changed_files)
         self.verification_results.extend(result.verification_results)
+        if result.acceptance_coverage:
+            self.acceptance_coverage = result.acceptance_coverage
 
     def _run_frontier_escalation(
         self,
@@ -1231,6 +1298,29 @@ class VerticalSliceRunner:
             ),
             context_measurements=self.context_measurements,
             context_attribution=context_attribution,
+            completion_policy=self.config.execution.completion_policy,
+            acceptance_coverage=self.acceptance_coverage,
+            local_agent_budget=(
+                self.config.execution.agent
+                if self.config.execution.mode == ExecutionMode.AGENT
+                else None
+            ),
+            frontier_agent_budget=(
+                self.config.execution.frontier_agent
+                if self.frontier_coder_provider is not None
+                and self.frontier_coder_config is not None
+                else None
+            ),
+            frontier_available=(
+                self.frontier_coder_provider is not None
+                and self.frontier_coder_config is not None
+            ),
+            rejected_tool_requests=sum(
+                1
+                for item in staged_results
+                for record in item.turn_records
+                if not record.accepted
+            ),
         )
         self.audit.write_json("report.json", report, kind="final_report")
         return report

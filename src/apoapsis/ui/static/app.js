@@ -57,6 +57,13 @@ function statusClass(status) {
   return "purple";
 }
 
+function acceptanceStatusClass(status) {
+  const normalized = String(status || "").toLowerCase();
+  if (normalized === "proven") return "good";
+  if (normalized === "failed") return "bad";
+  return "warn";
+}
+
 async function api(path, options = {}) {
   const headers = new Headers(options.headers || {});
   headers.set("X-Apoapsis-Session", sessionToken || "");
@@ -361,6 +368,8 @@ function changesView(detail) {
   const files = report?.files_changed || [];
   const coverage = report?.constraint_coverage || [];
   const verifications = report?.verification_results || [];
+  const acceptanceCoverage = report?.acceptance_coverage || [];
+  const completionPolicy = report?.completion_policy || "baseline";
   return `<main class="content">
     <div class="page-heading"><div><p class="eyebrow">CHANGES / VERIFICATION</p><h1>Proposal versus proof.</h1><p>Changed paths, constraint dispositions, and command results are rendered from the final report. An absent report remains pending.</p></div><span class="pill ${report ? statusClass(report.outcome) : "warn"}">${report ? e(report.outcome) : "Pending"}</span></div>
     ${report ? `<div class="grid four">${metric("Files changed", files.length, "Validated paths")}${metric("Transmitted files", report.transmitted_files, "Provider context")}${metric("Transmitted lines", report.transmitted_lines, "Provider context")}${metric("Verify runs", verifications.length, "Recorded results")}</div>` : `<div class="notice">No final report is present for this task yet.</div>`}
@@ -368,9 +377,15 @@ function changesView(detail) {
       <section class="card"><div class="card-header"><div><h2>Files changed</h2><p>Accepted report paths</p></div></div><div class="card-body">${files.length ? `<div class="file-list">${files.map((file) => `<div class="file-item"><code>${e(file)}</code><span class="pill purple">changed</span></div>`).join("")}</div>` : `<p class="muted">No changed files are recorded.</p>`}</div></section>
       <section class="card"><div class="card-header"><div><h2>Constraint coverage</h2><p>Model disposition, not independent proof</p></div></div><div class="card-body">${coverage.length ? coverage.map((item) => `<div class="constraint"><div class="constraint-head"><span class="constraint-id">${e(item.constraint_id)}</span><span class="pill ${item.disposition === "included" ? "good" : "warn"}">${e(item.disposition)}</span></div><blockquote>${e(item.reason)}</blockquote></div>`).join("") : `<p class="muted">No coverage entries are recorded.</p>`}</div></section>
     </div>
+    <p class="section-title">Acceptance coverage · ${e(titleCase(completionPolicy))} completion policy</p>
+    <section class="card card-pad">${acceptanceCoverage.length ? `<div class="verification-list">${acceptanceCoverage.map(acceptanceCoverageItem).join("")}</div>` : `<p class="muted">${completionPolicy === "strict" ? "No active acceptance criteria are configured for this task." : "The baseline completion policy does not gate on acceptance coverage; this task recorded none."}</p>`}</section>
     <p class="section-title">Verification results</p>
     <section class="card card-pad">${verifications.length ? `<div class="verification-list">${verifications.flatMap((result) => (result.commands || []).map((command) => verificationItem(command, result))).join("")}</div>` : `<p class="muted">No verification results are recorded.</p>`}</section>
   </main>`;
+}
+
+function acceptanceCoverageItem(item) {
+  return `<div class="verification-item"><div><strong>${e(item.criterion_id)}</strong><p>${e(item.reason)}</p>${item.evidence_reference ? `<p class="mono">${e(item.evidence_reference)}</p>` : ""}</div><span class="pill ${acceptanceStatusClass(item.status)}">${e(titleCase(item.status))}</span></div>`;
 }
 
 function verificationItem(command, aggregate) {
@@ -400,6 +415,11 @@ function reportView(detail) {
     <section class="card result-hero"><div class="result-outcome"><span class="result-orb ${complete ? "" : "failed"}"></span><div><h2>${e(report.outcome)}</h2><p>${e(report.error || (complete ? "Deterministic verification and reporting completed." : "The task did not reach verified completion."))}</p></div></div><span class="pill ${statusClass(report.outcome)}">${complete ? "Verified" : "Recorded"}</span></section>
     <p class="section-title">Usage & telemetry</p>
     <div class="grid four">${metric("Calls", report.number_of_calls, "Provider invocations")}${metric("Input tokens", compactNumber(report.input_tokens), `${compactNumber(report.cached_input_tokens)} cached`)}${metric("Output tokens", compactNumber(report.output_tokens), "Generated")}${metric("Estimated cost", `$${Number(report.estimated_cost_usd || 0).toFixed(4)}`, `${Number(report.latency_seconds || 0).toFixed(1)}s latency`)}</div>
+    <p class="section-title">Bounded agent budget · ${e(titleCase(report.completion_policy || "baseline"))} completion policy</p>
+    <div class="grid two mt-22">
+      <section class="card card-pad"><p class="section-title mt-0">Local agent</p><div class="grid two">${metric("Turns", `${report.local_agent_turns ?? 0} / ${report.local_agent_budget?.max_turns ?? "—"}`, "Used / configured ceiling")}${metric("Patch attempts", `${report.agent_patch_attempts ?? 0} / ${report.local_agent_budget?.max_patch_attempts ?? "—"}`, "Used / configured ceiling")}${metric("Verify runs", `${report.agent_verification_runs ?? 0} / ${report.local_agent_budget?.max_verification_runs ?? "—"}`, "Used / configured ceiling")}${metric("Rejected requests", report.rejected_tool_requests ?? 0, "Tool actions the harness refused")}</div></section>
+      <section class="card card-pad"><p class="section-title mt-0">Frontier escalation</p><div class="grid two">${metric("Available", report.frontier_available ? "Yes" : "No", "Configured frontier coder")}${metric("Escalated", report.escalation_triggered ? "Yes" : "No", report.escalation_reason || "Not triggered")}${metric("Turns", `${report.frontier_agent_turns ?? 0} / ${report.frontier_agent_budget?.max_turns ?? "—"}`, "Used / configured ceiling")}${metric("Verify runs", `${report.frontier_agent_verification_runs ?? 0} / ${report.frontier_agent_budget?.max_verification_runs ?? "—"}`, "Used / configured ceiling")}</div></section>
+    </div>
     <div class="grid two mt-22">
       <section class="card"><div class="card-header"><div><h2>Models & roles used</h2><p>Exact report identities</p></div></div><div class="card-body">${models.length ? models.map((model) => `<div class="file-item"><span>${e(model.provider)}</span><code>${e(model.model)}</code></div>`).join("") : `<p class="muted">No model calls were recorded.</p>`}</div></section>
       <section class="card"><div class="card-header"><div><h2>Audit artifacts</h2><p>${artifacts.length} files in the task record</p></div></div><div class="card-body">${artifacts.length ? `<div class="artifact-list">${artifacts.map((artifact) => `<div class="artifact-item"><code>${e(artifact)}</code></div>`).join("")}</div>` : `<p class="muted">No task artifacts were discovered.</p>`}</div></section>

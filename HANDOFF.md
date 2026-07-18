@@ -15,11 +15,11 @@ must be corrected before the change is considered complete.
 | Item | Current value |
 | --- | --- |
 | Last verified | 2026-07-18 |
-| Working-tree version | `1.0` plus ADR 0013 Windows local-model lifecycle and ADR 0014 first local operator-interface slice |
+| Working-tree version | `1.0` plus ADR 0013 Windows local-model lifecycle, ADR 0014 first local operator-interface slice, and ADR 0015 verification layers and acceptance coverage |
 | Checked-out branch | `main` |
-| Repository state | The 1.0/lifecycle baseline and the ADR 0014 UI slice are both committed on `main`. `DESIGN.md` is preserved as a separate, committed user-supplied design reference. Run `git status` and `git log -1 --oneline` for the exact current state. |
+| Repository state | The 1.0/lifecycle baseline, the ADR 0014 UI slice, and the ADR 0015 acceptance-coverage milestone are all committed on `main`. `DESIGN.md` is preserved as a separate, committed user-supplied design reference. Run `git status` and `git log -1 --oneline` for the exact current state. |
 | Preserved substrate tag | `substrate-v0.1` at `4c2e735` |
-| Full deterministic suite | 187 tests, 0 failures, 0 errors, 4 intentional skips (2 live-network, 1 live-Docker, 1 machine currently lacks the Windows privilege to create symlinks) |
+| Full deterministic suite | 197 tests, 0 failures, 0 errors, 4 intentional skips (2 live-network, 1 live-Docker, 1 machine currently lacks the Windows privilege to create symlinks) |
 | Syntax check | `python -m compileall -q src tests` passed |
 | Diff check | `git diff --check` passed; Git reported only expected LF-to-CRLF working-copy warnings |
 | Live local coding result | Qwen3-Coder-Next Q4 completed the controlled download-service task in 10 turns and 3 verification runs |
@@ -65,7 +65,7 @@ commands, and writes a complete usage and audit report.
 | Apply a patch | Unified-diff parser, policy validator, and Git applier |
 | Decide whether tests passed | Verification runner |
 | Retry or escalate | Fixed configuration and controller rules |
-| Mark a task complete | Verification engine after all required checks pass |
+| Mark a task complete | Verification engine after all required checks pass; under the opt-in strict completion policy (ADR 0015), additionally only after every active acceptance criterion is deterministically computed as Proven from configured, user-approved acceptance-designated commands -- a model may propose a criterion's mapping at specification time, but only the harness computes and grants Proven/Failed/Unproven status |
 | Record evidence and usage | Deterministic audit and reporting layers |
 
 No provider adapter may bypass this boundary. A larger or hosted model receives
@@ -217,6 +217,41 @@ architecture.
 - Controlled branches include `LOCAL_REPAIR`, `ESCALATION_REQUIRED`,
   `HUMAN_REVIEW_REQUIRED`, `FAILED`, and `ROLLED_BACK`.
 - Providers never call the transition API.
+
+### Verification layers and acceptance coverage (ADR 0015)
+
+- `src/apoapsis/workflow/acceptance.py` defines `AcceptanceCoverageStatus`
+  (`PROVEN`/`FAILED`/`UNPROVEN`), `AcceptanceCoverage`, and
+  `compute_acceptance_coverage()`/`acceptance_coverage_satisfied()` --
+  deterministic, stateless functions over a specification, the configured
+  verification commands, and the set of command names that actually passed.
+  A model may propose `AcceptanceCriterion.verification_method` at
+  specification-drafting time (gated by the existing approval step) and may
+  only request a configured command by name; it has no path to mark a
+  command `acceptance`-designated or assert a status directly.
+- `VerificationCommand.acceptance: bool` (`verification/runner.py`, default
+  `False`) marks a subset of already-configured commands as strong enough to
+  prove a criterion -- distinct from ordinary, model-visible development
+  verification.
+- `config.CompletionPolicy` (`BASELINE` default, `STRICT` opt-in) gates
+  whether `COMPLETE` additionally requires
+  `acceptance_coverage_satisfied()`. `BASELINE` is byte-for-byte today's
+  behavior, preserving held-out false-success comparability.
+  `BoundedAgentSession._check_completion` is the single place a turn may
+  declare itself complete; under `STRICT` an unsatisfied gap attaches one
+  synthetic `EV-ACCEPTANCE-GAP` evidence entry and returns control to the
+  model, exactly like an ordinary verification failure, until budget
+  exhausts or coverage is proven. One-shot mode's two `VERIFYING ->
+  COMPLETE` sites divert to `HUMAN_REVIEW_REQUIRED`
+  (`acceptance_coverage_incomplete`) instead, without spending its single
+  repair budget on coverage.
+- `FinalTaskReport` carries `completion_policy`, `acceptance_coverage`,
+  `local_agent_budget`/`frontier_agent_budget` (configured ceilings),
+  `frontier_available`, and `rejected_tool_requests`; the operator UI's
+  changes and report views render them with the existing pill/card styles.
+- `workflow/` and `agent/` never import `evaluation/oracle.py`; the held-out
+  oracle (ADR 0012) remains an eval-only side channel, invisible to every
+  prompt and evidence record under either policy. See ADR 0015.
 
 ### Repository isolation and context
 
@@ -914,7 +949,17 @@ tests supplement them; they must not replace deterministic coverage.
     to treat that as a settled result, and one profile's one
     specification-drafting failure is not yet attributable to profile width
     versus general model variance.
-12. **The local application is a first slice, not a complete desktop product.**
+12. **Strict acceptance-coverage completion is opt-in and has no live-model
+    evidence yet.** `CompletionPolicy.STRICT` (ADR 0015) is fully
+    implemented and covered by ten deterministic fake-provider scenarios
+    (`tests/test_acceptance_coverage.py`), but `BASELINE` remains the
+    default everywhere, including the download-service evaluation fixture,
+    and no `verification_method` mapping has been added to that fixture's
+    specification. Nothing yet measures whether a real local or frontier
+    model can productively repair toward a mapped acceptance command rather
+    than merely toward ordinary verification passing -- that is the natural
+    next evaluation once this milestone is reviewed.
+13. **The local application is a first slice, not a complete desktop product.**
     ADR 0014 now defines a capability-protected loopback application and the
     black/orange/purple interface has real read-only task/report/environment/
     evaluation views plus deterministic specification approval. Model-assisted
@@ -949,6 +994,7 @@ automation as a substitute for those proofs.
 | `0012` | Held-out correctness oracle, evidence provenance, and cross-run evaluation aggregation (Apoapsis 1.0c) |
 | `0013` | Windows owner lifecycle for configured loopback Ollama model warmup and explicit unload |
 | `0014` | Offline local operator interface, capability-protected loopback API, and deterministic specification approval |
+| `0015` | Verification layers (development, user-approved acceptance, held-out oracle) and deterministic acceptance-coverage gating on completion |
 
 Add a new ADR for a new architectural decision. Do not rewrite history to make
 old decisions appear current; mark an ADR superseded and link its replacement

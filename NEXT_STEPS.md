@@ -88,6 +88,40 @@ status and preserve `substrate-v0.1` and all user work.
 Stop after publishing the evidence and ask for review before changing retrieval
 architecture.
 
+### Done — verification sufficiency and acceptance coverage (ADR 0015)
+
+The 1.0 profile evidence above showed configured verification passing was not
+proof of product correctness (4 of 5 completions had a failed held-out
+oracle). This milestone added a real, product-level notion of "proven" that
+composes with the existing bounded-agent/one-shot/escalation machinery
+without touching retrieval, context compilation, or the held-out oracle:
+
+- Three named verification layers (development, user-approved acceptance,
+  held-out evaluation oracle) and a deterministic
+  `AcceptanceCoverage`/`compute_acceptance_coverage()` record per criterion
+  (`src/apoapsis/workflow/acceptance.py`).
+- An opt-in `CompletionPolicy.STRICT` (default remains `BASELINE`, preserving
+  today's held-out false-success comparability) that gates `COMPLETE` on
+  every active acceptance criterion being Proven by a configured,
+  user-approved acceptance-designated command -- never by a model's own
+  claim.
+- Ten deterministic fake-provider scenarios
+  (`tests/test_acceptance_coverage.py`) covering unmapped/mapped/failing-
+  then-passing criteria, a model's ineffective mapping attempt, two
+  different valid tool sequences, multi-turn repair, fail-closed rejection
+  of an unknown command, the oracle/workflow import-graph separation,
+  baseline-unaffected behavior, and composition with frontier escalation.
+- Report and UI surfacing of per-criterion status, configured agent budgets
+  versus actual usage, and frontier availability/escalation state.
+
+Not done, and the natural next evaluation once this is reviewed: map a real
+`verification_method` onto the download-service fixture's acceptance
+criteria and run `STRICT` against a real local/frontier model to see whether
+it can productively repair toward the mapped acceptance command rather than
+merely toward ordinary verification passing. Specification-extraction
+reliability (the one 128k drafting failure noted above) remains a separate,
+not-yet-investigated task.
+
 ### Priority B — review and resume experience
 
 The highest-value product gap is a polished continuation path for tasks that end

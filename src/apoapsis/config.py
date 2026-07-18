@@ -113,6 +113,15 @@ class AgentRoute(StrEnum):
     HUMAN_REVIEW_REQUIRED = "human_review_required"
 
 
+class CompletionPolicy(StrEnum):
+    """Whether COMPLETE requires proven acceptance coverage, or only that
+    configured verification passed (today's behavior, kept as the default
+    so held-out-oracle false-success measurement stays comparable)."""
+
+    BASELINE = "baseline"
+    STRICT = "strict"
+
+
 class AgentLoopConfig(StrictModel):
     max_turns: int = Field(default=12, ge=1, le=50)
     max_patch_attempts: int = Field(default=4, ge=1, le=20)
@@ -130,6 +139,7 @@ class AgentLoopConfig(StrictModel):
 class ExecutionConfig(StrictModel):
     mode: ExecutionMode = ExecutionMode.ONE_SHOT
     route: AgentRoute = AgentRoute.AUTO
+    completion_policy: CompletionPolicy = CompletionPolicy.BASELINE
     agent: AgentLoopConfig = Field(default_factory=AgentLoopConfig)
     frontier_agent: AgentLoopConfig = Field(
         default_factory=lambda: AgentLoopConfig(

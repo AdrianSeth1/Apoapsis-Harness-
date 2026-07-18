@@ -556,6 +556,39 @@ The Docker backend materially improves isolation but is not a defense
 against container-runtime or kernel vulnerabilities; see ADR 0009's threat
 model for exactly what it does and does not cover.
 
+## Acceptance coverage and the completion policy (ADR 0015)
+
+Configured verification passing is a development signal, not proof that the
+product is done. Mark the subset of commands strong enough to prove an
+acceptance criterion, and name which criterion each proves:
+
+```toml
+[[verification.commands]]
+name = "unit-tests"
+category = "tests"
+argv = ["python", "-m", "unittest", "discover", "-s", "tests", "-v"]
+timeout_seconds = 120
+required = true
+acceptance = true   # this command is strong enough to prove a criterion
+
+[execution]
+completion_policy = "baseline"   # default; set "strict" to gate on coverage
+```
+
+An extracted `AcceptanceCriterion` may carry a `verification_method` naming
+one configured command (the model may propose this at specification time;
+the user approves the specification as a whole, same as today). Under
+`completion_policy = "strict"`, `COMPLETE` additionally requires every
+active acceptance criterion to be computed as **Proven** -- mapped to a
+command that is both configured and `acceptance = true`, and that has
+actually passed. Unmapped, misconfigured, or failing mappings stay
+**Unproven**/**Failed** regardless of what a model claims; only the harness
+computes and grants that status. A gap returns control to the bounded agent
+with evidence (same budget, same loop) or, in one-shot mode, stops at
+`HUMAN_REVIEW_REQUIRED` rather than spending its single repair attempt on
+it. `completion_policy` defaults to `"baseline"` (today's behavior) so
+existing configurations, tests, and evaluation fixtures are unaffected.
+
 ## Repository layout
 
 ```text

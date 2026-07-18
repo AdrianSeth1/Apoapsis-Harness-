@@ -22,7 +22,7 @@ from apoapsis.agent.actions import (
 )
 from apoapsis.agent.inspection import AgentInspectionError, RepositoryInspector
 from apoapsis.audit.store import TaskAuditStore
-from apoapsis.config import AgentLoopConfig
+from apoapsis.config import AgentLoopConfig, CompletionPolicy
 from apoapsis.context.compiler import ContextCompiler, ContextPackage
 from apoapsis.context.provenance import (
     ContextEvidence,
@@ -43,6 +43,11 @@ from apoapsis.verification.runner import (
     VerificationCommand,
     VerificationConfig,
     VerificationRunner,
+)
+from apoapsis.workflow.acceptance import (
+    AcceptanceCoverage,
+    acceptance_coverage_satisfied,
+    compute_acceptance_coverage,
 )
 
 
@@ -74,6 +79,7 @@ class AgentSessionResult(StrictModel):
     changed_files: list[str] = Field(default_factory=list)
     turn_records: list[AgentTurnRecord] = Field(default_factory=list)
     verification_results: list[VerificationResult] = Field(default_factory=list)
+    acceptance_coverage: list[AcceptanceCoverage] = Field(default_factory=list)
 
 
 AgentModelCall = Callable[..., ModelResponse]
@@ -154,6 +160,7 @@ class BoundedAgentSession:
         apply_patch: PatchApply,
         model_role: ModelRole = ModelRole.CODING_AGENT,
         audit_prefix: str = "",
+        completion_policy: CompletionPolicy = CompletionPolicy.BASELINE,
     ) -> None:
         self.specification = specification
         self.worktree = Path(worktree).resolve()
@@ -166,6 +173,8 @@ class BoundedAgentSession:
         self.apply_patch = apply_patch
         self.model_role = model_role
         self.audit_prefix = audit_prefix
+        self.completion_policy = completion_policy
+        self.last_acceptance_coverage: list[AcceptanceCoverage] = []
         self.inspector = RepositoryInspector(
             self.worktree,
             max_search_results=config.max_search_results,
@@ -343,10 +352,11 @@ class BoundedAgentSession:
                 )
             result = self._verify([command])
             self._record_verification(turn, action.action, result)
-            return (
+            verification_passed = (
                 result.status == VerificationStatus.PASSED
                 and self._all_required_checks_passed()
             )
+            return self._check_completion(verification_passed)
 
         if isinstance(action, SubmitForVerificationAction):
             if not self.inspector.has_changes():
@@ -355,7 +365,8 @@ class BoundedAgentSession:
                 )
             result = self._verify(self.verification_config.commands)
             self._record_verification(turn, action.action, result)
-            return result.status == VerificationStatus.PASSED
+            verification_passed = result.status == VerificationStatus.PASSED
+            return self._check_completion(verification_passed)
 
         raise TypeError(f"unsupported agent action: {type(action).__name__}")
 
@@ -477,6 +488,58 @@ class BoundedAgentSession:
         }
         return required.issubset(
             self.passed_checks.get(self._verification_state_digest(), set())
+        )
+
+    def _check_completion(self, verification_passed: bool) -> bool:
+        """The single place a turn is allowed to declare itself complete.
+
+        Under the baseline policy this is byte-for-byte today's behavior:
+        configured verification passing is sufficient. Under the strict
+        policy, verification passing is necessary but not sufficient --
+        every active acceptance criterion must also be proven by an
+        approved acceptance-designated command. A model's own claims never
+        factor in; coverage is recomputed deterministically every time from
+        real passed command names.
+        """
+
+        if not verification_passed:
+            return False
+        if self.completion_policy == CompletionPolicy.BASELINE:
+            return True
+        coverage = compute_acceptance_coverage(
+            self.specification,
+            self.verification_config.commands,
+            self.passed_checks.get(self._verification_state_digest(), set()),
+        )
+        self.last_acceptance_coverage = coverage
+        if acceptance_coverage_satisfied(coverage):
+            return True
+        self._add_acceptance_gap_evidence(coverage)
+        return False
+
+    def _add_acceptance_gap_evidence(self, coverage: list[AcceptanceCoverage]) -> None:
+        gaps = [item for item in coverage if item.status.value != "proven"]
+        if not gaps:
+            return
+        lines = [
+            f"{item.criterion_id}: {item.status.value} -- {item.reason}"
+            for item in gaps
+        ]
+        self._add_evidence(
+            [
+                ContextEvidence(
+                    evidence_id="EV-ACCEPTANCE-GAP",
+                    kind=EvidenceKind.FAILURE,
+                    path="<acceptance_coverage>",
+                    commit=f"{self.base_context.head_commit}+working-tree",
+                    reason_included=(
+                        "unproven or failed acceptance criteria under the "
+                        "strict completion policy"
+                    ),
+                    content="\n".join(lines),
+                    transmission_policy=TransmissionPolicy.CLOUD_ALLOWED,
+                )
+            ]
         )
 
     def _record_verification(
@@ -653,6 +716,7 @@ class BoundedAgentSession:
             changed_files=self.inspector.changed_paths(),
             turn_records=self.records,
             verification_results=self.verification_results,
+            acceptance_coverage=self.last_acceptance_coverage,
         )
         self.audit.write_json(
             f"{self.audit_prefix}agent-session.json",

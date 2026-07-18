@@ -97,6 +97,7 @@ cached_input_per_million_usd = 0
 [execution]
 mode = "agent"
 route = "auto"
+completion_policy = "baseline"
 
 [execution.agent]
 max_turns = 12

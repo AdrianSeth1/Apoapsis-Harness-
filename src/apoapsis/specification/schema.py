@@ -51,6 +51,17 @@ class TraceableStatement(StrictModel):
 class AcceptanceCriterion(TraceableStatement):
     id: str = Field(pattern=r"^AC-[A-Za-z0-9._-]+$")
     status: ConstraintStatus = ConstraintStatus.ACTIVE
+    verification_method: str | None = Field(
+        default=None,
+        min_length=1,
+        description=(
+            "Optional name of a configured, acceptance-designated "
+            "verification command whose pass proves this criterion. "
+            "Must match [[verification.commands]] name with acceptance = "
+            "true, or it never counts as proof, regardless of who proposed "
+            "it."
+        ),
+    )
 
 
 class HardConstraint(StrictModel):
@@ -115,5 +126,13 @@ class TaskSpecification(StrictModel):
         return [
             item
             for item in self.hard_constraints
+            if item.status == ConstraintStatus.ACTIVE
+        ]
+
+    @property
+    def active_acceptance_criteria(self) -> list[AcceptanceCriterion]:
+        return [
+            item
+            for item in self.acceptance_criteria
             if item.status == ConstraintStatus.ACTIVE
         ]
