@@ -15,14 +15,15 @@ must be corrected before the change is considered complete.
 | Item | Current value |
 | --- | --- |
 | Last verified | 2026-07-18 |
-| Working-tree version | `1.0` (context measurement, deterministic context-quality improvements, held-out evaluation oracle, and cross-run metrics; see "Apoapsis 1.0 phased plan") |
+| Working-tree version | `1.0` plus the ADR 0013 Windows local-model lifecycle and owner/agent/design handoffs |
 | Checked-out branch | `main` |
 | Repository state | Everything described here is committed on `main`. This table intentionally does not embed a commit hash -- a commit that updates this file cannot know its own hash while being written, so a hardcoded hash here is stale the instant it lands. Run `git log -1 --oneline` for the exact current commit. |
 | Preserved substrate tag | `substrate-v0.1` at `4c2e735` |
-| Full deterministic suite | 171 tests, 0 failures, 0 errors, 4 intentional skips (2 live-network, 1 live-Docker, 1 machine currently lacks the Windows privilege to create symlinks) |
+| Full deterministic suite | 177 tests, 0 failures, 0 errors, 4 intentional skips (2 live-network, 1 live-Docker, 1 machine currently lacks the Windows privilege to create symlinks) |
 | Syntax check | `python -m compileall -q src tests` passed |
 | Diff check | `git diff --check` passed; Git reported only expected LF-to-CRLF working-copy warnings |
 | Live local coding result | Qwen3-Coder-Next Q4 completed the controlled download-service task in 10 turns and 3 verification runs |
+| Local model lifecycle result | `STOP_APOAPSIS.cmd` ran successfully against this machine's real Ollama service and explicitly unloaded both configured model names while leaving the service running. Start/warmup is covered against a fake loopback Ollama server but was not live-run here to avoid loading the approximately 48GB coding model merely for script verification. |
 | Live hosted escalation result | Not yet run. A repeatable harness (`apoapsis eval download-service --lane forced-escalation` / `--lane hybrid`) now exists to run it once real `[models.frontier_coder]` credentials are configured; the complete two-provider path is otherwise still only covered with fake providers |
 
 Update this table whenever its claims change. Never describe an uncommitted
@@ -155,6 +156,22 @@ architecture.
 - Context profiles `16k`, `32k`, `64k`, `128k`, and `256k` jointly change the native Ollama
   context window and deterministic evidence budget. They do not alter Research
   Mode's separate context budget.
+
+### Owner model lifecycle
+
+- `START_APOAPSIS.cmd` and `STOP_APOAPSIS.cmd` are the obvious Windows owner
+  entrypoints; both invoke `src/apoapsis/operator_lifecycle.py` from this checkout.
+- Targets are derived from the known `.apoapsis/config.toml` model roles, filtered
+  to `provider = "ollama"`, loopback-validated again, and deduplicated by endpoint
+  and model. Hosted endpoints are never contacted.
+- Start checks installation, may launch only the default local `ollama serve`
+  endpoint when it is unavailable, and warms coding models for 30 minutes at the
+  configured context window. Research-only models require `--include-research`;
+  models are never pulled automatically.
+- Stop sends `keep_alive = 0` to every configured installed Ollama model, including
+  research. It leaves the shared Ollama service running and never stops Docker,
+  tasks, or worktrees. The last result is atomically recorded in the ignored
+  `.apoapsis/runtime/` directory. See ADR 0013.
 
 ### Specification and constraints
 
@@ -505,6 +522,20 @@ The generated configuration currently selects:
 Installed model availability is machine state, not a repository guarantee.
 Check the local Ollama installation before a live evaluation.
 
+### Start and stop local model memory on Windows
+
+```powershell
+.\START_APOAPSIS.cmd
+.\START_APOAPSIS.cmd --include-research
+.\STOP_APOAPSIS.cmd
+```
+
+Start warms coding models only by default; keep Research Mode lazy unless its
+model is needed. Stop unloads all configured local models with an explicit zero
+keep-alive but intentionally leaves the shared Ollama service running. Set
+`APOAPSIS_NO_PAUSE=1` for terminal automation. These controls never contact a
+hosted provider and never download a missing model.
+
 ### Run the primary flow
 
 ```bash
@@ -743,6 +774,7 @@ rescue/savings and cross-profile model-quality claims remain unmeasured.
 | Docker sandbox backend | `tests/test_docker_backend.py` |
 | Context measurement, compaction metrics, and patch attribution | `tests/test_context_measurement.py` |
 | Context measurement wired through the vertical slice/report/audit | `tests/test_context_measurement_integration.py` |
+| Windows owner lifecycle / loopback model warmup and unload | `tests/test_operator_lifecycle.py` |
 
 Fake providers are the mandatory regression mechanism. Live model or network
 tests supplement them; they must not replace deterministic coverage.
@@ -802,13 +834,19 @@ tests supplement them; they must not replace deterministic coverage.
     deltas require a real paired hosted run. Context-profile comparisons likewise
     require repeated identical live-model runs; the presence of 128k/256k
     profiles is not evidence that they improve quality or latency.
+12. **There is no graphical application yet.** `docs/product-design-handoff.md`
+    is a design brief only. Before implementation, add an ADR choosing the local
+    application surface and deterministic API; the UI must not call providers or
+    invent workflow state from audit files.
 
-The next high-value proofs are (1) identical local download-service evaluations
+`NEXT_STEPS.md` is the owner and future-agent execution roadmap. The next high-
+value proofs are (1) identical local download-service evaluations
 across selected context profiles and (2) a real local-failure to hosted-frontier-
 repair run paired with direct frontier execution. Use `apoapsis eval` and
 `apoapsis eval-aggregate` and retain every audit artifact. Do not add embeddings,
-learned routing, autonomous agent swarms, a web interface, arbitrary model shell
-access, or general-purpose work automation as a substitute for those proofs.
+learned routing, autonomous agent swarms, an application implementation without
+an approved architecture, arbitrary model shell access, or general-purpose work
+automation as a substitute for those proofs.
 
 ## Architecture decisions
 
@@ -826,6 +864,7 @@ access, or general-purpose work automation as a substitute for those proofs.
 | `0010` | Context measurement and wider (128k/256k) context profiles (Apoapsis 1.0a) |
 | `0011` | Deterministic change/reference/failure context, observation compaction, stable prompt prefixes, and patch attribution (Apoapsis 1.0b) |
 | `0012` | Held-out correctness oracle, evidence provenance, and cross-run evaluation aggregation (Apoapsis 1.0c) |
+| `0013` | Windows owner lifecycle for configured loopback Ollama model warmup and explicit unload |
 
 Add a new ADR for a new architectural decision. Do not rewrite history to make
 old decisions appear current; mark an ADR superseded and link its replacement

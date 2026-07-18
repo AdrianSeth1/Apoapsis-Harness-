@@ -3,6 +3,11 @@
 Read `HANDOFF.md` before making changes. It is Apoapsis Harness's canonical living
 architecture and project-status handoff.
 
+Then read `NEXT_STEPS.md` for the current owner/coding-agent priority order. For
+application design or implementation, also read `docs/product-design-handoff.md`;
+the design brief does not itself authorize a UI architecture or weaken the
+authority boundary in `HANDOFF.md`.
+
 For every change that affects architecture, workflow behavior, configuration,
 model roles, context, patch policy, verification, audit artifacts, tests, or
 evaluation evidence:
@@ -24,4 +29,3 @@ Models are untrusted proposers. Do not grant a model direct shell, filesystem,
 Git, network, workflow-transition, retry-limit, verification, completion, or
 audit authority. If a proposed change alters that boundary, stop and require an
 explicit architectural decision.
-

@@ -1,0 +1,132 @@
+# Apoapsis next steps
+
+This is the practical roadmap after the completed Apoapsis 1.0 implementation.
+`HANDOFF.md` remains the canonical architecture and project-status record;
+`AGENTS.md` remains mandatory instructions for coding models.
+
+## For the owner
+
+### 1. Use the new local-model controls
+
+On Windows, double-click:
+
+- `START_APOAPSIS.cmd` to start/check Ollama and warm the configured coding
+  model for 30 minutes at its configured context size.
+- `STOP_APOAPSIS.cmd` when finished. It explicitly unloads every configured
+  local Ollama model, including the research model, and releases model RAM/VRAM.
+
+The shared Ollama service stays running after Stop; it is lightweight and may be
+used by other applications. Stop never touches hosted providers. To warm the
+research model too, run:
+
+```powershell
+.\START_APOAPSIS.cmd --include-research
+```
+
+Loading both large models simultaneously may exceed available GPU/RAM even when
+one model alone has context headroom. Leave Research Mode lazy unless it is
+needed. Set `APOAPSIS_NO_PAUSE=1` when invoking either file from automation.
+
+### 2. Collect the missing context-profile evidence
+
+The framework is complete; the most valuable missing result is whether more
+context actually helps this model on the same task. Start with 64k and 128k,
+using the same task, model, quantization, generation settings, and lane:
+
+```powershell
+apoapsis eval download-service --lane local --context-profile 64k --output-dir .apoapsis-eval/profile-64k-1
+apoapsis eval download-service --lane local --context-profile 128k --output-dir .apoapsis-eval/profile-128k-1
+apoapsis eval-aggregate .apoapsis-eval/profile-64k-1/comparison.json .apoapsis-eval/profile-128k-1/comparison.json --output-dir .apoapsis-eval/profile-comparison-1
+```
+
+Repeat each profile at least three times before drawing a model-quality
+conclusion. Compare completion and held-out-oracle results first; then context
+tokens, attribution, cache telemetry, latency, and resource pressure. Do not
+assume 256k is better merely because the model reports support for it.
+
+### 3. Prove the sandbox success path
+
+Docker's fail-closed path is live-proven; the success path still needs a pinned
+local image and one explicitly authorized run. Follow ADR 0009 and the Docker
+instructions in `HANDOFF.md`. Do not enable a silent host fallback.
+
+### 4. Add hosted-frontier evidence only when desired
+
+When real API credentials and pricing are configured, run paired identical
+local-first and direct-frontier lanes. Preserve the complete comparison and
+aggregate artifacts. Until then, hosted rescue and savings must remain
+`unmeasured`; subscription access must not be represented as API access.
+
+### 5. Design the human-facing application
+
+Give `docs/product-design-handoff.md` to Claude Design. It specifies the product
+flows, screens, data, trust-boundary presentation, and a black/orange/purple
+visual direction. It is a design brief, not authorization to add a web server or
+move deterministic authority into the UI.
+
+## For future coding agents
+
+Read `AGENTS.md`, then all of `HANDOFF.md`, before making changes. Check the Git
+status and preserve `substrate-v0.1` and all user work.
+
+### Priority A — evidence before more retrieval machinery
+
+1. Run repeated 64k/128k local evaluations on identical conditions.
+2. Aggregate the persisted reports without model calls.
+3. Record observed results in a new dated evaluation document.
+4. Diagnose any quality difference from the audited context and action history.
+5. Do not add embeddings, learned ranking, or model-selected context unless the
+   deterministic lexical/symbol/import/test/diff path fails repeatably and the
+   evidence identifies why.
+
+Stop after publishing the evidence and ask for review before changing retrieval
+architecture.
+
+### Priority B — review and resume experience
+
+The highest-value product gap is a polished continuation path for tasks that end
+in human review. Build this as deterministic control-plane functionality:
+
+- list stopped tasks and their exact stop reason;
+- show active constraints, current diff, policy findings, verification failures,
+  budgets consumed, and remaining authorized options;
+- allow explicit user choices such as retry with a configured remaining budget,
+  authorize a configured frontier stage, abandon, or inspect only;
+- append every decision to the existing audit/event record;
+- never let a model choose a transition, command, retry ceiling, or completion.
+
+Add an ADR before changing workflow/resume semantics. Cover each branch with a
+fake provider and keep the one-shot baseline intact.
+
+### Priority C — application shell after design review
+
+Use `docs/product-design-handoff.md` as the product brief. Before implementation,
+write an ADR choosing the local application surface and its read/write API. The
+UI should call deterministic Apoapsis services; it must not parse audit files to
+invent state or call models directly. Start with read-only task/report views,
+then specification approval, then explicit review/resume actions.
+
+The first UI slice is complete only when CLI and UI operations produce the same
+workflow events and reports under deterministic integration tests.
+
+### Priority D — operational proof and packaging
+
+- Run the live-gated Docker success-path test with a pinned local image.
+- Exercise `START_APOAPSIS.cmd` and `STOP_APOAPSIS.cmd` on the supported Windows
+  setup; keep model endpoints loopback-only.
+- Decide how the future desktop build locates Python, Git, ripgrep, Ollama, and
+  Docker without weakening `apoapsis doctor` or silently installing software.
+- Add packaging only after the UI/runtime decision; do not hide prerequisites or
+  auto-download models/images.
+
+## Always preserve these boundaries
+
+- Models propose typed actions or patches; they never receive direct shell,
+  filesystem, Git, network, workflow, retry, verification, completion, or audit
+  authority.
+- Verification and the held-out oracle are separate; oracle failures never
+  become repair context.
+- Hosted spend requires explicit provider configuration.
+- Start/Stop manages only configured loopback Ollama models.
+- No autonomous agent swarms, general-purpose work automation, or decorative UI
+  that obscures whether a result was verified.

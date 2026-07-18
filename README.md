@@ -56,6 +56,9 @@ content hashes and worktree pointers are not corrupted; see
   provider connectivity probe) and an `apoapsis eval` harness that runs every
   execution lane against a fresh copy of a controlled fixture and writes one
   comparison report.
+- Windows `START_APOAPSIS.cmd`/`STOP_APOAPSIS.cmd` controls that derive local
+  Ollama models from configuration, warm the coding model, and explicitly
+  release every configured local model's memory without touching hosted providers.
 
 See [ADR 0001](docs/adr/0001-mvp-deterministic-substrate.md) for the substrate
 and [ADR 0002](docs/adr/0002-frontier-vertical-slice.md) for the frontier flow.
@@ -76,9 +79,15 @@ measurement layer,
 reference/failure-directed retrieval, bounded observation compaction, and
 stable prompt prefixes, and
 [ADR 0012](docs/adr/0012-held-out-oracles-and-evaluation-aggregation.md)
-records held-out correctness checks and cross-run metrics. The
+records held-out correctness checks and cross-run metrics, and
+[ADR 0013](docs/adr/0013-local-model-operator-lifecycle.md) records safe local-
+model Start/Stop behavior. The
 [Research Mode guide](docs/research-mode.md)
 covers setup and operation.
+
+The owner and coding-agent roadmap is [`NEXT_STEPS.md`](NEXT_STEPS.md). The
+standalone black/orange/purple application brief for Claude Design is
+[`docs/product-design-handoff.md`](docs/product-design-handoff.md).
 
 ## Install for development
 
@@ -97,6 +106,29 @@ Run the tests:
 ```bash
 python -m unittest discover -s tests -v
 ```
+
+## Start and stop local models on Windows
+
+Double-click `START_APOAPSIS.cmd` before a local session. It validates the
+configured loopback Ollama endpoint, starts the default local service if needed,
+checks that models are already installed, and warms the deduplicated coding model
+for 30 minutes at its configured context size. It never pulls a model.
+
+The research-only model stays lazy by default because loading two large models
+can exceed available RAM/VRAM. Warm it explicitly when needed:
+
+```powershell
+.\START_APOAPSIS.cmd --include-research
+```
+
+When finished, double-click `STOP_APOAPSIS.cmd`. It sends an explicit zero keep-
+alive to every configured local Ollama model, including research, and releases
+their memory. The shared Ollama service remains running intentionally; hosted
+providers, Docker, repositories, worktrees, and tasks are untouched.
+
+For terminal automation, set `APOAPSIS_NO_PAUSE=1` so the command files do not
+wait for a keypress. The last lifecycle result is recorded under the ignored
+`.apoapsis/runtime/` directory.
 
 ## Current CLI workflow
 
