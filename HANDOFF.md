@@ -17,7 +17,7 @@ must be corrected before the change is considered complete.
 | Last verified | 2026-07-18 |
 | Working-tree version | `1.0` plus ADR 0013 Windows local-model lifecycle and ADR 0014 first local operator-interface slice |
 | Checked-out branch | `main` |
-| Repository state | The previous 1.0/lifecycle baseline is committed on `main`; the ADR 0014 UI slice described here is currently uncommitted. `DESIGN.md` is preserved as separate untracked user-supplied design reference. Run `git status` and `git log -1 --oneline` for the exact state. |
+| Repository state | The 1.0/lifecycle baseline and the ADR 0014 UI slice are both committed on `main`. `DESIGN.md` is preserved as a separate, committed user-supplied design reference. Run `git status` and `git log -1 --oneline` for the exact current state. |
 | Preserved substrate tag | `substrate-v0.1` at `4c2e735` |
 | Full deterministic suite | 187 tests, 0 failures, 0 errors, 4 intentional skips (2 live-network, 1 live-Docker, 1 machine currently lacks the Windows privilege to create symlinks) |
 | Syntax check | `python -m compileall -q src tests` passed |
@@ -690,6 +690,25 @@ instructions are in `docs/evaluation/direct-vs-apoapsis.md`.
   harness/mechanism smoke test, not the hosted-frontier proof itself.
 - A real hosted frontier escalation has not yet been measured. Keep that gap
   explicit until an audited run exists.
+- `docs/evaluation/apoapsis-1.0-profile-evidence-2026-07-18.md` records six
+  real `apoapsis eval download-service --lane local` runs (three at `64k`,
+  three at `128k`), aggregated with `apoapsis eval-aggregate`
+  (`EVAL-AGG-98C10812F0AB`). Retrieval found the same correct two files in
+  every one of the 5 runs that reached context compilation; **no
+  retrieval-architecture evidence exists, and none was changed**. The real
+  finding: **4 of 5 completions had a failed held-out oracle (80% false
+  success)** — the model solved the conditional-Range-header/append-vs-
+  write-mode part of resumable downloads every time, but only got the
+  full correct fix (correct return value *and* stale-data truncation on a
+  server that ignores Range) in 1 of 6 attempts. The agent's own configured
+  verification cannot see this by construction (the two acceptance tests
+  are the ones ADR 0012 deliberately withholds), so this is the held-out
+  oracle working exactly as intended, not a discouraging result about the
+  harness. Separately: 1 of 6 runs (128k) failed at specification drafting
+  before context compilation ran at all — with n=3 per profile this is not
+  strong evidence the failure is 128k-specific; it reads as general
+  specification-extraction flakiness worth its own investigation, not a
+  context-quality problem, since 5 of 6 runs did reach real retrieval.
 
 Failed evaluations are valuable evidence. Do not delete or rewrite them merely
 because a later architecture performs better. Add new dated results and explain
@@ -788,11 +807,17 @@ work, not missing framework code.
 
 ### Evidence still to collect after 1.0
 
-Run identical download-service tasks across selected profiles to measure whether
-the wider window improves completion, density, cache use, latency, and resource
-cost. Separately, configure a real hosted frontier coder and preserve a paired
-local-first/direct-frontier comparison. Until those audited runs exist, hosted
-rescue/savings and cross-profile model-quality claims remain unmeasured.
+A 3-attempts-per-profile 64k-vs-128k pass now exists
+(`docs/evaluation/apoapsis-1.0-profile-evidence-2026-07-18.md`): no
+retrieval-quality difference was observed (both profiles found the same
+correct files every time retrieval ran), and the sample is too small to
+attribute the one specification-drafting failure to profile width rather
+than general model/sampling variance. More attempts per profile (and a
+look at whether specification-extraction failures recur independent of
+profile) would sharpen both questions further. Separately, configure a real
+hosted frontier coder and preserve a paired local-first/direct-frontier
+comparison. Until that audited run exists, hosted rescue/savings and
+direct-frontier comparison claims remain unmeasured.
 
 ## Test map
 
@@ -869,13 +894,26 @@ tests supplement them; they must not replace deterministic coverage.
     download-service split is independent of normal verification and model
     context, but a new fixture requires its own acceptance/oracle design and
     proof that the oracle is absent before any model call. Do not generalize
-    the observed false-success rate beyond fixtures with a valid oracle.
-11. **Hosted and cross-profile model-quality metrics still lack real evidence.**
-    The typed fields, pairing rules, formulas, and unmeasured states are built,
-    but frontier rescue, hosted calls/tokens/cost saved, and direct-frontier
-    deltas require a real paired hosted run. Context-profile comparisons likewise
-    require repeated identical live-model runs; the presence of 128k/256k
-    profiles is not evidence that they improve quality or latency.
+    the observed false-success rate beyond fixtures with a valid oracle. The
+    real, measured rate on this one fixture is not reassuring: 6 live local
+    runs (`docs/evaluation/apoapsis-1.0-profile-evidence-2026-07-18.md`) gave
+    4 of 5 completions a failed held-out oracle (80%) — the model reliably
+    gets the easier part of resumable downloads right but only got the full
+    correct fix (return-value semantics *and* stale-data truncation on a
+    server that ignores Range) in 1 of 6 attempts. Treat this as real
+    evidence that ordinary agent-visible verification alone is not
+    sufficient for this class of task, not as a fluke to explain away.
+11. **Hosted and cross-profile model-quality metrics still lack full
+    evidence.** The typed fields, pairing rules, formulas, and unmeasured
+    states are built, but frontier rescue, hosted calls/tokens/cost saved,
+    and direct-frontier deltas require a real paired hosted run — none
+    exists yet. A first repeated-run context-profile pass now exists (3
+    attempts each at 64k/128k, cited above): retrieval was identical and
+    correct in every run that reached it, so it shows no context-quality
+    difference between the two profiles, but the sample is still too small
+    to treat that as a settled result, and one profile's one
+    specification-drafting failure is not yet attributable to profile width
+    versus general model variance.
 12. **The local application is a first slice, not a complete desktop product.**
     ADR 0014 now defines a capability-protected loopback application and the
     black/orange/purple interface has real read-only task/report/environment/
