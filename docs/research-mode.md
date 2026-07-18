@@ -1,6 +1,6 @@
 # Research Mode
 
-Research Mode adds bounded external precedent to SOL without granting external
+Research Mode adds bounded external precedent to Apoapsis without granting external
 content or a model workflow authority. It runs after the user approves the task
 specification and before deterministic repository context compilation.
 
@@ -35,14 +35,14 @@ audit artifacts. Reddit uses its approved OAuth API and is disabled by default.
 
 ## Configuration
 
-`sol init` writes a complete TOML example. The essential local-model section is:
+`apoapsis init` writes a complete TOML example. The essential local-model section is:
 
 ```toml
 [models.local_research]
 provider = "ollama"
 base_url = "http://127.0.0.1:11434"
 model = "qwen3.6:27b"
-api_key_env = "SOL_LOCAL_RESEARCH_API_KEY"
+api_key_env = "APOAPSIS_LOCAL_RESEARCH_API_KEY"
 timeout_seconds = 600
 max_output_tokens = 8192
 context_window_tokens = 32768
@@ -130,7 +130,7 @@ provenance. Research Mode never copies external code in this milestone.
 Each triggered task writes:
 
 ```text
-.sol/tasks/<task-id>/research/
+.apoapsis/tasks/<task-id>/research/
   research-spec.json
   queries.jsonl
   candidates.jsonl
@@ -149,8 +149,8 @@ shorter configurable lifetime. Extraction and synthesis keys include the model,
 prompt version, and repository dependency fingerprint, so a relevant model,
 prompt, dependency, adapter, query, or retrieval-date change invalidates reuse.
 
-Use `sol research inspect TASK-ID` to review the structured result,
-`sol research refresh TASK-ID` to bypass reusable entries, and the cache inspect
+Use `apoapsis research inspect TASK-ID` to review the structured result,
+`apoapsis research refresh TASK-ID` to bypass reusable entries, and the cache inspect
 and clear commands to manage local storage.
 
 ## Testing
@@ -167,8 +167,8 @@ for the task-report example. Optional bounded live smoke tests require explicit
 flags and never run by default:
 
 ```bash
-SOL_RUN_LIVE_GITHUB_TESTS=1 python -m unittest tests.test_research_live -v
-SOL_RUN_LIVE_REDDIT_TESTS=1 python -m unittest tests.test_research_live -v
+APOAPSIS_RUN_LIVE_GITHUB_TESTS=1 python -m unittest tests.test_research_live -v
+APOAPSIS_RUN_LIVE_REDDIT_TESTS=1 python -m unittest tests.test_research_live -v
 ```
 
 The Reddit live test also requires `REDDIT_CLIENT_ID` and

@@ -11,30 +11,30 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
-from sol.config import (
+from apoapsis.config import (
     FrontierProviderConfig,
     GitHubResearchSourceConfig,
     LocalResearchProviderConfig,
     ProviderPricing,
     ResearchSecurityConfig,
 )
-from sol.models.base import ModelOperation
-from sol.models.local import OllamaLocalProvider
-from sol.models.provider import ModelRole, ProviderInvocation
-from sol.models.telemetry import InstrumentedModelProvider
-from sol.research.brief import ResearchBriefCompiler
-from sol.research.cache import ResearchCache
-from sol.research.fetcher import (
+from apoapsis.models.base import ModelOperation
+from apoapsis.models.local import OllamaLocalProvider
+from apoapsis.models.provider import ModelRole, ProviderInvocation
+from apoapsis.models.telemetry import InstrumentedModelProvider
+from apoapsis.research.brief import ResearchBriefCompiler
+from apoapsis.research.cache import ResearchCache
+from apoapsis.research.fetcher import (
     FetchRequest,
     FetchResponse,
     ResearchFetchError,
     SafeHttpFetcher,
     _RestrictedRedirectHandler,
 )
-from sol.research.licenses import LicenseClassifier
-from sol.research.model import LocalResearchModelClient
-from sol.research.ranking import SourceRanker
-from sol.research.schemas import (
+from apoapsis.research.licenses import LicenseClassifier
+from apoapsis.research.model import LocalResearchModelClient
+from apoapsis.research.ranking import SourceRanker
+from apoapsis.research.schemas import (
     AuthorityLevel,
     CandidateRanking,
     CandidateRankingProposal,
@@ -52,16 +52,16 @@ from sol.research.schemas import (
     SourceCandidate,
     SourceLocator,
 )
-from sol.research.security import (
+from apoapsis.research.security import (
     PromptInjectionDetector,
     ResearchSecurityError,
     validate_domain,
 )
-from sol.research.sources.github import GitHubSource
-from sol.research.sources.official import OfficialDocumentationSource
-from sol.research.sources.reddit import RedditSource
-from sol.research.trigger import ResearchTriggerEngine
-from sol.specification.schema import RiskLevel
+from apoapsis.research.sources.github import GitHubSource
+from apoapsis.research.sources.official import OfficialDocumentationSource
+from apoapsis.research.sources.reddit import RedditSource
+from apoapsis.research.trigger import ResearchTriggerEngine
+from apoapsis.specification.schema import RiskLevel
 from tests.fakes import FakeModelProvider
 from tests.helpers import make_constraint, make_specification
 
@@ -113,7 +113,7 @@ class SecurityPolicyTests(unittest.TestCase):
     def test_redirect_and_response_size_limits_are_enforced(self) -> None:
         handler = _RestrictedRedirectHandler(["github.com"], max_redirects=1)
         request = urllib.request.Request("https://github.com/one")
-        setattr(request, "_sol_redirect_count", 1)
+        setattr(request, "_apoapsis_redirect_count", 1)
         with self.assertRaisesRegex(ResearchFetchError, "redirect limit"):
             handler.redirect_request(
                 request,
@@ -518,7 +518,7 @@ class CacheAndBriefTests(unittest.TestCase):
             relevance=0.9,
             confidence=EvidenceConfidence.HIGH,
             license=LicenseClassification.IDEA_ONLY,
-            applicability="SOL task reports",
+            applicability="Apoapsis task reports",
         )
         synthesis = ResearchSynthesis(
             research_goal="Improve reports",

@@ -8,21 +8,21 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from sol.config import (
+from apoapsis.config import (
     ContextCompilerConfig,
     FrontierProviderConfig,
     ModelsConfig,
     PatchPolicyConfig,
     ProviderPricing,
-    SolConfig,
+    ApoapsisConfig,
 )
-from sol.models.local import OllamaProvider
-from sol.models.telemetry import InstrumentedModelProvider
-from sol.reporting.report import TaskOutcome
-from sol.verification.runner import VerificationCommand, VerificationConfig
-from sol.workflow.engine import SQLiteTaskStore
-from sol.workflow.states import WorkflowState
-from sol.workflow.vertical_slice import VerticalSliceRunner
+from apoapsis.models.local import OllamaProvider
+from apoapsis.models.telemetry import InstrumentedModelProvider
+from apoapsis.reporting.report import TaskOutcome
+from apoapsis.verification.runner import VerificationCommand, VerificationConfig
+from apoapsis.workflow.engine import SQLiteTaskStore
+from apoapsis.workflow.states import WorkflowState
+from apoapsis.workflow.vertical_slice import VerticalSliceRunner
 from tests.fakes import FakeModelProvider
 
 
@@ -202,11 +202,11 @@ class FrontierVerticalSliceTests(unittest.TestCase):
         shutil.copytree(example, self.root)
         self._git("init", "-b", "main")
         self._git("config", "user.email", "tests@example.invalid")
-        self._git("config", "user.name", "SOL Tests")
+        self._git("config", "user.name", "Apoapsis Tests")
         self._git("add", ".")
         self._git("commit", "-m", "controlled baseline")
-        (self.root / ".sol").mkdir()
-        self.store = SQLiteTaskStore(self.root / ".sol" / "sol.db")
+        (self.root / ".apoapsis").mkdir()
+        self.store = SQLiteTaskStore(self.root / ".apoapsis" / "apoapsis.db")
 
     def _git(self, *args: str) -> None:
         subprocess.run(
@@ -225,7 +225,7 @@ class FrontierVerticalSliceTests(unittest.TestCase):
 
         def complete_with_task_id(invocation):
             next_call = len(fake.invocations) + 1
-            task_directories = list((self.root / ".sol" / "tasks").glob("TASK-*"))
+            task_directories = list((self.root / ".apoapsis" / "tasks").glob("TASK-*"))
             self.assertEqual(len(task_directories), 1)
             self.assertTrue(
                 (task_directories[0] / f"call-{next_call:03d}-context.json").is_file()
@@ -247,7 +247,7 @@ class FrontierVerticalSliceTests(unittest.TestCase):
             output_per_million_usd=4,
             cached_input_per_million_usd=1,
         )
-        config = SolConfig(
+        config = ApoapsisConfig(
             models=ModelsConfig(
                 frontier=FrontierProviderConfig(
                     provider="openai_compatible",
@@ -326,7 +326,7 @@ class FrontierVerticalSliceTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
         self.assertNotIn("response.status_code == 206", baseline_source)
 
-        audit_root = self.root / ".sol" / "tasks" / report.task_id
+        audit_root = self.root / ".apoapsis" / "tasks" / report.task_id
         expected = {
             "call-001-context.json",
             "call-001-request.json",
@@ -419,7 +419,7 @@ class FrontierVerticalSliceTests(unittest.TestCase):
             think=False,
         )
         adapter = StubOllama(frontier)
-        config = SolConfig(
+        config = ApoapsisConfig(
             models=ModelsConfig(frontier=frontier),
             context=ContextCompilerConfig(
                 max_files=10,
@@ -470,7 +470,7 @@ class FrontierVerticalSliceTests(unittest.TestCase):
         request_package = json.loads(
             (
                 self.root
-                / ".sol"
+                / ".apoapsis"
                 / "tasks"
                 / report.task_id
                 / "call-002-request.json"
@@ -497,7 +497,7 @@ class FrontierVerticalSliceTests(unittest.TestCase):
             return output
 
         fake.complete = complete_with_task_id  # type: ignore[method-assign]
-        config = SolConfig(
+        config = ApoapsisConfig(
             models=ModelsConfig(
                 frontier=FrontierProviderConfig(
                     base_url="https://provider.invalid/v1",
@@ -541,7 +541,7 @@ class FrontierVerticalSliceTests(unittest.TestCase):
         self.assertEqual(report.number_of_calls, 3)
         self.assertEqual(len(report.verification_results), 1)
         self.assertEqual(report.verification_results[0].status.value, "passed")
-        audit_root = self.root / ".sol" / "tasks" / report.task_id
+        audit_root = self.root / ".apoapsis" / "tasks" / report.task_id
         self.assertTrue((audit_root / "patch-failure-001.json").is_file())
         replacement_request = json.loads(
             (audit_root / "call-003-request.json").read_text(encoding="utf-8")
@@ -569,7 +569,7 @@ class FrontierVerticalSliceTests(unittest.TestCase):
         frontier = FrontierProviderConfig(
             base_url="https://provider.invalid/v1", model=fake.model_name
         )
-        config = SolConfig(
+        config = ApoapsisConfig(
             models=ModelsConfig(frontier=frontier),
             verification=VerificationConfig(commands=[]),
         )

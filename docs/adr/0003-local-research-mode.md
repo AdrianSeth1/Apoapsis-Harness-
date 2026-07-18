@@ -12,7 +12,7 @@ the deterministic authority boundary established by the substrate.
 
 ## Decision
 
-SOL will use a separate `LOCAL_RESEARCH_MODEL` role for structured planning,
+Apoapsis will use a separate `LOCAL_RESEARCH_MODEL` role for structured planning,
 ranking, evidence extraction, and comparative synthesis. Native Ollama is the
 preferred provider because it exposes JSON-schema output, thinking control,
 token/duration metrics, and model loading metadata. The existing

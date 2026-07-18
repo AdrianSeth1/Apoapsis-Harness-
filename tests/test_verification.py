@@ -5,8 +5,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from sol.verification.results import VerificationStatus
-from sol.verification.runner import (
+from apoapsis.verification.results import VerificationStatus
+from apoapsis.verification.runner import (
     VerificationCommand,
     VerificationConfig,
     VerificationRunner,

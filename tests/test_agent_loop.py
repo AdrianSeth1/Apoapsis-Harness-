@@ -8,13 +8,13 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from sol.agent.actions import (
+from apoapsis.agent.actions import (
     AgentActionError,
     agent_action_schema,
     parse_agent_action,
 )
-from sol.agent.inspection import AgentInspectionError, RepositoryInspector
-from sol.config import (
+from apoapsis.agent.inspection import AgentInspectionError, RepositoryInspector
+from apoapsis.config import (
     AgentLoopConfig,
     AgentRoute,
     ContextCompilerConfig,
@@ -23,17 +23,17 @@ from sol.config import (
     FrontierProviderConfig,
     ModelsConfig,
     PatchPolicyConfig,
-    SolConfig,
+    ApoapsisConfig,
 )
-from sol.models.telemetry import InstrumentedModelProvider
-from sol.models.provider import ProviderError
-from sol.reporting.report import TaskOutcome
-from sol.specification.schema import RiskLevel
-from sol.verification.runner import VerificationCommand, VerificationConfig
-from sol.workflow.engine import SQLiteTaskStore
-from sol.workflow.states import WorkflowState
-from sol.workflow.routing import select_agent_route
-from sol.workflow.vertical_slice import VerticalSliceRunner
+from apoapsis.models.telemetry import InstrumentedModelProvider
+from apoapsis.models.provider import ProviderError
+from apoapsis.reporting.report import TaskOutcome
+from apoapsis.specification.schema import RiskLevel
+from apoapsis.verification.runner import VerificationCommand, VerificationConfig
+from apoapsis.workflow.engine import SQLiteTaskStore
+from apoapsis.workflow.states import WorkflowState
+from apoapsis.workflow.routing import select_agent_route
+from apoapsis.workflow.vertical_slice import VerticalSliceRunner
 from tests.fakes import FakeModelProvider
 from tests.helpers import make_specification
 from tests.test_vertical_slice import (
@@ -126,11 +126,11 @@ class BoundedAgentIntegrationTests(unittest.TestCase):
         shutil.copytree(example, self.root)
         self._git("init", "-b", "main")
         self._git("config", "user.email", "tests@example.invalid")
-        self._git("config", "user.name", "SOL Tests")
+        self._git("config", "user.name", "Apoapsis Tests")
         self._git("add", ".")
         self._git("commit", "-m", "controlled baseline")
-        (self.root / ".sol").mkdir()
-        self.store = SQLiteTaskStore(self.root / ".sol" / "sol.db")
+        (self.root / ".apoapsis").mkdir()
+        self.store = SQLiteTaskStore(self.root / ".apoapsis" / "apoapsis.db")
 
     def _git(self, *arguments: str) -> None:
         subprocess.run(
@@ -147,8 +147,8 @@ class BoundedAgentIntegrationTests(unittest.TestCase):
         route: AgentRoute = AgentRoute.AUTO,
         frontier_coder: FrontierProviderConfig | None = None,
         frontier_turns: int = 8,
-    ) -> SolConfig:
-        return SolConfig(
+    ) -> ApoapsisConfig:
+        return ApoapsisConfig(
             models=ModelsConfig(
                 frontier=FrontierProviderConfig(
                     base_url="https://provider.invalid/v1",
@@ -279,7 +279,7 @@ class BoundedAgentIntegrationTests(unittest.TestCase):
         self.assertIn("local_agent_patch_ready", events)
         self.assertIn("local_agent_verification_passed", events)
 
-        audit = self.root / ".sol" / "tasks" / report.task_id
+        audit = self.root / ".apoapsis" / "tasks" / report.task_id
         self.assertTrue((audit / "agent-session.json").is_file())
         self.assertTrue((audit / "agent-turn-007.json").is_file())
         self.assertTrue((audit / "verification-failure-001.json").is_file())
@@ -395,7 +395,7 @@ class BoundedAgentIntegrationTests(unittest.TestCase):
         )
         self.assertEqual(report.verification_results[-1].status, "passed")
 
-        audit = self.root / ".sol" / "tasks" / report.task_id
+        audit = self.root / ".apoapsis" / "tasks" / report.task_id
         package = json.loads(
             (audit / "frontier-escalation-package.json").read_text(
                 encoding="utf-8"
@@ -507,7 +507,7 @@ class BoundedAgentIntegrationTests(unittest.TestCase):
         self.assertEqual(report.frontier_agent_turns, 2)
         self.assertFalse(report.provider_calls[1].succeeded)
         self.assertIn("provider call failed", report.escalation_reason or "")
-        audit = self.root / ".sol" / "tasks" / report.task_id
+        audit = self.root / ".apoapsis" / "tasks" / report.task_id
         package = json.loads(
             (audit / "frontier-escalation-package.json").read_text(
                 encoding="utf-8"
@@ -561,6 +561,10 @@ class BoundedAgentIntegrationTests(unittest.TestCase):
         )
         with self.assertRaises(AgentInspectionError):
             inspector.read("../outside.py")
+        with self.assertRaises(AgentInspectionError):
+            inspector.read(".apoapsis/config.toml")
+        with self.assertRaises(AgentInspectionError):
+            inspector.read(".sol/config.toml")
 
     def test_replace_text_requires_one_exact_match_and_generates_diff(self) -> None:
         inspector = RepositoryInspector(

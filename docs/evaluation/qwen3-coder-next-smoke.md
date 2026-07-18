@@ -40,7 +40,7 @@ Existing clients must continue working.
 
 An earlier temperature-1 diagnostic (`TASK-5D93D3719E30`) exposed a safe patch
 normalization gap: the old side matched once, but the model omitted unchanged
-edge context and Git rejected it. SOL 0.4.3 now adds an immediately adjacent
+edge context and Git rejected it. Apoapsis 0.4.3 now adds an immediately adjacent
 unchanged line only after an exact unique old-side match and audits the rebased
 patch. It does not enable Git's global zero-context mode.
 
@@ -53,13 +53,13 @@ change that logic.
 ## Conclusion
 
 The model installs, loads, and runs acceptably at 64K with predictable CPU/GPU
-offload. SOL's workflow and safety boundary also behave correctly. However,
+offload. Apoapsis's workflow and safety boundary also behave correctly. However,
 Coder-Next Q4 produced no accepted, verified solution in these controlled
 **one-shot** samples. More context did not help this small repository because
 all relevant files already fit in every request. Recommended sampling increased
 variation but did not produce a successful patch.
 
-These results are retained as the one-shot baseline. SOL 0.5 adds a bounded
+These results are retained as the one-shot baseline. Apoapsis 0.5 adds a bounded
 inspect-edit-test action loop specifically because this experiment did not test
 Coder-Next in its intended agentic operating mode. The identical fixture was
 therefore rerun through `--execution-mode agent` to test whether iterative
@@ -67,9 +67,9 @@ evidence requests and exact failure feedback improve the accepted patch rate.
 
 ## Bounded-agent results
 
-SOL 0.5 reran the identical fixture at 64K and temperature 1.0. The model could
+Apoapsis 0.5 reran the identical fixture at 64K and temperature 1.0. The model could
 request bounded reads and checks, inspect the current worktree diff, and propose
-either unified diffs or exact text replacements. SOL converted replacements to
+either unified diffs or exact text replacements. Apoapsis converted replacements to
 unified diffs and retained the same patch policy and verifier-owned completion.
 
 | Task | Agent turns | Patch attempts | Verification runs | Tokens in / out | Model latency | Outcome |
@@ -87,7 +87,7 @@ signatures, and verification configuration were untouched.
 
 An earlier diagnostic task (`TASK-C91B0A7ED1E6`) failed before the first agent
 turn because Ollama rejected Pydantic's discriminated-union JSON Schema. The
-wire schema is now a flat conservative JSON object, while SOL still performs
+wire schema is now a flat conservative JSON object, while Apoapsis still performs
 strict discriminated per-action validation after generation.
 
 The successful result changes the interpretation of the one-shot failures:
@@ -96,7 +96,9 @@ This is one accepted task, not evidence of broad capability or cost advantage;
 the next evaluation phase must repeat runs across multiple task categories and
 compare accepted-patch cost and time with direct frontier execution.
 
-Reports remain in the ignored controlled repository under:
+These immutable audits predate the Apoapsis namespace migration. Their legacy
+`.sol` paths and embedded hashes are intentionally preserved. Reports remain in
+the ignored controlled repository under:
 
 ```text
 .sol/evaluations/download-service-local/.sol/tasks/TASK-87C7DA93782B/report.json

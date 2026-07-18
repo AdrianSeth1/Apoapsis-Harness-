@@ -4,7 +4,7 @@ import json
 import re
 from datetime import datetime, timezone
 
-from sol.config import (
+from apoapsis.config import (
     GitHubResearchSourceConfig,
     LocalResearchProviderConfig,
     OfficialDocsResearchSourceConfig,
@@ -15,9 +15,9 @@ from sol.config import (
     ResearchSourcesConfig,
     ResearchSynthesisConfig,
 )
-from sol.models.base import ModelOperation, TokenUsage
-from sol.models.provider import ProviderInvocation, ProviderOutput
-from sol.research.schemas import (
+from apoapsis.models.base import ModelOperation, TokenUsage
+from apoapsis.models.provider import ProviderInvocation, ProviderOutput
+from apoapsis.research.schemas import (
     LicenseClassification,
     ResearchBudget,
     ResearchSourceName,
@@ -26,7 +26,7 @@ from sol.research.schemas import (
     SourceCandidate,
     SourceLocator,
 )
-from sol.research.sources.fixture import FixtureSource
+from apoapsis.research.sources.fixture import FixtureSource
 
 
 GITHUB_QUERY = "established CLI CI coding-agent report patterns"
@@ -168,7 +168,7 @@ class ResearchFixtureProvider:
                         "excerpt": excerpt,
                         "relevance": 0.94,
                         "confidence": "medium",
-                        "applicability": "SOL command-line task reports",
+                        "applicability": "Apoapsis command-line task reports",
                         "limitations": [
                             "One external source; corroboration is handled in synthesis."
                         ],
@@ -222,7 +222,7 @@ class ResearchFixtureProvider:
                     ),
                     "reason": (
                         "This combines implementation precedent with the recurring "
-                        "user complaint without changing SOL's deterministic policy."
+                        "user complaint without changing Apoapsis's deterministic policy."
                     ),
                     "constraints_addressed": ["HC-1", "HC-2"],
                 },

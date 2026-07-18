@@ -8,26 +8,26 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from sol.config import (
+from apoapsis.config import (
     ContextCompilerConfig,
     FrontierProviderConfig,
     ModelsConfig,
     PatchPolicyConfig,
-    SolConfig,
+    ApoapsisConfig,
 )
-from sol.models.telemetry import InstrumentedModelProvider
-from sol.reporting.report import TaskOutcome
-from sol.research.engine import ResearchEngine
-from sol.research.model import LocalResearchModelClient
-from sol.research.schemas import (
+from apoapsis.models.telemetry import InstrumentedModelProvider
+from apoapsis.reporting.report import TaskOutcome
+from apoapsis.research.engine import ResearchEngine
+from apoapsis.research.model import LocalResearchModelClient
+from apoapsis.research.schemas import (
     AuthorityLevel,
     LicenseClassification,
     ResearchMode,
     ResearchSourceName,
 )
-from sol.verification.runner import VerificationCommand, VerificationConfig
-from sol.workflow.engine import SQLiteTaskStore
-from sol.workflow.vertical_slice import VerticalSliceRunner
+from apoapsis.verification.runner import VerificationCommand, VerificationConfig
+from apoapsis.workflow.engine import SQLiteTaskStore
+from apoapsis.workflow.vertical_slice import VerticalSliceRunner
 from tests.fakes import FakeModelProvider
 from tests.helpers import make_constraint, make_specification
 from tests.research_fakes import (
@@ -38,7 +38,7 @@ from tests.research_fakes import (
 )
 
 
-REQUEST = """Improve SOL's final task report so that it feels useful and deliberate
+REQUEST = """Improve Apoapsis's final task report so that it feels useful and deliberate
 rather than like generic AI output.
 
 Preserve the existing machine-readable JSON report.
@@ -168,11 +168,11 @@ if __name__ == "__main__":
         )
         self._git("init", "-b", "main")
         self._git("config", "user.email", "research-tests@example.invalid")
-        self._git("config", "user.name", "SOL Research Tests")
+        self._git("config", "user.name", "Apoapsis Research Tests")
         self._git("add", ".")
         self._git("commit", "-m", "controlled report baseline")
         (self.root / ".env").write_text(
-            "SOL_TEST_SECRET=must-never-be-transmitted\n", encoding="utf-8"
+            "APOAPSIS_TEST_SECRET=must-never-be-transmitted\n", encoding="utf-8"
         )
 
     def _git(self, *arguments: str) -> subprocess.CompletedProcess[str]:
@@ -372,7 +372,7 @@ if __name__ == "__main__":
             return output
 
         frontier.complete = complete_with_task_id  # type: ignore[method-assign]
-        config = SolConfig(
+        config = ApoapsisConfig(
             models=ModelsConfig(
                 frontier=FrontierProviderConfig(
                     base_url="https://provider.invalid/v1",
@@ -406,9 +406,9 @@ if __name__ == "__main__":
             ),
             research=research_configuration(),
         )
-        metadata = self.root / ".sol"
+        metadata = self.root / ".apoapsis"
         metadata.mkdir(exist_ok=True)
-        store = SQLiteTaskStore(metadata / "sol.db")
+        store = SQLiteTaskStore(metadata / "apoapsis.db")
         runner = VerticalSliceRunner(
             self.root,
             store,
@@ -477,7 +477,7 @@ if __name__ == "__main__":
         )
         self.assertNotIn("must-never-be-transmitted", local_prompts)
         report_json = (
-            self.root / ".sol" / "tasks" / report.task_id / "report.json"
+            self.root / ".apoapsis" / "tasks" / report.task_id / "report.json"
         )
         self.assertTrue(report_json.is_file())
         serialized_report = report_json.read_text(encoding="utf-8")

@@ -5,16 +5,16 @@ import os
 import unittest
 from unittest.mock import patch
 
-from sol.config import FrontierProviderConfig, ProviderPricing
-from sol.models.base import ModelOperation
-from sol.models.frontier import OpenAICompatibleFrontierProvider
-from sol.models.local import OllamaProvider
-from sol.models.provider import ModelRole, ProviderError, ProviderInvocation
-from sol.models.telemetry import (
+from apoapsis.config import FrontierProviderConfig, ProviderPricing
+from apoapsis.models.base import ModelOperation
+from apoapsis.models.frontier import OpenAICompatibleFrontierProvider
+from apoapsis.models.local import OllamaProvider
+from apoapsis.models.provider import ModelRole, ProviderError, ProviderInvocation
+from apoapsis.models.telemetry import (
     InstrumentedModelProvider,
     InstrumentedProviderError,
 )
-from sol.specification.extractor import (
+from apoapsis.specification.extractor import (
     SpecificationExtractionError,
     SpecificationExtractor,
 )
@@ -87,7 +87,7 @@ class ProviderTests(unittest.TestCase):
         config = FrontierProviderConfig(
             base_url="https://provider.invalid/v1",
             model="frontier-test",
-            api_key_env="SOL_TEST_API_KEY",
+            api_key_env="APOAPSIS_TEST_API_KEY",
         )
         adapter = OpenAICompatibleFrontierProvider(config)
         response = _FakeHTTPResponse(
@@ -107,7 +107,7 @@ class ProviderTests(unittest.TestCase):
                 },
             }
         )
-        with patch.dict(os.environ, {"SOL_TEST_API_KEY": "secret"}):
+        with patch.dict(os.environ, {"APOAPSIS_TEST_API_KEY": "secret"}):
             with patch(
                 "urllib.request.urlopen", return_value=response
             ) as urlopen:

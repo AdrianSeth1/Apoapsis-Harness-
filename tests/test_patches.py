@@ -5,10 +5,10 @@ import subprocess
 import unittest
 from pathlib import Path
 
-from sol.config import PatchPolicyConfig
-from sol.patches.apply import GitPatchApplier
-from sol.patches.parser import UnifiedDiffError, UnifiedDiffParser
-from sol.patches.validator import PatchPolicyValidator
+from apoapsis.config import PatchPolicyConfig
+from apoapsis.patches.apply import GitPatchApplier
+from apoapsis.patches.parser import UnifiedDiffError, UnifiedDiffParser
+from apoapsis.patches.validator import PatchPolicyValidator
 
 
 def one_file_patch(path: str, *, deleted: bool = False) -> str:
@@ -41,6 +41,14 @@ class PatchPolicyTests(unittest.TestCase):
 
     def test_detects_path_escape(self) -> None:
         self.assertIn("path_escape", self.violations(one_file_patch("../escape.py")))
+        self.assertIn(
+            "path_escape",
+            self.violations(one_file_patch(".apoapsis/config.toml")),
+        )
+        self.assertIn(
+            "path_escape",
+            self.violations(one_file_patch(".sol/config.toml")),
+        )
 
     def test_detects_dependency_verification_and_deleted_test_changes(self) -> None:
         self.assertIn(

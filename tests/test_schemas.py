@@ -6,8 +6,8 @@ from datetime import datetime, timezone
 
 from pydantic import ValidationError
 
-from sol.context.provenance import ContextEvidence, EvidenceKind
-from sol.models.base import (
+from apoapsis.context.provenance import ContextEvidence, EvidenceKind
+from apoapsis.models.base import (
     ConstraintCoverage,
     ConstraintDisposition,
     ModelOperation,
@@ -15,7 +15,7 @@ from sol.models.base import (
     ModelResponse,
     TokenUsage,
 )
-from sol.verification.results import (
+from apoapsis.verification.results import (
     VerificationCommandResult,
     VerificationResult,
     VerificationStatus,

@@ -5,8 +5,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from sol.config import ContextCompilerConfig
-from sol.context.compiler import ContextCompiler
+from apoapsis.config import ContextCompilerConfig
+from apoapsis.context.compiler import ContextCompiler
 from tests.helpers import make_specification
 
 
@@ -33,7 +33,7 @@ class ContextCompilerTests(unittest.TestCase):
         )
         self._git("init", "-b", "main")
         self._git("config", "user.email", "tests@example.invalid")
-        self._git("config", "user.name", "SOL Tests")
+        self._git("config", "user.name", "Apoapsis Tests")
         self._git("add", ".")
         self._git("commit", "-m", "fixture")
 

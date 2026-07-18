@@ -13,12 +13,12 @@ agent: the model could only return one complete patch and one repair patch. It
 could not request more repository evidence, inspect the applied diff, run a
 configured check, or respond across multiple bounded turns.
 
-The original SOL thesis requires useful model iteration without transferring
+The original Apoapsis thesis requires useful model iteration without transferring
 workflow authority to the model.
 
 ## Decisions
 
-1. SOL supports `one_shot` and `agent` execution modes. The one-shot path remains
+1. Apoapsis supports `one_shot` and `agent` execution modes. The one-shot path remains
    available as a reproducible baseline; newly generated configuration selects
    agent mode.
 2. An agent response is exactly one schema-validated action. Allowed actions are
@@ -26,9 +26,9 @@ workflow authority to the model.
    incremental unified-diff proposal, exact text replacement, configured check
    execution, full verification submission, and escalation request.
 3. Models receive no shell, filesystem handle, process API, or arbitrary command
-   parameter. SOL validates and executes every action.
+   parameter. Apoapsis validates and executes every action.
 4. Repository reads are confined to tracked or unignored worktree files. `.git`,
-   `.sol`, binary files, absolute paths, drive paths, and parent traversal are
+   `.apoapsis`, binary files, absolute paths, drive paths, and parent traversal are
    rejected. Search uses ripgrep without a shell and returns bounded,
    line-provenanced evidence.
 5. Every turn receives an immutable context package written before the provider
@@ -38,7 +38,7 @@ workflow authority to the model.
 6. Patch proposals continue through the existing parser, policy validator, and
    `git apply --check` path. Test, dependency, verification-configuration,
    binary, excessive, and escaping changes remain forbidden by policy.
-   Exact replacements must match current text once; SOL deterministically turns
+   Exact replacements must match current text once; Apoapsis deterministically turns
    them into unified diffs before applying the same checks.
 7. A model may request only a named configured check. It may submit the worktree
    for full configured verification, but only a passing required verification

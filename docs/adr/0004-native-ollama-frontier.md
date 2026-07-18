@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted for SOL Harness 0.4.0; context profiles amended in 0.4.1 and
+Accepted for Apoapsis Harness 0.4.0; context profiles amended in 0.4.1 and
 deterministic import-neighbor expansion corrected in 0.4.2. Configurable,
 audited sampling and unique edge-context patch normalization were added in
 0.4.3.
@@ -53,5 +53,5 @@ credential, workflow-transition, or completion authority to the model.
   coordinates, and CRLF worktree line endings are canonicalized deterministically
   and audited; ambiguous or semantic changes remain rejected.
 - A hunk with missing edge context may receive one adjacent unchanged repository
-  line only after its complete old side has exactly one source match. SOL retains
+  line only after its complete old side has exactly one source match. Apoapsis retains
   strict Git application instead of globally permitting zero-context patches.

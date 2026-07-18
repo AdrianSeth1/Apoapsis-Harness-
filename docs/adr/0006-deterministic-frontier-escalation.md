@@ -22,7 +22,7 @@ budgets, transmitted context, or completion.
    `local_then_frontier`, and `frontier_only`. Under `auto`, low, medium, and
    unclassified tasks run local-first; high-risk tasks go directly to an
    available frontier provider; critical-risk tasks require human review.
-3. Only SOL authorizes escalation. A model may request it, and local budget
+3. Only Apoapsis authorizes escalation. A model may request it, and local budget
    exhaustion or a failed local provider call also triggers it, but the
    configured route and provider availability determine whether a frontier call
    occurs. A failed frontier provider call requires human review.
@@ -33,7 +33,7 @@ budgets, transmitted context, or completion.
    accepted local changes remain visible and every frontier edit passes the same
    parser, path/dependency/test/verification/binary/size policy, and Git apply
    checks.
-6. Before the first frontier call, SOL writes an immutable
+6. Before the first frontier call, Apoapsis writes an immutable
    `frontier-escalation-package.json` containing:
    - the original approved specification;
    - every active verbatim constraint;
@@ -57,7 +57,7 @@ budgets, transmitted context, or completion.
 
 ## Consequences
 
-SOL can now perform the intended local-first workflow and spend frontier tokens
+Apoapsis can now perform the intended local-first workflow and spend frontier tokens
 only after a bounded, auditable local attempt. The fake-provider integration
 proves that a failing local patch can be repaired by a separate frontier model
 in the same worktree and that frontier budget exhaustion safely requires human

@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from collections import deque
 
-from sol.models.base import TokenUsage
-from sol.models.provider import ProviderInvocation, ProviderOutput
+from apoapsis.models.base import TokenUsage
+from apoapsis.models.provider import ProviderInvocation, ProviderOutput
 
 
 class FakeModelProvider:

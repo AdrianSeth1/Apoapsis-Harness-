@@ -4,26 +4,26 @@ import asyncio
 import os
 import unittest
 
-from sol.config import (
+from apoapsis.config import (
     GitHubResearchSourceConfig,
     RedditResearchSourceConfig,
     ResearchSecurityConfig,
 )
-from sol.research.fetcher import ResearchFetchProcess
-from sol.research.schemas import (
+from apoapsis.research.fetcher import ResearchFetchProcess
+from apoapsis.research.schemas import (
     ResearchQuery,
     ResearchSourceName,
     ResearchSourceType,
     SourceBudget,
 )
-from sol.research.sources.github import GitHubSource
-from sol.research.sources.reddit import RedditSource
+from apoapsis.research.sources.github import GitHubSource
+from apoapsis.research.sources.reddit import RedditSource
 
 
 class OptionalLiveResearchTests(unittest.TestCase):
     @unittest.skipUnless(
-        os.environ.get("SOL_RUN_LIVE_GITHUB_TESTS") == "1",
-        "set SOL_RUN_LIVE_GITHUB_TESTS=1 to run the bounded GitHub smoke test",
+        os.environ.get("APOAPSIS_RUN_LIVE_GITHUB_TESTS") == "1",
+        "set APOAPSIS_RUN_LIVE_GITHUB_TESTS=1 to run the bounded GitHub smoke test",
     )
     def test_live_github_search_and_fetch_with_strict_budget(self) -> None:
         security = ResearchSecurityConfig(
@@ -63,8 +63,8 @@ class OptionalLiveResearchTests(unittest.TestCase):
             process.close()
 
     @unittest.skipUnless(
-        os.environ.get("SOL_RUN_LIVE_REDDIT_TESTS") == "1",
-        "set SOL_RUN_LIVE_REDDIT_TESTS=1 to run the bounded Reddit smoke test",
+        os.environ.get("APOAPSIS_RUN_LIVE_REDDIT_TESTS") == "1",
+        "set APOAPSIS_RUN_LIVE_REDDIT_TESTS=1 to run the bounded Reddit smoke test",
     )
     def test_live_reddit_search_with_strict_budget(self) -> None:
         if not os.environ.get("REDDIT_CLIENT_ID") or not os.environ.get(

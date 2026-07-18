@@ -1,6 +1,6 @@
-# SOL Harness
+# Apoapsis Harness
 
-SOL Harness is a local-first context, research, and verification layer for AI
+Apoapsis Harness is a local-first context, research, and verification layer for AI
 coding agents. It contains the deterministic `substrate-v0.1` baseline, a
 bounded inspect-edit-test coding loop, the original one-shot patch baseline,
 and a quarantined local Research Mode.
@@ -9,6 +9,14 @@ Start with [`HANDOFF.md`](HANDOFF.md) for the living architecture, current
 implementation status, known limitations, and the required maintenance contract
 for future coding models. The ADRs remain the decision history; this README is
 the user-facing guide.
+
+Version 0.7 adopts the complete Apoapsis namespace: the distribution is
+`apoapsis-harness`, the Python package and CLI are `apoapsis`, new project state
+lives in `.apoapsis/`, product environment variables begin with `APOAPSIS_`, and
+managed branches begin with `apoapsis/`. There is no pre-release compatibility
+alias. Legacy `.sol/` audit directories remain excluded and read-only so their
+content hashes and worktree pointers are not corrupted; see
+[ADR 0007](docs/adr/0007-apoapsis-namespace.md).
 
 ## What works now
 
@@ -43,6 +51,11 @@ the user-facing guide.
 - Source provenance, license classification, content quarantine, injection
   warnings, bounded caching, comparative synthesis, and brief-only frontier
   handoff.
+- A read-only `apoapsis doctor` preflight (toolchain, configured models,
+  context limits, credential presence, verification commands, and an opt-in
+  provider connectivity probe) and an `apoapsis eval` harness that runs every
+  execution lane against a fresh copy of a controlled fixture and writes one
+  comparison report.
 
 See [ADR 0001](docs/adr/0001-mvp-deterministic-substrate.md) for the substrate
 and [ADR 0002](docs/adr/0002-frontier-vertical-slice.md) for the frontier flow.
@@ -51,7 +64,10 @@ boundary, [ADR 0004](docs/adr/0004-native-ollama-frontier.md) records the native
 all-local proposal path, [ADR 0005](docs/adr/0005-bounded-coding-agent-loop.md)
 records the agent action boundary,
 [ADR 0006](docs/adr/0006-deterministic-frontier-escalation.md) records provider
-routing and escalation, and
+routing and escalation, [ADR 0007](docs/adr/0007-apoapsis-namespace.md) records
+the product/runtime namespace migration, and
+[ADR 0008](docs/adr/0008-evaluation-and-diagnostic-tooling.md) records the
+evaluation harness and diagnostic tooling contract, and
 [the Research Mode guide](docs/research-mode.md) covers setup and operation.
 
 ## Install for development
@@ -74,17 +90,17 @@ python -m unittest discover -s tests -v
 
 ## Current CLI workflow
 
-Initialize SOL inside an existing Git repository:
+Initialize Apoapsis inside an existing Git repository:
 
 ```bash
-sol init
+apoapsis init
 ```
 
 Draft a task without model inference. Repeated flags preserve constraints and
 criteria as separate source-backed records:
 
 ```bash
-sol task "Add resumable downloads" \
+apoapsis task "Add resumable downloads" \
   --constraint "Preserve the current public API." \
   --constraint "Do not add runtime dependencies." \
   --acceptance "Interrupted downloads resume from the persisted byte."
@@ -93,8 +109,8 @@ sol task "Add resumable downloads" \
 Review and approve the generated task ID:
 
 ```bash
-sol inspect TASK-ABC123
-sol approve TASK-ABC123 --version 2
+apoapsis inspect TASK-ABC123
+apoapsis approve TASK-ABC123 --version 2
 ```
 
 The lower-level workflow APIs then support repository analysis, context
@@ -102,18 +118,54 @@ compilation, routing, patch readiness, and verification as later milestones are
 added. Worktree and verification lifecycle commands already exist:
 
 ```bash
-sol worktree-create TASK-ABC123
-sol verify TASK-ABC123
-sol rollback TASK-ABC123 --delete-branch
+apoapsis worktree-create TASK-ABC123
+apoapsis verify TASK-ABC123
+apoapsis rollback TASK-ABC123 --delete-branch
 ```
 
 `verify` deliberately refuses to run until the persisted task state is
 `PATCH_READY`. `rollback` is explicit and may discard uncommitted task-worktree
 changes. Normal cleanup APIs refuse dirty worktrees unless force is requested.
 
+## Diagnostics and evaluation
+
+Check the local toolchain, configured models, context limits, credential
+presence (values are never printed), and verification commands:
+
+```bash
+apoapsis doctor
+apoapsis doctor --probe
+```
+
+`--probe` makes one real minimal completion call per configured provider to
+check connectivity and structured-output support. A loopback Ollama probe is
+free; a hosted (`openai_compatible`) probe result explicitly says it may
+incur real cost. Doctor never makes that call unless `--probe` is given, and
+it never requires `apoapsis init` to run — a missing configuration is just
+one more reported check.
+
+Run the controlled `download-service` fixture through every execution lane
+and get one comparison report:
+
+```bash
+apoapsis eval download-service
+apoapsis eval download-service --lane local --lane one-shot
+apoapsis eval download-service --lane forced-escalation --output-dir .apoapsis-eval/run-1
+```
+
+Each requested lane (`local`, `hybrid`, `forced-escalation`, `frontier`,
+`one-shot`) runs against its own fresh, isolated copy of the fixture. `hybrid`,
+`forced-escalation`, and `frontier` need `[models.frontier_coder]` configured;
+without it, they are reported as skipped with a clear reason rather than
+failing the whole command or making an unauthorized call. `forced-escalation`
+proves a real local-to-frontier handoff by giving the local stage only a
+one-turn budget, never by altering the task or the patch. Output is written to
+`--output-dir` (default `.apoapsis-eval/<run-id>/`, already gitignored) as
+`comparison.json` and `comparison.md`.
+
 ## Complete all-local agent flow
 
-`sol init` creates a 64K agent configuration for the installed Coder-Next Q4
+`apoapsis init` creates a 64K agent configuration for the installed Coder-Next Q4
 model:
 
 ```toml
@@ -189,7 +241,7 @@ Both native Ollama endpoints must be loopback URLs. No fake API key is needed.
 provider; `models.local_coder` is the first agent stage. Then run one command:
 
 ```bash
-sol run "Add resumable downloads without changing the public API"
+apoapsis run "Add resumable downloads without changing the public API"
 ```
 
 The generated default is the `64k` working profile. A run can select a reproducible
@@ -202,11 +254,11 @@ comparison profile without editing the project configuration:
 | `64k` | 65,536 | 24 | 240 | 180,000 |
 
 ```bash
-sol run "Add resumable downloads without changing the public API" --context-profile 64k
+apoapsis run "Add resumable downloads without changing the public API" --context-profile 64k
 ```
 
 Profiles affect the native local-coding window and deterministic retrieval;
-Research Mode retains its separately configured budget. SOL records the active
+Research Mode retains its separately configured budget. Apoapsis records the active
 window and generation settings in every frontier request package and the exact
 retrieval limits in every context package.
 
@@ -227,16 +279,16 @@ Temperature is configurable for native Ollama and hosted providers and is
 recorded in each request package. Zero remains the generated deterministic
 sampling default; Coder-Next's published model settings recommend `1.0`.
 
-SOL displays the extracted Pydantic specification and waits for approval. The
+Apoapsis displays the extracted Pydantic specification and waits for approval. The
 `--yes` flag is available for controlled non-interactive evaluation. Approval
-does not grant the model workflow authority: SOL deterministically mediates
+does not grant the model workflow authority: Apoapsis deterministically mediates
 every search, read, patch, and configured check; records each request package;
 and accepts completion only after full verification.
 
 Use the retained one-shot baseline for a direct controlled comparison:
 
 ```bash
-sol run "Add resumable downloads without changing the public API" \
+apoapsis run "Add resumable downloads without changing the public API" \
   --execution-mode one_shot --context-profile 64k
 ```
 
@@ -249,7 +301,7 @@ a separately authenticated provider:
 provider = "openai_compatible"
 base_url = "https://provider.example/v1"
 model = "frontier-coder"
-api_key_env = "SOL_FRONTIER_CODER_API_KEY"
+api_key_env = "APOAPSIS_FRONTIER_CODER_API_KEY"
 timeout_seconds = 900
 max_output_tokens = 16384
 temperature = 0.0
@@ -266,19 +318,19 @@ frontier coder, while critical-risk tasks require human review. Routes can be
 overridden with `--agent-route local_only`, `local_then_frontier`, or
 `frontier_only`.
 
-Before the first frontier coding call, SOL writes
+Before the first frontier coding call, Apoapsis writes
 `frontier-escalation-package.json` containing the approved task and constraints,
 the exact current diff, complete local action history, verification commands and
 normalized failures, provider identities, and the frontier context digest. The
 frontier agent continues in the same isolated worktree with its own deterministic
-budget. If it cannot verify the task, SOL stops for human review.
+budget. If it cannot verify the task, Apoapsis stops for human review.
 
-Every task writes `.sol/tasks/<task-id>/report.json`. `sol inspect <task-id>`
+Every task writes `.apoapsis/tasks/<task-id>/report.json`. `apoapsis inspect <task-id>`
 returns the persisted state/events and embeds that report when present.
 
-The controlled download-service fixture and direct-versus-SOL procedure are in
+The controlled download-service fixture and direct-versus-Apoapsis procedure are in
 [`examples/download-service`](examples/download-service) and
-[`docs/evaluation/direct-vs-sol.md`](docs/evaluation/direct-vs-sol.md). The first
+[`docs/evaluation/direct-vs-apoapsis.md`](docs/evaluation/direct-vs-apoapsis.md). The first
 measured local Qwen smoke results are in
 [`docs/evaluation/local-qwen-smoke.md`](docs/evaluation/local-qwen-smoke.md).
 The installed Coder-Next Q4 evaluation is in
@@ -296,13 +348,13 @@ dashboard, and similar judgment-heavy work, while localized mechanical work is
 skipped. Explicit modes are also available:
 
 ```bash
-sol run "Improve the task report UX" --research auto
-sol run "Add resumable downloads" --research github
-sol run "Why do users dislike coding-agent logs?" --research community
-sol run "Research and improve the onboarding report" --research full
+apoapsis run "Improve the task report UX" --research auto
+apoapsis run "Add resumable downloads" --research github
+apoapsis run "Why do users dislike coding-agent logs?" --research community
+apoapsis run "Research and improve the onboarding report" --research full
 ```
 
-Configure `[models.local_research]` in `.sol/config.toml` with a locally
+Configure `[models.local_research]` in `.apoapsis/config.toml` with a locally
 available Ollama model. GitHub and configured official documentation are enabled
 by default. Reddit remains disabled until its approved API credentials and
 applicable terms are configured.
@@ -310,11 +362,11 @@ applicable terms are configured.
 Research can also be run independently for an already approved task:
 
 ```bash
-sol research TASK-ABC123 --mode full
-sol research inspect TASK-ABC123
-sol research refresh TASK-ABC123 --mode full
-sol research cache inspect
-sol research cache clear
+apoapsis research TASK-ABC123 --mode full
+apoapsis research inspect TASK-ABC123
+apoapsis research refresh TASK-ABC123 --mode full
+apoapsis research cache inspect
+apoapsis research cache clear
 ```
 
 The deterministic harness owns URLs, network access, budgets, provenance,
@@ -327,13 +379,13 @@ approved task, repository policy, patch validation, and verification authorize
 a change.
 
 Research artifacts are written below
-`.sol/tasks/<task-id>/research/`; the final `report.json` includes the selected
+`.apoapsis/tasks/<task-id>/research/`; the final `report.json` includes the selected
 mode, patterns, evidence IDs, local-model calls, tokens, latency, and whether the
 brief influenced the proposed plan.
 
 ## Verification configuration
 
-`sol init` creates `.sol/config.toml`. Commands are argument arrays, not shell
+`apoapsis init` creates `.apoapsis/config.toml`. Commands are argument arrays, not shell
 snippets:
 
 ```toml
@@ -356,7 +408,7 @@ the future sandbox adapter before untrusted or model-selected commands are run.
 ## Repository layout
 
 ```text
-src/sol/
+src/apoapsis/
   agent/            bounded typed inspect-edit-test sessions
   cli/              CLI entry points
   context/          provenance-aware evidence schemas
@@ -369,6 +421,8 @@ src/sol/
   audit/            reproducible per-call and per-task artifacts
   patches/          unified-diff parsing, policy, and application
   reporting/        aggregate outcome and usage reports
+  doctor.py         read-only environment/credential/provider preflight
+  evaluation/       fixture-isolated lane runner and comparison report
 tests/               deterministic unit and integration tests
 docs/adr/            architectural decisions
 HANDOFF.md           living architecture and project handoff

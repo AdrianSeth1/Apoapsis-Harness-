@@ -5,8 +5,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from sol.execution.worktree import WorktreeError, WorktreeManager
-from sol.repository.git import GitRepository
+from apoapsis.execution.worktree import WorktreeError, WorktreeManager
+from apoapsis.repository.git import GitRepository
 
 
 class GitWorktreeTests(unittest.TestCase):
@@ -19,7 +19,7 @@ class GitWorktreeTests(unittest.TestCase):
         self.repository_path.mkdir()
         self._git("init", "-b", "main")
         self._git("config", "user.email", "tests@example.invalid")
-        self._git("config", "user.name", "SOL Tests")
+        self._git("config", "user.name", "Apoapsis Tests")
         (self.repository_path / "README.md").write_text(
             "fixture\n", encoding="utf-8"
         )
@@ -53,10 +53,10 @@ class GitWorktreeTests(unittest.TestCase):
         managed_path = Path(managed.path)
 
         self.assertTrue(managed_path.is_dir())
-        self.assertEqual(managed.branch, "sol/test-001")
+        self.assertEqual(managed.branch, "apoapsis/test-001")
         self.assertEqual(
             GitRepository(managed_path).snapshot().branch,
-            "sol/test-001",
+            "apoapsis/test-001",
         )
 
         (managed_path / "README.md").write_text(
@@ -73,7 +73,7 @@ class GitWorktreeTests(unittest.TestCase):
                 "show-ref",
                 "--verify",
                 "--quiet",
-                "refs/heads/sol/test-001",
+                "refs/heads/apoapsis/test-001",
             ],
             cwd=self.repository_path,
             check=False,

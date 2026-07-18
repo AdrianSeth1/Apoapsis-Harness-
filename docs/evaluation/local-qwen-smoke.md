@@ -9,7 +9,7 @@
 - Controlled `examples/download-service` baseline with one passing test and two
   intentionally failing resumable-download tests.
 
-The task was run through the normal one-command SOL workflow with Research Mode
+The task was run through the normal one-command Apoapsis workflow with Research Mode
 off so the patch proposer could be measured independently:
 
 ```text
@@ -65,7 +65,7 @@ of declaring success.
 
 ## 32K and 64K profile check
 
-SOL 0.4.1 repeated the controlled task with the same installed
+Apoapsis 0.4.1 repeated the controlled task with the same installed
 `qwen3-coder:30b` and the new explicit context profiles. The first two rows
 transmitted all six relevant fixture files, so this small repository does not
 measure the retrieval benefit of a larger budget.
@@ -89,7 +89,7 @@ partial file when resuming after a disconnect.
 
 An initial Qwen 3.6 64K trial (`TASK-7EA45D04747A`) revealed that the term limit
 could retain `downloads` while evicting the searchable singular `download`, and
-that one-level import expansion stopped at a package `__init__.py`. SOL 0.4.2
+that one-level import expansion stopped at a package `__init__.py`. Apoapsis 0.4.2
 now keeps plural/stem variants together and follows two bounded import levels.
 The corrected rerun transmitted the test, package re-export, downloader, job
 store, README, and project configuration. Qwen 3.6's first patch was rejected
@@ -103,6 +103,9 @@ During the corrected Qwen 3.6 run, Ollama reported the 65,536-token context at
 approximately 21.4 GB, leaving 2.7 GB free.
 
 ## Representative local audits
+
+These immutable audits predate the Apoapsis namespace migration. Their legacy
+`.sol` paths and embedded hashes are intentionally preserved.
 
 The disposable evaluation repository is ignored by the main Git checkout:
 
@@ -131,7 +134,7 @@ Keep `qwen3.6:27b` as the local research model and use `qwen3-coder:30b` as the
 fast baseline proposer. The next meaningful model comparison is
 `qwen3-coder-next` Q4, not Q5, because its published Q4 package is already about
 52 GB and will require CPU/RAM offload on this workstation. Run the same task set
-at the explicit `16k`, `32k`, and `64k` profiles. Keep SOL policy, verification
+at the explicit `16k`, `32k`, and `64k` profiles. Keep Apoapsis policy, verification
 commands, and repair limits fixed, and measure prompt evaluation speed, offload,
 patch acceptance, and verified task success at each context size.
 

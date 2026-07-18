@@ -3,8 +3,8 @@ requires = ["setuptools"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "sol-harness"
-version = "0.6.0"
+name = "apoapsis-harness"
+version = "0.7.0"
 description = "Local-first deterministic substrate for verified AI coding tasks"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -13,11 +13,11 @@ dependencies = [
 ]
 
 [project.scripts]
-sol = "sol.cli.app:main"
+apoapsis = "apoapsis.cli.app:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.coverage.run]
 branch = true
-source = ["sol"]
+source = ["apoapsis"]

@@ -1,6 +1,6 @@
 # Instructions for coding models
 
-Read `HANDOFF.md` before making changes. It is SOL Harness's canonical living
+Read `HANDOFF.md` before making changes. It is Apoapsis Harness's canonical living
 architecture and project-status handoff.
 
 For every change that affects architecture, workflow behavior, configuration,

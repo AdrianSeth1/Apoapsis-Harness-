@@ -8,9 +8,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from sol.cli.app import _apply_context_profile, build_parser, main
-from sol.config import FrontierProviderConfig, SolConfig
-from sol.workflow.engine import TaskStoreError
+from apoapsis import __version__
+from apoapsis.cli.app import _apply_context_profile, build_parser, main
+from apoapsis.config import FrontierProviderConfig, ApoapsisConfig
+from apoapsis.workflow.engine import TaskStoreError
 
 
 class CLITests(unittest.TestCase):
@@ -33,10 +34,13 @@ class CLITests(unittest.TestCase):
         return json.loads(output.getvalue())
 
     def test_init_task_inspect_and_approve(self) -> None:
+        self.assertEqual(build_parser().prog, "apoapsis")
+        self.assertEqual(__version__, "0.7.0")
         initialized = self.invoke("init")
         self.assertTrue(initialized["initialized"])
-        self.assertTrue((self.root / ".sol" / "sol.db").is_file())
-        config = SolConfig.from_toml(self.root / ".sol" / "config.toml")
+        self.assertTrue((self.root / ".apoapsis" / "apoapsis.db").is_file())
+        self.assertFalse((self.root / ".sol").exists())
+        config = ApoapsisConfig.from_toml(self.root / ".apoapsis" / "config.toml")
         self.assertEqual(config.models.frontier.provider, "ollama")
         self.assertEqual(
             config.models.frontier.model, "qwen3-coder-next:q4_K_M"
@@ -98,7 +102,7 @@ class CLITests(unittest.TestCase):
 
     def test_context_profiles_scale_frontier_and_repository_budgets(self) -> None:
         self.invoke("init")
-        config = SolConfig.from_toml(self.root / ".sol" / "config.toml")
+        config = ApoapsisConfig.from_toml(self.root / ".apoapsis" / "config.toml")
 
         control = _apply_context_profile(config, "16k")
         self.assertEqual(control.models.frontier.context_window_tokens, 16384)
@@ -140,7 +144,7 @@ class CLITests(unittest.TestCase):
 
     def test_context_profile_rejects_a_hosted_provider(self) -> None:
         self.invoke("init")
-        config = SolConfig.from_toml(self.root / ".sol" / "config.toml")
+        config = ApoapsisConfig.from_toml(self.root / ".apoapsis" / "config.toml")
         hosted = FrontierProviderConfig(
             provider="openai_compatible",
             base_url="https://provider.invalid/v1",

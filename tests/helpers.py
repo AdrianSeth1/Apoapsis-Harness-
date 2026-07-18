@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from sol.specification.schema import (
+from apoapsis.specification.schema import (
     HardConstraint,
     SourceKind,
     TaskSpecification,

@@ -1,11 +1,11 @@
-# ADR 0001: Deterministic substrate for the SOL Harness MVP
+# ADR 0001: Deterministic substrate for the Apoapsis Harness MVP
 
 - Status: Accepted
 - Date: 2026-07-17
 
 ## Context
 
-SOL needs a trustworthy local control plane before it adds model-driven code
+Apoapsis needs a trustworthy local control plane before it adds model-driven code
 generation. The first milestone must preserve user constraints, isolate source
 changes, persist every workflow decision, and let deterministic verification—not
 a model—decide whether a patch passed.
@@ -31,7 +31,7 @@ a model—decide whether a patch passed.
    and persisted structured results. A host process runner is the portable MVP;
    container enforcement is a later execution adapter.
 7. **Git worktrees provide source isolation, not security isolation.** Each task
-   receives a dedicated `sol/<task>` branch under a controlled directory.
+   receives a dedicated `apoapsis/<task>` branch under a controlled directory.
    Package installation, network use, secrets, and destructive operations will
    require separate policy enforcement before model execution is enabled.
 8. **The future local adapter defaults to an OpenAI-compatible endpoint.** This

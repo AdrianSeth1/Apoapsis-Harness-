@@ -4,15 +4,15 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from sol.specification.schema import SourceKind, TraceableStatement
-from sol.workflow.engine import (
+from apoapsis.specification.schema import SourceKind, TraceableStatement
+from apoapsis.workflow.engine import (
     ConcurrentTransitionError,
     InvalidTransitionError,
     SQLiteTaskStore,
     TaskNotFoundError,
 )
-from sol.workflow.events import WorkflowActor
-from sol.workflow.states import WorkflowState
+from apoapsis.workflow.events import WorkflowActor
+from apoapsis.workflow.states import WorkflowState
 from tests.helpers import make_specification
 
 
@@ -20,7 +20,7 @@ class SQLiteTaskStoreTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary_directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary_directory.cleanup)
-        self.database = Path(self.temporary_directory.name) / "state" / "sol.db"
+        self.database = Path(self.temporary_directory.name) / "state" / "apoapsis.db"
         self.store = SQLiteTaskStore(self.database)
         self.specification = make_specification()
 
