@@ -15,15 +15,16 @@ must be corrected before the change is considered complete.
 | Item | Current value |
 | --- | --- |
 | Last verified | 2026-07-18 |
-| Working-tree version | `1.0` plus the ADR 0013 Windows local-model lifecycle and owner/agent/design handoffs |
+| Working-tree version | `1.0` plus ADR 0013 Windows local-model lifecycle and ADR 0014 first local operator-interface slice |
 | Checked-out branch | `main` |
-| Repository state | Everything described here is committed on `main`. This table intentionally does not embed a commit hash -- a commit that updates this file cannot know its own hash while being written, so a hardcoded hash here is stale the instant it lands. Run `git log -1 --oneline` for the exact current commit. |
+| Repository state | The previous 1.0/lifecycle baseline is committed on `main`; the ADR 0014 UI slice described here is currently uncommitted. `DESIGN.md` is preserved as separate untracked user-supplied design reference. Run `git status` and `git log -1 --oneline` for the exact state. |
 | Preserved substrate tag | `substrate-v0.1` at `4c2e735` |
-| Full deterministic suite | 177 tests, 0 failures, 0 errors, 4 intentional skips (2 live-network, 1 live-Docker, 1 machine currently lacks the Windows privilege to create symlinks) |
+| Full deterministic suite | 187 tests, 0 failures, 0 errors, 4 intentional skips (2 live-network, 1 live-Docker, 1 machine currently lacks the Windows privilege to create symlinks) |
 | Syntax check | `python -m compileall -q src tests` passed |
 | Diff check | `git diff --check` passed; Git reported only expected LF-to-CRLF working-copy warnings |
 | Live local coding result | Qwen3-Coder-Next Q4 completed the controlled download-service task in 10 turns and 3 verification runs |
 | Local model lifecycle result | `STOP_APOAPSIS.cmd` ran successfully against this machine's real Ollama service and explicitly unloaded both configured model names while leaving the service running. Start/warmup is covered against a fake loopback Ollama server but was not live-run here to avoid loading the approximately 48GB coding model merely for script verification. |
+| Local UI result | `apoapsis ui` was exercised against the real checkout and a disposable initialized repository at 1440px and 1100px. Home/models/specification/control views rendered without browser errors; a two-step UI approval advanced `SPEC_DRAFTED -> SPEC_APPROVED` and appended the expected user event. No model call was made. |
 | Live hosted escalation result | Not yet run. A repeatable harness (`apoapsis eval download-service --lane forced-escalation` / `--lane hybrid`) now exists to run it once real `[models.frontier_coder]` credentials are configured; the complete two-provider path is otherwise still only covered with fake providers |
 
 Update this table whenever its claims change. Never describe an uncommitted
@@ -142,7 +143,7 @@ architecture.
 
 ### CLI and configuration
 
-- `src/apoapsis/cli/app.py` owns `apoapsis init`, `run`, `task`, `approve`, `inspect`,
+- `src/apoapsis/cli/app.py` owns `apoapsis init`, `ui`, `run`, `task`, `approve`, `inspect`,
   `worktree-create`, `verify`, `rollback`, and Research Mode commands.
 - `src/apoapsis/config.py` is the strict TOML schema and cross-provider validation.
 - `.apoapsis/config.toml` is generated per target repository; `.apoapsis/apoapsis.db` stores
@@ -156,6 +157,27 @@ architecture.
 - Context profiles `16k`, `32k`, `64k`, `128k`, and `256k` jointly change the native Ollama
   context window and deterministic evidence budget. They do not alter Research
   Mode's separate context budget.
+
+### Local operator interface
+
+- `src/apoapsis/ui/application.py` is the deterministic application boundary.
+  It exposes repository/configuration/task/event/report/evaluation/lifecycle
+  facts and one typed mutation: optimistic specification approval through the
+  existing workflow store. It does not call providers, shell commands, patch
+  application, verification, retry, completion, or arbitrary filesystem APIs.
+- `src/apoapsis/ui/server.py` serves packaged offline assets on loopback for
+  `apoapsis ui`. Each run generates an ephemeral session capability; API calls
+  require it, foreign origins are rejected, CORS is disabled, and responses use
+  CSP, no-referrer, no-frame, and no-sniff headers. See ADR 0014.
+- `src/apoapsis/ui/static/` implements the accepted black/orange/purple product
+  language for Home, specification, control, changes/verification, review,
+  report, evaluations, and models/environment states. All displayed task and
+  model values come from Apoapsis services; the Claude prototype runtime and
+  illustrative model names are not shipped.
+- Read-only task/report views and deterministic specification approval are live.
+  Natural-language intake, task execution orchestration, review/resume commands,
+  and native desktop packaging remain unavailable until their resumable service
+  and authority contracts are implemented.
 
 ### Owner model lifecycle
 
@@ -536,6 +558,25 @@ keep-alive but intentionally leaves the shared Ollama service running. Set
 `APOAPSIS_NO_PAUSE=1` for terminal automation. These controls never contact a
 hosted provider and never download a missing model.
 
+### Launch the local operator interface
+
+```powershell
+apoapsis ui
+apoapsis ui --no-open --port 7331
+```
+
+The first form opens the default browser to a fresh capability-protected
+loopback session. Static assets are offline and packaged with the Python
+distribution. Merely opening the UI does not prompt or load a model. Home,
+task/specification, workflow timeline, report/audit, evaluations, and configured
+model views are live; Doctor runs only after an explicit UI action.
+
+Specification approval is the only UI mutation in this slice. It requires a
+second in-app confirmation and the current optimistic task version, then calls
+the same store transition used by `apoapsis approve`. Model-assisted new-task
+intake, execution, and review/resume actions remain CLI-only or visibly
+unavailable.
+
 ### Run the primary flow
 
 ```bash
@@ -775,6 +816,7 @@ rescue/savings and cross-profile model-quality claims remain unmeasured.
 | Context measurement, compaction metrics, and patch attribution | `tests/test_context_measurement.py` |
 | Context measurement wired through the vertical slice/report/audit | `tests/test_context_measurement_integration.py` |
 | Windows owner lifecycle / loopback model warmup and unload | `tests/test_operator_lifecycle.py` |
+| Local UI service, capability/origin security, static shell, and CLI-equivalent specification approval | `tests/test_ui.py` |
 
 Fake providers are the mandatory regression mechanism. Live model or network
 tests supplement them; they must not replace deterministic coverage.
@@ -834,18 +876,21 @@ tests supplement them; they must not replace deterministic coverage.
     deltas require a real paired hosted run. Context-profile comparisons likewise
     require repeated identical live-model runs; the presence of 128k/256k
     profiles is not evidence that they improve quality or latency.
-12. **There is no graphical application yet.** `docs/product-design-handoff.md`
-    is a design brief only. Before implementation, add an ADR choosing the local
-    application surface and deterministic API; the UI must not call providers or
-    invent workflow state from audit files.
+12. **The local application is a first slice, not a complete desktop product.**
+    ADR 0014 now defines a capability-protected loopback application and the
+    black/orange/purple interface has real read-only task/report/environment/
+    evaluation views plus deterministic specification approval. Model-assisted
+    intake, execution progress orchestration, human-review resume choices, and a
+    packaged native wrapper are still missing. Do not implement them as browser
+    provider calls, CLI subprocess construction, or inferred audit-file state.
 
 `NEXT_STEPS.md` is the owner and future-agent execution roadmap. The next high-
 value proofs are (1) identical local download-service evaluations
 across selected context profiles and (2) a real local-failure to hosted-frontier-
 repair run paired with direct frontier execution. Use `apoapsis eval` and
 `apoapsis eval-aggregate` and retain every audit artifact. Do not add embeddings,
-learned routing, autonomous agent swarms, an application implementation without
-an approved architecture, arbitrary model shell access, or general-purpose work
+learned routing, autonomous agent swarms, a native wrapper or new UI mutations
+without explicit service/authority contracts, arbitrary model shell access, or general-purpose work
 automation as a substitute for those proofs.
 
 ## Architecture decisions
@@ -865,6 +910,7 @@ automation as a substitute for those proofs.
 | `0011` | Deterministic change/reference/failure context, observation compaction, stable prompt prefixes, and patch attribution (Apoapsis 1.0b) |
 | `0012` | Held-out correctness oracle, evidence provenance, and cross-run evaluation aggregation (Apoapsis 1.0c) |
 | `0013` | Windows owner lifecycle for configured loopback Ollama model warmup and explicit unload |
+| `0014` | Offline local operator interface, capability-protected loopback API, and deterministic specification approval |
 
 Add a new ADR for a new architectural decision. Do not rewrite history to make
 old decisions appear current; mark an ADR superseded and link its replacement

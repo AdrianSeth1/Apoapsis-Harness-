@@ -59,6 +59,9 @@ content hashes and worktree pointers are not corrupted; see
 - Windows `START_APOAPSIS.cmd`/`STOP_APOAPSIS.cmd` controls that derive local
   Ollama models from configuration, warm the coding model, and explicitly
   release every configured local model's memory without touching hosted providers.
+- An offline black/orange/purple local operator interface for real repository,
+  task, specification, event, report, evaluation, and model-configuration data,
+  including version-checked deterministic specification approval.
 
 See [ADR 0001](docs/adr/0001-mvp-deterministic-substrate.md) for the substrate
 and [ADR 0002](docs/adr/0002-frontier-vertical-slice.md) for the frontier flow.
@@ -81,7 +84,9 @@ stable prompt prefixes, and
 [ADR 0012](docs/adr/0012-held-out-oracles-and-evaluation-aggregation.md)
 records held-out correctness checks and cross-run metrics, and
 [ADR 0013](docs/adr/0013-local-model-operator-lifecycle.md) records safe local-
-model Start/Stop behavior. The
+model Start/Stop behavior, and
+[ADR 0014](docs/adr/0014-local-operator-interface.md) records the local
+application/API and browser-session security boundary. The
 [Research Mode guide](docs/research-mode.md)
 covers setup and operation.
 
@@ -129,6 +134,38 @@ providers, Docker, repositories, worktrees, and tasks are untouched.
 For terminal automation, set `APOAPSIS_NO_PAUSE=1` so the command files do not
 wait for a keypress. The last lifecycle result is recorded under the ignored
 `.apoapsis/runtime/` directory.
+
+## Local operator interface
+
+Launch the offline interface from an initialized project:
+
+```powershell
+apoapsis ui
+```
+
+It opens a capability-protected loopback session at `127.0.0.1:7331`. Use
+`apoapsis ui --no-open` to serve without opening a browser, or `--port` to select
+a different loopback port. All HTML, CSS, and JavaScript assets ship with
+Apoapsis; the interface contacts no CDN and never calls a model provider
+directly.
+
+The first slice provides:
+
+- Home/project status and persisted tasks;
+- specification review with exact verbatim hard constraints;
+- a two-step, optimistic-version specification approval that writes the same
+  workflow event as `apoapsis approve`;
+- workflow timelines, change/verification summaries, final usage reports, and
+  audit-artifact locations;
+- persisted evaluation comparisons and actual configured model roles; and
+- an explicit **Run doctor** action. Merely opening the UI does not probe or
+  load a model.
+
+Natural-language task extraction, workflow execution, and human-review resume
+actions are visibly unavailable in this first slice. Continue using the CLI for
+those operations until their resumable application services and deterministic
+transition contracts are implemented. The supplied Claude Design export is a
+visual reference only; its external prototype runtime is not shipped.
 
 ## Current CLI workflow
 
@@ -535,6 +572,7 @@ src/apoapsis/
   audit/            reproducible per-call and per-task artifacts
   patches/          unified-diff parsing, policy, and application
   reporting/        aggregate outcome and usage reports
+  ui/               offline local operator interface and protected application API
   doctor.py         read-only environment/credential/provider preflight
   evaluation/       fixture-isolated lane runner and comparison report
 tests/               deterministic unit and integration tests

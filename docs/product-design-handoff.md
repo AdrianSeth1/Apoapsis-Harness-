@@ -1,5 +1,10 @@
 # Claude Design handoff: Apoapsis application
 
+> Implementation status (2026-07-18): the first local operator-interface slice
+> now implements this visual system for real project/task/report data and
+> deterministic specification approval. See ADR 0014. Model-assisted intake,
+> review/resume controls, and native desktop packaging remain follow-up work.
+
 ## Assignment
 
 Design a desktop-first application for **Apoapsis**, a local-first, auditable AI

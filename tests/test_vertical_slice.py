@@ -19,6 +19,7 @@ from apoapsis.config import (
 from apoapsis.models.local import OllamaProvider
 from apoapsis.models.telemetry import InstrumentedModelProvider
 from apoapsis.reporting.report import TaskOutcome
+from apoapsis.ui.application import ApoapsisUIService
 from apoapsis.verification.runner import VerificationCommand, VerificationConfig
 from apoapsis.workflow.engine import SQLiteTaskStore
 from apoapsis.workflow.states import WorkflowState
@@ -361,6 +362,18 @@ class FrontierVerticalSliceTests(unittest.TestCase):
         self.assertIn("test_server_ignores_range", repair_request["prompt"])
         for constraint in task.specification.hard_constraints:
             self.assertIn(constraint.verbatim_source, repair_request["prompt"])
+
+        # The operator interface consumes the same typed report and workflow
+        # record produced by this fake-provider vertical slice; it does not
+        # synthesize a separate UI outcome.
+        ui_detail = ApoapsisUIService(self.root).task_detail(report.task_id)
+        self.assertEqual(ui_detail["task"]["state"], "COMPLETE")
+        self.assertEqual(ui_detail["report"]["outcome"], "complete")
+        self.assertEqual(ui_detail["report"]["number_of_calls"], 3)
+        self.assertIn(
+            "src/download_service/downloader.py",
+            ui_detail["report"]["files_changed"],
+        )
 
     def test_native_ollama_provider_runs_the_verified_repair_flow(self) -> None:
         class StubOllama(OllamaProvider):

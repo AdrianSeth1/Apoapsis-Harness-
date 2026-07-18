@@ -256,6 +256,21 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    ui = subparsers.add_parser(
+        "ui", help="open the local Apoapsis operator interface"
+    )
+    ui.add_argument(
+        "--port",
+        type=int,
+        default=7331,
+        help="loopback port for the local interface (default: 7331)",
+    )
+    ui.add_argument(
+        "--no-open",
+        action="store_true",
+        help="serve the interface without opening a browser window",
+    )
+
     run = subparsers.add_parser(
         "run", help="run an approved verified coding workflow"
     )
@@ -407,6 +422,11 @@ def _dispatch(args: argparse.Namespace) -> dict[str, object] | None:
         return _init(root)
     if args.command == "doctor":
         return run_doctor(root, probe_providers=args.probe).model_dump(mode="json")
+    if args.command == "ui":
+        from apoapsis.ui.server import serve_ui
+
+        serve_ui(root, port=args.port, open_browser=not args.no_open)
+        return None
     if args.command == "eval":
         return _eval_download_service(
             root, args.lane, args.context_profile, args.output_dir

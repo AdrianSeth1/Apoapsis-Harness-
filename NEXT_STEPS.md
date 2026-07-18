@@ -57,12 +57,18 @@ local-first and direct-frontier lanes. Preserve the complete comparison and
 aggregate artifacts. Until then, hosted rescue and savings must remain
 `unmeasured`; subscription access must not be represented as API access.
 
-### 5. Design the human-facing application
+### 5. Use and review the first local application slice
 
-Give `docs/product-design-handoff.md` to Claude Design. It specifies the product
-flows, screens, data, trust-boundary presentation, and a black/orange/purple
-visual direction. It is a design brief, not authorization to add a web server or
-move deterministic authority into the UI.
+Run `apoapsis ui` from an initialized project. The offline black/orange/purple
+interface now shows real project, task, specification, event, report,
+evaluation, and model-configuration data. Specification approval is live and
+uses the same optimistic transition/event record as the CLI. Opening the UI does
+not load or prompt a model; Doctor runs only when explicitly selected.
+
+Natural-language model-assisted intake, execution orchestration, review/resume
+choices, and native desktop packaging remain intentionally unavailable. Use the
+CLI for those operations until the deterministic application services below are
+built.
 
 ## For future coding agents
 
@@ -98,26 +104,39 @@ in human review. Build this as deterministic control-plane functionality:
 Add an ADR before changing workflow/resume semantics. Cover each branch with a
 fake provider and keep the one-shot baseline intact.
 
-### Priority C — application shell after design review
+### Priority C — extend the accepted application shell (ADR 0014)
 
-Use `docs/product-design-handoff.md` as the product brief. Before implementation,
-write an ADR choosing the local application surface and its read/write API. The
-UI should call deterministic Apoapsis services; it must not parse audit files to
-invent state or call models directly. Start with read-only task/report views,
-then specification approval, then explicit review/resume actions.
+The first UI slice is complete: local/offline assets, a capability-protected
+loopback API, real read-only task/report/environment/evaluation views, and
+optimistic specification approval have deterministic integration and visual
+coverage. CLI and UI approval produce the same persisted transition record.
 
-The first UI slice is complete only when CLI and UI operations produce the same
-workflow events and reports under deterministic integration tests.
+Continue in this order:
+
+1. Extract model-assisted task intake into a resumable application service. Do
+   not keep a CLI input callback or HTTP request open while a model is running.
+2. Persist a pending-approval operation and reconnect it to the existing
+   specification extractor, provider telemetry, audit package, and exact
+   verbatim-constraint checks.
+3. Implement the explicit review/resume options from Priority B as typed service
+   commands with optimistic versions and allowed-transition validation.
+4. Add task execution progress through persisted events or a durable operation
+   record; browser disconnects must not grant, cancel, or repeat authority.
+5. Only then choose a packaged native wrapper for the proven loopback surface.
+
+Keep `src/apoapsis/ui/application.py` as the authority boundary. Browser code
+must not call providers, construct CLI commands, parse files into invented
+state, or decide verification/completion.
 
 ### Priority D — operational proof and packaging
 
 - Run the live-gated Docker success-path test with a pinned local image.
 - Exercise `START_APOAPSIS.cmd` and `STOP_APOAPSIS.cmd` on the supported Windows
   setup; keep model endpoints loopback-only.
-- Decide how the future desktop build locates Python, Git, ripgrep, Ollama, and
+- Decide how a future native wrapper locates Python, Git, ripgrep, Ollama, and
   Docker without weakening `apoapsis doctor` or silently installing software.
-- Add packaging only after the UI/runtime decision; do not hide prerequisites or
-  auto-download models/images.
+- Add packaging only after resumable intake and review commands prove the
+  application service; do not hide prerequisites or auto-download models/images.
 
 ## Always preserve these boundaries
 

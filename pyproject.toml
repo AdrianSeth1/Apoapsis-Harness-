@@ -18,6 +18,9 @@ apoapsis = "apoapsis.cli.app:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+"apoapsis.ui" = ["static/*.html", "static/*.css", "static/*.js"]
+
 [tool.coverage.run]
 branch = true
 source = ["apoapsis"]

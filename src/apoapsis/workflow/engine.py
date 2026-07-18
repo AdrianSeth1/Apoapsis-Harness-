@@ -43,10 +43,15 @@ class TaskRecord(StrictModel):
 class SQLiteTaskStore:
     """Persistent task state with atomic, optimistic transitions."""
 
-    def __init__(self, database_path: str | Path) -> None:
+    def __init__(
+        self, database_path: str | Path, *, initialize: bool = True
+    ) -> None:
         self.database_path = Path(database_path)
-        self.database_path.parent.mkdir(parents=True, exist_ok=True)
-        self._initialize()
+        if initialize:
+            self.database_path.parent.mkdir(parents=True, exist_ok=True)
+            self._initialize()
+        elif not self.database_path.is_file():
+            raise TaskStoreError(f"task database does not exist: {self.database_path}")
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(
