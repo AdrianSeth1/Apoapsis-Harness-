@@ -18,7 +18,13 @@ _DIGEST = "sha256:" + "a" * 64
 class _FakeDockerProcess:
     """Stand-in for `subprocess.run` keyed on the docker subcommand, so
     Docker CLI/engine behavior can be injected deterministically without a
-    real Docker installation."""
+    real Docker installation.
+
+    `run` invocations are parsed for their `--name`/`apoapsis.run_id` label
+    so a later `inspect` call can realistically report what the (fake)
+    daemon would have recorded -- this is what lets ownership-verified
+    cleanup be tested without a real container ever existing.
+    """
 
     def __init__(
         self,
@@ -30,6 +36,7 @@ class _FakeDockerProcess:
         run_stdout: str = "",
         run_stderr: str = "",
         raise_timeout_on_run: bool = False,
+        inspect_reports_wrong_owner: bool = False,
     ) -> None:
         self.engine_ok = engine_ok
         self.os_type = os_type
@@ -38,7 +45,9 @@ class _FakeDockerProcess:
         self.run_stdout = run_stdout
         self.run_stderr = run_stderr
         self.raise_timeout_on_run = raise_timeout_on_run
+        self.inspect_reports_wrong_owner = inspect_reports_wrong_owner
         self.calls: list[list[str]] = []
+        self.created_containers: dict[str, str] = {}
 
     def __call__(self, argv: list[str], **kwargs: object) -> subprocess.CompletedProcess:
         self.calls.append(list(argv))
@@ -60,6 +69,13 @@ class _FakeDockerProcess:
                 "" if self.image_present else "no such image",
             )
         if sub == "run":
+            name = argv[argv.index("--name") + 1]
+            run_id = None
+            for index, token in enumerate(argv):
+                if token == "--label" and argv[index + 1].startswith("apoapsis.run_id="):
+                    run_id = argv[index + 1].split("=", 1)[1]
+            if run_id is not None:
+                self.created_containers[name] = run_id
             if self.raise_timeout_on_run:
                 raise subprocess.TimeoutExpired(
                     cmd=argv, timeout=1, output=self.run_stdout, stderr=self.run_stderr
@@ -67,6 +83,14 @@ class _FakeDockerProcess:
             return subprocess.CompletedProcess(
                 argv, self.run_returncode, self.run_stdout, self.run_stderr
             )
+        if sub == "inspect":
+            name = argv[-1]
+            if self.inspect_reports_wrong_owner:
+                return subprocess.CompletedProcess(argv, 0, "not-the-real-owner\n", "")
+            reported = self.created_containers.get(name)
+            if reported is None:
+                return subprocess.CompletedProcess(argv, 1, "", "no such container")
+            return subprocess.CompletedProcess(argv, 0, f"{reported}\n", "")
         if sub in ("rm", "kill"):
             return subprocess.CompletedProcess(argv, 0, "", "")
         raise AssertionError(f"unexpected docker invocation: {argv}")
@@ -90,6 +114,14 @@ def _config(**overrides: object) -> DockerBackendConfig:
 
 def _patch_subprocess_run(fake: _FakeDockerProcess):
     return mock.patch("apoapsis.execution.docker_backend.subprocess.run", side_effect=fake)
+
+
+def _label_values(argv: list[str], key: str) -> list[str]:
+    return [
+        argv[index + 1]
+        for index, token in enumerate(argv)
+        if token == "--label" and argv[index + 1].startswith(f"{key}=")
+    ]
 
 
 class DockerCommandConstructionTests(unittest.TestCase):
@@ -118,7 +150,16 @@ class DockerCommandConstructionTests(unittest.TestCase):
             return run_argv[run_argv.index(flag) + 1]
 
         self.assertIn("--rm", run_argv)
-        self.assertEqual(value_after("--name"), "apoapsis-verify-argv0001-001")
+        name = value_after("--name")
+        self.assertRegex(name, r"^apoapsis-verify-argv0001-001-[0-9a-f]{8}$")
+        self.assertIn("--pull=never", run_argv)
+        managed_labels = _label_values(run_argv, "apoapsis.managed")
+        self.assertEqual(managed_labels, ["apoapsis.managed=true"])
+        run_id_labels = _label_values(run_argv, "apoapsis.run_id")
+        self.assertEqual(len(run_id_labels), 1)
+        run_id = run_id_labels[0].split("=", 1)[1]
+        self.assertRegex(run_id, r"^[0-9a-f]{32}$")
+        self.assertTrue(name.endswith(run_id[:8]))
         self.assertEqual(value_after("--network"), "none")
         self.assertIn("--read-only", run_argv)
         self.assertEqual(value_after("--cap-drop"), "ALL")
@@ -164,6 +205,21 @@ class DockerCommandConstructionTests(unittest.TestCase):
         self.assertIn("ALLOWED_VAR=x", run_argv)
         self.assertNotIn("SECRET_VAR=y", run_argv)
         self.assertEqual(run_argv.count("-e"), 1)
+
+    def test_two_commands_in_the_same_attempt_get_distinct_container_names(self) -> None:
+        fake = _FakeDockerProcess()
+        backend = DockerExecutionBackend(_config())
+        command = VerificationCommand(name="probe", category="sandbox", argv=["true"])
+        with _patch_subprocess_run(fake):
+            context = backend.prepare(self.project_root, "TASK-ARGV0003", 1)
+            backend.run_command(context, command, environment={})
+            backend.run_command(context, command, environment={})
+            backend.finalize(context)
+
+        run_calls = [call for call in fake.calls if call[1] == "run"]
+        names = [call[call.index("--name") + 1] for call in run_calls]
+        self.assertEqual(len(names), 2)
+        self.assertNotEqual(names[0], names[1])
 
 
 class DockerFailClosedTests(unittest.TestCase):
@@ -227,7 +283,7 @@ class DockerTimeoutCleanupTests(unittest.TestCase):
         self.project_root = Path(self.temporary_directory.name) / "project"
         self.project_root.mkdir()
 
-    def test_timeout_triggers_explicit_kill_and_remove(self) -> None:
+    def test_timeout_triggers_ownership_verified_kill_and_remove(self) -> None:
         fake = _FakeDockerProcess(raise_timeout_on_run=True)
         backend = DockerExecutionBackend(_config())
         command = VerificationCommand(
@@ -239,33 +295,128 @@ class DockerTimeoutCleanupTests(unittest.TestCase):
             backend.finalize(context)
 
         self.assertEqual(outcome.status, VerificationStatus.TIMED_OUT)
-        container_name = "apoapsis-verify-timeout01-001"
+        self.assertEqual(outcome.backend_metadata["timeout_cleanup"], "removed")
+        container_name = outcome.backend_metadata["container_name"]
+        self.assertRegex(container_name, r"^apoapsis-verify-timeout01-001-[0-9a-f]{8}$")
+        inspect_calls = [call for call in fake.calls if call[1] == "inspect"]
+        self.assertTrue(any(container_name in call for call in inspect_calls))
         kill_calls = [call for call in fake.calls if call[1] == "kill"]
         rm_calls = [call for call in fake.calls if call[1] == "rm"]
         self.assertTrue(any(container_name in call for call in kill_calls))
         self.assertTrue(any(container_name in call for call in rm_calls))
+
+    def test_ownership_mismatch_leaves_the_container_untouched(self) -> None:
+        """A container reporting a different apoapsis.run_id than the one
+        this exact invocation created must never be killed or removed --
+        this is the "never touch an unrelated container" guarantee."""
+
+        fake = _FakeDockerProcess(raise_timeout_on_run=True, inspect_reports_wrong_owner=True)
+        backend = DockerExecutionBackend(_config())
+        command = VerificationCommand(
+            name="slow", category="sandbox", argv=["sleep", "999"], timeout_seconds=1
+        )
+        with _patch_subprocess_run(fake):
+            context = backend.prepare(self.project_root, "TASK-TIMEOUT02", 1)
+            outcome = backend.run_command(context, command, environment={})
+            backend.finalize(context)
+
+        self.assertEqual(outcome.status, VerificationStatus.TIMED_OUT)
+        self.assertEqual(
+            outcome.backend_metadata["timeout_cleanup"],
+            "ownership_unverified_left_running",
+        )
+        self.assertFalse(any(call[1] == "kill" for call in fake.calls))
+        self.assertFalse(any(call[1] == "rm" for call in fake.calls))
+
+    def test_ownership_check_failure_also_leaves_the_container_untouched(self) -> None:
+        """If `docker inspect` itself fails (e.g. the container is already
+        gone, or the daemon errors), ownership cannot be proven -- cleanup
+        must still refuse to kill/remove anything."""
+
+        class _InspectFailsProcess(_FakeDockerProcess):
+            def __call__(self, argv, **kwargs):  # type: ignore[override]
+                if len(argv) > 1 and argv[1] == "inspect":
+                    self.calls.append(list(argv))
+                    return subprocess.CompletedProcess(argv, 1, "", "no such container")
+                return super().__call__(argv, **kwargs)
+
+        fake = _InspectFailsProcess(raise_timeout_on_run=True)
+        backend = DockerExecutionBackend(_config())
+        command = VerificationCommand(
+            name="slow", category="sandbox", argv=["sleep", "999"], timeout_seconds=1
+        )
+        with _patch_subprocess_run(fake):
+            context = backend.prepare(self.project_root, "TASK-TIMEOUT03", 1)
+            outcome = backend.run_command(context, command, environment={})
+            backend.finalize(context)
+
+        self.assertEqual(
+            outcome.backend_metadata["timeout_cleanup"],
+            "ownership_unverified_left_running",
+        )
+        self.assertFalse(any(call[1] == "kill" for call in fake.calls))
+        self.assertFalse(any(call[1] == "rm" for call in fake.calls))
 
 
 class DockerWorkspaceSafetyTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary_directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary_directory.cleanup)
-        self.project_root = Path(self.temporary_directory.name) / "project"
+        root = Path(self.temporary_directory.name)
+        self.project_root = root / "project"
         self.project_root.mkdir()
+        self.outside_dir = root / "outside"
+        self.outside_dir.mkdir()
+        (self.outside_dir / "secret.txt").write_text(
+            "outside-secret-content\n", encoding="utf-8"
+        )
         (self.project_root / "source.py").write_text("x = 1\n", encoding="utf-8")
         (self.project_root / ".git").mkdir()
-        (self.project_root / ".git" / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+        (self.project_root / ".git" / "HEAD").write_text(
+            "ref: refs/heads/main\n", encoding="utf-8"
+        )
         (self.project_root / ".apoapsis").mkdir()
-        (self.project_root / ".apoapsis" / "config.toml").write_text("x", encoding="utf-8")
-        if not (self.project_root / "escape_target").exists():
-            (self.project_root / "escape_target").write_text("outside\n", encoding="utf-8")
+        (self.project_root / ".apoapsis" / "config.toml").write_text(
+            "x", encoding="utf-8"
+        )
+        self.file_symlink_supported = self._try_symlink(
+            self.outside_dir / "secret.txt",
+            self.project_root / "file_link.py",
+            target_is_directory=False,
+        )
+        self.dir_symlink_supported = self._try_symlink(
+            self.outside_dir, self.project_root / "dir_link", target_is_directory=True
+        )
+        self.junction_supported = self._try_junction(
+            self.outside_dir, self.project_root / "junction_link"
+        )
+
+    @staticmethod
+    def _try_symlink(target: Path, link: Path, *, target_is_directory: bool) -> bool:
         try:
-            os.symlink(
-                self.project_root / "escape_target", self.project_root / "link.py"
-            )
-            self.symlinks_supported = True
+            os.symlink(target, link, target_is_directory=target_is_directory)
+            return True
         except (OSError, NotImplementedError):
-            self.symlinks_supported = False
+            return False
+
+    @staticmethod
+    def _try_junction(target: Path, link: Path) -> bool:
+        if os.name != "nt":
+            return False
+        result = subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(link), str(target)],
+            capture_output=True,
+            text=True,
+        )
+        return result.returncode == 0 and link.exists()
+
+    def _assert_secret_never_copied(self, workspace: Path) -> None:
+        copied_names = {path.name for path in workspace.rglob("*")}
+        self.assertNotIn("secret.txt", copied_names)
+        for path in workspace.rglob("*"):
+            if path.is_file():
+                content = path.read_text(encoding="utf-8", errors="ignore")
+                self.assertNotIn("outside-secret-content", content)
 
     def test_copy_excludes_metadata_and_skips_symlinks(self) -> None:
         fake = _FakeDockerProcess()
@@ -276,9 +427,46 @@ class DockerWorkspaceSafetyTests(unittest.TestCase):
             self.assertTrue((workspace / "source.py").is_file())
             self.assertFalse((workspace / ".git").exists())
             self.assertFalse((workspace / ".apoapsis").exists())
-            if self.symlinks_supported:
-                self.assertFalse((workspace / "link.py").exists())
-                self.assertEqual(context.extra["skipped_symlinks"], 1)
+
+            expected_skipped = 0
+            if self.file_symlink_supported:
+                self.assertFalse((workspace / "file_link.py").exists())
+                expected_skipped += 1
+            if self.dir_symlink_supported:
+                self.assertFalse((workspace / "dir_link").exists())
+                expected_skipped += 1
+            if self.junction_supported:
+                self.assertFalse((workspace / "junction_link").exists())
+                expected_skipped += 1
+
+            self.assertEqual(context.extra["skipped_reparse_points"], expected_skipped)
+            self._assert_secret_never_copied(workspace)
+            backend.finalize(context)
+
+        if not (self.file_symlink_supported or self.dir_symlink_supported):
+            self.skipTest(
+                "neither file nor directory symlinks could be created on this "
+                "machine/platform; junction coverage is asserted separately"
+            )
+
+    def test_copy_never_traverses_a_windows_junction_pointing_outside_the_repository(
+        self,
+    ) -> None:
+        if not self.junction_supported:
+            self.skipTest("could not create a Windows directory junction here")
+
+        fake = _FakeDockerProcess()
+        backend = DockerExecutionBackend(_config())
+        with _patch_subprocess_run(fake):
+            context = backend.prepare(self.project_root, "TASK-COPY0002", 1)
+            workspace = context.extra["workspace"]
+            # the junction itself must not exist in the copy at all --
+            # neither as a traversed directory nor as any kind of entry.
+            self.assertFalse((workspace / "junction_link").exists())
+            self.assertNotIn("junction_link", {p.name for p in workspace.iterdir()})
+            # the defining requirement: the file reachable only through the
+            # junction must never have been copied into the workspace.
+            self._assert_secret_never_copied(workspace)
             backend.finalize(context)
 
     def test_finalize_flags_mutation_of_a_pre_existing_file_but_not_new_files(
@@ -287,7 +475,7 @@ class DockerWorkspaceSafetyTests(unittest.TestCase):
         fake = _FakeDockerProcess()
         backend = DockerExecutionBackend(_config())
         with _patch_subprocess_run(fake):
-            context = backend.prepare(self.project_root, "TASK-COPY0002", 1)
+            context = backend.prepare(self.project_root, "TASK-COPY0003", 1)
             workspace = context.extra["workspace"]
             # simulate a misbehaving test mutating a pre-existing source file
             (workspace / "source.py").write_text("x = 2\n", encoding="utf-8")

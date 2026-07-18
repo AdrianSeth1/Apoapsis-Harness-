@@ -15,12 +15,11 @@ must be corrected before the change is considered complete.
 | Item | Current value |
 | --- | --- |
 | Last verified | 2026-07-18 |
-| Working-tree version | `0.9.0-dev` |
+| Working-tree version | `0.9.1` (0.9 execution sandbox, security-review follow-up applied) |
 | Checked-out branch | `main` |
-| Current committed HEAD | `0d5e93b` (`Rename Sol to Apoapsis Harness and add doctor/eval tooling`) |
+| Repository state | Everything described here is committed on `main`. This table intentionally does not embed a commit hash -- a commit that updates this file cannot know its own hash while being written, so a hardcoded hash here is stale the instant it lands. Run `git log -1 --oneline` for the exact current commit. |
 | Preserved substrate tag | `substrate-v0.1` at `4c2e735` |
-| Working-tree state | Uncommitted Apoapsis 0.9 execution sandbox (`ExecutionBackend`, host/Docker backends) on top of the committed 0.7 namespace migration + 0.8 doctor/eval tooling |
-| Full deterministic suite | 133 tests, 0 failures, 0 errors, 3 intentional live-network/Docker skips |
+| Full deterministic suite | 137 tests, 0 failures, 0 errors, 4 intentional skips (2 live-network, 1 live-Docker, 1 machine currently lacks the Windows privilege to create symlinks -- junction coverage, the actual security-fix target, still runs and passes) |
 | Syntax check | `python -m compileall -q src tests` passed |
 | Diff check | `git diff --check` passed; Git reported only expected LF-to-CRLF working-copy warnings |
 | Live local coding result | Qwen3-Coder-Next Q4 completed the controlled download-service task in 10 turns and 3 verification runs |
@@ -288,18 +287,43 @@ plan, compatibility tests, and an ADR.
   `backend_metadata={"sandboxed": False}`.
 - `src/apoapsis/execution/docker_backend.py` is `DockerExecutionBackend`,
   the preferred sandbox: runs each command in a `docker run` with `--rm
-  --network none --read-only --cap-drop ALL --security-opt
+  --pull=never --network none --read-only --cap-drop ALL --security-opt
   no-new-privileges --pids-limit <N> --memory <N>m --cpus <N> --user
-  <non-root numeric> --tmpfs /tmp:...`, exactly one writable mount (a
+  <non-root numeric> --tmpfs /tmp:size=<N>m`, exactly one writable mount (a
   temporary copy of the worktree, never the real one), and the pinned
-  `image@digest` — never a shell. It fails closed (raises
-  `SandboxUnavailableError`) on a missing CLI, unreachable engine,
+  `image@digest` — never a shell. `--pull=never` is a second, independent
+  guarantee on top of the local-image preflight check that `docker run`
+  itself can never trigger an implicit network pull. It fails closed
+  (raises `SandboxUnavailableError`) on a missing CLI, unreachable engine,
   non-Linux container mode, or an absent pinned image, and **never pulls
-  an image automatically**. A host timeout triggers an explicit
-  `docker kill` + `docker rm -f` on the exact container. After the run it
-  diffs a before/after content-hash manifest restricted to files that
-  existed before the run; any change there forces
-  `VerificationResult.status = FAILED` via the new
+  an image automatically**.
+- Every container gets a **unique, unpredictable name** per invocation
+  (`apoapsis-verify-<task-slug>-<attempt>-<random 8 hex>`, task/attempt
+  kept for diagnostics) and two labels, `apoapsis.managed=true` and
+  `apoapsis.run_id=<uuid>`. There is no more predictable/reusable
+  container name to accidentally collide with something else. On a host
+  timeout, cleanup first runs `docker inspect` and checks the
+  `apoapsis.run_id` label **matches the value this exact invocation
+  created** before ever running `docker kill`/`docker rm -f`; if
+  ownership can't be verified (label mismatch, or the inspect itself
+  fails), the container is left untouched and
+  `backend_metadata["timeout_cleanup"]` records
+  `"ownership_unverified_left_running"` rather than silently proceeding.
+- The pre-run workspace copy walks the source tree manually via
+  `os.scandir` (not `os.walk`) and, before recursing into anything, checks
+  both the symlink bit and the Windows-only `st_file_attributes`
+  reparse-point bit. This matters because `os.path.islink`/`is_symlink`
+  do **not** detect Windows directory junctions (`IO_REPARSE_TAG_
+  MOUNT_POINT` is a different reparse tag than `IO_REPARSE_TAG_SYMLINK`),
+  so a junction pointing outside the repository would previously have
+  been walked into and its contents copied into the sandboxed workspace.
+  File symlinks, directory symlinks, and junctions are all now skipped
+  identically (never followed, never copied, counted in
+  `skipped_reparse_points`); a stat failure on any entry propagates and
+  fails the whole copy closed rather than treating an unreadable entry as
+  an ordinary file. After the run it diffs a before/after content-hash
+  manifest restricted to files that existed before the run; any change
+  there forces `VerificationResult.status = FAILED` via the
   `integrity_violations` field.
 - Example opt-in configuration:
   ```toml
@@ -594,6 +618,14 @@ tests supplement them; they must not replace deterministic coverage.
    only via injected-process unit tests plus a live-gated integration test
    (`APOAPSIS_RUN_LIVE_DOCKER_TESTS=1`) that has not yet actually run.
    It is also not a defense against container-runtime or kernel escapes.
+   A follow-up security review of the initial implementation found and
+   fixed three issues before any live use: Windows directory junctions
+   bypassed the symlink check in the workspace copy (`os.path.islink`
+   does not detect junctions), `docker run` had no `--pull=never` as a
+   second guarantee against an implicit network pull, and the container
+   name/cleanup logic used a predictable name with unverified
+   kill/remove. All three now have dedicated regression tests, including
+   a real Windows junction created and proven un-copied on this machine.
 2. **No live hosted escalation evidence.** A repeatable harness now exists
    (`apoapsis eval download-service --lane forced-escalation` / `--lane
    hybrid`); configure a real `[models.frontier_coder]` and run it while
@@ -668,11 +700,13 @@ touches Apoapsis behavior:
    tokens, latency, files changed, verification result, and audit location.
 9. Run the focused tests, then the full suite, syntax compilation, and
    `git diff --check`. Report skipped tests explicitly.
-10. Refresh the Snapshot table last. Use an exact date. Use the exact hash when
-    the handoff is not itself part of that commit; otherwise identify it as
-    `this commit` with its exact subject because embedding its own hash is
-    impossible. If changes are uncommitted, say so. Do not invent results that
-    were not observed.
+10. Refresh the Snapshot table last. Use an exact date. Do not put a specific
+    commit hash in the Snapshot table: a commit that updates this file cannot
+    know its own hash while being written, so any embedded hash is stale the
+    moment it lands. Instead state the durable fact -- "committed on `main`"
+    or "uncommitted, see `git status`" -- and point at `git log -1 --oneline`
+    for the exact current commit. Do not invent results that were not
+    observed.
 
 ### Documentation update triggers
 

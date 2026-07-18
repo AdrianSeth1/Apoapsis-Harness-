@@ -3,8 +3,10 @@ from __future__ import annotations
 import hashlib
 import os
 import shutil
+import stat as stat_module
 import subprocess
 import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -23,6 +25,8 @@ if TYPE_CHECKING:
 
 _EXCLUDED_DIR_NAMES = {".git", ".apoapsis", ".sol"}
 _DOCKER_CALL_TIMEOUT_SECONDS = 30.0
+_RUN_ID_LABEL = "apoapsis.run_id"
+_MANAGED_LABEL = "apoapsis.managed"
 
 
 class DockerExecutionBackend:
@@ -57,7 +61,7 @@ class DockerExecutionBackend:
         if sandbox_root.exists():
             shutil.rmtree(sandbox_root)
         sandbox_root.mkdir(parents=True, exist_ok=True)
-        skipped_symlinks = _copy_workspace(project_root, workspace)
+        skipped_reparse_points = _copy_workspace(project_root, workspace)
         before_manifest = _content_manifest(workspace)
         return ExecutionContext(
             root=workspace,
@@ -68,7 +72,7 @@ class DockerExecutionBackend:
                 "workspace": workspace,
                 "sandbox_root": sandbox_root,
                 "before_manifest": before_manifest,
-                "skipped_symlinks": skipped_symlinks,
+                "skipped_reparse_points": skipped_reparse_points,
             },
         )
 
@@ -79,13 +83,13 @@ class DockerExecutionBackend:
         *,
         environment: dict[str, str],
     ) -> RawCommandOutcome:
+        run_id = uuid.uuid4().hex
         container_name = (
             f"apoapsis-verify-{context.extra['task_slug']}-"
-            f"{context.extra['attempt']:03d}"
+            f"{context.extra['attempt']:03d}-{run_id[:8]}"
         )
-        self._remove_if_exists(container_name)
         workspace = context.extra["workspace"]
-        argv = self._build_argv(container_name, workspace, command, environment)
+        argv = self._build_argv(container_name, run_id, workspace, command, environment)
         effective_timeout = min(
             command.timeout_seconds, self.config.wall_clock_timeout_seconds
         )
@@ -95,6 +99,7 @@ class DockerExecutionBackend:
         stdout = ""
         stderr = ""
         status = VerificationStatus.ERROR
+        timeout_cleanup: str | None = None
         try:
             completed = subprocess.run(
                 argv,
@@ -118,11 +123,24 @@ class DockerExecutionBackend:
             stdout = _to_text(exc.stdout)
             stderr = _to_text(exc.stderr)
             status = VerificationStatus.TIMED_OUT
-            self._kill_and_remove(container_name)
+            timeout_cleanup = self._kill_and_remove(container_name, run_id)
         except OSError as exc:
             stderr = str(exc)
             status = VerificationStatus.ERROR
         duration = time.monotonic() - started_clock
+        metadata: dict[str, object] = {
+            "sandboxed": True,
+            "image": self.config.image,
+            "image_digest": self.config.image_digest,
+            "container_name": container_name,
+            "run_id": run_id,
+            "cpu_limit": self.config.cpu_limit,
+            "memory_limit_mb": self.config.memory_limit_mb,
+            "pids_limit": self.config.pids_limit,
+            "network": self.config.network,
+        }
+        if timeout_cleanup is not None:
+            metadata["timeout_cleanup"] = timeout_cleanup
         return RawCommandOutcome(
             exit_code=exit_code,
             stdout=stdout,
@@ -132,16 +150,7 @@ class DockerExecutionBackend:
             finished_at=datetime.now(timezone.utc),
             duration_seconds=duration,
             backend=self.backend_name,
-            backend_metadata={
-                "sandboxed": True,
-                "image": self.config.image,
-                "image_digest": self.config.image_digest,
-                "container_name": container_name,
-                "cpu_limit": self.config.cpu_limit,
-                "memory_limit_mb": self.config.memory_limit_mb,
-                "pids_limit": self.config.pids_limit,
-                "network": self.config.network,
-            },
+            backend_metadata=metadata,
         )
 
     def finalize(self, context: ExecutionContext) -> list[str]:
@@ -203,16 +212,38 @@ class DockerExecutionBackend:
                 f"docker {' '.join(args)} failed: {exc}"
             ) from exc
 
-    def _remove_if_exists(self, name: str) -> None:
-        self._run_docker(["rm", "-f", name])
+    def _verify_ownership(self, container_name: str, run_id: str) -> bool:
+        """True only if `container_name` exists and carries the exact
+        `apoapsis.run_id` label this backend attached when it created it."""
 
-    def _kill_and_remove(self, name: str) -> None:
-        self._run_docker(["kill", name])
-        self._run_docker(["rm", "-f", name])
+        inspected = self._run_docker(
+            [
+                "inspect",
+                "--format",
+                "{{ index .Config.Labels \"" + _RUN_ID_LABEL + "\" }}",
+                container_name,
+            ]
+        )
+        if inspected.returncode != 0:
+            return False
+        return inspected.stdout.strip() == run_id
+
+    def _kill_and_remove(self, container_name: str, run_id: str) -> str:
+        """Best-effort cleanup after a timeout -- but only ever against the
+        exact container this call created. Fails closed: if ownership
+        cannot be verified via the run-id label, the container is left
+        untouched rather than killed or removed."""
+
+        if not self._verify_ownership(container_name, run_id):
+            return "ownership_unverified_left_running"
+        self._run_docker(["kill", container_name])
+        self._run_docker(["rm", "-f", container_name])
+        return "removed"
 
     def _build_argv(
         self,
         container_name: str,
+        run_id: str,
         workspace: Path,
         command: "VerificationCommand",
         environment: dict[str, str],
@@ -223,6 +254,11 @@ class DockerExecutionBackend:
             "--rm",
             "--name",
             container_name,
+            "--label",
+            f"{_MANAGED_LABEL}=true",
+            "--label",
+            f"{_RUN_ID_LABEL}={run_id}",
+            "--pull=never",
             "--network",
             self.config.network,
             "--read-only",
@@ -253,33 +289,60 @@ class DockerExecutionBackend:
         return argv
 
 
+def _is_reparse_point(entry: "os.DirEntry[str]") -> bool:
+    """True for a symlink, Windows junction, or any other reparse point.
+
+    `os.path.islink`/`DirEntry.is_symlink` do NOT detect Windows directory
+    junctions (they carry `IO_REPARSE_TAG_MOUNT_POINT`, not
+    `IO_REPARSE_TAG_SYMLINK`), so this also checks the Windows-only
+    `st_file_attributes` bit that is set for every reparse-point type,
+    junctions included. If the entry cannot be stat'd at all, the
+    exception propagates -- failing the whole copy closed rather than
+    silently treating an unreadable entry as an ordinary file or directory.
+    """
+
+    info = entry.stat(follow_symlinks=False)
+    if stat_module.S_ISLNK(info.st_mode):
+        return True
+    attributes = getattr(info, "st_file_attributes", None)
+    return attributes is not None and bool(
+        attributes & stat_module.FILE_ATTRIBUTE_REPARSE_POINT
+    )
+
+
 def _copy_workspace(source: Path, destination: Path) -> int:
     """Copy `source` into `destination` for isolated verification.
 
-    Excludes `.git`/`.apoapsis`/`.sol`. Never follows or copies symlinks --
-    this is the entire containment guarantee against a symlink pointing
-    outside the workspace. Returns the number of symlinks skipped.
+    Excludes `.git`/`.apoapsis`/`.sol`. Never follows or copies symlinks,
+    Windows junctions, or any other reparse point -- entries are walked
+    manually (not via `os.walk`, which does not honor `followlinks=False`
+    for junctions) so nothing is ever recursed into before it has been
+    confirmed not to be a reparse point. Returns the number of entries
+    skipped for this reason.
     """
 
-    destination.mkdir(parents=True, exist_ok=True)
     skipped = 0
-    resolved_source = source.resolve()
-    for current_root, dirs, files in os.walk(resolved_source, followlinks=False):
-        dirs[:] = [
-            name
-            for name in dirs
-            if name not in _EXCLUDED_DIR_NAMES
-            and not os.path.islink(os.path.join(current_root, name))
-        ]
-        relative = Path(current_root).relative_to(resolved_source)
-        target_dir = destination / relative
-        target_dir.mkdir(parents=True, exist_ok=True)
-        for name in files:
-            source_file = Path(current_root) / name
-            if source_file.is_symlink():
-                skipped += 1
-                continue
-            shutil.copy2(source_file, target_dir / name)
+
+    def walk(current_source: Path, current_destination: Path) -> None:
+        nonlocal skipped
+        current_destination.mkdir(parents=True, exist_ok=True)
+        with os.scandir(current_source) as entries:
+            for entry in entries:
+                if entry.name in _EXCLUDED_DIR_NAMES:
+                    continue
+                if _is_reparse_point(entry):
+                    skipped += 1
+                    continue
+                if entry.is_dir(follow_symlinks=False):
+                    walk(Path(entry.path), current_destination / entry.name)
+                elif entry.is_file(follow_symlinks=False):
+                    shutil.copy2(entry.path, current_destination / entry.name)
+                else:
+                    # Not a reparse point, but also not an ordinary file or
+                    # directory (e.g. a socket or device) -- never copy it.
+                    skipped += 1
+
+    walk(source.resolve(), destination)
     return skipped
 
 

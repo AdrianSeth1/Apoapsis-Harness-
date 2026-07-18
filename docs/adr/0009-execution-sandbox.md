@@ -44,39 +44,77 @@ shelling into WSL directly.
    `HostExecutionBackend`; changing backends requires the caller to
    explicitly edit `[verification.backend]`.
 4. Every container run applies the same fixed hardening:
-   `--rm --network none --read-only --cap-drop ALL --security-opt
-   no-new-privileges --pids-limit <N> --memory <N>m --cpus <N> --user
-   <non-root numeric> --tmpfs /tmp:size=<N>m`, exactly one writable mount
-   (`-v <workspace>:/workspace:rw -w /workspace`), and the configured
-   verification `argv` passed directly to the pinned `image@digest` — never
-   through a shell. `network` is a fixed `"none"` literal this milestone,
-   not a runtime toggle. No `-e` flag is ever added for a host environment
+   `--rm --pull=never --network none --read-only --cap-drop ALL
+   --security-opt no-new-privileges --pids-limit <N> --memory <N>m --cpus
+   <N> --user <non-root numeric> --tmpfs /tmp:size=<N>m`, exactly one
+   writable mount (`-v <workspace>:/workspace:rw -w /workspace`), and the
+   configured verification `argv` passed directly to the pinned
+   `image@digest` — never through a shell. `--pull=never` is deliberately
+   redundant with the local-image preflight check in decision 3: it is a
+   second, independent guarantee that `docker run` itself cannot trigger a
+   network pull even if the local image state changed between preflight
+   and execution. `network` is a fixed `"none"` literal this milestone, not
+   a runtime toggle. No `-e` flag is ever added for a host environment
    variable unless it is in the Docker-specific `environment_allowlist`
    (default empty) — Docker's own default behavior of not inheriting host
    environment already satisfies "remove host credentials and unrelated
    environment variables" for everything not explicitly listed.
-5. Containers use a deterministic name derived from the task and attempt
-   (`apoapsis-verify-<task-slug>-<attempt:03d>`). Before running, any
-   same-named container from a prior crashed run is force-removed. If the
-   host-side wait exceeds `min(command.timeout_seconds,
-   docker.wall_clock_timeout_seconds)`, Apoapsis explicitly runs `docker
-   kill` then `docker rm -f` on that exact container — a killed Docker CLI
-   process can never leave sandboxed work running unattended.
+5. Every container gets a **unique, unpredictable name** generated fresh
+   per invocation (`apoapsis-verify-<task-slug>-<attempt:03d>-<random 8
+   hex>`) and two labels: `apoapsis.managed=true` and
+   `apoapsis.run_id=<uuid>`. There is deliberately no predictable, reusable
+   name left to pre-emptively `docker rm -f` before a run. If the host-side
+   wait exceeds `min(command.timeout_seconds,
+   docker.wall_clock_timeout_seconds)`, Apoapsis runs `docker inspect` and
+   requires the `apoapsis.run_id` label on the matching container to equal
+   the value this exact invocation generated **before** ever running
+   `docker kill`/`docker rm -f`. If ownership cannot be verified — label
+   mismatch, or the inspect call itself fails — the container is left
+   untouched and the outcome records
+   `backend_metadata["timeout_cleanup"] = "ownership_unverified_left_running"`.
+   This is a deliberate fail-closed choice: Apoapsis would rather leave an
+   orphaned container running than risk killing or removing something it
+   did not create.
 6. Verification runs against a **temporary copy** of the task worktree
    under `.apoapsis/sandbox/<task>/attempt-<N>/workspace/` (existing,
    gitignored, Apoapsis-controlled state), not the real worktree, so a
-   misbehaving command cannot mutate the actual task branch. The copy
-   excludes `.git`/`.apoapsis`/`.sol` and **never follows or copies
-   symlinks** — that omission is the entire containment guarantee against a
-   symlink pointing outside the workspace. After the run, Apoapsis
-   recomputes a content-hash manifest and compares it against the
-   pre-run manifest, **restricted to paths that already existed before the
-   run**: any changed pre-existing file is an "unexpected filesystem
-   change" and forces the aggregate `VerificationResult.status` to
-   `FAILED` (recorded in a new `integrity_violations` field); genuinely new
-   files created during the run (build/test output) are not flagged. The
-   temporary workspace is deleted unconditionally afterward — retaining it
-   for audit is a future extension, not built here.
+   misbehaving command cannot mutate the actual task branch. The copy is a
+   manual recursive walk via `os.scandir` (deliberately not `os.walk`,
+   whose `followlinks=False` argument does not stop it from descending
+   into a Windows directory junction) that excludes `.git`/`.apoapsis`/
+   `.sol` and, before ever recursing into or copying an entry, checks both
+   the POSIX symlink bit and the Windows-only `st_file_attributes`
+   reparse-point bit — the latter is what actually catches junctions,
+   since `os.path.islink`/`Path.is_symlink` report `False` for
+   `IO_REPARSE_TAG_MOUNT_POINT` reparse points. Symlinks, junctions, and
+   any other reparse point are all skipped identically (never followed,
+   never copied) and counted; a `stat` failure on any entry propagates and
+   fails the entire copy closed rather than guessing the entry is safe.
+   After the run, Apoapsis recomputes a content-hash manifest and compares
+   it against the pre-run manifest, **restricted to paths that already
+   existed before the run**: any changed pre-existing file is an
+   "unexpected filesystem change" and forces the aggregate
+   `VerificationResult.status` to `FAILED` (recorded in a new
+   `integrity_violations` field); genuinely new files created during the
+   run (build/test output) are not flagged. The temporary workspace is
+   deleted unconditionally afterward — retaining it for audit is a future
+   extension, not built here.
+
+### Amendment: pre-live-use security review (2026-07-18)
+
+Before this backend was ever exercised against a real Docker engine, a
+security review of the initial implementation found three issues, all
+fixed and covered by dedicated regression tests (including a real Windows
+junction created and proven un-copied on this machine) before any live
+use: (a) the workspace copy did not detect Windows directory junctions,
+only true symlinks, so a junction pointing outside the repository would
+have had its contents copied into the sandboxed, container-mounted
+workspace; (b) `docker run` had no `--pull=never`, leaving a theoretical
+window for an implicit network pull between preflight and execution; (c)
+containers used a predictable, reusable name with unconditional
+`docker rm -f`/`docker kill`, which could have targeted a container
+Apoapsis did not create. Decisions 4–6 above already describe the
+corrected, shipped behavior.
 7. `apoapsis doctor` reuses the backend's own preflight so doctor and a
    real run can never disagree: Docker CLI present, engine responds, Linux
    containers, pinned image present locally, and one minimal sandbox
@@ -101,9 +139,12 @@ default); a verification command reaching the network (fixed `--network
 none`); a verification command consuming unbounded CPU, memory, or
 processes (hard `--cpus`/`--memory`/`--pids-limit`); a verification command
 mutating the real task worktree, `.git`, or other host paths (only a
-throwaway copy is mounted, and it is the *only* writable mount); a
-verification command persisting after Apoapsis gives up on it (deterministic
-naming plus explicit kill-and-remove on timeout).
+throwaway copy is mounted, and it is the *only* writable mount, and the
+copy itself cannot be used to smuggle unrelated host files in through a
+symlink or Windows junction); a verification command persisting after
+Apoapsis gives up on it (unique per-invocation naming plus
+ownership-verified kill-and-remove on timeout — Apoapsis never touches a
+container it cannot prove it created).
 
 **What this does not defend against, and is not claimed to:** a kernel or
 container-runtime vulnerability that breaks out of the container namespace
