@@ -17,6 +17,7 @@ from apoapsis.architect.errors import (
     PlanNotFoundError,
     PlanStoreError,
 )
+from apoapsis.intake.errors import IntakeError, IntakeOperationNotFoundError
 from apoapsis.review.errors import FrontierUnavailableError, OperationNotFoundError, ReviewError
 from apoapsis.ui.application import ApoapsisUIService, UIActionError
 from apoapsis.workflow.engine import (
@@ -90,6 +91,9 @@ class ApoapsisUIRequestHandler(BaseHTTPRequestHandler):
             return
         if path.startswith("/api/reviews/") and path.endswith("/operations"):
             self._handle_review_operation_submit(path)
+            return
+        if path == "/api/intake/operations":
+            self._handle_intake_operation_submit()
             return
         self._send_error(HTTPStatus.NOT_FOUND, "route not found")
 
@@ -176,6 +180,25 @@ class ApoapsisUIRequestHandler(BaseHTTPRequestHandler):
         else:
             self._send_json(HTTPStatus.ACCEPTED, payload)
 
+    def _handle_intake_operation_submit(self) -> None:
+        try:
+            body = self._read_json_body()
+            request_text = body.get("request_text")
+            operation_id = body.get("operation_id")
+            if not isinstance(request_text, str) or not request_text.strip():
+                raise ValueError("request_text is required")
+            if not isinstance(operation_id, str) or not operation_id:
+                raise ValueError("operation_id is required")
+            payload = self.server.service.submit_intake_operation(
+                request_text=request_text, operation_id=operation_id
+            )
+        except IntakeError as exc:
+            self._send_error(HTTPStatus.CONFLICT, str(exc))
+        except (TaskStoreError, ValueError, json.JSONDecodeError) as exc:
+            self._send_error(HTTPStatus.BAD_REQUEST, str(exc))
+        else:
+            self._send_json(HTTPStatus.ACCEPTED, payload)
+
     def _read_expected_version(self) -> int:
         body = self._read_json_body()
         expected_version = body.get("expected_version")
@@ -211,12 +234,28 @@ class ApoapsisUIRequestHandler(BaseHTTPRequestHandler):
             elif path.startswith("/api/reviews/"):
                 task_id = unquote(path[len("/api/reviews/") :]).strip("/")
                 payload = self.server.service.review_case_detail(task_id)
+            elif path.startswith("/api/intake/operations/"):
+                operation_id = unquote(
+                    path[len("/api/intake/operations/") :]
+                ).strip("/")
+                payload = self.server.service.intake_operation_status(operation_id)
             else:
                 self._send_error(HTTPStatus.NOT_FOUND, "route not found")
                 return
-        except (TaskNotFoundError, PlanNotFoundError, OperationNotFoundError):
+        except (
+            TaskNotFoundError,
+            PlanNotFoundError,
+            OperationNotFoundError,
+            IntakeOperationNotFoundError,
+        ):
             self._send_error(HTTPStatus.NOT_FOUND, "not found")
-        except (TaskStoreError, PlanStoreError, ReviewError, ValueError) as exc:
+        except (
+            TaskStoreError,
+            PlanStoreError,
+            ReviewError,
+            IntakeError,
+            ValueError,
+        ) as exc:
             self._send_error(HTTPStatus.BAD_REQUEST, str(exc))
         else:
             self._send_json(HTTPStatus.OK, payload)

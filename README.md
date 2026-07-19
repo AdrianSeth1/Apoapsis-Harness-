@@ -66,9 +66,9 @@ content hashes and worktree pointers are not corrupted; see
   release every configured local model's memory without touching hosted providers.
 - An offline black/orange/purple local operator interface for real repository,
   task, specification, plan, Human Review, event, report, evaluation, and
-  model-configuration data, including version-checked specification/plan
-  approval, bounded continuation, crash recovery, and explicit fresh-frontier
-  authorization.
+  model-configuration data, including a durable New Task intake screen,
+  version-checked specification/plan approval, bounded continuation, crash
+  recovery, and explicit fresh-frontier authorization.
 
 See [ADR 0001](docs/adr/0001-mvp-deterministic-substrate.md) for the substrate
 and [ADR 0002](docs/adr/0002-frontier-vertical-slice.md) for the frontier flow.
@@ -381,6 +381,11 @@ mid-extraction is returned to human review, inspectable and abandonable
 through the existing, unmodified `apoapsis review` commands. **This does not
 execute the approved task** -- new-task execution orchestration is separate,
 still-unreleased work.
+
+The local UI (`apoapsis ui`) has the same flow as a **New Task** screen:
+describe the request, watch persisted progress (safe to close the tab and
+reconnect), then review and approve the drafted specification on the task
+page -- the exact same two-step approval `apoapsis approve` already uses.
 
 ## Diagnostics and evaluation
 

@@ -5,7 +5,7 @@ ideas and safety boundaries without assuming you already know the codebase.
 `HANDOFF.md` remains the canonical technical record for coding agents; the ADRs
 under `docs/adr/` preserve why individual decisions were made.
 
-Current as of 2026-07-19, after ADR 0023.
+Current as of 2026-07-19, after ADR 0023 (Commits D1a and D1b).
 
 ## The short version
 
@@ -368,15 +368,17 @@ result, and how much did it cost?"
 - Architect Mode export/import/validation/approval and Plans UI.
 - Human Review CLI/UI, bounded continuation, crash recovery, and explicit fresh
   frontier-stage authorization.
-- Durable, crash-safe new-task intake (`apoapsis intake submit/inspect/
-  recover`): the same model-assisted specification extraction and one bounded
-  correction attempt as `apoapsis run`, as a background-safe operation that
-  stops at `SPEC_DRAFTED` -- CLI/service seam only so far; the UI screen is
-  the very next step.
+- Durable, crash-safe new-task intake, both as a CLI/service seam
+  (`apoapsis intake submit/inspect/recover`) and a New Task UI screen: the
+  same model-assisted specification extraction and one bounded correction
+  attempt as `apoapsis run`, as a background-safe operation that stops at
+  `SPEC_DRAFTED`, approved through the existing, unmodified specification-
+  approval action. Live-verified end to end in a browser against a real
+  local Ollama model.
 - The black/orange/purple offline loopback UI for real project, task,
   specification, plan, review, verification, evaluation, report, and model
   facts.
-- 403 deterministic tests in the current repository snapshot, with six
+- 418 deterministic tests in the current repository snapshot, with six
   intentional environment-gated skips.
 
 ### Proven with real local inference
@@ -402,19 +404,19 @@ still small.
 
 ## What should be built next
 
-### Done: durable new-task intake service (ADR 0023)
+### Done: durable new-task intake, CLI and UI (ADR 0023)
 
-The service half of "type an idea into the app" is built: `IntakeOperation
-Record`/`IntakeOperationStore`/`IntakeWorker` (`src/apoapsis/intake/`) persist
-an operation before any model call, run specification extraction (with its
+"Type an idea into the app" is built end to end. `IntakeOperationRecord`/
+`IntakeOperationStore`/`IntakeWorker` (`src/apoapsis/intake/`) persist an
+operation before any model call, run specification extraction (with its
 existing one bounded correction attempt) outside any request thread, write the
 normal request/context/telemetry audit package before each call, and persist
 either a validated `SPEC_DRAFTED` result or a bounded, deterministic failure.
-Crash recovery mirrors Human Review's own ledger exactly. Approval still uses
-the existing, unmodified optimistic specification-approval path. Available
-today only as a CLI/service seam (`apoapsis intake submit/inspect/recover`);
-the UI screen (New Request action, polling, candidate-specification review)
-is the very next step.
+Crash recovery mirrors Human Review's own ledger exactly. The New Task screen
+(`#/new`) submits a request, polls the persisted operation (safe to close the
+tab and reconnect), and once drafted links to the existing task page for the
+full candidate review and the same, unmodified two-step approval action. This
+was live-verified in a real browser against a real local Ollama model.
 
 ### Next milestone: launch execution after approval
 

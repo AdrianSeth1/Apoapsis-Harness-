@@ -21,6 +21,8 @@ const store = {
   reviewOperation: null,
   reviewConfirm: null,
   reviewAdditionalTurns: 5,
+  intakeOperation: null,
+  intakeRequestText: "",
   route: { name: "home" },
   busy: false,
   error: null,
@@ -145,6 +147,8 @@ async function syncRoute() {
         store.review = await api(`/api/reviews/${encodeURIComponent(store.route.taskId)}`);
         resumePendingReviewOperationPoll(store.route.taskId);
       }
+    } else if (store.route.name === "new") {
+      resumePendingIntakeOperationPoll();
     }
   } catch (error) {
     store.error = error.message;
@@ -278,7 +282,7 @@ function homeView() {
       <div class="grid two mt-18">
         <section class="card">
           <div class="card-header"><div><h2>Recent tasks</h2><p>Persisted workflow records, newest first.</p></div><span class="pill purple">${tasks.length} total</span></div>
-          ${tasks.length ? `<div class="task-list">${tasks.slice(0, 8).map(taskRow).join("")}</div>` : emptyState("No tasks yet", "Create a task through the CLI today; natural-language task creation in this interface is the next product slice.")}
+          ${tasks.length ? `<div class="task-list">${tasks.slice(0, 8).map(taskRow).join("")}</div>` : emptyState("No tasks yet", "Describe a request on the New task page, or use `apoapsis run`/`apoapsis intake submit` from the CLI.")}
         </section>
         <section class="card">
           <div class="card-header"><div><h2>Models & execution</h2><p>Configuration, not a synthetic readiness claim.</p></div><a class="button ghost" href="#/models">Inspect →</a></div>
@@ -304,16 +308,79 @@ function taskRow(task) {
 }
 
 function newTaskView() {
+  const op = store.intakeOperation;
+  if (!op) return newTaskFormView();
+  if (op.status === "recorded" || op.status === "running") return newTaskRunningView(op);
+  if (op.status === "pending_specification_approval") return newTaskDraftedView(op);
+  return newTaskFailedView(op);
+}
+
+function newTaskFormView() {
   return `<main class="content narrow">
-    <div class="page-heading"><div><p class="eyebrow">NEW TASK / AUTHORITY-GATED</p><h1>Describe the outcome.</h1><p>The designed intake surface is ready to implement, but model-assisted extraction needs a resumable server-side workflow rather than a UI that pretends a blocking CLI prompt is interactive.</p></div></div>
+    <div class="page-heading"><div><p class="eyebrow">NEW TASK / MODEL-ASSISTED INTAKE</p><h1>Describe the outcome.</h1><p>Extraction proposes a candidate specification. It never edits the repository, and approving it does not yet start coding -- both remain explicit, separate steps.</p></div></div>
     <section class="card">
       <div class="card-body">
-        <label class="section-title" for="task-request">Natural-language request</label>
-        <div class="constraint"><blockquote id="task-request" class="muted">Task creation is intentionally disabled in this first slice.</blockquote></div>
-        <div class="notice mt-16"><strong>Available now:</strong> create and inspect tasks with <span class="mono orange">apoapsis task "your request"</span>, then return here to review and approve the extracted record. The next UI milestone will add resumable model-assisted intake without transferring workflow authority to the browser.</div>
-        <div class="flex-end mt-18"><button class="button primary" disabled>Extract specification</button></div>
+        <label class="section-title" for="intake-request">Natural-language request</label>
+        <textarea id="intake-request" class="mono" rows="6" placeholder="Add resumable downloads without changing the public API.">${e(store.intakeRequestText)}</textarea>
+        <div class="notice mt-16">This runs a durable, crash-safe operation: you can close this tab or lose the connection while extraction runs and come back to see the result. A second, bounded correction attempt is made automatically if the first response is invalid -- never more than one.</div>
+        <div class="flex-end mt-18"><button class="button primary" data-action="intake-submit" ${store.busy ? "disabled" : ""}>Extract specification →</button></div>
       </div>
     </section>
+  </main>`;
+}
+
+function newTaskRunningView(op) {
+  const stage = INTAKE_OPERATION_STAGE[op.status] || { label: op.status, pill: "warn" };
+  return `<main class="content narrow">
+    <div class="page-heading"><div><p class="eyebrow">NEW TASK / ${e(op.task_id)}</p><h1>Extracting a specification.</h1><p>A background worker is drafting this specification now. It is safe to close this tab -- progress is persisted and will still be here on reconnect.</p></div><span class="pill ${stage.pill}">${e(stage.label)}</span></div>
+    <section class="card card-pad">
+      <div class="constraint-head"><span class="constraint-id">OPERATION ${e(op.operation_id)}</span><span class="pill ${stage.pill}">${e(stage.label)}</span></div>
+      <p class="muted mt-14">${e(op.result_summary || "Waiting for the background worker to run this operation.")}</p>
+    </section>
+  </main>`;
+}
+
+function newTaskFailedView(op) {
+  const stage = INTAKE_OPERATION_STAGE[op.status] || { label: op.status, pill: "bad" };
+  const ambiguous = op.status === "ambiguous";
+  return `<main class="content narrow">
+    <div class="page-heading"><div><p class="eyebrow">NEW TASK / ${e(op.task_id)}</p><h1>${ambiguous ? "Outcome uncertain." : "Extraction failed."}</h1><p>${ambiguous
+      ? "The process running this operation may have crashed. Whether the extraction call was transmitted before that happened is unknown -- it was never automatically repeated."
+      : "Both the original attempt and its one bounded correction failed validation. The task stopped deterministically; nothing was retried a third time."}</p></div><span class="pill ${stage.pill}">${e(stage.label)}</span></div>
+    <section class="card card-pad">
+      <p class="muted">${e(op.error || op.result_summary || "No further detail was recorded.")}</p>
+      ${ambiguous ? `<div class="notice mt-14">Check the <a href="#/reviews">Human review queue</a> for <span class="mono">${e(op.task_id)}</span> -- a stranded task is returned there automatically so it can be inspected and abandoned.</div>` : ""}
+    </section>
+    <div class="flex-end mt-18"><button class="button ghost" data-action="intake-reset">Start over</button></div>
+  </main>`;
+}
+
+function newTaskDraftedView(op) {
+  const task = store.task && store.task.task.task_id === op.task_id ? store.task.task : null;
+  const spec = task?.specification;
+  const correctionAttempted = (op.audit_artifact_locations || []).some(
+    (path) => path.includes("specification-extraction-failure-")
+  );
+  return `<main class="content narrow">
+    <div class="page-heading"><div><p class="eyebrow">NEW TASK / ${e(op.task_id)}</p><h1>Specification drafted.</h1><p>Extraction proposed a candidate specification -- it did not edit the repository. Review it on the task page and approve it there; approving does not yet start coding.</p></div><span class="pill good">Pending approval</span></div>
+    <section class="card card-pad">
+      ${spec ? `<p class="section-title mt-0">Objective</p><p class="objective">${e(spec.objective.text)}</p>` : ""}
+      <div class="grid two mt-14">
+        ${metric("Provider role", titleCase(op.provider_role), "Recorded on the operation")}
+        ${metric("Extraction attempts", correctionAttempted ? "2 (one bounded correction)" : "1", "ADR 0018's one-correction contract")}
+        ${spec ? metric("Hard constraints", spec.hard_constraints.length, "Exact verbatim wording") : ""}
+        ${spec ? metric("Acceptance criteria", spec.acceptance_criteria.length, `Risk: ${titleCase(spec.risk_level)}`) : ""}
+      </div>
+      <p class="section-title">Audit artifacts · ${(op.audit_artifact_locations || []).length}</p>
+      <div class="artifact-list">${(op.audit_artifact_locations || []).map((artifact) => `<div class="artifact-item"><code>${e(artifact)}</code></div>`).join("") || `<p class="muted">No artifacts were recorded.</p>`}</div>
+    </section>
+    <div class="approval-bar">
+      <div><strong>Ready for review</strong><span>Constraints, acceptance criteria, and the two-step approval action live on the task page -- the same approval every other task-creation path already uses.</span></div>
+      <div class="approval-actions">
+        <button class="button ghost" data-action="intake-reset">Start another request</button>
+        <a class="button primary" href="#/task/${encodeURIComponent(op.task_id)}/spec">Review & approve →</a>
+      </div>
+    </div>
   </main>`;
 }
 
@@ -520,6 +587,14 @@ const REVIEW_OPERATION_STAGE = {
   running: { label: "Running", pill: "purple" },
   succeeded: { label: "Succeeded", pill: "good" },
   failed: { label: "Failed", pill: "bad" },
+};
+
+const INTAKE_OPERATION_STAGE = {
+  recorded: { label: "Recorded", pill: "warn" },
+  running: { label: "Extracting", pill: "purple" },
+  pending_specification_approval: { label: "Specification drafted", pill: "good" },
+  failed: { label: "Failed", pill: "bad" },
+  ambiguous: { label: "Ambiguous", pill: "bad" },
 };
 
 function reviewsView() {
@@ -739,6 +814,85 @@ function resumePendingReviewOperationPoll(taskId) {
     }
   } catch (error) {
     window.sessionStorage.removeItem(reviewOperationStorageKey(taskId));
+  }
+}
+
+const INTAKE_OPERATION_STORAGE_KEY = "apoapsis-intake-operation";
+
+function intakeGenerateOperationId() {
+  const raw = (window.crypto && window.crypto.randomUUID)
+    ? window.crypto.randomUUID()
+    : `${Date.now()}-${Math.random()}`;
+  return `INOP-${raw.replaceAll("-", "").slice(0, 24).toUpperCase()}`;
+}
+
+async function submitIntakeOperation() {
+  const field = document.getElementById("intake-request");
+  const requestText = (field ? field.value : store.intakeRequestText || "").trim();
+  if (!requestText) {
+    store.error = "Describe the outcome before extracting a specification.";
+    render();
+    return;
+  }
+  const operationId = intakeGenerateOperationId();
+  window.sessionStorage.setItem(INTAKE_OPERATION_STORAGE_KEY, JSON.stringify({ operationId }));
+  store.intakeRequestText = requestText;
+  store.busy = true;
+  store.error = null;
+  render();
+  try {
+    const record = await api("/api/intake/operations", {
+      method: "POST",
+      body: JSON.stringify({ request_text: requestText, operation_id: operationId }),
+    });
+    store.intakeOperation = record;
+    pollIntakeOperation(operationId);
+  } catch (error) {
+    store.error = error.message;
+    window.sessionStorage.removeItem(INTAKE_OPERATION_STORAGE_KEY);
+  } finally {
+    store.busy = false;
+    render();
+  }
+}
+
+let intakePollHandle = null;
+
+async function pollIntakeOperation(operationId) {
+  if (intakePollHandle) {
+    clearTimeout(intakePollHandle);
+    intakePollHandle = null;
+  }
+  try {
+    const record = await api(`/api/intake/operations/${encodeURIComponent(operationId)}`);
+    store.intakeOperation = record;
+    if (record.status === "recorded" || record.status === "running") {
+      render();
+      intakePollHandle = setTimeout(() => pollIntakeOperation(operationId), 2000);
+      return;
+    }
+    window.sessionStorage.removeItem(INTAKE_OPERATION_STORAGE_KEY);
+    if (record.status === "pending_specification_approval") {
+      store.task = await api(`/api/tasks/${encodeURIComponent(record.task_id)}`);
+    }
+    render();
+  } catch (error) {
+    store.error = error.message;
+    render();
+  }
+}
+
+function resumePendingIntakeOperationPoll() {
+  if (store.intakeOperation) return;
+  const raw = window.sessionStorage.getItem(INTAKE_OPERATION_STORAGE_KEY);
+  if (!raw) return;
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && parsed.operationId) {
+      pollIntakeOperation(parsed.operationId);
+    }
+  } catch (error) {
+    window.sessionStorage.removeItem(INTAKE_OPERATION_STORAGE_KEY);
   }
 }
 
@@ -992,6 +1146,23 @@ root.addEventListener("click", (event) => {
   }
   if (button.dataset.action === "review-act-confirm") {
     submitReviewAction(store.route.taskId, button.dataset.reviewAction);
+  }
+  if (button.dataset.action === "intake-submit") submitIntakeOperation();
+  if (button.dataset.action === "intake-reset") {
+    if (intakePollHandle) {
+      clearTimeout(intakePollHandle);
+      intakePollHandle = null;
+    }
+    window.sessionStorage.removeItem(INTAKE_OPERATION_STORAGE_KEY);
+    store.intakeOperation = null;
+    store.intakeRequestText = "";
+    render();
+  }
+});
+
+root.addEventListener("input", (event) => {
+  if (event.target && event.target.id === "intake-request") {
+    store.intakeRequestText = event.target.value;
   }
 });
 

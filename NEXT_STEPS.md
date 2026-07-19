@@ -506,40 +506,65 @@ ADR 0023. 20 new tests across `tests/test_intake.py`/
 `apoapsis run`/`apoapsis task` and every existing suite are unaffected
 (only additive changes).
 
+### Done — Phase D1b: New Task UI screen (ADR 0023)
+
+Replaced the prior disabled `#/new` placeholder with a real screen:
+`ApoapsisUIService.submit_intake_operation()`/`intake_operation_status()`
+mirror the review-operation service methods exactly (validate, durably
+record via `prepare_intake_operation()`, hand off to a lazily-constructed
+`IntakeWorker`, return immediately -- the service itself never calls a
+model); `POST /api/intake/operations` / `GET /api/intake/operations/
+<operation-id>` sit behind the same session/origin checks as every other
+route. The New Task screen submits a natural-language request, persists
+the operation id in `sessionStorage` (mirroring the review operation's
+reconnect pattern), and polls through `recorded`/`running` to either
+`pending_specification_approval` or `failed`/`ambiguous`. Once drafted, it
+shows the provider role, extraction-attempt count, and audit-artifact
+list, then links straight to the existing, unmodified task detail page for
+the full candidate review and two-step approval -- no second approval
+implementation was added. 15 new tests in `tests/test_intake_ui.py`
+(service, HTTP security, duplicate/reconnect, ambiguous-operation
+visibility, bundled-asset sanity); full suite 418/418 passing. Live-
+verified end to end against a real local Ollama model in a browser: a
+typed request reached `SPEC_DRAFTED` and was approved to `SPEC_APPROVED`,
+confirmed via `apoapsis inspect`'s event log -- this live check caught a
+real bug (`INTAKE_OPERATION_STAGE` referenced before being defined) that
+the deterministic suite had not, since it never executes `app.js`; fixed
+before commit.
+
 ### Priority C — extend the accepted application shell (ADR 0014)
 
 The application now has local/offline assets, a capability-protected loopback
 API, real task/report/environment/evaluation/plan/review views, optimistic
 specification and plan approval, durable Human Review operations with
 bounded continuation, crash recovery, explicit fresh-frontier-stage
-authorization, and (CLI/service-seam only, so far) durable new-task intake.
-It can control existing work safely and durably draft a new task's
-specification. The highest-value remaining product gap is that it still
-cannot *execute* a new task after approval, and the intake seam has no UI
-screen yet.
+authorization, and durable new-task intake (CLI, service, and UI). It can
+control existing work safely and durably draft and approve a new task's
+specification, start to finish, from the browser. The highest-value
+remaining product gap is that it still cannot *execute* a new task after
+approval.
 
 Continue in this order:
 
-1. Done (ADR 0023, above): durable, resumable model-assisted task intake,
-   stopping at `SPEC_DRAFTED`.
-2. Add the corresponding UI screen (Commit D1b): a New Request action,
-   persisted operation polling/reconnect, and candidate-specification
-   review reusing the existing, unmodified specification-approval action.
-3. After optimistic specification approval, launch the already-approved task
+1. Done (ADR 0023): durable, resumable model-assisted task intake, stopping
+   at `SPEC_DRAFTED`, with both a CLI/service seam (Commit D1a) and a New
+   Task UI screen (Commit D1b) reusing the existing, unmodified
+   specification-approval action.
+2. After optimistic specification approval, launch the already-approved task
    through a durable worker. Project progress from workflow events/operation
    records; browser code must not infer state, run a CLI subprocess, or own a
    provider. A disconnect must not grant, cancel, duplicate, or repeat work.
-4. Then add an approved-plan-to-single-slice bridge under its own ADR. Compile
+3. Then add an approved-plan-to-single-slice bridge under its own ADR. Compile
    one explicitly selected ready slice into an immutable execution package,
    recheck the plan/repository/dependency fingerprints, obtain explicit user
    approval, and run the normal bounded agent protocol. Suggested paths and
    symbols remain advisory; never auto-start the next slice or add an autonomous
    scheduler.
-5. Evaluate one substantial task monolithically versus plan-then-slices under
+4. Evaluate one substantial task monolithically versus plan-then-slices under
    identical model/settings. Compare held-out true success, false success,
    turns, patch/verification attempts, transmitted context, latency, and hosted
    calls/cost before claiming Architect Mode improves outcomes.
-6. Only then choose a packaged native wrapper for the proven loopback surface.
+5. Only then choose a packaged native wrapper for the proven loopback surface.
 
 Keep `src/apoapsis/ui/application.py` as the authority boundary. Browser code
 must not call providers, construct CLI commands, parse files into invented

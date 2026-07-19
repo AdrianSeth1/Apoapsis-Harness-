@@ -8,6 +8,9 @@ from apoapsis.architect.schema import ArchitecturePlan, PlanRecord, PlanStatus
 from apoapsis.architect.store import SQLitePlanStore
 from apoapsis.config import ApoapsisConfig
 from apoapsis.doctor import run_doctor
+from apoapsis.intake.execution import prepare_intake_operation
+from apoapsis.intake.store import IntakeOperationStore
+from apoapsis.intake.worker import IntakeWorker
 from apoapsis.reporting.report import FinalTaskReport
 from apoapsis.repository.git import GitCommandError, GitRepository
 from apoapsis.review.case import build_review_case
@@ -78,6 +81,7 @@ class ApoapsisUIService:
         self.project_root = Path(project_root).resolve()
         self.metadata_root = self.project_root / ".apoapsis"
         self._review_worker: ReviewWorker | None = None
+        self._intake_worker: IntakeWorker | None = None
 
     def overview(self) -> dict[str, Any]:
         config = self._config()
@@ -280,6 +284,41 @@ class ApoapsisUIService:
         if self._review_worker is None:
             self._review_worker = ReviewWorker(self.project_root)
         return self._review_worker
+
+    def submit_intake_operation(
+        self, *, request_text: str, operation_id: str
+    ) -> dict[str, Any]:
+        """Validate and durably record a new-task intake operation, then
+        hand it to the background worker -- this method itself never calls
+        a model; only ``IntakeWorker`` (on its own thread) does."""
+
+        if self._store() is None:
+            raise TaskStoreError(
+                "Apoapsis is not initialized; run 'apoapsis init' first"
+            )
+        operation_store = self._intake_operation_store()
+        prepare_intake_operation(
+            self.project_root,
+            self._require_store(),
+            operation_store,
+            request_text=request_text,
+            operation_id=operation_id,
+        )
+        self._intake_worker_instance().submit(operation_id)
+        return operation_store.get(operation_id).model_dump(mode="json")
+
+    def intake_operation_status(self, operation_id: str) -> dict[str, Any]:
+        return self._intake_operation_store().get(operation_id).model_dump(
+            mode="json"
+        )
+
+    def _intake_operation_store(self) -> IntakeOperationStore:
+        return IntakeOperationStore(self.metadata_root / "intake-operations.db")
+
+    def _intake_worker_instance(self) -> IntakeWorker:
+        if self._intake_worker is None:
+            self._intake_worker = IntakeWorker(self.project_root)
+        return self._intake_worker
 
     def doctor(self) -> dict[str, Any]:
         """Run the existing explicit diagnostic command without provider probes."""

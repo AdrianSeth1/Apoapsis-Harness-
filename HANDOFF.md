@@ -19,11 +19,11 @@ without replacing this canonical coding-agent handoff.
 | Item | Current value |
 | --- | --- |
 | Last verified | 2026-07-19 |
-| Working-tree version | `1.0` plus ADR 0013 Windows local-model lifecycle, ADR 0014 first local operator-interface slice, ADR 0015 verification layers and acceptance coverage, ADR 0016's corrective follow-up, ADR 0017's worktree-fingerprint/explicit-acceptance-designation hardening, the opt-in `local-strict` evaluation lane with its first live result, ADR 0018's acceptance-failure-evidence/bounded-specification-correction fixes, ADR 0019's Architect Mode planning foundation plus its Plans UI surface, ADR 0020's deterministic human-review-and-resume CLI and UI, ADR 0021's review/resume integrity hardening, ADR 0022's explicit human-authorized fresh frontier stage, and ADR 0023's durable new-task intake CLI/service seam |
+| Working-tree version | `1.0` plus ADR 0013 Windows local-model lifecycle, ADR 0014 first local operator-interface slice, ADR 0015 verification layers and acceptance coverage, ADR 0016's corrective follow-up, ADR 0017's worktree-fingerprint/explicit-acceptance-designation hardening, the opt-in `local-strict` evaluation lane with its first live result, ADR 0018's acceptance-failure-evidence/bounded-specification-correction fixes, ADR 0019's Architect Mode planning foundation plus its Plans UI surface, ADR 0020's deterministic human-review-and-resume CLI and UI, ADR 0021's review/resume integrity hardening, ADR 0022's explicit human-authorized fresh frontier stage, and ADR 0023's durable new-task intake (CLI/service seam and New Task UI screen) |
 | Checked-out branch | `main` |
 | Repository state | The 1.0/lifecycle baseline, the ADR 0014 UI slice, the ADR 0015 acceptance-coverage milestone, the ADR 0016 correction, the ADR 0017 hardening, the `local-strict` lane, the ADR 0018 fixes, ADR 0019's Architect Mode foundation (CLI + Plans UI), ADR 0020's review/resume CLI and UI, ADR 0021's hardening, ADR 0022's `authorize_frontier_stage` action, and ADR 0023's `apoapsis intake` seam are all committed on `main`; live evaluation evidence is committed separately. `DESIGN.md` is preserved as a separate, committed user-supplied design reference. Run `git status` and `git log -1 --oneline` for the exact current state. |
 | Preserved substrate tag | `substrate-v0.1` at `4c2e735` |
-| Full deterministic suite | 403 tests, 0 failures, 0 errors, 6 intentional skips (2 live-network, 1 live-Docker, 3 machine currently lacks the Windows privilege to create symlinks) |
+| Full deterministic suite | 418 tests, 0 failures, 0 errors, 6 intentional skips (2 live-network, 1 live-Docker, 3 machine currently lacks the Windows privilege to create symlinks) |
 | Syntax check | `python -m compileall -q src tests` passed |
 | Diff check | `git diff --check` passed; Git reported only expected LF-to-CRLF working-copy warnings |
 | Live local coding result | Qwen3-Coder-Next Q4 completed the controlled download-service task in 10 turns and 3 verification runs |
@@ -31,6 +31,7 @@ without replacing this canonical coding-agent handoff.
 | Live STRICT evaluation result (round 2, 2026-07-19, after ADR 0018) | Three more fresh attempts, identical conditions: **1/3 reached `COMPLETE`, and the held-out oracle independently confirmed it correct** -- the first genuine true success across both rounds (6 attempts total). The other two attempts both received accurate failure evidence and made real further edits (a materially different, more diagnosable failure mode than round 1), but ran out of their 12-turn budget before finishing. 0/3 specification failures this round (too small a sample to call a reliability change). See `docs/evaluation/apoapsis-strict-live-evaluation-2026-07-19.md`. |
 | Local model lifecycle result | `STOP_APOAPSIS.cmd` ran successfully against this machine's real Ollama service and explicitly unloaded both configured model names while leaving the service running. Start/warmup is covered against a fake loopback Ollama server, and was also live-run for the STRICT evaluation above. |
 | Local UI result | `apoapsis ui` was exercised against the real checkout and a disposable initialized repository at 1440px and 1100px. Home/models/specification/control views rendered without browser errors; a two-step UI approval advanced `SPEC_DRAFTED -> SPEC_APPROVED` and appended the expected user event. No model call was made. |
+| Live New Task intake result | The New Task screen (`#/new`) was exercised end to end against a disposable initialized repository and a real local Ollama model: a typed natural-language request reached `SPEC_DRAFTED` via one real extraction call (no correction needed), and the two-step approval on the linked task page advanced it to `SPEC_APPROVED` -- confirmed via `apoapsis inspect`'s event log (`task_created -> specification_updated -> intake_specification_drafted -> specification_approved`). A real bug (`INTAKE_OPERATION_STAGE` referenced before being defined) was caught by this live check, not by the deterministic suite, and fixed before commit. |
 | Live hosted escalation result | Not yet run. A repeatable harness (`apoapsis eval download-service --lane forced-escalation` / `--lane hybrid`) now exists to run it once real `[models.frontier_coder]` credentials are configured; the complete two-provider path is otherwise still only covered with fake providers |
 
 Update this table whenever its claims change. Never describe an uncommitted
@@ -194,11 +195,12 @@ architecture.
   model, plan, and review values come from Apoapsis services; the Claude
   prototype runtime and illustrative model names are not shipped.
 - Read-only task/report/plan/review views, deterministic specification/plan
-  approval, and deterministic human-review continuation (abandon, retry
-  verification, continue locally/with frontier) are all live. Natural-language
-  intake, task execution orchestration for new tasks, plan-slice execution,
-  and native desktop packaging remain unavailable until their resumable
-  service and authority contracts are implemented.
+  approval, deterministic human-review continuation (abandon, retry
+  verification, continue locally/with frontier), and durable natural-language
+  new-task intake (New Task screen, ADR 0023) are all live. Task execution
+  orchestration for new tasks, plan-slice execution, and native desktop
+  packaging remain unavailable until their resumable service and authority
+  contracts are implemented.
 
 ### Owner model lifecycle
 
@@ -457,6 +459,28 @@ architecture.
   `ApoapsisUIService.approve_specification()` transition every other
   task-creation path already uses. New-task execution orchestration
   remains the next, separately reviewed milestone.
+- **UI (Commit D1b):** `ApoapsisUIService.submit_intake_operation()` /
+  `intake_operation_status()` mirror the review-operation service methods
+  exactly -- submission validates and durably records via `prepare_intake
+  _operation()`, then hands the id to a lazily-constructed `IntakeWorker`
+  (mirroring `_worker()`/`ReviewWorker`) and returns immediately; the
+  service itself never calls a model. `POST /api/intake/operations` /
+  `GET /api/intake/operations/<operation-id>` sit behind the same
+  session/origin checks as every other route (`ui/server.py`). The New
+  Task screen (`#/new`, `src/apoapsis/ui/static/app.js`) replaces the
+  prior disabled placeholder: a natural-language request form submits and
+  persists `sessionStorage`-backed polling (mirroring the review
+  operation's reconnect pattern) through `recorded`/`running` to either
+  `pending_specification_approval` or `failed`/`ambiguous`. Once drafted,
+  it shows the operation's provider role, extraction-attempt count (derived
+  from whether `specification-extraction-failure-001.json` appears in the
+  operation's own `audit_artifact_locations`), and audit-artifact list,
+  then links straight to the existing, completely unmodified task detail
+  page (`#/task/<id>/spec`) for the full candidate review and two-step
+  approval action -- no second approval implementation was added. Live-
+  verified end to end against a real local Ollama model: a typed request
+  reached `SPEC_DRAFTED` and was approved to `SPEC_APPROVED` through the
+  browser, confirmed via `apoapsis inspect`'s event log.
 
 ### Verification layers and acceptance coverage (ADR 0015, corrected by ADR 0016, hardened by ADR 0017/0018)
 
@@ -1261,6 +1285,7 @@ direct-frontier comparison claims remain unmeasured.
 | Explicit fresh-frontier-stage authorization: eligibility (unconfigured/newly-configured/already-exists), unavailable-frontier rejection, stale-worktree/duplicate-operation rejection, successful and budget-exhausted stage runs, and background-worker/UI submission | `tests/test_review_frontier_stage.py`, `tests/test_review_ui.py` |
 | Durable new-task intake: successful extraction, bounded correction, double failure, verbatim/catalog rejection surviving correction, duplicate/simultaneous operations, provider-construction failure, queue-delay state changes, and crash recovery (reclaim/ambiguous/return-to-review) | `tests/test_intake.py` |
 | Intake CLI seam (`submit`/`inspect`/`recover`) and unaffected `run`/`task` commands | `tests/test_intake_cli.py` |
+| Intake UI: service/API/security, background-worker execution, duplicate/reconnect, ambiguous-operation visibility, and the New Task screen's bundled JS | `tests/test_intake_ui.py` |
 
 Fake providers are the mandatory regression mechanism. Live model or network
 tests supplement them; they must not replace deterministic coverage.
@@ -1294,17 +1319,19 @@ tests supplement them; they must not replace deterministic coverage.
 4. **Historical configuration naming remains.** `models.frontier` still serves
    specification and one-shot roles even when backed by local Ollama.
 5. **No automatic merge/commit.** A successful worktree remains for inspection.
-6. **Human Review is implemented; durable new-task intake now exists, but
-   new-task execution orchestration does not.** ADR 0020–0022 provide CLI
-   and UI review, deterministic bounded continuation, crash recovery, and
-   explicit fresh-frontier-stage authorization. ADR 0023 provides a durable
-   CLI/service seam (`apoapsis intake submit/inspect/recover`) that runs
-   model-assisted specification extraction (with its existing one bounded
-   correction attempt) as a crash-safe operation, stopping at
-   `SPEC_DRAFTED`. Approval still uses the existing, unmodified
-   `apoapsis approve` transition. Nothing yet turns an approved
-   specification into a running task -- that is deliberately the next,
-   separately reviewed milestone.
+6. **Human Review is implemented; durable new-task intake now exists (CLI
+   and UI), but new-task execution orchestration does not.** ADR 0020–0022
+   provide CLI and UI review, deterministic bounded continuation, crash
+   recovery, and explicit fresh-frontier-stage authorization. ADR 0023
+   provides a durable CLI/service seam (`apoapsis intake submit/inspect/
+   recover`) and a New Task UI screen (`#/new`) that run model-assisted
+   specification extraction (with its existing one bounded correction
+   attempt) as a crash-safe operation, stopping at `SPEC_DRAFTED`.
+   Approval still uses the existing, unmodified `apoapsis approve`
+   transition, reached via a link from the New Task screen to the
+   existing task detail page. Nothing yet turns an approved specification
+   into a running task -- that is deliberately the next, separately
+   reviewed milestone.
 7. **Cost is configured, not discovered.** Zero pricing yields a valid but
    economically uninformative report.
 8. **Live network tests are intentionally skipped by default.** Run them only
@@ -1376,13 +1403,13 @@ tests supplement them; they must not replace deterministic coverage.
     desktop product.** ADR 0014/0019/0020–0022 define a capability-protected
     loopback application with real task/report/environment/evaluation/plan/
     Human Review views, deterministic specification/plan approval, resumable
-    review operations, and explicit frontier authorization. ADR 0023 (Commit
-    D1a) adds a durable intake CLI/service seam; Commit D1b (tracked
-    separately) is expected to add the corresponding UI screen. Durable
-    new-task execution progress, approved-plan slice execution, and a
-    packaged native wrapper are still missing. Do not implement them as
-    browser provider calls, CLI subprocess construction, or inferred
-    audit-file state.
+    review operations, and explicit frontier authorization. ADR 0023 adds a
+    durable new-task intake CLI/service seam (Commit D1a) and its New Task
+    UI screen (Commit D1b), reusing the existing, unmodified specification-
+    approval action. Durable new-task execution progress, approved-plan
+    slice execution, and a packaged native wrapper are still missing. Do
+    not implement them as browser provider calls, CLI subprocess
+    construction, or inferred audit-file state.
 14. **Architect Mode (ADR 0019) produces plans but never executes them.**
     `apoapsis plan export/import/validate/inspect/approve` is fully
     implemented and covered by `tests/test_architect_validation.py`,
@@ -1464,7 +1491,7 @@ automation as a substitute for those proofs.
 | `0020` | Deterministic human review and resume: `ReviewCase` projection, bounded-agent-session resume, idempotent/crash-safe continuation operations, and immutable continuation packages |
 | `0021` | Review/resume integrity hardening: execution-time precondition recheck, one active operation per task, explicit crash recovery (`recover_stale_operations`), abandon-before-cleanup ordering, newest-event-only stop classification, shared bounded diff/inspection, and fresh post-retry/continuation evidence |
 | `0022` | Explicit, human-authorized fresh frontier stage (`AUTHORIZE_FRONTIER_STAGE`), distinct from `FRONTIER_CONTINUATION`, sharing an extracted `build_local_to_frontier_escalation()` with automatic in-process escalation |
-| `0023` | Durable model-assisted new-task intake: `IntakeOperationRecord`/`IntakeOperationStore`/`IntakeWorker` mirroring the review-operation crash-safety ledger, reusing `SpecificationExtractor`'s exact bounded-correction contract, stopping at `SPEC_DRAFTED` without executing the task |
+| `0023` | Durable model-assisted new-task intake: `IntakeOperationRecord`/`IntakeOperationStore`/`IntakeWorker` mirroring the review-operation crash-safety ledger, reusing `SpecificationExtractor`'s exact bounded-correction contract, stopping at `SPEC_DRAFTED` without executing the task (Commit D1a: CLI/service seam; Commit D1b: New Task UI screen, reusing the existing, unmodified specification-approval action) |
 
 Add a new ADR for a new architectural decision. Do not rewrite history to make
 old decisions appear current; mark an ADR superseded and link its replacement

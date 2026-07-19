@@ -37,7 +37,21 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
-button, input { font: inherit; }
+button, input, textarea { font: inherit; }
+
+input[type="text"], input[type="number"], textarea {
+  width: 100%;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  color: var(--text);
+  background: var(--panel-soft);
+  padding: 10px 13px;
+  resize: vertical;
+}
+input[type="text"]:focus, input[type="number"]:focus, textarea:focus {
+  outline: 2px solid var(--orange);
+  outline-offset: 1px;
+}
 button, a { -webkit-tap-highlight-color: transparent; }
 a { color: inherit; text-decoration: none; }
 
