@@ -5,7 +5,7 @@ ideas and safety boundaries without assuming you already know the codebase.
 `HANDOFF.md` remains the canonical technical record for coding agents; the ADRs
 under `docs/adr/` preserve why individual decisions were made.
 
-Current as of 2026-07-19, after ADR 0022.
+Current as of 2026-07-19, after ADR 0023.
 
 ## The short version
 
@@ -368,10 +368,15 @@ result, and how much did it cost?"
 - Architect Mode export/import/validation/approval and Plans UI.
 - Human Review CLI/UI, bounded continuation, crash recovery, and explicit fresh
   frontier-stage authorization.
+- Durable, crash-safe new-task intake (`apoapsis intake submit/inspect/
+  recover`): the same model-assisted specification extraction and one bounded
+  correction attempt as `apoapsis run`, as a background-safe operation that
+  stops at `SPEC_DRAFTED` -- CLI/service seam only so far; the UI screen is
+  the very next step.
 - The black/orange/purple offline loopback UI for real project, task,
   specification, plan, review, verification, evaluation, report, and model
   facts.
-- 383 deterministic tests in the current repository snapshot, with six
+- 403 deterministic tests in the current repository snapshot, with six
   intentional environment-gated skips.
 
 ### Proven with real local inference
@@ -397,25 +402,42 @@ still small.
 
 ## What should be built next
 
-### Next milestone: durable new-task intake in the app
+### Done: durable new-task intake service (ADR 0023)
 
-The UI can display and control existing tasks, but it cannot yet accept a new
-natural-language request and carry it through the model-assisted specification
-step. The next service should:
+The service half of "type an idea into the app" is built: `IntakeOperation
+Record`/`IntakeOperationStore`/`IntakeWorker` (`src/apoapsis/intake/`) persist
+an operation before any model call, run specification extraction (with its
+existing one bounded correction attempt) outside any request thread, write the
+normal request/context/telemetry audit package before each call, and persist
+either a validated `SPEC_DRAFTED` result or a bounded, deterministic failure.
+Crash recovery mirrors Human Review's own ledger exactly. Approval still uses
+the existing, unmodified optimistic specification-approval path. Available
+today only as a CLI/service seam (`apoapsis intake submit/inspect/recover`);
+the UI screen (New Request action, polling, candidate-specification review)
+is the very next step.
 
-1. Persist a `TaskOperation` before starting model work.
-2. Run specification extraction outside the HTTP request thread.
-3. Write the normal request/context/telemetry audit package before the call.
-4. Persist either a validated `PENDING_SPEC_APPROVAL` result or a bounded
-   extraction failure.
-5. Let the browser reconnect and poll without resubmitting or duplicating the
-   provider call.
-6. Use the existing optimistic specification approval path unchanged.
-7. After approval, launch execution through a durable worker while progress is
-   projected from persisted events—not invented by browser code.
+### Next milestone: launch execution after approval
 
-This closes the biggest product gap: typing an idea into the designed app and
-watching a real, auditable task proceed.
+Nothing yet turns an approved specification into a running task from the app.
+The next service should:
+
+1. Extract `VerticalSliceRunner`'s post-approval phases (routing, context,
+   worktree, agent, patch, verification, escalation, reporting) into a shared
+   service, reused rather than duplicated by both `apoapsis run` and the app.
+2. Persist an execution operation before starting, requiring the task id,
+   expected version, and repository fingerprint -- the same idempotency/
+   crash-safety ledger shape as Human Review and intake.
+3. Mark the operation running before any provider call or worktree mutation,
+   execute outside any HTTP request, and drive the existing
+   `REPOSITORY_ANALYZED -> ... -> COMPLETE`/`HUMAN_REVIEW_REQUIRED` edges
+   unchanged.
+4. Project a live control-room view (state, stage, budgets, diff, verification,
+   escalation) from persisted events and operation records only -- never
+   invented by browser code.
+
+This closes the biggest remaining product gap: typing an idea into the
+designed app and watching a real, auditable task run to completion or a
+Human Review stop, without ever leaving the browser.
 
 ### Following milestone: approved-plan to single-slice execution
 

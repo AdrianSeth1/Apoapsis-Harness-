@@ -472,27 +472,59 @@ unavailable-frontier rejection, stale-worktree/duplicate-operation
 rejection, successful and budget-exhausted stage runs) plus a new
 background-worker/UI test in `tests/test_review_ui.py`; full suite passing.
 
+### Done — Phase D1a: durable model-assisted new-task intake (ADR 0023)
+
+Added `src/apoapsis/intake/` (`schema.py`/`store.py`/`execution.py`/
+`recovery.py`/`worker.py`), structurally mirroring `review/`'s crash-safety
+ledger exactly: `IntakeOperationRecord`/`IntakeOperationStore`
+(`.apoapsis/intake-operations.db`) with the same
+active-operation-per-task/duplicate-operation-id/never-silently-re-enter-
+RUNNING guarantees as `ReviewOperationStore`. `prepare_intake_operation()`
+allocates a deterministic `task_id`, creates the task row at `INTAKE` with
+the exact verbatim request text, and durably records the operation --
+synchronous, fast, model-call-free, HTTP-handler-safe. `run_intake_
+operation()` takes only `operation_id`, marks it `RUNNING` before provider
+construction, rechecks the task's identity/state/version fresh, then calls
+the *unmodified* `SpecificationExtractor` with its existing one-bounded-
+correction-attempt contract (ADR 0018) -- no second specification-
+extraction implementation. A double failure stops deterministically at
+`FAILED` (returned, not raised); any other exception marks the operation
+`FAILED` and re-raises. Success reaches `SPEC_DRAFTED` through the
+pre-existing edge, using the same `update_specification()`/`transition()`
+calls `VerticalSliceRunner.run()` already uses --
+`workflow/states.py` did not change, and approval still only ever uses the
+existing, unmodified `apoapsis approve` / `ApoapsisUIService.approve_
+specification()` transition. `recover_stale_intake_operations()` mirrors
+`review.recovery` exactly, returning a stranded `INTAKE` task to
+`HUMAN_REVIEW_REQUIRED` through an event `review.classify` doesn't
+recognize (correctly `UNKNOWN`, `inspect_only`/`abandon` only) -- a
+genuine reuse of the existing, unmodified review/abandon machinery for
+crash recovery, not a new capability. CLI: `apoapsis intake
+submit/inspect/recover` -- a full seam usable without `apoapsis ui`. New
+ADR 0023. 20 new tests across `tests/test_intake.py`/
+`tests/test_intake_cli.py`; full suite 403/403 passing, confirming
+`apoapsis run`/`apoapsis task` and every existing suite are unaffected
+(only additive changes).
+
 ### Priority C — extend the accepted application shell (ADR 0014)
 
 The application now has local/offline assets, a capability-protected loopback
 API, real task/report/environment/evaluation/plan/review views, optimistic
-specification and plan approval, and durable Human Review operations with
-bounded continuation, crash recovery, and explicit fresh-frontier-stage
-authorization. It can control existing work safely. The highest-value product
-gap is that it still cannot originate and execute a new task from natural
-language.
+specification and plan approval, durable Human Review operations with
+bounded continuation, crash recovery, explicit fresh-frontier-stage
+authorization, and (CLI/service-seam only, so far) durable new-task intake.
+It can control existing work safely and durably draft a new task's
+specification. The highest-value remaining product gap is that it still
+cannot *execute* a new task after approval, and the intake seam has no UI
+screen yet.
 
 Continue in this order:
 
-1. Add an ADR and extract model-assisted task intake into a durable,
-   resumable application service. Persist the operation before the first model
-   call; do not keep a CLI input callback or HTTP request open while inference
-   runs.
-2. Reuse the existing specification extractor, one bounded correction attempt,
-   provider telemetry, call audit package, acceptance-command catalog, and exact
-   verbatim-constraint checks. Persist either a validated pending-approval
-   candidate or a bounded terminal failure. Browser reconnects poll the same
-   operation id and never resubmit the provider call.
+1. Done (ADR 0023, above): durable, resumable model-assisted task intake,
+   stopping at `SPEC_DRAFTED`.
+2. Add the corresponding UI screen (Commit D1b): a New Request action,
+   persisted operation polling/reconnect, and candidate-specification
+   review reusing the existing, unmodified specification-approval action.
 3. After optimistic specification approval, launch the already-approved task
    through a durable worker. Project progress from workflow events/operation
    records; browser code must not infer state, run a CLI subprocess, or own a

@@ -16,6 +16,10 @@ from apoapsis.architect.audit import PlanAuditStore, write_package_artifact
 from apoapsis.architect.store import SQLitePlanStore
 from apoapsis.architect.validation import validate_plan
 from apoapsis.architect.schema import PlanValidationResult, ValidationSeverity
+from apoapsis.intake.errors import IntakeError
+from apoapsis.intake.execution import execute_intake_operation
+from apoapsis.intake.recovery import recover_stale_intake_operations
+from apoapsis.intake.store import IntakeOperationStore
 from apoapsis.review.case import build_review_case
 from apoapsis.review.errors import ReviewError
 from apoapsis.review.execution import execute_review_action
@@ -439,6 +443,38 @@ def build_parser() -> argparse.ArgumentParser:
     plan_approve.add_argument("plan_id")
     plan_approve.add_argument("--expected-version", type=int, required=True)
 
+    intake = subparsers.add_parser(
+        "intake",
+        help=(
+            "durable model-assisted new-task intake (ADR 0023): a CLI/"
+            "service seam for creating, inspecting, and recovering intake "
+            "operations without requiring `apoapsis ui`"
+        ),
+    )
+    intake_subparsers = intake.add_subparsers(dest="intake_command", required=True)
+    intake_submit = intake_subparsers.add_parser(
+        "submit",
+        help=(
+            "run model-assisted specification extraction for a new "
+            "natural-language request, stopping at SPEC_DRAFTED -- never "
+            "executes the resulting task"
+        ),
+    )
+    intake_submit.add_argument("request_text")
+    intake_submit.add_argument("--operation-id", required=True)
+    intake_inspect = intake_subparsers.add_parser(
+        "inspect", help="show one intake operation's durable record"
+    )
+    intake_inspect.add_argument("operation_id")
+    intake_subparsers.add_parser(
+        "recover",
+        help=(
+            "explicit crash recovery: reclaim never-started intake "
+            "operations, mark stale running ones ambiguous, and return "
+            "stuck tasks to human review"
+        ),
+    )
+
     review = subparsers.add_parser(
         "review", help="deterministic human-review and resume (ADR 0020)"
     )
@@ -542,6 +578,7 @@ def main(argv: list[str] | None = None) -> None:
         InstrumentedProviderError,
         ArchitectError,
         ReviewError,
+        IntakeError,
     ) as exc:
         parser.exit(2, f"error: {exc}\n")
     if result is not None:
@@ -593,6 +630,8 @@ def _dispatch(args: argparse.Namespace) -> dict[str, object] | None:
         )
     if args.command == "review":
         return _review_command(root, store, args)
+    if args.command == "intake":
+        return _intake_command(root, store, args)
     if args.command == "inspect":
         record = store.get_task(args.task_id)
         result: dict[str, object] = {
@@ -745,6 +784,36 @@ def _plan_approve(
         kind="plan_approval",
     )
     return record.model_dump(mode="json")
+
+
+def _intake_operation_store(root: Path) -> IntakeOperationStore:
+    metadata = root / ".apoapsis"
+    if not (metadata / "config.toml").is_file():
+        raise TaskStoreError("Apoapsis is not initialized; run 'apoapsis init' first")
+    return IntakeOperationStore(metadata / "intake-operations.db")
+
+
+def _intake_command(
+    root: Path, store: SQLiteTaskStore, args: argparse.Namespace
+) -> dict[str, object]:
+    operation_store = _intake_operation_store(root)
+    if args.intake_command == "inspect":
+        return operation_store.get(args.operation_id).model_dump(mode="json")
+    if args.intake_command == "recover":
+        report = recover_stale_intake_operations(store, operation_store)
+        return report.model_dump(mode="json")
+    if args.intake_command == "submit":
+        config = ApoapsisConfig.from_toml(root / ".apoapsis" / "config.toml")
+        record = execute_intake_operation(
+            root,
+            store,
+            operation_store,
+            config,
+            request_text=args.request_text,
+            operation_id=args.operation_id,
+        )
+        return record.model_dump(mode="json")
+    raise AssertionError(f"unhandled intake command: {args.intake_command}")
 
 
 def _review_operation_store(root: Path) -> ReviewOperationStore:

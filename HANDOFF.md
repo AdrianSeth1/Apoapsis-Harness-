@@ -19,11 +19,11 @@ without replacing this canonical coding-agent handoff.
 | Item | Current value |
 | --- | --- |
 | Last verified | 2026-07-19 |
-| Working-tree version | `1.0` plus ADR 0013 Windows local-model lifecycle, ADR 0014 first local operator-interface slice, ADR 0015 verification layers and acceptance coverage, ADR 0016's corrective follow-up, ADR 0017's worktree-fingerprint/explicit-acceptance-designation hardening, the opt-in `local-strict` evaluation lane with its first live result, ADR 0018's acceptance-failure-evidence/bounded-specification-correction fixes, ADR 0019's Architect Mode planning foundation plus its Plans UI surface, ADR 0020's deterministic human-review-and-resume CLI and UI, ADR 0021's review/resume integrity hardening, and ADR 0022's explicit human-authorized fresh frontier stage |
+| Working-tree version | `1.0` plus ADR 0013 Windows local-model lifecycle, ADR 0014 first local operator-interface slice, ADR 0015 verification layers and acceptance coverage, ADR 0016's corrective follow-up, ADR 0017's worktree-fingerprint/explicit-acceptance-designation hardening, the opt-in `local-strict` evaluation lane with its first live result, ADR 0018's acceptance-failure-evidence/bounded-specification-correction fixes, ADR 0019's Architect Mode planning foundation plus its Plans UI surface, ADR 0020's deterministic human-review-and-resume CLI and UI, ADR 0021's review/resume integrity hardening, ADR 0022's explicit human-authorized fresh frontier stage, and ADR 0023's durable new-task intake CLI/service seam |
 | Checked-out branch | `main` |
-| Repository state | The 1.0/lifecycle baseline, the ADR 0014 UI slice, the ADR 0015 acceptance-coverage milestone, the ADR 0016 correction, the ADR 0017 hardening, the `local-strict` lane, the ADR 0018 fixes, ADR 0019's Architect Mode foundation (CLI + Plans UI), ADR 0020's review/resume CLI and UI, ADR 0021's hardening, and ADR 0022's `authorize_frontier_stage` action are all committed on `main`; live evaluation evidence is committed separately. `DESIGN.md` is preserved as a separate, committed user-supplied design reference. Run `git status` and `git log -1 --oneline` for the exact current state. |
+| Repository state | The 1.0/lifecycle baseline, the ADR 0014 UI slice, the ADR 0015 acceptance-coverage milestone, the ADR 0016 correction, the ADR 0017 hardening, the `local-strict` lane, the ADR 0018 fixes, ADR 0019's Architect Mode foundation (CLI + Plans UI), ADR 0020's review/resume CLI and UI, ADR 0021's hardening, ADR 0022's `authorize_frontier_stage` action, and ADR 0023's `apoapsis intake` seam are all committed on `main`; live evaluation evidence is committed separately. `DESIGN.md` is preserved as a separate, committed user-supplied design reference. Run `git status` and `git log -1 --oneline` for the exact current state. |
 | Preserved substrate tag | `substrate-v0.1` at `4c2e735` |
-| Full deterministic suite | 383 tests, 0 failures, 0 errors, 6 intentional skips (2 live-network, 1 live-Docker, 3 machine currently lacks the Windows privilege to create symlinks) |
+| Full deterministic suite | 403 tests, 0 failures, 0 errors, 6 intentional skips (2 live-network, 1 live-Docker, 3 machine currently lacks the Windows privilege to create symlinks) |
 | Syntax check | `python -m compileall -q src tests` passed |
 | Diff check | `git diff --check` passed; Git reported only expected LF-to-CRLF working-copy warnings |
 | Live local coding result | Qwen3-Coder-Next Q4 completed the controlled download-service task in 10 turns and 3 verification runs |
@@ -396,6 +396,67 @@ architecture.
   that already exists for the task; it never launches a fresh frontier
   session from a local-only stop. Does not change one-shot mode's own
   execution path.
+
+### Durable model-assisted new-task intake (ADR 0023)
+
+- `src/apoapsis/intake/` is a small package structurally mirroring
+  `review/` exactly, reusing the same crash-safety discipline ADR
+  0020/0021 already proved out rather than inventing a second one.
+  `intake/schema.py`'s `IntakeOperationRecord` carries a caller-supplied
+  `operation_id`, a deterministically allocated `task_id` (the same
+  `TASK-<hex>` convention every other task-creation path uses), the
+  exact, verbatim request text, its sha256 hash, the task version
+  observed at creation, the provider role, and `IntakeOperationStatus`
+  (`recorded`/`running`/`pending_specification_approval`/`failed`/
+  `ambiguous`).
+- `src/apoapsis/intake/store.py`'s `IntakeOperationStore` is the same
+  SQLite idempotency ledger shape as `ReviewOperationStore`
+  (`.apoapsis/intake-operations.db`): a resubmitted `operation_id` is
+  rejected once terminal, only one `RECORDED`/`RUNNING` operation may
+  exist per task, and a stuck `RUNNING` operation is never silently
+  re-entered.
+- `src/apoapsis/intake/execution.py`'s `prepare_intake_operation()`
+  allocates the task id, creates the task row at `INTAKE` with the exact
+  request text as its preliminary objective, and durably records the
+  operation -- all synchronous, fast, and safe to call from an HTTP
+  handler, before any model call. `run_intake_operation()` takes only
+  `operation_id`, marks it `RUNNING` before provider construction, freshly
+  rechecks the task's identity/state/version, then calls the *unmodified*
+  `SpecificationExtractor` (the same class, same catalog, same
+  exact-verbatim-substring and acceptance-catalog checks `apoapsis run`
+  uses) with the same one-bounded-correction-attempt contract as ADR
+  0018. A double failure stops deterministically at `FAILED` (returned
+  normally, not raised); any other exception marks the operation `FAILED`
+  and re-raises. On success it calls the same
+  `SQLiteTaskStore.update_specification()`/`transition()` methods
+  `VerticalSliceRunner.run()` calls, reaching `SPEC_DRAFTED` through the
+  pre-existing edge -- `workflow/states.py` did not change.
+  `execute_intake_operation()` composes both for synchronous callers (the
+  CLI).
+- `src/apoapsis/intake/recovery.py`'s `recover_stale_intake_operations()`
+  mirrors `review.recovery.recover_stale_operations()`: reclaims
+  `RECORDED` operations, marks stale `RUNNING` ones `AMBIGUOUS`, and --
+  only if the task is still stuck at `INTAKE` -- returns it to
+  `HUMAN_REVIEW_REQUIRED` via a new, unrecognized-by-`review.classify`
+  event type, so an operator can inspect and `apoapsis review abandon` a
+  stranded intake task through the existing, completely unmodified review
+  machinery (a genuine reuse: `build_review_case` already handles a task
+  with no worktree, the same shape `specification_not_approved` stops
+  already have).
+- `src/apoapsis/intake/worker.py`'s `IntakeWorker` mirrors
+  `review.worker.ReviewWorker`: a background thread whose queue carries
+  only an `operation_id`, running one recovery pass at startup.
+- CLI: `apoapsis intake submit "<request>" --operation-id ID` (synchronous;
+  runs `execute_intake_operation()` in the foreground, exactly like
+  `apoapsis run`/`review continue-local` already do), `apoapsis intake
+  inspect <operation-id>`, `apoapsis intake recover` -- a full CLI/service
+  seam that creates, inspects, and recovers intake operations without
+  requiring `apoapsis ui`.
+- **Does not execute the approved task.** Approval still only reaches
+  `SPEC_APPROVED` through the exact same, unmodified `apoapsis approve` /
+  `ApoapsisUIService.approve_specification()` transition every other
+  task-creation path already uses. New-task execution orchestration
+  remains the next, separately reviewed milestone.
 
 ### Verification layers and acceptance coverage (ADR 0015, corrected by ADR 0016, hardened by ADR 0017/0018)
 
@@ -1198,6 +1259,8 @@ direct-frontier comparison claims remain unmeasured.
 | Human Review UI: service/API/security, background-worker execution, replay (duplicate operation) and reconnect (persisted operation polling from a fresh service instance) | `tests/test_review_ui.py` |
 | Review/resume integrity hardening: queue-delay staleness, one-active-operation-per-task, abandon-before-cleanup ordering, provider-construction failure reaching FAILED, unknown-newest-event classification, untracked files in the diff, fresh post-retry evidence, and crash recovery (reclaim/ambiguous/return-to-review) | `tests/test_review_hardening.py` |
 | Explicit fresh-frontier-stage authorization: eligibility (unconfigured/newly-configured/already-exists), unavailable-frontier rejection, stale-worktree/duplicate-operation rejection, successful and budget-exhausted stage runs, and background-worker/UI submission | `tests/test_review_frontier_stage.py`, `tests/test_review_ui.py` |
+| Durable new-task intake: successful extraction, bounded correction, double failure, verbatim/catalog rejection surviving correction, duplicate/simultaneous operations, provider-construction failure, queue-delay state changes, and crash recovery (reclaim/ambiguous/return-to-review) | `tests/test_intake.py` |
+| Intake CLI seam (`submit`/`inspect`/`recover`) and unaffected `run`/`task` commands | `tests/test_intake_cli.py` |
 
 Fake providers are the mandatory regression mechanism. Live model or network
 tests supplement them; they must not replace deterministic coverage.
@@ -1231,11 +1294,17 @@ tests supplement them; they must not replace deterministic coverage.
 4. **Historical configuration naming remains.** `models.frontier` still serves
    specification and one-shot roles even when backed by local Ollama.
 5. **No automatic merge/commit.** A successful worktree remains for inspection.
-6. **Human Review is implemented, but new-task orchestration is not.** ADR
-   0020–0022 provide CLI and UI review, deterministic bounded continuation,
-   crash recovery, and explicit fresh-frontier-stage authorization. The UI
-   still cannot originate a natural-language task and durably carry it through
-   model-assisted extraction, approval, and new-task execution.
+6. **Human Review is implemented; durable new-task intake now exists, but
+   new-task execution orchestration does not.** ADR 0020–0022 provide CLI
+   and UI review, deterministic bounded continuation, crash recovery, and
+   explicit fresh-frontier-stage authorization. ADR 0023 provides a durable
+   CLI/service seam (`apoapsis intake submit/inspect/recover`) that runs
+   model-assisted specification extraction (with its existing one bounded
+   correction attempt) as a crash-safe operation, stopping at
+   `SPEC_DRAFTED`. Approval still uses the existing, unmodified
+   `apoapsis approve` transition. Nothing yet turns an approved
+   specification into a running task -- that is deliberately the next,
+   separately reviewed milestone.
 7. **Cost is configured, not discovered.** Zero pricing yields a valid but
    economically uninformative report.
 8. **Live network tests are intentionally skipped by default.** Run them only
@@ -1307,10 +1376,12 @@ tests supplement them; they must not replace deterministic coverage.
     desktop product.** ADR 0014/0019/0020–0022 define a capability-protected
     loopback application with real task/report/environment/evaluation/plan/
     Human Review views, deterministic specification/plan approval, resumable
-    review operations, and explicit frontier authorization. Model-assisted
-    new-task intake, durable new-task execution progress, approved-plan slice
-    execution, and a packaged native wrapper are still missing. Do not implement
-    them as browser provider calls, CLI subprocess construction, or inferred
+    review operations, and explicit frontier authorization. ADR 0023 (Commit
+    D1a) adds a durable intake CLI/service seam; Commit D1b (tracked
+    separately) is expected to add the corresponding UI screen. Durable
+    new-task execution progress, approved-plan slice execution, and a
+    packaged native wrapper are still missing. Do not implement them as
+    browser provider calls, CLI subprocess construction, or inferred
     audit-file state.
 14. **Architect Mode (ADR 0019) produces plans but never executes them.**
     `apoapsis plan export/import/validate/inspect/approve` is fully
@@ -1393,6 +1464,7 @@ automation as a substitute for those proofs.
 | `0020` | Deterministic human review and resume: `ReviewCase` projection, bounded-agent-session resume, idempotent/crash-safe continuation operations, and immutable continuation packages |
 | `0021` | Review/resume integrity hardening: execution-time precondition recheck, one active operation per task, explicit crash recovery (`recover_stale_operations`), abandon-before-cleanup ordering, newest-event-only stop classification, shared bounded diff/inspection, and fresh post-retry/continuation evidence |
 | `0022` | Explicit, human-authorized fresh frontier stage (`AUTHORIZE_FRONTIER_STAGE`), distinct from `FRONTIER_CONTINUATION`, sharing an extracted `build_local_to_frontier_escalation()` with automatic in-process escalation |
+| `0023` | Durable model-assisted new-task intake: `IntakeOperationRecord`/`IntakeOperationStore`/`IntakeWorker` mirroring the review-operation crash-safety ledger, reusing `SpecificationExtractor`'s exact bounded-correction contract, stopping at `SPEC_DRAFTED` without executing the task |
 
 Add a new ADR for a new architectural decision. Do not rewrite history to make
 old decisions appear current; mark an ADR superseded and link its replacement

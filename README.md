@@ -35,7 +35,9 @@ content hashes and worktree pointers are not corrupted; see
 - Native loopback-only Ollama and authenticated OpenAI-compatible frontier
   adapters with token, cache, latency, and configured-price telemetry.
 - Model-assisted specification extraction with exact hard-constraint source
-  validation and explicit user approval.
+  validation and explicit user approval, plus a durable, crash-safe
+  `apoapsis intake` CLI/service seam for running that same extraction as a
+  background-safe operation.
 - Reproducible Git/ripgrep/symbol/import/test context packages with line-level
   provenance.
 - A typed coding-agent protocol for literal search, bounded reads, diff
@@ -351,6 +353,34 @@ interrupted call did:
 ```bash
 apoapsis review recover
 ```
+
+## Durable new-task intake (ADR 0023)
+
+`apoapsis run` already does model-assisted specification extraction, but it
+blocks the whole CLI process until the model responds. `apoapsis intake` runs
+the same extraction (the same extractor, the same one bounded correction
+attempt, the same exact-verbatim-constraint and acceptance-catalog checks) as
+a durable, crash-safe operation instead:
+
+```bash
+apoapsis intake submit "Add resumable downloads without changing the public API" \
+  --operation-id INOP-1
+apoapsis intake inspect INOP-1
+apoapsis intake recover
+```
+
+`submit` allocates a task id, persists the operation and the task's
+preliminary specification (holding the exact request text) before any model
+call, then runs extraction. A clean result reaches `SPEC_DRAFTED`, approved
+through the same `apoapsis approve` transition every other task-creation path
+already uses; a double extraction failure (both the original and the one
+bounded correction) stops deterministically at `FAILED`. `intake recover`
+reclaims an operation that never actually started and marks a stale
+in-progress one ambiguous, exactly like `review recover` -- a task stranded
+mid-extraction is returned to human review, inspectable and abandonable
+through the existing, unmodified `apoapsis review` commands. **This does not
+execute the approved task** -- new-task execution orchestration is separate,
+still-unreleased work.
 
 ## Diagnostics and evaluation
 
