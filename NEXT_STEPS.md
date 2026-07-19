@@ -265,13 +265,29 @@ Full suite: 258 tests (up from 244; 14 new across
 `tests/test_specification_correction.py`, and
 `tests/test_provider_and_specification.py`). See ADR 0018.
 
-**Not yet done: re-running `local-strict` live under these fixes.** That
-is the natural next step -- three fresh Qwen3-Coder-Next Q4 attempts at
-64k, identical conditions, comparing specification-correction behavior,
-acceptance-failure evidence, whether the model edits after seeing the real
-error, strict completion, held-out correctness, false success, human
-review, turns/verification attempts/tokens/latency against the first
-run. Do not begin it without explicit direction.
+### Done — re-ran `local-strict` live under the Phase A fix: first genuine success
+
+Three more fresh Qwen3-Coder-Next Q4 attempts at 64k, identical conditions
+to round 1, no manual repair. Result:
+**1/3 reached `COMPLETE`, and the held-out oracle independently confirmed
+it correct** -- the first genuine true success across both rounds (6
+attempts total). The model's return-value arithmetic was finally right in
+the resume branch. The other two attempts both received accurate failure
+evidence (never happened in round 1) and made real further edits -- one
+ran the required `unit-tests` command for the first time in either round
+-- but ran out of their 12-turn budget before finishing; a manual
+post-hoc check confirmed their remaining bugs were genuine, not harness
+artifacts. Zero specification failures this round (one in round 1) -- too
+small a sample to call either a rate. No retrieval issue in either round.
+Full detail: `docs/evaluation/apoapsis-strict-live-evaluation-2026-07-19.md`.
+
+**Still unmeasured**: a reliable completion/false-success rate (one
+success in three attempts is not a rate); whether more turn budget, a
+different budget shape, or a more capable model would close the gap for
+the two attempts that ran out of turns; specification-extraction
+reliability under the one-correction-attempt fix (never exercised live
+this round, since all three extracted validly on the first try). Do not
+begin another live evaluation without explicit direction.
 
 ### Priority B — review and resume experience
 

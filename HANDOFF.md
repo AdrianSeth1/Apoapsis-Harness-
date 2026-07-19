@@ -23,7 +23,8 @@ must be corrected before the change is considered complete.
 | Syntax check | `python -m compileall -q src tests` passed |
 | Diff check | `git diff --check` passed; Git reported only expected LF-to-CRLF working-copy warnings |
 | Live local coding result | Qwen3-Coder-Next Q4 completed the controlled download-service task in 10 turns and 3 verification runs |
-| Live STRICT evaluation result | Three fresh `apoapsis eval download-service --lane local-strict` attempts (Qwen3-Coder-Next Q4, 64k, 2026-07-18): 0/3 `COMPLETE` (2 `HUMAN_REVIEW_REQUIRED`, 1 specification-extraction failure). Both attempts that reached the mechanism genuinely proposed correct acceptance-catalog mappings and produced code with only a narrow return-value bug remaining, but a harness gap (a failing `acceptance = true`, `required = false` command produced no failure evidence or accurate summary) prevented a fair repair attempt. ADR 0018 fixes both that gap and a separate specification-extraction failure mode observed in the same run; a fresh three-attempt re-run under the fix has not yet happened. See `docs/evaluation/apoapsis-strict-live-evaluation-2026-07-18.md`. |
+| Live STRICT evaluation result (round 1, 2026-07-18) | Three fresh `--lane local-strict` attempts (Qwen3-Coder-Next Q4, 64k): 0/3 `COMPLETE` (2 `HUMAN_REVIEW_REQUIRED`, 1 specification-extraction failure). Both attempts that reached the mechanism genuinely proposed correct acceptance-catalog mappings, but a harness gap (a failing `acceptance = true`, `required = false` command produced no failure evidence or accurate summary) prevented a fair repair attempt. See `docs/evaluation/apoapsis-strict-live-evaluation-2026-07-18.md`. |
+| Live STRICT evaluation result (round 2, 2026-07-19, after ADR 0018) | Three more fresh attempts, identical conditions: **1/3 reached `COMPLETE`, and the held-out oracle independently confirmed it correct** -- the first genuine true success across both rounds (6 attempts total). The other two attempts both received accurate failure evidence and made real further edits (a materially different, more diagnosable failure mode than round 1), but ran out of their 12-turn budget before finishing. 0/3 specification failures this round (too small a sample to call a reliability change). See `docs/evaluation/apoapsis-strict-live-evaluation-2026-07-19.md`. |
 | Local model lifecycle result | `STOP_APOAPSIS.cmd` ran successfully against this machine's real Ollama service and explicitly unloaded both configured model names while leaving the service running. Start/warmup is covered against a fake loopback Ollama server, and was also live-run for the STRICT evaluation above. |
 | Local UI result | `apoapsis ui` was exercised against the real checkout and a disposable initialized repository at 1440px and 1100px. Home/models/specification/control views rendered without browser errors; a two-step UI approval advanced `SPEC_DRAFTED -> SPEC_APPROVED` and appended the expected user event. No model call was made. |
 | Live hosted escalation result | Not yet run. A repeatable harness (`apoapsis eval download-service --lane forced-escalation` / `--lane hybrid`) now exists to run it once real `[models.frontier_coder]` credentials are configured; the complete two-provider path is otherwise still only covered with fake providers |
@@ -862,6 +863,24 @@ instructions are in `docs/evaluation/direct-vs-apoapsis.md`.
   This is disclosed, not fixed, in that milestone -- see the report for the
   exact narrow fix candidate. No retrieval issue: the same correct 7-file
   set was retrieved every time.
+- ADR 0018 fixed that gap (and a separate specification-extraction
+  reliability issue observed in the same run) and
+  `docs/evaluation/apoapsis-strict-live-evaluation-2026-07-19.md` records
+  a second round of three fresh attempts under the fix, same conditions.
+  **1 of 3 reached `COMPLETE`, and the held-out oracle independently
+  confirmed it correct** -- the first genuine, true success across both
+  rounds (6 attempts total): the model's return-value arithmetic was
+  finally right in the resume branch, seeding the cumulative total from
+  the persisted offset instead of only counting bytes written in that
+  call. The other two attempts both received accurate failure evidence
+  when their fix was wrong (never happened at all in round 1) and made
+  real further edits -- one of them ran the required `unit-tests` command
+  for the first time in either round -- but ran out of their 12-turn
+  budget before finishing; a manual post-hoc check confirmed their
+  remaining bugs were genuine, not harness artifacts. Zero specification
+  failures this round, versus one in round 1 -- too small a sample (three
+  attempts each) to call either a rate. No retrieval issue in either
+  round.
 
 Failed evaluations are valuable evidence. Do not delete or rewrite them merely
 because a later architecture performs better. Add new dated results and explain
@@ -1070,32 +1089,35 @@ tests supplement them; they must not replace deterministic coverage.
     to treat that as a settled result, and one profile's one
     specification-drafting failure is not yet attributable to profile width
     versus general model variance.
-12. **Strict acceptance-coverage completion is the product default,
-    deterministically well-tested, and its first live-model result (0 of 3
-    completions) has driven one corrective fix (ADR 0018) -- a fair
-    re-run has not yet happened.** `CompletionPolicy.STRICT` (ADR 0015,
-    corrected by ADR 0016, hardened by ADR 0017, evidence-fixed by ADR
-    0018) is fully implemented and covered by deterministic fake-provider/
-    unit scenarios across `tests/test_acceptance_coverage.py`,
-    `tests/test_worktree_fingerprint.py`, `tests/test_verification.py`,
-    and `tests/test_specification_correction.py`, plus fake-provider
-    coverage for the opt-in `local-strict` eval lane
-    (`tests/test_evaluation.py`). `apoapsis init` writes `completion_policy
-    = "strict"` but its default command stays `acceptance = false` --
-    acceptance designation is always an explicit owner decision (Doctor
-    and the UI overview both warn when none is designated).
-    `docs/evaluation/apoapsis-strict-live-evaluation-2026-07-18.md` records
-    the first three live `--lane local-strict` attempts (Qwen3-Coder-Next
-    Q4, 64k): 0 completions (2 human review, 1 specification-extraction
-    failure), but in both attempts that reached it the model genuinely
-    discovered and correctly used the new acceptance-command catalog, and
-    came close to a correct fix. The run surfaced two real gaps, both now
-    fixed by ADR 0018: a failing `acceptance = true`, `required = false`
-    command previously produced no failure evidence or accurate turn
-    summary; and a specification-extraction failure previously stopped the
-    task outright with no chance at a mechanical, one-call correction. A
-    fresh three-attempt `local-strict` run under these fixes has not yet
-    happened -- do not begin it, or any other live evaluation, without
+12. **Strict acceptance-coverage completion has now produced one genuine,
+    independently-confirmed live success -- out of six attempts across two
+    rounds, still far too small a sample for a completion or false-success
+    rate.** `CompletionPolicy.STRICT` (ADR 0015, corrected by ADR 0016,
+    hardened by ADR 0017, evidence-fixed by ADR 0018) is fully implemented
+    and covered by deterministic fake-provider/unit scenarios across
+    `tests/test_acceptance_coverage.py`, `tests/test_worktree_
+    fingerprint.py`, `tests/test_verification.py`, and `tests/
+    test_specification_correction.py`, plus fake-provider coverage for the
+    opt-in `local-strict` eval lane (`tests/test_evaluation.py`).
+    `apoapsis init` writes `completion_policy = "strict"` but its default
+    command stays `acceptance = false` -- acceptance designation is always
+    an explicit owner decision (Doctor and the UI overview both warn when
+    none is designated). Round 1
+    (`docs/evaluation/apoapsis-strict-live-evaluation-2026-07-18.md`, 0/3
+    completions) surfaced two real gaps, both fixed by ADR 0018: a failing
+    `acceptance = true`, `required = false` command previously produced no
+    failure evidence or accurate turn summary; a specification-extraction
+    failure previously stopped the task outright with no chance at a
+    mechanical, one-call correction. Round 2
+    (`docs/evaluation/apoapsis-strict-live-evaluation-2026-07-19.md`, same
+    conditions, after the fix) reached **1/3 `COMPLETE` with the held-out
+    oracle independently confirming correctness** -- the model's
+    return-value arithmetic was finally right. The other two attempts both
+    received accurate failure evidence and made real further edits, a
+    materially different failure mode than round 1, but ran out of their
+    12-turn budget before finishing a fully correct fix. Whether more
+    turns, a different budget shape, or a more capable model would close
+    that gap is unmeasured. Do not begin another live evaluation without
     explicit direction.
 13. **The local application is a first slice, not a complete desktop product.**
     ADR 0014 now defines a capability-protected loopback application and the
