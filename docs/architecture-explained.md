@@ -548,17 +548,32 @@ tracking a slice's execution was duplicated to make this work; the UI's
 only new code is the slice list, the package preview, and the approval
 action itself. There is still no "Run all" button anywhere.
 
-### Then prove whether planning helps
+### Done: the framework to prove whether planning helps (ADR 0028, Commit D4a)
 
-Run the same larger task both ways under identical model/settings:
+The comparison itself now exists, deterministically: the same larger task,
+run the same way both times --
 
 - one monolithic request; and
-- an approved strong-model plan executed one slice at a time.
+- an approved, fixed strong-model plan executed one slice at a time,
+  advancing automatically only inside this dedicated evaluation tool
+  (never in the product's own CLI or browser, which stay one-slice-at-a-time
+  with no scheduler).
 
-Compare true success, false success, turns, patch attempts, verification runs,
-context transmitted, latency, and any frontier calls/cost. This is the evidence
-that determines whether Architect Mode is valuable—not the fact that it can
-produce attractive plans.
+It measures true success (did it work, checked by a held-out test the model
+never saw), false success, per-slice outcomes, turns, patch attempts,
+verification runs, context transmitted, latency, cost, and a new kind of
+result specific to planning: an *integration failure*, where every slice
+individually checked out fine but the assembled whole still didn't actually
+work -- something a single-shot attempt has no way to even exhibit. Building
+this end to end surfaced a real bug in the single-slice execution bridge
+itself (approving a second slice of the same plan was incorrectly blocked
+forever, not just while the first was still running) and fixed it.
+
+What does not exist yet is a real result: every test run so far uses a
+scripted stand-in for a model, never a live one, and the plan being executed
+must still come from a genuinely separate model session, not this tool.
+Producing that live evidence, honestly, is the next and last step before
+anyone can say whether Architect Mode is actually worth using.
 
 ### Later operational work
 

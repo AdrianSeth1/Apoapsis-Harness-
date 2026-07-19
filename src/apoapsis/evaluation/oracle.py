@@ -61,7 +61,7 @@ def run_held_out_oracle(
     config: ApoapsisConfig,
     definition: HeldOutOracleDefinition,
 ) -> HeldOutOracleResult:
-    """Run a harness-owned oracle only after normal completion.
+    """Run a harness-owned oracle only after normal completion of one task.
 
     The source is copied into the completed worktree after all model calls, so
     neither its filename nor its contents can enter repository context. The
@@ -69,9 +69,7 @@ def run_held_out_oracle(
     grants the model no command-selection or retry authority.
     """
 
-    source = Path(definition.source_path).resolve()
-    source_bytes = source.read_bytes()
-    source_sha256 = hashlib.sha256(source_bytes).hexdigest()
+    source_sha256 = hashlib.sha256(Path(definition.source_path).read_bytes()).hexdigest()
     if report.outcome != TaskOutcome.COMPLETE:
         return HeldOutOracleResult(
             oracle_id=definition.oracle_id,
@@ -88,6 +86,39 @@ def run_held_out_oracle(
             status=OracleStatus.INFRASTRUCTURE_ERROR,
             reason="completed task report has no usable worktree",
         )
+    return run_held_out_oracle_against_worktree(
+        Path(report.worktree_path),
+        config,
+        definition,
+        task_id=report.task_id,
+        attempt_offset=len(report.verification_results) + 100,
+    )
+
+
+def run_held_out_oracle_against_worktree(
+    worktree: str | Path,
+    config: ApoapsisConfig,
+    definition: HeldOutOracleDefinition,
+    *,
+    task_id: str,
+    attempt_offset: int = 100,
+) -> HeldOutOracleResult:
+    """The same harness-owned oracle mechanics as `run_held_out_oracle`, but
+    against an arbitrary worktree path rather than one task's own completed
+    report -- used by the planning-comparison harness (ADR 0028) to run the
+    oracle once against a planned condition's final, merged repository
+    state, which is not any single task's own worktree."""
+
+    source_sha256 = hashlib.sha256(Path(definition.source_path).read_bytes()).hexdigest()
+    worktree = Path(worktree).resolve()
+    if not worktree.is_dir():
+        return HeldOutOracleResult(
+            oracle_id=definition.oracle_id,
+            oracle_version=definition.version,
+            source_sha256=source_sha256,
+            status=OracleStatus.INFRASTRUCTURE_ERROR,
+            reason="no usable worktree was supplied",
+        )
     if not config.verification.commands:
         return HeldOutOracleResult(
             oracle_id=definition.oracle_id,
@@ -97,7 +128,7 @@ def run_held_out_oracle(
             reason="no configured verification command supplies an interpreter",
         )
 
-    worktree = Path(report.worktree_path).resolve()
+    source = Path(definition.source_path).resolve()
     oracle_name = f".apoapsis_holdout_{source_sha256[:12]}.py"
     oracle_path = worktree / oracle_name
     if oracle_path.exists() or oracle_path.is_symlink():
@@ -129,9 +160,9 @@ def run_held_out_oracle(
             update={"commands": [command], "stop_on_failure": True}
         )
         result = VerificationRunner(oracle_config).run(
-            report.task_id,
+            task_id,
             worktree,
-            attempt=len(report.verification_results) + 100,
+            attempt=attempt_offset,
         )
     except Exception as exc:  # noqa: BLE001 - normalized as oracle infrastructure
         error = f"{type(exc).__name__}: {exc}"

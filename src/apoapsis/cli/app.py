@@ -42,6 +42,7 @@ from apoapsis.review.schema import ReviewActionKind
 from apoapsis.review.store import ReviewOperationStore
 from apoapsis.config import (
     AgentRoute,
+    CompletionPolicy,
     ExecutionMode,
     FrontierProviderConfig,
     ApoapsisConfig,
@@ -52,6 +53,16 @@ from apoapsis.evaluation.fixture import prepare_fixture_repository
 from apoapsis.evaluation.harness import run_eval_lane
 from apoapsis.evaluation.lanes import requires_frontier_coder
 from apoapsis.evaluation.oracle import HeldOutOracleDefinition
+from apoapsis.evaluation.planning_harness import (
+    run_monolithic_condition,
+    run_planned_condition,
+)
+from apoapsis.evaluation.planning_report import write_planning_comparison
+from apoapsis.evaluation.planning_schemas import (
+    PlannerMethod,
+    PlannerProvenance,
+    PlanningComparisonReport,
+)
 from apoapsis.evaluation.report import write_aggregate, write_comparison
 from apoapsis.evaluation.schemas import (
     DEFAULT_LANE_ORDER,
@@ -59,6 +70,7 @@ from apoapsis.evaluation.schemas import (
     EvalEvidenceKind,
     EvalLane,
     EvalLaneResult,
+    MetricStatus,
 )
 from apoapsis.execution.worktree import WorktreeError, WorktreeManager
 from apoapsis.models.frontier import OpenAICompatibleFrontierProvider
@@ -81,7 +93,11 @@ from apoapsis.specification.schema import (
     TaskSpecification,
     TraceableStatement,
 )
-from apoapsis.verification.runner import VerificationConfig, VerificationRunner
+from apoapsis.verification.runner import (
+    VerificationCommand,
+    VerificationConfig,
+    VerificationRunner,
+)
 from apoapsis.workflow.engine import SQLiteTaskStore, TaskStoreError
 from apoapsis.workflow.events import WorkflowActor
 from apoapsis.workflow.states import WorkflowState
@@ -409,6 +425,54 @@ def build_parser() -> argparse.ArgumentParser:
     rollback.add_argument("task_id")
     rollback.add_argument(
         "--delete-branch", action="store_true", help="also delete the task branch"
+    )
+
+    evaluate_planning = subparsers.add_parser(
+        "eval-planning",
+        help=(
+            "compare a monolithic request against an approved, plan-then-"
+            "execute decomposition (ADR 0028) -- never generates a plan "
+            "itself; requires one already approved via `plan export/"
+            "import/validate/approve` against --planned-project-root"
+        ),
+    )
+    evaluate_planning.add_argument("scenario", choices=["download-service-v2"])
+    evaluate_planning.add_argument("--plan-id", required=True)
+    evaluate_planning.add_argument(
+        "--expected-plan-version", type=int, required=True
+    )
+    evaluate_planning.add_argument(
+        "--planned-project-root",
+        type=Path,
+        required=True,
+        help=(
+            "an already-initialized project directory where the fixed "
+            "plan was already exported, imported, validated, and approved "
+            "-- must still be at its untouched scenario baseline (no slice "
+            "packaged or started yet); this command executes the plan's "
+            "slices inside it"
+        ),
+    )
+    evaluate_planning.add_argument(
+        "--planner-model",
+        required=True,
+        help=(
+            "which strong model produced this plan (e.g. "
+            "'claude-opus-4-8-web'); recorded for provenance only -- this "
+            "command never calls a planner itself, and always records "
+            "planner tokens/cost as unmeasured for a manually-pasted "
+            "subscription session, never a fabricated zero"
+        ),
+    )
+    evaluate_planning.add_argument(
+        "--context-profile",
+        choices=["16k", "32k", "64k", "128k", "256k"],
+        help="override the native Ollama window and repository evidence budget",
+    )
+    evaluate_planning.add_argument(
+        "--output-dir",
+        type=Path,
+        help="directory for the fresh monolithic fixture copy and the comparison report",
     )
 
     evaluate = subparsers.add_parser(
@@ -739,6 +803,16 @@ def _dispatch(args: argparse.Namespace) -> dict[str, object] | None:
     if args.command == "eval":
         return _eval_download_service(
             root, args.lane, args.context_profile, args.output_dir
+        )
+    if args.command == "eval-planning":
+        return _eval_planning(
+            root,
+            args.plan_id,
+            args.expected_plan_version,
+            args.planned_project_root.resolve(),
+            args.planner_model,
+            args.context_profile,
+            args.output_dir,
         )
     if args.command == "eval-aggregate":
         return _aggregate_eval_reports(root, args.comparisons, args.output_dir)
@@ -1512,6 +1586,218 @@ def _eval_download_service(
         lanes=results,
     )
     write_comparison(resolved_output_dir, comparison)
+    return comparison.model_dump(mode="json")
+
+
+_DOWNLOAD_SERVICE_V2_HOLDOUT = "tests/test_v2_holdout_acceptance.py"
+_DOWNLOAD_SERVICE_V2_SCENARIO_VERSION = "1.0"
+_DOWNLOAD_SERVICE_V2_TASK = (
+    "Add durable job-record bookkeeping (attempt count, transferred bytes, "
+    "an expected checksum, a lifecycle state, and failure information), a "
+    "resilient resumable downloader (Range-based resume, deterministic "
+    "retry with backoff on transient transport failures, and structured "
+    "progress reporting), and an integrated download service that persists "
+    "progress and attempt state and verifies a SHA-256 checksum before "
+    "reporting completion.\n"
+    "Preserve the current public API.\n"
+    "Do not add runtime dependencies.\n"
+    "Never sleep for real or touch the network; use an injectable clock "
+    "and a fake transport, exactly like the existing tests already do.\n"
+)
+
+
+def _download_service_v2_config(base: ApoapsisConfig) -> ApoapsisConfig:
+    """Three acceptance-designated, non-required commands -- one per
+    slice -- under `STRICT` completion policy: each slice's derived task's
+    own inherited acceptance criterion gates it on exactly its own command,
+    never on an unrelated slice's not-yet-implemented one. See ADR 0028."""
+
+    commands = [
+        VerificationCommand(
+            name="v2-jobs-tests",
+            category="tests",
+            description="Durable job-record bookkeeping (Slice A).",
+            argv=[sys.executable, "-m", "unittest", "tests.test_jobs_contract", "-v"],
+            timeout_seconds=30,
+            # Slice A has no dependencies and always runs first in this
+            # fixed DAG, so this is the one command `VerticalSliceRunner`'s
+            # "at least one required command" floor can safely require --
+            # by the time any other slice's isolated worktree is created,
+            # Slice A's fix is already merged into its base, so this
+            # command has already passed there too. See ADR 0028.
+            required=True,
+            acceptance=True,
+        ),
+        VerificationCommand(
+            name="v2-downloader-tests",
+            category="tests",
+            description="Resilient resumable downloading (Slice B).",
+            argv=[
+                sys.executable,
+                "-m",
+                "unittest",
+                "tests.test_resilient_downloader",
+                "-v",
+            ],
+            timeout_seconds=30,
+            required=False,
+            acceptance=True,
+        ),
+        VerificationCommand(
+            name="v2-service-tests",
+            category="acceptance",
+            description="Integrated download service (Slice C).",
+            argv=[
+                sys.executable,
+                "-m",
+                "unittest",
+                "tests.test_service_integration_visible",
+                "-v",
+            ],
+            timeout_seconds=30,
+            required=False,
+            acceptance=True,
+        ),
+    ]
+    verification = base.verification.model_copy(update={"commands": commands})
+    execution = base.execution.model_copy(
+        update={
+            "mode": ExecutionMode.AGENT,
+            "route": AgentRoute.LOCAL_ONLY,
+            "completion_policy": CompletionPolicy.STRICT,
+        }
+    )
+    return base.model_copy(update={"verification": verification, "execution": execution})
+
+
+def _planner_provenance(
+    root: Path, plan_id: str, planner_model: str
+) -> PlannerProvenance:
+    from apoapsis.architect.schema import PlannerRequestPackage
+    from apoapsis.architect.store import SQLitePlanStore as _PlanStore
+
+    plan_store = _PlanStore(root / ".apoapsis" / "architect-plans.db")
+    record = plan_store.get_plan(plan_id)
+    package_path = (
+        root
+        / ".apoapsis"
+        / "plan-packages"
+        / record.package_id
+        / "request-package.json"
+    )
+    package = PlannerRequestPackage.model_validate_json(
+        package_path.read_text(encoding="utf-8")
+    )
+    return PlannerProvenance(
+        package_id=record.package_id,
+        plan_id=plan_id,
+        plan_version=record.version,
+        request_package_sha256=package.package_sha256,
+        planner_model=planner_model,
+        planner_method=PlannerMethod.MANUAL_SUBSCRIPTION_PASTE,
+        planner_tokens_status=MetricStatus.UNMEASURED,
+        reason="manually-pasted subscription session; no API telemetry exists",
+    )
+
+
+def _eval_planning(
+    root: Path,
+    plan_id: str,
+    expected_plan_version: int,
+    planned_project_root: Path,
+    planner_model: str,
+    context_profile: str | None,
+    output_dir: Path | None,
+) -> dict[str, object]:
+    fixture_source = root / "examples" / "download-service-v2"
+    if not fixture_source.is_dir():
+        raise TaskStoreError(
+            f"fixture not found: {fixture_source}; run this command from the "
+            "apoapsis-harness checkout"
+        )
+    if not planned_project_root.is_dir():
+        raise TaskStoreError(
+            f"--planned-project-root not found: {planned_project_root}"
+        )
+    config_path = root / ".apoapsis" / "config.toml"
+    if not config_path.is_file():
+        raise TaskStoreError("Apoapsis is not initialized; run 'apoapsis init' first")
+    base_config = ApoapsisConfig.from_toml(config_path)
+    if context_profile is not None:
+        base_config = _apply_context_profile(base_config, context_profile)
+    config = _download_service_v2_config(base_config)
+    coding_model = (config.models.local_coder or config.models.frontier).model
+
+    planner = _planner_provenance(planned_project_root, plan_id, planner_model)
+
+    run_id = f"EVALPLAN-{uuid.uuid4().hex[:12].upper()}"
+    resolved_output_dir = (
+        output_dir if output_dir is not None else root / ".apoapsis-eval" / run_id
+    )
+    oracle = HeldOutOracleDefinition(
+        oracle_id="download-service-v2-holdout-v1",
+        version="1.0",
+        source_path=fixture_source / _DOWNLOAD_SERVICE_V2_HOLDOUT,
+        withheld_relative_path=_DOWNLOAD_SERVICE_V2_HOLDOUT,
+    )
+
+    monolithic_root = resolved_output_dir / "monolithic" / "download-service-v2"
+    prepare_fixture_repository(
+        fixture_source,
+        monolithic_root,
+        excluded_relative_files=[_DOWNLOAD_SERVICE_V2_HOLDOUT],
+    )
+    provider, local_coder_provider, frontier_coder_provider = _build_agent_providers(
+        config
+    )
+    monolithic = run_monolithic_condition(
+        monolithic_root,
+        config,
+        provider,
+        local_coder_provider=local_coder_provider,
+        frontier_coder_provider=frontier_coder_provider,
+        task_text=_DOWNLOAD_SERVICE_V2_TASK,
+        scenario_id="download-service-v2",
+        scenario_version=_DOWNLOAD_SERVICE_V2_SCENARIO_VERSION,
+        evidence_kind=_lane_evidence_kind(config, EvalLane.LOCAL),
+        held_out_oracle=oracle,
+    )
+
+    plan_store = SQLitePlanStore(planned_project_root / ".apoapsis" / "architect-plans.db")
+    slice_store = PlanSliceExecutionStore(
+        planned_project_root / ".apoapsis" / "plan-slice-executions.db"
+    )
+    planned_task_store = SQLiteTaskStore(planned_project_root / ".apoapsis" / "apoapsis.db")
+    planned_operation_store = ExecutionOperationStore(
+        planned_project_root / ".apoapsis" / "execution-operations.db"
+    )
+    planned = run_planned_condition(
+        planned_project_root,
+        plan_store,
+        slice_store,
+        planned_task_store,
+        planned_operation_store,
+        plan_id,
+        expected_plan_version=expected_plan_version,
+        config=config,
+        planner=planner,
+        scenario_id="download-service-v2",
+        scenario_version=_DOWNLOAD_SERVICE_V2_SCENARIO_VERSION,
+        evidence_kind=_lane_evidence_kind(config, EvalLane.LOCAL),
+        held_out_oracle=oracle,
+    )
+
+    comparison = PlanningComparisonReport(
+        run_id=run_id,
+        scenario_id="download-service-v2",
+        scenario_version=_DOWNLOAD_SERVICE_V2_SCENARIO_VERSION,
+        task_text=_DOWNLOAD_SERVICE_V2_TASK,
+        coding_model=coding_model,
+        context_profile=context_profile,
+        monolithic=monolithic,
+        planned=planned,
+    )
+    write_planning_comparison(resolved_output_dir, comparison)
     return comparison.model_dump(mode="json")
 
 

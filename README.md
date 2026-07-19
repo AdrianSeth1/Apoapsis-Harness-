@@ -577,6 +577,33 @@ metrics. Hosted rescue and savings remain explicitly `unmeasured` unless the
 loaded artifacts contain a paired real hosted-frontier run; fake providers test
 the formulas but never populate real-world hosted results.
 
+## Planning comparison: monolithic versus plan-then-slices (ADR 0028)
+
+A separate, deterministic comparison between doing a substantial, multi-part
+task in one request and doing the exact same task through an approved,
+fixed plan executed one slice at a time. Uses its own fixture
+(`download-service-v2`, a three-slice extension of the `download-service`
+scenario above with a real dependency) and never generates a plan itself --
+the fixed plan must already be exported, imported, validated, and approved
+against the project directory you point it at:
+
+```bash
+apoapsis eval-planning download-service-v2 \
+  --plan-id PLAN-ABC123 --expected-plan-version 1 \
+  --planned-project-root /path/to/an/already-approved/project \
+  --planner-model "claude-opus-4-8-web"
+```
+
+This writes `planning-comparison.json`/`.md` with both conditions' outcomes,
+per-slice results, resource totals, and whether the held-out cross-slice
+oracle passed. Both conditions run under `STRICT` completion policy (a
+documented departure from `apoapsis eval`'s lanes, which always force
+`BASELINE`) so each slice's own inherited acceptance criterion gates it
+independently. `--planner-model` is recorded for provenance only; this
+command never calls a planner, and a manually-pasted subscription
+session's planner tokens/cost are always recorded as unmeasured, never a
+fabricated zero.
+
 ## Complete all-local agent flow
 
 `apoapsis init` creates a 64K agent configuration for the installed Coder-Next Q4

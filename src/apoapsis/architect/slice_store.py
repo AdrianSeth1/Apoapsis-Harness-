@@ -5,7 +5,6 @@ from contextlib import closing
 from pathlib import Path
 
 from apoapsis.architect.errors import (
-    ActiveSliceExecutionExistsError,
     ConcurrentSliceExecutionTransitionError,
     SliceApprovalError,
     SliceExecutionNotFoundError,
@@ -19,7 +18,6 @@ from apoapsis.specification.schema import utc_now
 # computed from the derived task's own real state, never a second,
 # independently-drifting copy of it. See ``slice_service.project_status``.
 _OWNED_STATUSES = (SliceExecutionStatus.PACKAGED.value, SliceExecutionStatus.APPROVED.value)
-_ACTIVE_STATUSES = (SliceExecutionStatus.APPROVED.value,)
 
 
 class PlanSliceExecutionStore:
@@ -159,10 +157,19 @@ class PlanSliceExecutionStore:
         task_expected_version: int,
     ) -> PlanSliceExecutionRecord:
         """Atomically transitions ``PACKAGED -> APPROVED`` and records the
-        derived task's id/version -- but only if no *other* slice of the
-        same plan is already ``APPROVED`` (a real execution has already
-        been authorized and not yet resolved); only one slice per plan may
-        be active at a time."""
+        derived task's id/version.
+
+        Deliberately does *not* itself check "no other slice of this plan
+        is already APPROVED": this store never persists a slice's real,
+        current execution status past ``APPROVED`` (RUNNING/COMPLETE/
+        HUMAN_REVIEW/FAILED are always a live projection computed from the
+        derived task's own state -- see the module docstring), so a query
+        purely over this table's own ``status`` column cannot tell a still
+        -running slice from one that finished long ago. The "at most one
+        slice per plan active at a time" invariant (ADR 0027) is instead
+        enforced by the service layer (``slice_service.approve_slice``),
+        which has access to the task store and checks live task state
+        before ever calling this method."""
 
         now = utc_now()
         connection = self._connect()
@@ -187,19 +194,6 @@ class PlanSliceExecutionStore:
                 raise SliceApprovalError(
                     f"slice {plan_id}/{slice_id}'s package no longer "
                     "matches the expected hash; re-inspect before approving"
-                )
-            active = connection.execute(
-                "SELECT slice_id FROM plan_slice_executions "
-                "WHERE plan_id = ? AND status IN (%s) AND slice_id != ?"
-                % ",".join("?" * len(_ACTIVE_STATUSES)),
-                (plan_id, *_ACTIVE_STATUSES, slice_id),
-            ).fetchone()
-            if active is not None:
-                connection.rollback()
-                raise ActiveSliceExecutionExistsError(
-                    f"plan {plan_id} already has an active slice execution "
-                    f"({active['slice_id']}); wait for it to finish or "
-                    "resolve it before approving another"
                 )
             version = int(row["version"])
             cursor = connection.execute(

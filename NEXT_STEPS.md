@@ -778,6 +778,47 @@ its normal "Start coding" action present, untouched. See ADR 0027's D3b
 addendum and `HANDOFF.md`'s "Plans UI slice experience" section for full
 detail.
 
+### Done — Phase D4a: planning comparison framework (ADR 0028)
+
+Builds the deterministic monolithic-versus-planned comparison framework
+Priority C item 4 (below) calls for, and the fixture it needs. A new,
+physically separate `examples/download-service-v2/` fixture (an extension
+of the ADR 0012 fixture family, not a second unrelated one -- the original
+`download-service` scenario's files, checks, oracle, and historical
+evaluation path stay byte-for-byte untouched) has a real 3-slice dependency
+DAG (job-record bookkeeping, resilient downloading, and an integrating
+service that depends on both) with per-slice dev/acceptance checks and a
+held-out cross-slice oracle covering adversarial cases none of them see
+alone.
+
+Both conditions use `STRICT` completion policy -- a documented deviation
+from every other evaluation lane's forced `BASELINE` -- so each slice's own
+inherited acceptance criterion gates it on exactly its own command, never
+on an unrelated slice's not-yet-implemented one. Building this end to end
+surfaced and fixed a real, previously-latent bug in ADR 0027's own "one
+active slice per plan" check, which incorrectly blocked approving a second
+slice forever rather than only while the first was genuinely still
+running -- a live product user would have hit the same bug sequentially
+working through any multi-slice plan.
+
+`run_monolithic_condition()`/`run_planned_condition()` (new
+`evaluation/planning_harness.py`) compare a single-shot attempt against the
+exact, unmodified D3a slice-execution functions, advanced automatically
+only inside this evaluation-only module and gated on an already-approved
+fixed plan -- auto-advance is never reachable from the product CLI/UI.
+`summarize_planning_comparisons()` computes true completion, false
+success, per-slice outcomes, resource totals, and cross-slice integration
+failure from persisted reports only. New `apoapsis eval-planning` CLI
+command. New `tests/test_planning_evaluation.py` (10 tests). Full suite:
+536/536 passing, 6 intentional skips.
+
+**No live model evidence anywhere in this commit** -- every test uses a
+deterministic fake provider. Commit D4b (live local evidence against a
+genuinely externally-produced plan, obtained by manually pasting the
+exported planner package into a separate chat session) is deliberately
+deferred to its own review. See ADR 0028 and `HANDOFF.md`'s "Planning
+comparison framework" section for full detail.
+
 ### Priority C — extend the accepted application shell (ADR 0014)
 
 The application now has local/offline assets, a capability-protected loopback
@@ -809,10 +850,14 @@ Continue in this order:
    approval, and hands off to the exact same durable execution service every
    other task uses. Suggested paths and symbols remain advisory; nothing
    auto-starts the next slice or adds an autonomous scheduler.
-4. Evaluate one substantial task monolithically versus plan-then-slices under
-   identical model/settings. Compare held-out true success, false success,
-   turns, patch/verification attempts, transmitted context, latency, and hosted
-   calls/cost before claiming Architect Mode improves outcomes.
+4. Done (ADR 0028, Commit D4a): the deterministic monolithic-versus-planned
+   comparison framework and its `download-service-v2` fixture -- true
+   success, false success, per-slice outcomes, turns, patch/verification
+   attempts, transmitted context, latency, cost, and cross-slice
+   integration failure, all from persisted reports, zero live evidence yet.
+   Commit D4b (live local evidence against a genuinely externally-produced
+   plan) is next, gated on this commit's review; do not claim Architect
+   Mode improves outcomes until D4b's live evidence exists.
 5. Only then choose a packaged native wrapper for the proven loopback surface.
 
 Keep `src/apoapsis/ui/application.py` as the authority boundary. Browser code

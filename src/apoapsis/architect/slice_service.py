@@ -4,7 +4,11 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from apoapsis.architect.errors import SliceApprovalError, SliceExecutionNotFoundError
+from apoapsis.architect.errors import (
+    ActiveSliceExecutionExistsError,
+    SliceApprovalError,
+    SliceExecutionNotFoundError,
+)
 from apoapsis.architect.slice_package import (
     build_plan_slice_execution_package,
     write_plan_slice_execution_package,
@@ -69,6 +73,39 @@ def package_slice(
     return package
 
 
+def _other_slice_is_genuinely_active(
+    task_store: SQLiteTaskStore,
+    slice_store: PlanSliceExecutionStore,
+    plan_id: str,
+    slice_id: str,
+) -> PlanSliceExecutionRecord | None:
+    """Finds another slice of this plan that is genuinely still executing
+    right now -- read live from its derived task's real workflow state,
+    never from this store's own persisted ``status`` column.
+
+    ``PlanSliceExecutionStore`` deliberately never writes anything past
+    ``APPROVED`` for a slice (RUNNING/COMPLETE/HUMAN_REVIEW/FAILED are
+    always a live projection, never a second copy of the truth -- see its
+    own module docstring). A naive "no other row is APPROVED" check is
+    therefore not merely stale but permanently wrong: once any slice of a
+    plan is ever approved, its row stays ``APPROVED`` forever, which would
+    block every other slice of that plan from ever being approved again,
+    even long after the first slice's task genuinely finished. The
+    "at most one slice per plan active at a time" invariant (ADR 0027) is
+    about concurrency, not history, so it must be checked against live
+    task state."""
+
+    for record in slice_store.list_for_plan(plan_id):
+        if record.slice_id == slice_id:
+            continue
+        if record.status != SliceExecutionStatus.APPROVED or record.task_id is None:
+            continue
+        task = task_store.get_task(record.task_id)
+        if task.state not in _TASK_STATE_TO_SLICE_STATUS:
+            return record
+    return None
+
+
 def approve_slice(
     project_root: str | Path,
     task_store: SQLiteTaskStore,
@@ -91,6 +128,13 @@ def approve_slice(
         raise SliceApprovalError(
             f"slice {plan_id}/{slice_id}'s package no longer matches the "
             "expected hash; re-inspect before approving"
+        )
+    active = _other_slice_is_genuinely_active(task_store, slice_store, plan_id, slice_id)
+    if active is not None:
+        raise ActiveSliceExecutionExistsError(
+            f"plan {plan_id} already has an active slice execution "
+            f"({active.slice_id}); wait for it to finish or resolve it "
+            "before approving another"
         )
     specification = package.derived_specification
     created = task_store.create_task(specification)
