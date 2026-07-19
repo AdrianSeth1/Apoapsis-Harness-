@@ -215,7 +215,7 @@ def _make_apply_patch(audit: TaskAuditStore, config: ApoapsisConfig, worktree_pa
     return apply_patch
 
 
-def execute_review_action(
+def prepare_review_operation(
     project_root: str | Path,
     task_store: SQLiteTaskStore,
     operation_store: ReviewOperationStore,
@@ -227,15 +227,14 @@ def execute_review_action(
     expected_version: int,
     expected_worktree_fingerprint: str | None = None,
     additional_turns: int | None = None,
-    local_coder_provider: InstrumentedModelProvider | None = None,
-    frontier_coder_provider: InstrumentedModelProvider | None = None,
-) -> ReviewOperationRecord:
-    """Execute one deterministic, harness-authorized human-review action.
-
-    Never called from an HTTP request handler directly in the UI (ADR
-    0020 Commit C2) -- this is the one place actual work (a resumed model
-    call, a verification run, a worktree cleanup) happens, gated by every
-    check below.
+) -> tuple[ReviewCase, ContinuationBudget | None]:
+    """Every fast, synchronous, read-only check plus operation-record
+    creation -- never a model call, never a worktree mutation. Safe to call
+    directly from an HTTP request handler (ADR 0020 Commit C2): a caller
+    gets an immediate, authoritative accept/reject before any slow work is
+    ever enqueued. Raises on any validation failure; otherwise the
+    operation is durably recorded as ``RECORDED`` and ready for
+    ``run_review_operation``.
     """
 
     root = Path(project_root).resolve()
@@ -285,6 +284,10 @@ def execute_review_action(
                 "continuations"
             )
         budget = ContinuationBudget(additional_turns=additional_turns)
+        if action == ReviewActionKind.FRONTIER_CONTINUATION and not review_case.frontier_available:
+            raise FrontierUnavailableError(
+                "no frontier coder is configured for this project"
+            )
 
     operation_store.create(
         operation_id,
@@ -293,6 +296,31 @@ def execute_review_action(
         expected_task_version=expected_version,
         authorized_budget=budget,
     )
+    return review_case, budget
+
+
+def run_review_operation(
+    project_root: str | Path,
+    task_store: SQLiteTaskStore,
+    operation_store: ReviewOperationStore,
+    config: ApoapsisConfig,
+    review_case: ReviewCase,
+    *,
+    action: ReviewActionKind,
+    operation_id: str,
+    expected_version: int,
+    budget: ContinuationBudget | None,
+    local_coder_provider: InstrumentedModelProvider | None = None,
+    frontier_coder_provider: InstrumentedModelProvider | None = None,
+) -> ReviewOperationRecord:
+    """The actual work -- a resumed model call, a verification run, or a
+    worktree cleanup -- for an operation ``prepare_review_operation`` has
+    already validated and recorded. May be slow; intended to run on a
+    background worker thread (ADR 0020 Commit C2), never inside an HTTP
+    request handler.
+    """
+
+    root = Path(project_root).resolve()
     operation_store.mark_running(operation_id)
     try:
         if action == ReviewActionKind.INSPECT_ONLY:
@@ -318,10 +346,6 @@ def execute_review_action(
             )
         elif action == ReviewActionKind.FRONTIER_CONTINUATION:
             assert budget is not None
-            if not review_case.frontier_available:
-                raise FrontierUnavailableError(
-                    "no frontier coder is configured for this project"
-                )
             summary = _execute_continuation(
                 root,
                 task_store,
@@ -339,6 +363,54 @@ def execute_review_action(
         operation_store.mark_failed(operation_id, error=f"{type(exc).__name__}: {exc}")
         raise
     return operation_store.mark_succeeded(operation_id, result_summary=summary)
+
+
+def execute_review_action(
+    project_root: str | Path,
+    task_store: SQLiteTaskStore,
+    operation_store: ReviewOperationStore,
+    config: ApoapsisConfig,
+    *,
+    task_id: str,
+    action: ReviewActionKind,
+    operation_id: str,
+    expected_version: int,
+    expected_worktree_fingerprint: str | None = None,
+    additional_turns: int | None = None,
+    local_coder_provider: InstrumentedModelProvider | None = None,
+    frontier_coder_provider: InstrumentedModelProvider | None = None,
+) -> ReviewOperationRecord:
+    """Convenience wrapper for synchronous callers (the CLI): prepare and
+    run in one call. The UI (ADR 0020 Commit C2) calls
+    ``prepare_review_operation`` from its HTTP handler and
+    ``run_review_operation`` from a background worker instead, so a
+    resumed model call never blocks a request thread."""
+
+    review_case, budget = prepare_review_operation(
+        project_root,
+        task_store,
+        operation_store,
+        config,
+        task_id=task_id,
+        action=action,
+        operation_id=operation_id,
+        expected_version=expected_version,
+        expected_worktree_fingerprint=expected_worktree_fingerprint,
+        additional_turns=additional_turns,
+    )
+    return run_review_operation(
+        project_root,
+        task_store,
+        operation_store,
+        config,
+        review_case,
+        action=action,
+        operation_id=operation_id,
+        expected_version=expected_version,
+        budget=budget,
+        local_coder_provider=local_coder_provider,
+        frontier_coder_provider=frontier_coder_provider,
+    )
 
 
 def _execute_abandon(
@@ -607,4 +679,8 @@ def _execute_continuation(
     return f"continuation stopped again: {result.stop_reason}"
 
 
-__all__ = ["execute_review_action"]
+__all__ = [
+    "execute_review_action",
+    "prepare_review_operation",
+    "run_review_operation",
+]

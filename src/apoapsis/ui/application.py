@@ -10,6 +10,11 @@ from apoapsis.config import ApoapsisConfig
 from apoapsis.doctor import run_doctor
 from apoapsis.reporting.report import FinalTaskReport
 from apoapsis.repository.git import GitCommandError, GitRepository
+from apoapsis.review.case import build_review_case
+from apoapsis.review.execution import prepare_review_operation
+from apoapsis.review.schema import ReviewActionKind
+from apoapsis.review.store import ReviewOperationStore
+from apoapsis.review.worker import ReviewWorker
 from apoapsis.workflow.engine import (
     SQLiteTaskStore,
     TaskNotFoundError,
@@ -72,6 +77,7 @@ class ApoapsisUIService:
     def __init__(self, project_root: str | Path) -> None:
         self.project_root = Path(project_root).resolve()
         self.metadata_root = self.project_root / ".apoapsis"
+        self._review_worker: ReviewWorker | None = None
 
     def overview(self) -> dict[str, Any]:
         config = self._config()
@@ -199,6 +205,87 @@ class ApoapsisUIService:
             ],
             "available_actions": self._plan_available_actions(approved),
         }
+
+    def review_cases(self) -> dict[str, Any]:
+        store = self._store()
+        config = self._config()
+        if store is None or config is None:
+            return {"cases": []}
+        cases = [
+            build_review_case(
+                self.project_root, store, config, record.task_id
+            ).model_dump(mode="json")
+            for record in store.list_tasks(limit=200)
+            if record.state == WorkflowState.HUMAN_REVIEW_REQUIRED
+        ]
+        return {"cases": cases}
+
+    def review_case_detail(self, task_id: str) -> dict[str, Any]:
+        store = self._require_store()
+        config = self._config()
+        if config is None:
+            raise TaskStoreError(
+                "Apoapsis is not initialized; run 'apoapsis init' first"
+            )
+        return build_review_case(
+            self.project_root, store, config, task_id
+        ).model_dump(mode="json")
+
+    def submit_review_operation(
+        self,
+        task_id: str,
+        *,
+        action: str,
+        operation_id: str,
+        expected_version: int,
+        expected_worktree_fingerprint: str | None = None,
+        additional_turns: int | None = None,
+    ) -> dict[str, Any]:
+        """Validate and durably record a review operation, then hand it to
+        the background worker -- this method itself never calls a model or
+        runs a command; only ``ReviewWorker`` (on its own thread) does."""
+
+        store = self._require_store()
+        config = self._config()
+        if config is None:
+            raise TaskStoreError(
+                "Apoapsis is not initialized; run 'apoapsis init' first"
+            )
+        operation_store = self._review_operation_store()
+        action_kind = ReviewActionKind(action)
+        review_case, budget = prepare_review_operation(
+            self.project_root,
+            store,
+            operation_store,
+            config,
+            task_id=task_id,
+            action=action_kind,
+            operation_id=operation_id,
+            expected_version=expected_version,
+            expected_worktree_fingerprint=expected_worktree_fingerprint,
+            additional_turns=additional_turns,
+        )
+        self._worker().submit(
+            review_case,
+            action=action_kind,
+            operation_id=operation_id,
+            expected_version=expected_version,
+            budget=budget,
+        )
+        return operation_store.get(operation_id).model_dump(mode="json")
+
+    def review_operation_status(self, operation_id: str) -> dict[str, Any]:
+        return self._review_operation_store().get(operation_id).model_dump(
+            mode="json"
+        )
+
+    def _review_operation_store(self) -> ReviewOperationStore:
+        return ReviewOperationStore(self.metadata_root / "review-operations.db")
+
+    def _worker(self) -> ReviewWorker:
+        if self._review_worker is None:
+            self._review_worker = ReviewWorker(self.project_root)
+        return self._review_worker
 
     def doctor(self) -> dict[str, Any]:
         """Run the existing explicit diagnostic command without provider probes."""

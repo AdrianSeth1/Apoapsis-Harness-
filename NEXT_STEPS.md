@@ -374,22 +374,38 @@ mutating action, optimistic-version/worktree-fingerprint conflict handling,
 and a background worker outside the HTTP request path so a browser
 disconnect can never cancel, duplicate, or repeat an authorized operation.
 
-### Priority B — review and resume experience (service layer done; UI remains, Commit C2)
+### Done — Phase C2: Human Review UI (ADR 0014 + ADR 0020)
 
-The highest-value remaining product gap is a polished **UI** continuation
-path for tasks that end in human review -- the deterministic service layer
-above is complete; only the application surface remains:
-
-- list stopped tasks and their exact stop reason;
-- show active constraints, current diff, policy findings, verification failures,
-  budgets consumed, and remaining authorized options;
-- allow explicit user choices such as retry with a configured remaining budget,
-  authorize a configured frontier stage, abandon, or inspect only;
-- append every decision to the existing audit/event record;
-- never let a model choose a transition, command, retry ceiling, or completion.
-
-Add an ADR before changing workflow/resume semantics. Cover each branch with a
-fake provider and keep the one-shot baseline intact.
+Extended `ApoapsisUIService` with `review_cases()`, `review_case_detail()`,
+`submit_review_operation()`, and `review_operation_status()`.
+`submit_review_operation()` performs every fast, synchronous check
+(`review.execution.prepare_review_operation()`: optimistic task version,
+eligible action, worktree-fingerprint match, continuation ceilings) and
+durably records the operation before handing it to `review.worker
+.ReviewWorker` -- a background thread that calls
+`review.execution.run_review_operation()` (the actual model call,
+verification run, or worktree cleanup) entirely outside the HTTP request.
+`ui/server.py` added `GET /api/reviews`, `GET /api/reviews/<id>`,
+`POST /api/reviews/<id>/operations` (returns `202 Accepted` immediately,
+never blocks on the actual work), and
+`GET /api/reviews/<id>/operations/<operation-id>` for polling -- all behind
+the same capability-token/origin checks as every other route.
+`ui/static/app.js` added a Human Review queue (`#/reviews`) and case-detail
+view (`#/review/<task-id>`): exact stop reason, current diff, active
+constraints, verification/acceptance results, consumed/configured budgets,
+models used, audit locations, and only the actions the service actually
+declares eligible. Every mutating action requires two-step confirmation;
+continuation actions additionally prompt for an authorized
+`additional_turns` value bounded by the configured ceiling. The browser
+persists the in-flight `operation_id` in `sessionStorage` and resumes
+polling it on reconnect (page reload) instead of resubmitting -- a browser
+disconnect can never cancel, duplicate, or repeat an authorized operation,
+since submission is already durably recorded before the worker ever runs
+it. 18 new tests in `tests/test_review_ui.py` (service-level listing/detail/
+submission, background-worker execution via a patched fake provider,
+duplicate-operation replay rejection, reconnect via a fresh service
+instance reading the same persisted operation, and server-level session/
+origin/version/duplicate-conflict coverage); full suite 358/358 passing.
 
 ### Priority C — extend the accepted application shell (ADR 0014)
 

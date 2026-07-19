@@ -15,11 +15,11 @@ must be corrected before the change is considered complete.
 | Item | Current value |
 | --- | --- |
 | Last verified | 2026-07-19 |
-| Working-tree version | `1.0` plus ADR 0013 Windows local-model lifecycle, ADR 0014 first local operator-interface slice, ADR 0015 verification layers and acceptance coverage, ADR 0016's corrective follow-up, ADR 0017's worktree-fingerprint/explicit-acceptance-designation hardening, the opt-in `local-strict` evaluation lane with its first live result, ADR 0018's acceptance-failure-evidence/bounded-specification-correction fixes, ADR 0019's Architect Mode planning foundation plus its Plans UI surface, and ADR 0020's deterministic human-review-and-resume CLI foundation |
+| Working-tree version | `1.0` plus ADR 0013 Windows local-model lifecycle, ADR 0014 first local operator-interface slice, ADR 0015 verification layers and acceptance coverage, ADR 0016's corrective follow-up, ADR 0017's worktree-fingerprint/explicit-acceptance-designation hardening, the opt-in `local-strict` evaluation lane with its first live result, ADR 0018's acceptance-failure-evidence/bounded-specification-correction fixes, ADR 0019's Architect Mode planning foundation plus its Plans UI surface, and ADR 0020's deterministic human-review-and-resume CLI and UI |
 | Checked-out branch | `main` |
-| Repository state | The 1.0/lifecycle baseline, the ADR 0014 UI slice, the ADR 0015 acceptance-coverage milestone, the ADR 0016 correction, the ADR 0017 hardening, the `local-strict` lane, the ADR 0018 fixes, ADR 0019's Architect Mode foundation (CLI + Plans UI), and ADR 0020's review/resume CLI foundation are all committed on `main`; live evaluation evidence is committed separately. `DESIGN.md` is preserved as a separate, committed user-supplied design reference. Run `git status` and `git log -1 --oneline` for the exact current state. |
+| Repository state | The 1.0/lifecycle baseline, the ADR 0014 UI slice, the ADR 0015 acceptance-coverage milestone, the ADR 0016 correction, the ADR 0017 hardening, the `local-strict` lane, the ADR 0018 fixes, ADR 0019's Architect Mode foundation (CLI + Plans UI), and ADR 0020's review/resume CLI and UI are all committed on `main`; live evaluation evidence is committed separately. `DESIGN.md` is preserved as a separate, committed user-supplied design reference. Run `git status` and `git log -1 --oneline` for the exact current state. |
 | Preserved substrate tag | `substrate-v0.1` at `4c2e735` |
-| Full deterministic suite | 340 tests, 0 failures, 0 errors, 6 intentional skips (2 live-network, 1 live-Docker, 3 machine currently lacks the Windows privilege to create symlinks) |
+| Full deterministic suite | 358 tests, 0 failures, 0 errors, 6 intentional skips (2 live-network, 1 live-Docker, 3 machine currently lacks the Windows privilege to create symlinks) |
 | Syntax check | `python -m compileall -q src tests` passed |
 | Diff check | `git diff --check` passed; Git reported only expected LF-to-CRLF working-copy warnings |
 | Live local coding result | Qwen3-Coder-Next Q4 completed the controlled download-service task in 10 turns and 3 verification runs |
@@ -166,27 +166,35 @@ architecture.
 
 - `src/apoapsis/ui/application.py` is the deterministic application boundary.
   It exposes repository/configuration/task/event/report/evaluation/lifecycle/
-  plan facts and two typed mutations: optimistic specification approval and
-  optimistic plan approval, both through their respective existing stores. It
-  does not call providers, shell commands, patch application, verification,
-  retry, completion, or arbitrary filesystem APIs.
+  plan/review facts and typed mutations: optimistic specification approval,
+  optimistic plan approval, and human-review operation submission -- all
+  through their respective existing stores. The service itself never calls
+  a provider, shell command, patch application, verification runner, or
+  arbitrary filesystem API directly; `submit_review_operation()` validates
+  and durably records an operation, then hands it to `ReviewWorker`
+  (`review/worker.py`), a background thread that performs the actual work
+  outside any request.
 - `src/apoapsis/ui/server.py` serves packaged offline assets on loopback for
   `apoapsis ui`. Each run generates an ephemeral session capability; API calls
   require it, foreign origins are rejected, CORS is disabled, and responses use
   CSP, no-referrer, no-frame, and no-sniff headers. See ADR 0014. `GET /api/
-  plans`, `GET /api/plans/<id>`, and `POST /api/plans/<id>/approve` (ADR 0019
-  Commit B2) sit behind the exact same checks as every other route.
+  plans`, `GET /api/plans/<id>`, `POST /api/plans/<id>/approve` (ADR 0019
+  Commit B2), `GET /api/reviews`, `GET /api/reviews/<id>`,
+  `POST /api/reviews/<id>/operations`, and
+  `GET /api/reviews/<id>/operations/<operation-id>` (ADR 0020 Commit C2) all
+  sit behind the exact same checks as every other route.
 - `src/apoapsis/ui/static/` implements the accepted black/orange/purple product
   language for Home, specification, control, changes/verification, review,
-  report, evaluations, models/environment, and Plans (index + overview/slices
-  detail) states. All displayed task, model, and plan values come from
-  Apoapsis services; the Claude prototype runtime and illustrative model names
-  are not shipped.
-- Read-only task/report/plan views and deterministic specification/plan
-  approval are live. Natural-language intake, task execution orchestration,
-  review/resume commands, slice execution, and native desktop packaging
-  remain unavailable until their resumable service and authority contracts
-  are implemented.
+  report, evaluations, models/environment, Plans (index + overview/slices
+  detail), and Human Review (queue + case detail) states. All displayed task,
+  model, plan, and review values come from Apoapsis services; the Claude
+  prototype runtime and illustrative model names are not shipped.
+- Read-only task/report/plan/review views, deterministic specification/plan
+  approval, and deterministic human-review continuation (abandon, retry
+  verification, continue locally/with frontier) are all live. Natural-language
+  intake, task execution orchestration for new tasks, plan-slice execution,
+  and native desktop packaging remain unavailable until their resumable
+  service and authority contracts are implemented.
 
 ### Owner model lifecycle
 
@@ -290,20 +298,41 @@ architecture.
   session's turns/observations/verification state from a prior
   `AgentSessionResult` so a continuation adds turns without ever resetting
   what was already consumed.
-- `src/apoapsis/review/execution.py`'s `execute_review_action()` is the
-  single mutation entry point: checks optimistic task version, eligible
-  action, worktree-fingerprint match, and continuation ceilings; writes an
-  immutable `ReviewContinuationPackage` (`review/package.py`) before any
-  resumed model call; and drives the same `IMPLEMENTING -> PATCH_READY ->
-  VERIFYING -> COMPLETE` / `... -> ESCALATION_REQUIRED ->
-  HUMAN_REVIEW_REQUIRED` edges the original run used -- no changes to
-  `workflow/states.py` were needed; every edge already existed.
+- `src/apoapsis/review/execution.py` splits validation from execution:
+  `prepare_review_operation()` is fast and synchronous (checks optimistic
+  task version, eligible action, worktree-fingerprint match, and
+  continuation ceilings, then durably records the operation) and is safe to
+  call from an HTTP handler; `run_review_operation()` does the actual work
+  (a resumed model call, a verification run, a worktree cleanup) and is
+  meant for a background thread. `execute_review_action()` composes both
+  for synchronous callers (the CLI). Every mutation writes an immutable
+  `ReviewContinuationPackage` (`review/package.py`) before any resumed
+  model call, and drives the same `IMPLEMENTING -> PATCH_READY -> VERIFYING
+  -> COMPLETE` / `... -> ESCALATION_REQUIRED -> HUMAN_REVIEW_REQUIRED`
+  edges the original run used -- no changes to `workflow/states.py` were
+  needed; every edge already existed.
 - `src/apoapsis/review/store.py`'s `ReviewOperationStore` is a small SQLite
   idempotency ledger (`.apoapsis/review-operations.db`): a caller-supplied
   `operation_id` can never be submitted twice, and an operation stuck
   `running` (e.g. after a crash) can never be silently re-entered.
+- `src/apoapsis/review/worker.py`'s `ReviewWorker` (Commit C2) runs
+  `run_review_operation()` on a background thread, owned by
+  `ApoapsisUIService`, never inside an HTTP request handler. Submission via
+  `ApoapsisUIService.submit_review_operation()` validates and records the
+  operation synchronously, then hands it to the worker and returns
+  immediately (`202 Accepted`) -- a browser disconnect after that point
+  cannot cancel, duplicate, or repeat it.
 - CLI: `apoapsis review list/inspect/abandon/retry-verification/
   continue-local/continue-frontier` (`src/apoapsis/cli/app.py`).
+- UI (Commit C2): a Human Review queue (`#/reviews`) and case-detail view
+  (`#/review/<task-id>`) on the existing ADR 0014 boundary --
+  `GET /api/reviews`, `GET /api/reviews/<id>`,
+  `POST /api/reviews/<id>/operations`, and
+  `GET /api/reviews/<id>/operations/<operation-id>` for polling. Every
+  mutating action requires two-step confirmation; continuation actions
+  additionally take an authorized `additional_turns` value. The browser
+  persists the in-flight `operation_id` in `sessionStorage` and resumes
+  polling it on reconnect rather than re-submitting.
 - A continuation always resumes the exact agent session (local or frontier)
   that already exists for the task; it never launches a fresh frontier
   session from a local-only stop. Does not change one-shot mode's own
@@ -1106,6 +1135,7 @@ direct-frontier comparison claims remain unmeasured.
 | Review classify/eligibility rules and the operation-store idempotency/crash-safety ledger | `tests/test_review.py` |
 | Every HUMAN_REVIEW_REQUIRED scenario, stale versions, changed worktrees, unavailable frontier, exhausted ceilings, duplicate/crash-ambiguous operations, counter preservation, continuation-package auditing, continued failure, forbidden authority claims | `tests/test_review_execution.py` |
 | Review CLI command wiring | `tests/test_review_cli.py` |
+| Human Review UI: service/API/security, background-worker execution, replay (duplicate operation) and reconnect (persisted operation polling from a fresh service instance) | `tests/test_review_ui.py` |
 
 Fake providers are the mandatory regression mechanism. Live model or network
 tests supplement them; they must not replace deterministic coverage.
@@ -1229,17 +1259,23 @@ tests supplement them; they must not replace deterministic coverage.
     oversight. No subscription-backed provider adapter was added for
     `plan export`/`import` — they remain manual, copy-paste workflows,
     consistent with the still-deferred ADR 0008 non-goal.
-15. **Human review and resume (ADR 0020) is CLI-only so far; no UI surface
-    exists yet.** `apoapsis review list/inspect/abandon/retry-verification/
-    continue-local/continue-frontier` are fully implemented and covered by
-    `tests/test_review.py`, `tests/test_review_execution.py`, and
-    `tests/test_review_cli.py`. A continuation always resumes the exact
-    agent session (local or frontier) that already exists for a task; it
-    deliberately does not launch a fresh frontier session from a
-    local-only stop with no frontier session yet, and does not let a
-    continuation switch which agent resumes. `report.json` is not
-    rewritten after a continuation -- `ReviewCase` reads live audit
-    artifacts instead; this is a disclosed simplification, not a bug.
+15. **Human review and resume (ADR 0020) now spans CLI and UI.**
+    `apoapsis review list/inspect/abandon/retry-verification/
+    continue-local/continue-frontier` and the local UI's Human Review
+    queue/case-detail views are both fully implemented and covered by
+    `tests/test_review.py`, `tests/test_review_execution.py`,
+    `tests/test_review_cli.py`, and `tests/test_review_ui.py`. A
+    continuation always resumes the exact agent session (local or
+    frontier) that already exists for a task; it deliberately does not
+    launch a fresh frontier session from a local-only stop with no
+    frontier session yet, and does not let a continuation switch which
+    agent resumes. `report.json` is not rewritten after a continuation --
+    `ReviewCase` reads live audit artifacts instead; this is a disclosed
+    simplification, not a bug. The UI's `ReviewWorker` is one background
+    thread per running `apoapsis ui` process; if the process itself is
+    killed mid-operation, the operation is left `RUNNING` in the durable
+    store exactly like a CLI crash would leave it -- the same documented
+    fail-closed behavior, not a new failure mode.
 
 `NEXT_STEPS.md` is the owner and future-agent execution roadmap. The next high-
 value proofs are (1) identical local download-service evaluations

@@ -161,16 +161,24 @@ The first slice provides:
 - a **Plans** index and detail view (ADR 0019): architecture summary,
   decisions, dependency-ordered implementation slices, validation findings,
   package/provenance, and a deterministic, optimistic-version-checked
-  approve action that states explicitly it does not execute any slice; and
+  approve action that states explicitly it does not execute any slice;
+- a **Human Review** queue and case-detail view (ADR 0020): exact stop
+  reason, current diff, active constraints, verification/acceptance
+  results, consumed vs. configured budgets, and only the actions the
+  review service actually declares eligible, each behind two-step
+  confirmation. Submitting an action returns immediately -- a background
+  worker performs the actual work (a resumed model call, a verification
+  run, or a worktree cleanup), and the page polls a persisted operation id
+  for progress, surviving a reload without resubmitting; and
 - an explicit **Run doctor** action. Merely opening the UI does not probe or
   load a model.
 
-Natural-language task extraction, workflow execution, human-review resume
-actions, and slice execution are visibly unavailable in this first slice.
-Continue using the CLI for those operations until their resumable
-application services and deterministic transition contracts are
-implemented. The supplied Claude Design export is a visual reference only;
-its external prototype runtime is not shipped.
+Natural-language task extraction and workflow execution for new tasks, and
+plan-slice execution, are visibly unavailable in this first slice. Continue
+using the CLI for those operations until their resumable application
+services and deterministic transition contracts are implemented. The
+supplied Claude Design export is a visual reference only; its external
+prototype runtime is not shipped.
 
 ## Current CLI workflow
 

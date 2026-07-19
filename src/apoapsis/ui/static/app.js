@@ -16,6 +16,11 @@ const store = {
   evaluations: null,
   plans: null,
   plan: null,
+  reviews: null,
+  review: null,
+  reviewOperation: null,
+  reviewConfirm: null,
+  reviewAdditionalTurns: 5,
   route: { name: "home" },
   busy: false,
   error: null,
@@ -92,7 +97,10 @@ function parseRoute() {
   if (parts[0] === "plan" && parts[1]) {
     return { name: "plan", planId: decodeURIComponent(parts[1]), view: parts[2] || "overview" };
   }
-  const allowed = new Set(["home", "new", "evaluations", "models", "plans"]);
+  if (parts[0] === "review" && parts[1]) {
+    return { name: "review", taskId: decodeURIComponent(parts[1]) };
+  }
+  const allowed = new Set(["home", "new", "evaluations", "models", "plans", "reviews"]);
   return { name: allowed.has(parts[0]) ? parts[0] : "home" };
 }
 
@@ -101,6 +109,9 @@ async function syncRoute() {
   store.error = null;
   store.approvalPending = false;
   store.planApprovalPending = false;
+  if (store.route.name !== "review") {
+    store.reviewConfirm = null;
+  }
   try {
     if (store.route.name === "task") {
       if (!store.task || store.task.task.task_id !== store.route.taskId) {
@@ -121,6 +132,18 @@ async function syncRoute() {
         store.busy = true;
         render();
         store.plan = await api(`/api/plans/${encodeURIComponent(store.route.planId)}`);
+      }
+    } else if (store.route.name === "reviews" && store.reviews === null) {
+      store.busy = true;
+      render();
+      store.reviews = await api("/api/reviews");
+    } else if (store.route.name === "review") {
+      if (!store.review || store.review.task_id !== store.route.taskId) {
+        store.busy = true;
+        render();
+        store.reviewOperation = null;
+        store.review = await api(`/api/reviews/${encodeURIComponent(store.route.taskId)}`);
+        resumePendingReviewOperationPoll(store.route.taskId);
       }
     }
   } catch (error) {
@@ -162,6 +185,7 @@ function sidebar() {
         <a class="nav-link${active("home")}" href="#/home"><span class="nav-dot"></span><span>Projects</span></a>
         <a class="nav-link${active("new")}" href="#/new"><span class="nav-dot"></span><span>New task</span></a>
         <a class="nav-link${active("plans")}" href="#/plans"><span class="nav-dot"></span><span>Plans</span></a>
+        <a class="nav-link${active("reviews")}" href="#/reviews"><span class="nav-dot"></span><span>Human review queue</span></a>
         <a class="nav-link${active("evaluations")}" href="#/evaluations"><span class="nav-dot"></span><span>Evaluations</span></a>
         <a class="nav-link${active("models")}" href="#/models"><span class="nav-dot"></span><span>Models & environment</span></a>
       </nav>
@@ -482,6 +506,236 @@ function sliceCard(slice) {
   </article>`;
 }
 
+const REVIEW_ACTION_LABELS = {
+  inspect_only: "Inspect only",
+  abandon: "Abandon & roll back",
+  verification_only_retry: "Retry verification",
+  local_continuation: "Continue locally",
+  frontier_continuation: "Continue with frontier",
+};
+
+const REVIEW_OPERATION_STAGE = {
+  recorded: { label: "Recorded", pill: "warn" },
+  running: { label: "Running", pill: "purple" },
+  succeeded: { label: "Succeeded", pill: "good" },
+  failed: { label: "Failed", pill: "bad" },
+};
+
+function reviewsView() {
+  const cases = store.reviews?.cases || [];
+  return `<main class="content">
+    <div class="page-heading"><div><p class="eyebrow">HUMAN REVIEW / EXPLICIT CONTROL</p><h1>Tasks waiting<br>on a decision.</h1><p>Only actions the deterministic review service actually authorizes for each exact stop reason are ever offered here -- never a fixed menu.</p></div><span class="pill ${cases.length ? "warn" : "good"}">${cases.length ? `${cases.length} awaiting review` : "None waiting"}</span></div>
+    <section class="card">
+      ${cases.length ? `<div class="task-list">${cases.map(reviewRow).join("")}</div>` : emptyState("Nothing needs review", "Tasks that stop for a human decision will appear here with their exact stop reason and available actions.")}
+    </section>
+  </main>`;
+}
+
+function reviewRow(item) {
+  return `<a class="task-row" href="#/review/${encodeURIComponent(item.task_id)}">
+    <div class="task-main"><strong>${e(item.objective_text || item.task_id)}</strong><span>${e(item.task_id)} · v${e(item.task_version)}</span></div>
+    <span class="pill warn">${e(titleCase(item.stop_reason_kind))}</span>
+    <span class="meta">${e(formatDate(item.generated_at))}</span><span class="arrow">→</span>
+  </a>`;
+}
+
+function reviewView() {
+  if (!store.review) return loadingView();
+  return reviewDetailView(store.review);
+}
+
+function reviewDetailView(detail) {
+  const eligible = detail.eligible_actions || [];
+  const localBudget = detail.configured_local_budget;
+  const frontierBudget = detail.configured_frontier_budget;
+  return `<main class="content">
+    <div class="page-heading"><div><p class="eyebrow">HUMAN REVIEW / ${e(detail.task_id)}</p><h1>${e(titleCase(detail.stop_reason_kind))}</h1><p>${e(detail.stop_reason_text)}</p></div><span class="pill warn">${e(titleCase(detail.workflow_state))}</span></div>
+
+    <div class="grid four">
+      ${metric("Task version", detail.task_version, "Optimistic concurrency")}
+      ${metric("Worktree", detail.worktree_exists ? "Present" : "None", detail.worktree_exists ? "Fingerprint tracked" : "Stopped before implementation began")}
+      ${metric("Continuations used", `${detail.continuations_used} / ${detail.max_continuations_per_task}`, "Per-task ceiling")}
+      ${metric("Frontier", detail.frontier_available ? "Configured" : "Not configured", "Checked fresh, not from the original stop")}
+    </div>
+
+    ${reviewOperationPanel()}
+
+    <p class="section-title">Active hard constraints · ${(detail.active_hard_constraints || []).length}</p>
+    ${(detail.active_hard_constraints || []).length ? detail.active_hard_constraints.map(constraintCard).join("") : `<div class="notice">No active hard constraints are recorded.</div>`}
+
+    ${detail.worktree_exists ? `
+    <p class="section-title">Current diff</p>
+    <section class="card card-pad"><div class="mono" style="white-space: pre-wrap; overflow-wrap: anywhere;">${e(detail.current_diff || "(no diff)")}</div></section>
+    ` : `<div class="notice mt-16">No worktree exists for this task yet -- it stopped before implementation began.</div>`}
+
+    <p class="section-title">Verification & acceptance</p>
+    <section class="card card-pad">
+      ${(detail.verification_results || []).length ? `<div class="verification-list">${detail.verification_results.flatMap((result) => (result.commands || []).map((command) => verificationItem(command, result))).join("")}</div>` : `<p class="muted">No verification results are recorded.</p>`}
+      ${(detail.acceptance_coverage || []).length ? `<div class="verification-list mt-14">${detail.acceptance_coverage.map(acceptanceCoverageItem).join("")}</div>` : ""}
+      ${(detail.normalized_failures || []).length ? `<div class="mt-14">${detail.normalized_failures.map((failure) => `<div class="constraint"><div class="constraint-head"><span class="constraint-id">${e(failure.command_name)}</span><span class="pill bad">${e(failure.status)}</span></div><blockquote>${e(failure.root_error)}</blockquote></div>`).join("")}</div>` : ""}
+    </section>
+
+    <p class="section-title">Budgets</p>
+    <div class="grid two mt-14">
+      <section class="card card-pad"><p class="section-title mt-0">Local agent</p><div class="grid two">${metric("Turns", `${detail.consumed_local_turns} / ${localBudget?.max_turns ?? "—"}`, "Used / ceiling")}${metric("Patch attempts", `${detail.consumed_local_patch_attempts} / ${localBudget?.max_patch_attempts ?? "—"}`, "Used / ceiling")}${metric("Verify runs", `${detail.consumed_local_verification_runs} / ${localBudget?.max_verification_runs ?? "—"}`, "Used / ceiling")}</div></section>
+      <section class="card card-pad"><p class="section-title mt-0">Frontier agent</p><div class="grid two">${metric("Turns", `${detail.consumed_frontier_turns} / ${frontierBudget?.max_turns ?? "—"}`, "Used / ceiling")}${metric("Patch attempts", `${detail.consumed_frontier_patch_attempts} / ${frontierBudget?.max_patch_attempts ?? "—"}`, "Used / ceiling")}${metric("Verify runs", `${detail.consumed_frontier_verification_runs} / ${frontierBudget?.max_verification_runs ?? "—"}`, "Used / ceiling")}</div></section>
+    </div>
+
+    <p class="section-title">Models used</p>
+    <section class="card card-pad">${(detail.models_used || []).length ? detail.models_used.map((model) => `<div class="file-item"><code>${e(model)}</code></div>`).join("") : `<p class="muted">No model calls were recorded.</p>`}</section>
+
+    <p class="section-title">Audit artifacts · ${(detail.audit_artifact_locations || []).length}</p>
+    <section class="card card-pad">${(detail.audit_artifact_locations || []).length ? `<div class="artifact-list">${detail.audit_artifact_locations.map((artifact) => `<div class="artifact-item"><code>${e(artifact)}</code></div>`).join("")}</div>` : `<p class="muted">No artifacts were discovered.</p>`}</section>
+
+    <p class="section-title">Eligible actions</p>
+    <section class="card card-pad">${reviewActionPanel(detail, eligible)}</section>
+  </main>`;
+}
+
+function reviewOperationPanel() {
+  const op = store.reviewOperation;
+  if (!op) return "";
+  const stage = REVIEW_OPERATION_STAGE[op.status] || { label: op.status, pill: "warn" };
+  let note;
+  if (op.status === "running") note = "A background worker is performing this action now. It is safe to close this tab -- progress is persisted and will still be here on reconnect.";
+  else if (op.status === "recorded") note = "Accepted and durably recorded; waiting for the background worker to pick it up.";
+  else note = op.result_summary || op.error || "";
+  return `<section class="card card-pad mt-16">
+    <div class="constraint-head"><span class="constraint-id">OPERATION ${e(op.operation_id)} · ${e(REVIEW_ACTION_LABELS[op.action] || op.action)}</span><span class="pill ${stage.pill}">${e(stage.label)}</span></div>
+    <p class="muted">${e(note)}</p>
+  </section>`;
+}
+
+function reviewActionPanel(detail, eligible) {
+  if (!eligible.length) {
+    return `<p class="muted">No actions are currently eligible for this task.</p>`;
+  }
+  if (store.reviewConfirm) {
+    return reviewConfirmPanel(detail, store.reviewConfirm.action);
+  }
+  return `<div class="grid two">${eligible.map((action) => reviewActionButton(action)).join("")}</div>`;
+}
+
+function reviewActionButton(action) {
+  const label = REVIEW_ACTION_LABELS[action] || action;
+  const description = {
+    inspect_only: "No mutation -- just records that a human looked at this case.",
+    abandon: "Cleans up the worktree (if one exists) and marks the task rolled back.",
+    verification_only_retry: "Re-runs configured verification against the current worktree. No model is called.",
+    local_continuation: "Resumes the local coding agent with additional authorized turns.",
+    frontier_continuation: "Resumes the frontier coding agent with additional authorized turns.",
+  }[action] || "";
+  return `<article class="card card-pad"><h3>${e(label)}</h3><p class="muted">${e(description)}</p><button class="button ${action === "inspect_only" ? "ghost" : "primary"}" data-action="review-act-intent" data-review-action="${e(action)}">${e(label)} →</button></article>`;
+}
+
+function reviewConfirmPanel(detail, action) {
+  const needsTurns = action === "local_continuation" || action === "frontier_continuation";
+  const copy = {
+    inspect_only: "Records that a human explicitly reviewed this case. No other state changes.",
+    abandon: "This cleans up the worktree (if one exists) and marks the task ROLLED_BACK. This cannot be undone.",
+    verification_only_retry: "Re-runs configured verification against the current worktree right now. No model is called.",
+    local_continuation: "Resumes the local coding agent from exactly where it stopped, with the authorized additional turns. This calls a model.",
+    frontier_continuation: "Resumes the frontier coding agent from exactly where it stopped, with the authorized additional turns. This calls a hosted/frontier model and may incur cost.",
+  }[action] || "";
+  return `<div class="approval-bar">
+    <div>
+      <strong>Confirm: ${e(REVIEW_ACTION_LABELS[action] || action)}</strong>
+      <span>${e(copy)}</span>
+      ${needsTurns ? `<div class="mt-14"><label class="section-title mt-0" for="review-additional-turns">Additional turns (max ${e(detail.max_additional_turns_per_continuation)})</label><input id="review-additional-turns" type="number" min="1" max="${e(detail.max_additional_turns_per_continuation)}" value="${e(store.reviewAdditionalTurns)}" class="mono"></div>` : ""}
+    </div>
+    <div class="approval-actions">
+      <button class="button ghost" data-action="review-act-cancel">Cancel</button>
+      <button class="button primary" data-action="review-act-confirm" data-review-action="${e(action)}" ${store.busy ? "disabled" : ""}>Confirm →</button>
+    </div>
+  </div>`;
+}
+
+function reviewOperationStorageKey(taskId) {
+  return `apoapsis-review-operation-${taskId}`;
+}
+
+function reviewGenerateOperationId() {
+  const raw = (window.crypto && window.crypto.randomUUID)
+    ? window.crypto.randomUUID()
+    : `${Date.now()}-${Math.random()}`;
+  return `RVOP-${raw.replaceAll("-", "").slice(0, 24).toUpperCase()}`;
+}
+
+let reviewPollHandle = null;
+
+async function submitReviewAction(taskId, action) {
+  const detail = store.review;
+  const additionalTurnsField = document.getElementById("review-additional-turns");
+  const additionalTurns = additionalTurnsField ? Number(additionalTurnsField.value) : undefined;
+  const operationId = reviewGenerateOperationId();
+  const payload = { action, operation_id: operationId, expected_version: detail.task_version };
+  if (detail.worktree_fingerprint) payload.expected_worktree_fingerprint = detail.worktree_fingerprint;
+  if (additionalTurns !== undefined && !Number.isNaN(additionalTurns)) payload.additional_turns = additionalTurns;
+
+  window.sessionStorage.setItem(
+    reviewOperationStorageKey(taskId),
+    JSON.stringify({ operationId, action })
+  );
+  store.busy = true;
+  store.error = null;
+  store.reviewConfirm = null;
+  render();
+  try {
+    const record = await api(`/api/reviews/${encodeURIComponent(taskId)}/operations`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+    store.reviewOperation = record;
+    pollReviewOperation(taskId, operationId);
+  } catch (error) {
+    store.error = error.message;
+    window.sessionStorage.removeItem(reviewOperationStorageKey(taskId));
+  } finally {
+    store.busy = false;
+    render();
+  }
+}
+
+async function pollReviewOperation(taskId, operationId) {
+  if (reviewPollHandle) {
+    clearTimeout(reviewPollHandle);
+    reviewPollHandle = null;
+  }
+  try {
+    const record = await api(
+      `/api/reviews/${encodeURIComponent(taskId)}/operations/${encodeURIComponent(operationId)}`
+    );
+    store.reviewOperation = record;
+    render();
+    if (record.status === "recorded" || record.status === "running") {
+      reviewPollHandle = setTimeout(() => pollReviewOperation(taskId, operationId), 2000);
+      return;
+    }
+    window.sessionStorage.removeItem(reviewOperationStorageKey(taskId));
+    if (store.route.name === "review" && store.route.taskId === taskId) {
+      store.review = await api(`/api/reviews/${encodeURIComponent(taskId)}`);
+      store.reviews = null;
+      render();
+    }
+  } catch (error) {
+    store.error = error.message;
+    render();
+  }
+}
+
+function resumePendingReviewOperationPoll(taskId) {
+  const raw = window.sessionStorage.getItem(reviewOperationStorageKey(taskId));
+  if (!raw) return;
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && parsed.operationId) {
+      pollReviewOperation(taskId, parsed.operationId);
+    }
+  } catch (error) {
+    window.sessionStorage.removeItem(reviewOperationStorageKey(taskId));
+  }
+}
+
 function taskView() {
   if (!store.task) return loadingView();
   const detail = store.task;
@@ -633,6 +887,8 @@ function render() {
   if (store.route.name === "task") view = taskView();
   else if (store.route.name === "plan") view = planView();
   else if (store.route.name === "plans") view = plansView();
+  else if (store.route.name === "review") view = reviewView();
+  else if (store.route.name === "reviews") view = reviewsView();
   else if (store.route.name === "new") view = newTaskView();
   else if (store.route.name === "evaluations") view = evaluationsView();
   else if (store.route.name === "models") view = modelsView();
@@ -720,6 +976,17 @@ root.addEventListener("click", (event) => {
     render();
   }
   if (button.dataset.action === "plan-approve-confirm") approvePlan(button);
+  if (button.dataset.action === "review-act-intent") {
+    store.reviewConfirm = { action: button.dataset.reviewAction };
+    render();
+  }
+  if (button.dataset.action === "review-act-cancel") {
+    store.reviewConfirm = null;
+    render();
+  }
+  if (button.dataset.action === "review-act-confirm") {
+    submitReviewAction(store.route.taskId, button.dataset.reviewAction);
+  }
 });
 
 window.addEventListener("hashchange", syncRoute);

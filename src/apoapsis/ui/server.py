@@ -17,6 +17,7 @@ from apoapsis.architect.errors import (
     PlanNotFoundError,
     PlanStoreError,
 )
+from apoapsis.review.errors import FrontierUnavailableError, OperationNotFoundError, ReviewError
 from apoapsis.ui.application import ApoapsisUIService, UIActionError
 from apoapsis.workflow.engine import (
     ConcurrentTransitionError,
@@ -87,6 +88,9 @@ class ApoapsisUIRequestHandler(BaseHTTPRequestHandler):
         if path.startswith("/api/plans/") and path.endswith("/approve"):
             self._handle_plan_approve(path)
             return
+        if path.startswith("/api/reviews/") and path.endswith("/operations"):
+            self._handle_review_operation_submit(path)
+            return
         self._send_error(HTTPStatus.NOT_FOUND, "route not found")
 
     def _handle_task_approve(self, path: str) -> None:
@@ -125,6 +129,53 @@ class ApoapsisUIRequestHandler(BaseHTTPRequestHandler):
         else:
             self._send_json(HTTPStatus.OK, payload)
 
+    def _handle_review_operation_submit(self, path: str) -> None:
+        task_id = unquote(
+            path[len("/api/reviews/") : -len("/operations")]
+        ).strip("/")
+        try:
+            body = self._read_json_body()
+            action = body.get("action")
+            operation_id = body.get("operation_id")
+            expected_version = body.get("expected_version")
+            expected_fingerprint = body.get("expected_worktree_fingerprint")
+            additional_turns = body.get("additional_turns")
+            if not isinstance(action, str) or not action:
+                raise ValueError("action is required")
+            if not isinstance(operation_id, str) or not operation_id:
+                raise ValueError("operation_id is required")
+            if not isinstance(expected_version, int) or isinstance(
+                expected_version, bool
+            ):
+                raise ValueError("expected_version must be an integer")
+            if expected_fingerprint is not None and not isinstance(
+                expected_fingerprint, str
+            ):
+                raise ValueError("expected_worktree_fingerprint must be a string")
+            if additional_turns is not None and (
+                not isinstance(additional_turns, int)
+                or isinstance(additional_turns, bool)
+            ):
+                raise ValueError("additional_turns must be an integer")
+            payload = self.server.service.submit_review_operation(
+                task_id,
+                action=action,
+                operation_id=operation_id,
+                expected_version=expected_version,
+                expected_worktree_fingerprint=expected_fingerprint,
+                additional_turns=additional_turns,
+            )
+        except TaskNotFoundError:
+            self._send_error(HTTPStatus.NOT_FOUND, "task not found")
+        except FrontierUnavailableError as exc:
+            self._send_error(HTTPStatus.BAD_REQUEST, str(exc))
+        except ReviewError as exc:
+            self._send_error(HTTPStatus.CONFLICT, str(exc))
+        except (TaskStoreError, ValueError, json.JSONDecodeError) as exc:
+            self._send_error(HTTPStatus.BAD_REQUEST, str(exc))
+        else:
+            self._send_json(HTTPStatus.ACCEPTED, payload)
+
     def _read_expected_version(self) -> int:
         body = self._read_json_body()
         expected_version = body.get("expected_version")
@@ -148,12 +199,24 @@ class ApoapsisUIRequestHandler(BaseHTTPRequestHandler):
             elif path.startswith("/api/plans/"):
                 plan_id = unquote(path[len("/api/plans/") :]).strip("/")
                 payload = self.server.service.plan_detail(plan_id)
+            elif path == "/api/reviews":
+                payload = self.server.service.review_cases()
+            elif "/operations/" in path and path.startswith("/api/reviews/"):
+                remainder = path[len("/api/reviews/") :]
+                _task_id_part, _, operation_id_part = remainder.partition(
+                    "/operations/"
+                )
+                operation_id = unquote(operation_id_part).strip("/")
+                payload = self.server.service.review_operation_status(operation_id)
+            elif path.startswith("/api/reviews/"):
+                task_id = unquote(path[len("/api/reviews/") :]).strip("/")
+                payload = self.server.service.review_case_detail(task_id)
             else:
                 self._send_error(HTTPStatus.NOT_FOUND, "route not found")
                 return
-        except (TaskNotFoundError, PlanNotFoundError):
+        except (TaskNotFoundError, PlanNotFoundError, OperationNotFoundError):
             self._send_error(HTTPStatus.NOT_FOUND, "not found")
-        except (TaskStoreError, PlanStoreError, ValueError) as exc:
+        except (TaskStoreError, PlanStoreError, ReviewError, ValueError) as exc:
             self._send_error(HTTPStatus.BAD_REQUEST, str(exc))
         else:
             self._send_json(HTTPStatus.OK, payload)
