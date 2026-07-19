@@ -64,35 +64,25 @@ _BASE_ELIGIBLE_ACTIONS: dict[StopReasonKind, tuple[ReviewActionKind, ...]] = {
 
 def classify_stop_reason(
     events: list[WorkflowEvent],
-) -> tuple[StopReasonKind, str, str]:
-    """Classify the most recent HUMAN_REVIEW_REQUIRED-causing event.
+) -> tuple[StopReasonKind, WorkflowEvent | None]:
+    """Classify the task's stop reason from its *newest* transition into
+    HUMAN_REVIEW_REQUIRED only (ADR 0021).
 
-    Returns ``(kind, event_type, reason_text)``. Scans the event history
-    from newest to oldest for the most recent event whose ``to_state`` is
-    HUMAN_REVIEW_REQUIRED and whose ``event_type`` is recognized; falls
-    back to ``StopReasonKind.UNKNOWN`` (only inspect/abandon eligible) if
-    nothing recognized is found, rather than guessing at a broader
-    capability set than the harness can actually justify.
+    Returns ``(kind, event)``. The newest such event alone decides the
+    classification: if its ``event_type`` is unrecognized, the result is
+    ``StopReasonKind.UNKNOWN`` -- this function never keeps scanning past
+    the newest matching event to find an older, recognized one. Falling
+    back to stale history would misclassify a task whose most recent stop
+    reason simply isn't in this module's lookup table yet (for example, a
+    future event type), rather than failing closed.
     """
 
     for event in reversed(events):
         if event.to_state != WorkflowState.HUMAN_REVIEW_REQUIRED:
             continue
-        kind = _EVENT_TYPE_STOP_REASON.get(event.event_type)
-        if kind is None:
-            continue
-        reason = (
-            event.payload.get("reason")
-            if isinstance(event.payload, dict)
-            else None
-        )
-        text = reason if isinstance(reason, str) and reason else event.event_type
-        return kind, event.event_type, text
-    return (
-        StopReasonKind.UNKNOWN,
-        "unknown",
-        "no recognized stop reason was found in the task's event history",
-    )
+        kind = _EVENT_TYPE_STOP_REASON.get(event.event_type, StopReasonKind.UNKNOWN)
+        return kind, event
+    return StopReasonKind.UNKNOWN, None
 
 
 def eligible_actions_for(

@@ -10,6 +10,7 @@ from pydantic import ValidationError
 from apoapsis.config import AgentLoopConfig
 from apoapsis.review.classify import classify_stop_reason, eligible_actions_for
 from apoapsis.review.errors import (
+    ActiveOperationExistsError,
     DuplicateOperationError,
     OperationAlreadyRunningError,
     OperationNotFoundError,
@@ -89,10 +90,11 @@ class ClassifyStopReasonTests(unittest.TestCase):
                         payload={"reason": "some reason"},
                     )
                 ]
-                kind, matched_type, text = classify_stop_reason(events)
+                kind, matched_event = classify_stop_reason(events)
                 self.assertEqual(kind, expected_kind)
-                self.assertEqual(matched_type, event_type)
-                self.assertEqual(text, "some reason")
+                assert matched_event is not None
+                self.assertEqual(matched_event.event_type, event_type)
+                self.assertEqual(matched_event.payload.get("reason"), "some reason")
 
     def test_unrecognized_event_falls_back_to_unknown(self) -> None:
         events = [
@@ -100,9 +102,31 @@ class ClassifyStopReasonTests(unittest.TestCase):
                 "some_future_event_type", to_state=WorkflowState.HUMAN_REVIEW_REQUIRED
             )
         ]
-        kind, matched_type, _text = classify_stop_reason(events)
+        kind, matched_event = classify_stop_reason(events)
         self.assertEqual(kind, StopReasonKind.UNKNOWN)
-        self.assertEqual(matched_type, "unknown")
+        assert matched_event is not None
+        self.assertEqual(matched_event.event_type, "some_future_event_type")
+
+    def test_newest_event_alone_decides_even_if_unrecognized(self) -> None:
+        """An unrecognized *newest* HUMAN_REVIEW_REQUIRED event must never
+        fall back to an older, recognized one (ADR 0021) -- it must
+        classify as UNKNOWN instead."""
+
+        events = [
+            _event(
+                "bounded_frontier_requires_human",
+                to_state=WorkflowState.HUMAN_REVIEW_REQUIRED,
+                payload={"reason": "frontier exhausted"},
+            ),
+            _event(
+                "some_future_event_type",
+                to_state=WorkflowState.HUMAN_REVIEW_REQUIRED,
+            ),
+        ]
+        kind, matched_event = classify_stop_reason(events)
+        self.assertEqual(kind, StopReasonKind.UNKNOWN)
+        assert matched_event is not None
+        self.assertEqual(matched_event.event_type, "some_future_event_type")
 
     def test_most_recent_matching_event_wins(self) -> None:
         events = [
@@ -117,9 +141,10 @@ class ClassifyStopReasonTests(unittest.TestCase):
                 payload={"reason": "frontier exhausted"},
             ),
         ]
-        kind, _matched_type, text = classify_stop_reason(events)
+        kind, matched_event = classify_stop_reason(events)
         self.assertEqual(kind, StopReasonKind.FRONTIER_AGENT_EXHAUSTED)
-        self.assertEqual(text, "frontier exhausted")
+        assert matched_event is not None
+        self.assertEqual(matched_event.payload.get("reason"), "frontier exhausted")
 
 
 class EligibleActionsTests(unittest.TestCase):
@@ -172,14 +197,39 @@ class ReviewOperationStoreTests(unittest.TestCase):
         fetched = self.store.get("RVOP-1")
         self.assertEqual(fetched.operation_id, "RVOP-1")
 
-    def test_duplicate_operation_id_rejected(self) -> None:
+    def test_duplicate_operation_id_rejected_once_terminal(self) -> None:
+        # A literal duplicate operation_id for the same *active* task is
+        # instead rejected by the one-active-operation-per-task check
+        # (see test_second_active_operation_for_same_task_rejected) --
+        # DuplicateOperationError is reserved for reusing an operation_id
+        # whose row already exists in a *terminal* status.
         self.store.create(
             "RVOP-1", "TASK-1", ReviewActionKind.ABANDON, expected_task_version=1
         )
+        self.store.mark_running("RVOP-1")
+        self.store.mark_succeeded("RVOP-1", result_summary="done")
         with self.assertRaises(DuplicateOperationError):
             self.store.create(
                 "RVOP-1", "TASK-1", ReviewActionKind.ABANDON, expected_task_version=1
             )
+
+    def test_second_active_operation_for_same_task_rejected(self) -> None:
+        self.store.create(
+            "RVOP-1", "TASK-1", ReviewActionKind.ABANDON, expected_task_version=1
+        )
+        with self.assertRaises(ActiveOperationExistsError):
+            self.store.create(
+                "RVOP-2", "TASK-1", ReviewActionKind.ABANDON, expected_task_version=1
+            )
+
+    def test_different_tasks_may_each_have_an_active_operation(self) -> None:
+        self.store.create(
+            "RVOP-1", "TASK-1", ReviewActionKind.ABANDON, expected_task_version=1
+        )
+        record = self.store.create(
+            "RVOP-2", "TASK-2", ReviewActionKind.ABANDON, expected_task_version=1
+        )
+        self.assertEqual(record.task_id, "TASK-2")
 
     def test_unknown_operation_raises(self) -> None:
         with self.assertRaises(OperationNotFoundError):

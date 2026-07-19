@@ -15,11 +15,11 @@ must be corrected before the change is considered complete.
 | Item | Current value |
 | --- | --- |
 | Last verified | 2026-07-19 |
-| Working-tree version | `1.0` plus ADR 0013 Windows local-model lifecycle, ADR 0014 first local operator-interface slice, ADR 0015 verification layers and acceptance coverage, ADR 0016's corrective follow-up, ADR 0017's worktree-fingerprint/explicit-acceptance-designation hardening, the opt-in `local-strict` evaluation lane with its first live result, ADR 0018's acceptance-failure-evidence/bounded-specification-correction fixes, ADR 0019's Architect Mode planning foundation plus its Plans UI surface, and ADR 0020's deterministic human-review-and-resume CLI and UI |
+| Working-tree version | `1.0` plus ADR 0013 Windows local-model lifecycle, ADR 0014 first local operator-interface slice, ADR 0015 verification layers and acceptance coverage, ADR 0016's corrective follow-up, ADR 0017's worktree-fingerprint/explicit-acceptance-designation hardening, the opt-in `local-strict` evaluation lane with its first live result, ADR 0018's acceptance-failure-evidence/bounded-specification-correction fixes, ADR 0019's Architect Mode planning foundation plus its Plans UI surface, ADR 0020's deterministic human-review-and-resume CLI and UI, and ADR 0021's review/resume integrity hardening |
 | Checked-out branch | `main` |
-| Repository state | The 1.0/lifecycle baseline, the ADR 0014 UI slice, the ADR 0015 acceptance-coverage milestone, the ADR 0016 correction, the ADR 0017 hardening, the `local-strict` lane, the ADR 0018 fixes, ADR 0019's Architect Mode foundation (CLI + Plans UI), and ADR 0020's review/resume CLI and UI are all committed on `main`; live evaluation evidence is committed separately. `DESIGN.md` is preserved as a separate, committed user-supplied design reference. Run `git status` and `git log -1 --oneline` for the exact current state. |
+| Repository state | The 1.0/lifecycle baseline, the ADR 0014 UI slice, the ADR 0015 acceptance-coverage milestone, the ADR 0016 correction, the ADR 0017 hardening, the `local-strict` lane, the ADR 0018 fixes, ADR 0019's Architect Mode foundation (CLI + Plans UI), ADR 0020's review/resume CLI and UI, and ADR 0021's hardening are all committed on `main`; live evaluation evidence is committed separately. `DESIGN.md` is preserved as a separate, committed user-supplied design reference. Run `git status` and `git log -1 --oneline` for the exact current state. |
 | Preserved substrate tag | `substrate-v0.1` at `4c2e735` |
-| Full deterministic suite | 358 tests, 0 failures, 0 errors, 6 intentional skips (2 live-network, 1 live-Docker, 3 machine currently lacks the Windows privilege to create symlinks) |
+| Full deterministic suite | 373 tests, 0 failures, 0 errors, 6 intentional skips (2 live-network, 1 live-Docker, 3 machine currently lacks the Windows privilege to create symlinks) |
 | Syntax check | `python -m compileall -q src tests` passed |
 | Diff check | `git diff --check` passed; Git reported only expected LF-to-CRLF working-copy warnings |
 | Live local coding result | Qwen3-Coder-Next Q4 completed the controlled download-service task in 10 turns and 3 verification runs |
@@ -301,29 +301,51 @@ architecture.
 - `src/apoapsis/review/execution.py` splits validation from execution:
   `prepare_review_operation()` is fast and synchronous (checks optimistic
   task version, eligible action, worktree-fingerprint match, and
-  continuation ceilings, then durably records the operation) and is safe to
-  call from an HTTP handler; `run_review_operation()` does the actual work
-  (a resumed model call, a verification run, a worktree cleanup) and is
-  meant for a background thread. `execute_review_action()` composes both
-  for synchronous callers (the CLI). Every mutation writes an immutable
-  `ReviewContinuationPackage` (`review/package.py`) before any resumed
-  model call, and drives the same `IMPLEMENTING -> PATCH_READY -> VERIFYING
-  -> COMPLETE` / `... -> ESCALATION_REQUIRED -> HUMAN_REVIEW_REQUIRED`
-  edges the original run used -- no changes to `workflow/states.py` were
-  needed; every edge already existed.
+  continuation ceilings via the shared `_validate_operation_preconditions`,
+  then durably records the operation, including
+  `expected_worktree_fingerprint`) and is safe to call from an HTTP
+  handler; `run_review_operation()` takes only an `operation_id`, marks it
+  `RUNNING` before anything else (including provider construction), then
+  freshly re-projects a `ReviewCase` and re-runs the *same* precondition
+  check against the operation's own recorded expectations immediately
+  before dispatching to any action handler (ADR 0021) -- never trusting
+  state computed at submission time. `execute_review_action()` composes
+  both for synchronous callers (the CLI). Every continuation writes an
+  immutable `ReviewContinuationPackage` (`review/package.py`) before any
+  resumed model call, and drives the same `IMPLEMENTING -> PATCH_READY ->
+  VERIFYING -> COMPLETE` / `... -> ESCALATION_REQUIRED ->
+  HUMAN_REVIEW_REQUIRED` edges the original run used -- no changes to
+  `workflow/states.py` were needed; every edge already existed. `abandon`
+  transitions to `ROLLED_BACK` (version-checked) *before* any destructive
+  worktree cleanup, never after.
 - `src/apoapsis/review/store.py`'s `ReviewOperationStore` is a small SQLite
   idempotency ledger (`.apoapsis/review-operations.db`): a caller-supplied
-  `operation_id` can never be submitted twice, and an operation stuck
-  `running` (e.g. after a crash) can never be silently re-entered.
-- `src/apoapsis/review/worker.py`'s `ReviewWorker` (Commit C2) runs
-  `run_review_operation()` on a background thread, owned by
-  `ApoapsisUIService`, never inside an HTTP request handler. Submission via
+  `operation_id` can never be submitted twice for a *terminal* operation
+  (`DuplicateOperationError`), only one `RECORDED`/`RUNNING` operation may
+  exist per task at a time (`ActiveOperationExistsError`, checked
+  atomically inside the same transaction as the insert), and an operation
+  stuck `RUNNING` can never be silently re-entered
+  (`OperationAlreadyRunningError`) -- only explicit recovery ever moves it
+  forward, into the terminal `AMBIGUOUS` status.
+- `src/apoapsis/review/recovery.py`'s `recover_stale_operations()` (ADR
+  0021) is the explicit crash-recovery path: reclaims `RECORDED` operations
+  (nothing was ever transmitted for them), marks `RUNNING` operations
+  stale beyond a configurable expiry as `AMBIGUOUS` (terminal, inspectable,
+  never auto-repeated), and returns a task stranded outside
+  `HUMAN_REVIEW_REQUIRED` back to it via a `review_operation_recovery_
+  requires_human` event that makes no claim about the interrupted call's
+  outcome. Runs automatically at `ReviewWorker` startup and explicitly via
+  `apoapsis review recover`.
+- `src/apoapsis/review/worker.py`'s `ReviewWorker` (Commit C2, simplified by
+  ADR 0021) runs `run_review_operation(operation_id=...)` on a background
+  thread, owned by `ApoapsisUIService`, never inside an HTTP request
+  handler -- its queue carries only the `operation_id`. Submission via
   `ApoapsisUIService.submit_review_operation()` validates and records the
-  operation synchronously, then hands it to the worker and returns
+  operation synchronously, then hands the id to the worker and returns
   immediately (`202 Accepted`) -- a browser disconnect after that point
   cannot cancel, duplicate, or repeat it.
 - CLI: `apoapsis review list/inspect/abandon/retry-verification/
-  continue-local/continue-frontier` (`src/apoapsis/cli/app.py`).
+  continue-local/continue-frontier/recover` (`src/apoapsis/cli/app.py`).
 - UI (Commit C2): a Human Review queue (`#/reviews`) and case-detail view
   (`#/review/<task-id>`) on the existing ADR 0014 boundary --
   `GET /api/reviews`, `GET /api/reviews/<id>`,
@@ -333,6 +355,14 @@ architecture.
   additionally take an authorized `additional_turns` value. The browser
   persists the in-flight `operation_id` in `sessionStorage` and resumes
   polling it on reconnect rather than re-submitting.
+- `ReviewCase.current_diff` (`review/case.py`) is built from the shared
+  `RepositoryInspector.diff()` machinery, so permitted untracked text files
+  and binary/symlink path-only placeholders appear exactly as they do to
+  the bounded agent loop (ADR 0017) -- not a plain `git diff`. Verification
+  results/acceptance coverage prefer the freshest evidence a retry or
+  continuation actually produced over the original, never-updated
+  `report.json` snapshot, chosen by the same newest-event classification
+  `stop_reason_kind` uses.
 - A continuation always resumes the exact agent session (local or frontier)
   that already exists for the task; it never launches a fresh frontier
   session from a local-only stop. Does not change one-shot mode's own
@@ -1136,6 +1166,7 @@ direct-frontier comparison claims remain unmeasured.
 | Every HUMAN_REVIEW_REQUIRED scenario, stale versions, changed worktrees, unavailable frontier, exhausted ceilings, duplicate/crash-ambiguous operations, counter preservation, continuation-package auditing, continued failure, forbidden authority claims | `tests/test_review_execution.py` |
 | Review CLI command wiring | `tests/test_review_cli.py` |
 | Human Review UI: service/API/security, background-worker execution, replay (duplicate operation) and reconnect (persisted operation polling from a fresh service instance) | `tests/test_review_ui.py` |
+| Review/resume integrity hardening: queue-delay staleness, one-active-operation-per-task, abandon-before-cleanup ordering, provider-construction failure reaching FAILED, unknown-newest-event classification, untracked files in the diff, fresh post-retry evidence, and crash recovery (reclaim/ambiguous/return-to-review) | `tests/test_review_hardening.py` |
 
 Fake providers are the mandatory regression mechanism. Live model or network
 tests supplement them; they must not replace deterministic coverage.
@@ -1259,23 +1290,32 @@ tests supplement them; they must not replace deterministic coverage.
     oversight. No subscription-backed provider adapter was added for
     `plan export`/`import` — they remain manual, copy-paste workflows,
     consistent with the still-deferred ADR 0008 non-goal.
-15. **Human review and resume (ADR 0020) now spans CLI and UI.**
-    `apoapsis review list/inspect/abandon/retry-verification/
-    continue-local/continue-frontier` and the local UI's Human Review
-    queue/case-detail views are both fully implemented and covered by
+15. **Human review and resume (ADR 0020, hardened by ADR 0021) now spans
+    CLI and UI with explicit crash recovery.** `apoapsis review
+    list/inspect/abandon/retry-verification/continue-local/
+    continue-frontier/recover` and the local UI's Human Review
+    queue/case-detail views are fully implemented and covered by
     `tests/test_review.py`, `tests/test_review_execution.py`,
-    `tests/test_review_cli.py`, and `tests/test_review_ui.py`. A
-    continuation always resumes the exact agent session (local or
-    frontier) that already exists for a task; it deliberately does not
-    launch a fresh frontier session from a local-only stop with no
-    frontier session yet, and does not let a continuation switch which
-    agent resumes. `report.json` is not rewritten after a continuation --
-    `ReviewCase` reads live audit artifacts instead; this is a disclosed
-    simplification, not a bug. The UI's `ReviewWorker` is one background
-    thread per running `apoapsis ui` process; if the process itself is
-    killed mid-operation, the operation is left `RUNNING` in the durable
-    store exactly like a CLI crash would leave it -- the same documented
-    fail-closed behavior, not a new failure mode.
+    `tests/test_review_cli.py`, `tests/test_review_ui.py`, and
+    `tests/test_review_hardening.py`. A continuation always resumes the
+    exact agent session (local or frontier) that already exists for a
+    task; it deliberately does not launch a fresh frontier session from a
+    local-only stop with no frontier session yet, and does not let a
+    continuation switch which agent resumes. `report.json` is not
+    rewritten after a continuation -- `ReviewCase` reads live audit
+    artifacts (and, for a verification retry or continuation stop, the
+    exact fresher evidence that stop produced) instead; this is a
+    disclosed simplification, not a bug. Every operation is re-validated
+    against a freshly re-projected `ReviewCase` immediately before it does
+    anything (ADR 0021), not only at submission time. The UI's
+    `ReviewWorker` is one background thread per running `apoapsis ui`
+    process; if the process itself is killed mid-operation,
+    `recover_stale_operations()` (run automatically at the next
+    `ReviewWorker` startup, or explicitly via `apoapsis review recover`)
+    reclaims any operation that never started, marks a stale `RUNNING`
+    operation `AMBIGUOUS` (terminal, inspectable, never auto-repeated), and
+    returns a task stranded outside `HUMAN_REVIEW_REQUIRED` back to it
+    without claiming what the interrupted call actually did.
 
 `NEXT_STEPS.md` is the owner and future-agent execution roadmap. The next high-
 value proofs are (1) identical local download-service evaluations
@@ -1310,6 +1350,7 @@ automation as a substitute for those proofs.
 | `0018` | Acceptance-designated command failures now produce real evidence regardless of `required`, and specification extraction gets exactly one bounded correction attempt |
 | `0019` | Architect Mode planning foundation: deterministic plan schemas/validation/store/audit, manual export/import CLI workflow, and a read-only Plans surface on the local UI |
 | `0020` | Deterministic human review and resume: `ReviewCase` projection, bounded-agent-session resume, idempotent/crash-safe continuation operations, and immutable continuation packages |
+| `0021` | Review/resume integrity hardening: execution-time precondition recheck, one active operation per task, explicit crash recovery (`recover_stale_operations`), abandon-before-cleanup ordering, newest-event-only stop classification, shared bounded diff/inspection, and fresh post-retry/continuation evidence |
 
 Add a new ADR for a new architectural decision. Do not rewrite history to make
 old decisions appear current; mark an ADR superseded and link its replacement

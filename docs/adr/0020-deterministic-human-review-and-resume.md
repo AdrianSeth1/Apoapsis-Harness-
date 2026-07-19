@@ -278,3 +278,14 @@ mutating action, optimistic-version and worktree-fingerprint conflict
 handling, and a background worker (outside the HTTP request path) that
 performs continuation work asynchronously so a browser disconnect can never
 cancel, duplicate, or repeat an authorized operation.
+
+**Errata (ADR 0021):** a subsequent integrity review found that several of
+this ADR's guarantees were not fully enforced as implemented -- most
+notably, `run_review_operation` used a `ReviewCase` and budget captured at
+*submission* time with no re-check at *execution* time, so a worker-queue
+delay could act on stale worktree/version/eligibility state; no limit
+existed on concurrent operations per task; provider construction could
+raise before `mark_running`, leaving an operation `RECORDED` forever; and
+no recovery path existed for a `RUNNING` operation whose process died. None
+of this ADR's design changed -- ADR 0021 documents the fixes, all within
+this same architecture.

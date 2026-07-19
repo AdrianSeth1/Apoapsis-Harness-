@@ -328,7 +328,7 @@ timeout_seconds = 30
         fake_provider = InstrumentedModelProvider(fake, ProviderPricing())
 
         with patch(
-            "apoapsis.review.worker._build_provider", return_value=fake_provider
+            "apoapsis.review.execution._build_provider", return_value=fake_provider
         ):
             self.service.submit_review_operation(
                 self.task_id,

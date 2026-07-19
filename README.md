@@ -312,6 +312,20 @@ and the number of continuations per task are both capped by
 when a frontier agent session already exists for that task; it never
 launches a fresh frontier attempt from a local-only stop.
 
+Every operation is re-validated against fresh state (task version, worktree
+fingerprint, eligibility, budgets) immediately before it does anything,
+never only at submission time (ADR 0021) -- and only one operation may be
+active per task at once. If the process running a continuation is killed,
+`apoapsis review recover` (also run automatically whenever `apoapsis ui`
+starts) reclaims any operation that never actually started, marks a stale
+in-progress operation as ambiguous (never automatically repeated), and
+returns a stranded task to human review without claiming what the
+interrupted call did:
+
+```bash
+apoapsis review recover
+```
+
 ## Diagnostics and evaluation
 
 Check the local toolchain, configured models, context limits, credential

@@ -19,6 +19,8 @@ from apoapsis.models.base import (
     ModelRequest,
     ModelResponse,
 )
+from apoapsis.models.frontier import OpenAICompatibleFrontierProvider
+from apoapsis.models.local import OllamaProvider
 from apoapsis.models.provider import ModelRole, ProviderInvocation
 from apoapsis.models.telemetry import InstrumentedModelProvider, InstrumentedProviderError
 from apoapsis.patches.apply import GitPatchApplier
@@ -32,7 +34,6 @@ from apoapsis.review.case import (
     read_agent_session,
     task_slug,
 )
-from apoapsis.review.classify import eligible_actions_for
 from apoapsis.review.errors import (
     ContinuationCeilingExceededError,
     FrontierUnavailableError,
@@ -57,6 +58,88 @@ from apoapsis.workflow.acceptance import (
 from apoapsis.workflow.engine import SQLiteTaskStore
 from apoapsis.workflow.events import WorkflowActor
 from apoapsis.workflow.states import WorkflowState
+
+_CONTINUATION_ACTIONS = frozenset(
+    {ReviewActionKind.LOCAL_CONTINUATION, ReviewActionKind.FRONTIER_CONTINUATION}
+)
+_WORKTREE_CHECKED_ACTIONS = frozenset(
+    {
+        ReviewActionKind.VERIFICATION_ONLY_RETRY,
+        ReviewActionKind.LOCAL_CONTINUATION,
+        ReviewActionKind.FRONTIER_CONTINUATION,
+    }
+)
+
+
+def _build_provider(provider_config: FrontierProviderConfig) -> InstrumentedModelProvider:
+    if provider_config.provider == "ollama":
+        adapter = OllamaProvider(provider_config)
+    elif provider_config.provider == "openai_compatible":
+        adapter = OpenAICompatibleFrontierProvider(provider_config)
+    else:
+        raise ReviewError(f"unsupported provider: {provider_config.provider}")
+    return InstrumentedModelProvider(adapter, provider_config.pricing)
+
+
+def _validate_operation_preconditions(
+    review_case: ReviewCase,
+    *,
+    action: ReviewActionKind,
+    expected_version: int,
+    expected_worktree_fingerprint: str | None,
+    budget: ContinuationBudget | None,
+    max_additional_turns_per_continuation: int,
+) -> None:
+    """The one set of precondition checks every operation must pass --
+    used both by ``prepare_review_operation`` (against caller-supplied
+    expectations, before recording) and ``run_review_operation`` (against
+    the durably recorded expectations, freshly re-checked immediately
+    before doing anything -- ADR 0021). Raises on the first violation.
+    """
+
+    if expected_version != review_case.task_version:
+        raise ReviewError(
+            f"expected task version {expected_version}, found "
+            f"{review_case.task_version}"
+        )
+    if action not in review_case.eligible_actions:
+        raise InvalidReviewActionError(
+            f"action {action.value} is not eligible for task "
+            f"{review_case.task_id} "
+            f"(eligible: {[item.value for item in review_case.eligible_actions]})"
+        )
+    if action in _WORKTREE_CHECKED_ACTIONS:
+        if (
+            expected_worktree_fingerprint is None
+            or expected_worktree_fingerprint != review_case.worktree_fingerprint
+        ):
+            raise WorktreeChangedError(
+                "the worktree fingerprint no longer matches what was shown "
+                "before authorizing this action; inspect the task again"
+            )
+    if action in _CONTINUATION_ACTIONS:
+        if budget is None:
+            raise ReviewError(f"{action.value} requires an authorized budget")
+        if budget.additional_turns > max_additional_turns_per_continuation:
+            raise ContinuationCeilingExceededError(
+                f"additional_turns {budget.additional_turns} exceeds the "
+                f"configured ceiling of {max_additional_turns_per_continuation} "
+                "per continuation"
+            )
+        if review_case.continuations_used >= review_case.max_continuations_per_task:
+            raise ContinuationCeilingExceededError(
+                f"task {review_case.task_id} has already used "
+                f"{review_case.continuations_used} of "
+                f"{review_case.max_continuations_per_task} authorized "
+                "continuations"
+            )
+        if (
+            action == ReviewActionKind.FRONTIER_CONTINUATION
+            and not review_case.frontier_available
+        ):
+            raise FrontierUnavailableError(
+                "no frontier coder is configured for this project"
+            )
 
 
 def _inference_parameters(
@@ -227,76 +310,45 @@ def prepare_review_operation(
     expected_version: int,
     expected_worktree_fingerprint: str | None = None,
     additional_turns: int | None = None,
-) -> tuple[ReviewCase, ContinuationBudget | None]:
+) -> ReviewCase:
     """Every fast, synchronous, read-only check plus operation-record
     creation -- never a model call, never a worktree mutation. Safe to call
     directly from an HTTP request handler (ADR 0020 Commit C2): a caller
     gets an immediate, authoritative accept/reject before any slow work is
-    ever enqueued. Raises on any validation failure; otherwise the
-    operation is durably recorded as ``RECORDED`` and ready for
-    ``run_review_operation``.
+    ever enqueued. Raises on any validation failure (including
+    ``ActiveOperationExistsError`` if this task already has a RECORDED or
+    RUNNING operation); otherwise the operation -- and everything needed to
+    later re-derive and re-check it, including
+    ``expected_worktree_fingerprint`` -- is durably recorded as ``RECORDED``
+    and ready for ``run_review_operation``.
     """
 
     root = Path(project_root).resolve()
     review_case = build_review_case(root, task_store, config, task_id)
-
-    if expected_version != review_case.task_version:
-        raise ReviewError(
-            f"expected task version {expected_version}, found "
-            f"{review_case.task_version}"
-        )
-    if action not in review_case.eligible_actions:
-        raise InvalidReviewActionError(
-            f"action {action.value} is not eligible for task {task_id} "
-            f"(eligible: {[item.value for item in review_case.eligible_actions]})"
-        )
-
-    needs_worktree_check = action in {
-        ReviewActionKind.VERIFICATION_ONLY_RETRY,
-        ReviewActionKind.LOCAL_CONTINUATION,
-        ReviewActionKind.FRONTIER_CONTINUATION,
-    }
-    if needs_worktree_check:
-        if (
-            expected_worktree_fingerprint is None
-            or expected_worktree_fingerprint != review_case.worktree_fingerprint
-        ):
-            raise WorktreeChangedError(
-                "the worktree fingerprint no longer matches what was shown "
-                "before authorizing this action; inspect the task again"
-            )
-
-    budget: ContinuationBudget | None = None
-    if action in {ReviewActionKind.LOCAL_CONTINUATION, ReviewActionKind.FRONTIER_CONTINUATION}:
-        if additional_turns is None:
-            raise ReviewError(f"{action.value} requires additional_turns")
-        if additional_turns > config.review.max_additional_turns_per_continuation:
-            raise ContinuationCeilingExceededError(
-                f"additional_turns {additional_turns} exceeds the configured "
-                f"ceiling of {config.review.max_additional_turns_per_continuation} "
-                "per continuation"
-            )
-        if review_case.continuations_used >= review_case.max_continuations_per_task:
-            raise ContinuationCeilingExceededError(
-                f"task {task_id} has already used "
-                f"{review_case.continuations_used} of "
-                f"{review_case.max_continuations_per_task} authorized "
-                "continuations"
-            )
-        budget = ContinuationBudget(additional_turns=additional_turns)
-        if action == ReviewActionKind.FRONTIER_CONTINUATION and not review_case.frontier_available:
-            raise FrontierUnavailableError(
-                "no frontier coder is configured for this project"
-            )
-
+    budget = (
+        ContinuationBudget(additional_turns=additional_turns)
+        if additional_turns is not None
+        else None
+    )
+    _validate_operation_preconditions(
+        review_case,
+        action=action,
+        expected_version=expected_version,
+        expected_worktree_fingerprint=expected_worktree_fingerprint,
+        budget=budget,
+        max_additional_turns_per_continuation=(
+            config.review.max_additional_turns_per_continuation
+        ),
+    )
     operation_store.create(
         operation_id,
         task_id,
         action,
         expected_task_version=expected_version,
+        expected_worktree_fingerprint=expected_worktree_fingerprint,
         authorized_budget=budget,
     )
-    return review_case, budget
+    return review_case
 
 
 def run_review_operation(
@@ -304,61 +356,99 @@ def run_review_operation(
     task_store: SQLiteTaskStore,
     operation_store: ReviewOperationStore,
     config: ApoapsisConfig,
-    review_case: ReviewCase,
     *,
-    action: ReviewActionKind,
     operation_id: str,
-    expected_version: int,
-    budget: ContinuationBudget | None,
     local_coder_provider: InstrumentedModelProvider | None = None,
     frontier_coder_provider: InstrumentedModelProvider | None = None,
 ) -> ReviewOperationRecord:
     """The actual work -- a resumed model call, a verification run, or a
     worktree cleanup -- for an operation ``prepare_review_operation`` has
-    already validated and recorded. May be slow; intended to run on a
-    background worker thread (ADR 0020 Commit C2), never inside an HTTP
-    request handler.
+    already validated and recorded. Takes only ``operation_id``; every
+    other input (task, action, expected version/fingerprint, budget) is
+    reloaded from the durable operation record, never carried in memory
+    from submission time (ADR 0021) -- a worker queue entry, a crash, or a
+    long delay between submission and execution can never cause stale
+    in-memory state to be acted on.
+
+    Marks the operation ``RUNNING`` before anything else -- including
+    provider construction -- so any preflight failure (a bad provider
+    config, a task that changed underneath the operation, an exhausted
+    ceiling) reaches a deterministic terminal status (``FAILED``) instead
+    of leaving the operation ``RECORDED`` forever. Immediately re-projects
+    a fresh ``ReviewCase`` and re-validates every precondition against the
+    operation's own recorded expectations before dispatching to the action
+    handler -- never trusting anything computed earlier.
+
+    Intended to run on a background worker thread (ADR 0020 Commit C2),
+    never inside an HTTP request handler.
     """
 
     root = Path(project_root).resolve()
+    record = operation_store.get(operation_id)
     operation_store.mark_running(operation_id)
     try:
-        if action == ReviewActionKind.INSPECT_ONLY:
+        review_case = build_review_case(root, task_store, config, record.task_id)
+        _validate_operation_preconditions(
+            review_case,
+            action=record.action,
+            expected_version=record.expected_task_version,
+            expected_worktree_fingerprint=record.expected_worktree_fingerprint,
+            budget=record.authorized_budget,
+            max_additional_turns_per_continuation=(
+                config.review.max_additional_turns_per_continuation
+            ),
+        )
+
+        if record.action == ReviewActionKind.INSPECT_ONLY:
             summary = "inspected only; no state change was made"
-        elif action == ReviewActionKind.ABANDON:
-            summary = _execute_abandon(root, task_store, review_case, expected_version)
-        elif action == ReviewActionKind.VERIFICATION_ONLY_RETRY:
+        elif record.action == ReviewActionKind.ABANDON:
+            summary = _execute_abandon(
+                root, task_store, review_case, record.expected_task_version
+            )
+        elif record.action == ReviewActionKind.VERIFICATION_ONLY_RETRY:
             summary = _execute_verification_retry(
-                root, task_store, config, review_case, expected_version
+                root,
+                task_store,
+                config,
+                review_case,
+                record.expected_task_version,
+                operation_id=operation_id,
             )
-        elif action == ReviewActionKind.LOCAL_CONTINUATION:
-            assert budget is not None
+        elif record.action == ReviewActionKind.LOCAL_CONTINUATION:
+            assert record.authorized_budget is not None
+            provider = local_coder_provider or _build_provider(
+                config.models.local_coder or config.models.frontier
+            )
             summary = _execute_continuation(
                 root,
                 task_store,
                 config,
                 review_case,
-                expected_version,
-                action=action,
+                record.expected_task_version,
+                action=record.action,
                 operation_id=operation_id,
-                budget=budget,
-                provider=local_coder_provider,
+                budget=record.authorized_budget,
+                provider=provider,
             )
-        elif action == ReviewActionKind.FRONTIER_CONTINUATION:
-            assert budget is not None
+        elif record.action == ReviewActionKind.FRONTIER_CONTINUATION:
+            assert record.authorized_budget is not None
+            assert config.models.frontier_coder is not None
+            provider = frontier_coder_provider or _build_provider(
+                config.models.frontier_coder
+            )
             summary = _execute_continuation(
                 root,
                 task_store,
                 config,
                 review_case,
-                expected_version,
-                action=action,
+                record.expected_task_version,
+                action=record.action,
                 operation_id=operation_id,
-                budget=budget,
-                provider=frontier_coder_provider,
+                budget=record.authorized_budget,
+                provider=provider,
             )
         else:
-            raise AssertionError(f"unhandled review action: {action}")
+            raise AssertionError(f"unhandled review action: {record.action}")
     except Exception as exc:
         operation_store.mark_failed(operation_id, error=f"{type(exc).__name__}: {exc}")
         raise
@@ -386,7 +476,7 @@ def execute_review_action(
     ``run_review_operation`` from a background worker instead, so a
     resumed model call never blocks a request thread."""
 
-    review_case, budget = prepare_review_operation(
+    prepare_review_operation(
         project_root,
         task_store,
         operation_store,
@@ -403,11 +493,7 @@ def execute_review_action(
         task_store,
         operation_store,
         config,
-        review_case,
-        action=action,
         operation_id=operation_id,
-        expected_version=expected_version,
-        budget=budget,
         local_coder_provider=local_coder_provider,
         frontier_coder_provider=frontier_coder_provider,
     )
@@ -419,10 +505,10 @@ def _execute_abandon(
     review_case: ReviewCase,
     expected_version: int,
 ) -> str:
-    if review_case.worktree_exists:
-        WorktreeManager(root).cleanup(
-            task_slug(review_case.task_id), force=True, delete_branch=False
-        )
+    # The version-checked transition happens BEFORE any destructive
+    # worktree cleanup (ADR 0021): a stale operation must fail its version
+    # check and never delete anything, rather than deleting the worktree
+    # and only then discovering the task had already moved on.
     task_store.transition(
         review_case.task_id,
         WorkflowState.ROLLED_BACK,
@@ -434,6 +520,10 @@ def _execute_abandon(
         },
         expected_version=expected_version,
     )
+    if review_case.worktree_exists:
+        WorktreeManager(root).cleanup(
+            task_slug(review_case.task_id), force=True, delete_branch=False
+        )
     return "task abandoned and rolled back"
 
 
@@ -443,6 +533,8 @@ def _execute_verification_retry(
     config: ApoapsisConfig,
     review_case: ReviewCase,
     expected_version: int,
+    *,
+    operation_id: str,
 ) -> str:
     assert review_case.worktree_path is not None
     task_id = review_case.task_id
@@ -451,17 +543,18 @@ def _execute_verification_retry(
         WorkflowState.VERIFYING,
         actor=WorkflowActor.VERIFICATION_ENGINE,
         event_type="review_verification_retry_started",
-        payload={"reason": "human-authorized verification-only retry"},
+        payload={
+            "reason": "human-authorized verification-only retry",
+            "operation_id": operation_id,
+        },
         expected_version=expected_version,
     )
     result = VerificationRunner(config.verification).run(
         task_id, review_case.worktree_path, attempt=1
     )
     audit = TaskAuditStore(root, task_id)
-    existing = sorted(audit.root.glob("review-verification-retry-*.json"))
-    index = len(existing) + 1
     audit.write_json(
-        f"review-verification-retry-{index:03d}.json",
+        f"review-verification-retry-{operation_id}.json",
         result,
         kind="verification_result",
     )
@@ -472,7 +565,10 @@ def _execute_verification_retry(
             WorkflowState.HUMAN_REVIEW_REQUIRED,
             actor=WorkflowActor.VERIFICATION_ENGINE,
             event_type="review_verification_retry_failed",
-            payload={"reason": "configured verification still failed on retry"},
+            payload={
+                "reason": "configured verification still failed on retry",
+                "operation_id": operation_id,
+            },
             expected_version=verifying.version,
         )
         return "verification retry still failing"
@@ -499,6 +595,7 @@ def _execute_verification_retry(
                         "acceptance criterion is proven under the strict "
                         "completion policy"
                     ),
+                    "operation_id": operation_id,
                     "coverage": [item.model_dump(mode="json") for item in coverage],
                 },
                 expected_version=verifying.version,
@@ -510,7 +607,7 @@ def _execute_verification_retry(
         WorkflowState.COMPLETE,
         actor=WorkflowActor.VERIFICATION_ENGINE,
         event_type="review_verification_retry_passed",
-        payload={},
+        payload={"operation_id": operation_id},
         expected_version=verifying.version,
     )
     return "verification retry passed; task marked COMPLETE"

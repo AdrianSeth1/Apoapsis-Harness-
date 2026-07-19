@@ -19,6 +19,7 @@ from apoapsis.architect.schema import PlanValidationResult, ValidationSeverity
 from apoapsis.review.case import build_review_case
 from apoapsis.review.errors import ReviewError
 from apoapsis.review.execution import execute_review_action
+from apoapsis.review.recovery import recover_stale_operations
 from apoapsis.review.schema import ReviewActionKind
 from apoapsis.review.store import ReviewOperationStore
 from apoapsis.config import (
@@ -482,6 +483,14 @@ def build_parser() -> argparse.ArgumentParser:
     review_continue_frontier.add_argument(
         "--additional-turns", type=int, required=True
     )
+    review_subparsers.add_parser(
+        "recover",
+        help=(
+            "explicit crash recovery: reclaim never-started operations, "
+            "mark stale running ones ambiguous, and return stuck tasks to "
+            "human review"
+        ),
+    )
 
     aggregate = subparsers.add_parser(
         "eval-aggregate",
@@ -797,6 +806,9 @@ def _review_command(
             frontier_coder_provider=frontier_coder_provider,
         )
         return record.model_dump(mode="json")
+    if args.review_command == "recover":
+        report = recover_stale_operations(store, operation_store)
+        return report.model_dump(mode="json")
     raise AssertionError(f"unhandled review command: {args.review_command}")
 
 

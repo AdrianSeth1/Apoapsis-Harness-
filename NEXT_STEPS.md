@@ -407,6 +407,39 @@ duplicate-operation replay rejection, reconnect via a fresh service
 instance reading the same persisted operation, and server-level session/
 origin/version/duplicate-conflict coverage); full suite 358/358 passing.
 
+### Done — Phase H1: review/resume integrity hardening (ADR 0021)
+
+A focused integrity review of ADR 0020's implementation found real gaps
+between documented and enforced guarantees: `ReviewWorker`'s queue carried
+a `ReviewCase` captured at submission time with no recheck at execution
+time; no limit existed on concurrent operations per task; provider
+construction could raise before `mark_running`, leaving an operation
+`RECORDED` forever; no crash-recovery path existed at all; `_execute_abandon`
+deleted the worktree before its version check; `classify_stop_reason` could
+silently fall back to a stale, older recognized stop reason; `ReviewCase
+.current_diff` used a plain `git diff` (missing untracked files); and
+verification/acceptance evidence never advanced past the original,
+never-updated `report.json` snapshot. All fixed without touching
+`workflow/states.py` or any of ADR 0020's five stop-reason scenarios:
+`ReviewOperationRecord` now persists `expected_worktree_fingerprint`;
+`run_review_operation()` takes only an `operation_id`, marks it `RUNNING`
+first, then freshly re-projects and re-validates a `ReviewCase` against the
+durably recorded expectations before doing anything; `ReviewOperationStore
+.create()` atomically rejects a second active operation per task
+(`ActiveOperationExistsError`); a new `review.recovery.recover_stale_
+operations()` reclaims never-started operations, marks stale `RUNNING` ones
+the new terminal `AMBIGUOUS` status, and returns stranded tasks to
+`HUMAN_REVIEW_REQUIRED` without claiming what happened -- run automatically
+at `ReviewWorker` startup and explicitly via `apoapsis review recover`;
+abandon now transitions before cleanup; stop classification decides on the
+newest `HUMAN_REVIEW_REQUIRED` event alone; `ReviewCase.current_diff` uses
+the shared `RepositoryInspector.diff()`; and fresh evidence is selected
+using the same newest-event classification already computed. New ADR 0021;
+errata appended to ADR 0020; HANDOFF's overstated crash-behavior claim
+corrected. 12 new tests in `tests/test_review_hardening.py`, plus updates to
+existing review tests for the new `classify_stop_reason` signature and the
+duplicate/active-operation distinction; full suite 373/373 passing.
+
 ### Priority C — extend the accepted application shell (ADR 0014)
 
 The first UI slice is complete: local/offline assets, a capability-protected

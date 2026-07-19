@@ -253,7 +253,7 @@ class ApoapsisUIService:
             )
         operation_store = self._review_operation_store()
         action_kind = ReviewActionKind(action)
-        review_case, budget = prepare_review_operation(
+        prepare_review_operation(
             self.project_root,
             store,
             operation_store,
@@ -265,13 +265,7 @@ class ApoapsisUIService:
             expected_worktree_fingerprint=expected_worktree_fingerprint,
             additional_turns=additional_turns,
         )
-        self._worker().submit(
-            review_case,
-            action=action_kind,
-            operation_id=operation_id,
-            expected_version=expected_version,
-            budget=budget,
-        )
+        self._worker().submit(operation_id)
         return operation_store.get(operation_id).model_dump(mode="json")
 
     def review_operation_status(self, operation_id: str) -> dict[str, Any]:

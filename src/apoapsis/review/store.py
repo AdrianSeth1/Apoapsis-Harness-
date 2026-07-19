@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-import json
 import sqlite3
 from contextlib import closing
 from pathlib import Path
 
 from apoapsis.review.errors import (
+    ActiveOperationExistsError,
     DuplicateOperationError,
     OperationAlreadyRunningError,
     OperationNotFoundError,
@@ -19,17 +19,26 @@ from apoapsis.review.schema import (
 )
 from apoapsis.specification.schema import utc_now
 
+_ACTIVE_STATUSES = (
+    ReviewOperationStatus.RECORDED.value,
+    ReviewOperationStatus.RUNNING.value,
+)
+
 
 class ReviewOperationStore:
-    """Persistent, idempotent ledger of human-review operations (ADR 0020).
+    """Persistent, idempotent ledger of human-review operations (ADR 0020,
+    hardened by ADR 0021).
 
     ``operation_id`` is a stable, caller-supplied idempotency key: creating
     the same ``operation_id`` twice is rejected outright
-    (``DuplicateOperationError``), and an operation left ``RUNNING`` --
-    for example because the process crashed after a provider request had
-    possibly already been transmitted -- can never be silently re-entered
-    (``OperationAlreadyRunningError``); a caller must inspect it and start
-    a genuinely new operation to proceed.
+    (``DuplicateOperationError``), and only one RECORDED/RUNNING operation
+    may exist per task at a time (``ActiveOperationExistsError``). An
+    operation left ``RUNNING`` -- for example because the process crashed
+    after a provider request had possibly already been transmitted -- can
+    never be silently re-entered (``OperationAlreadyRunningError``); explicit
+    recovery (``review.recovery.recover_stale_operations``) is the only path
+    that ever moves a stuck ``RUNNING`` operation forward, into the terminal,
+    inspectable ``AMBIGUOUS`` status -- never back into execution.
     """
 
     def __init__(self, database_path: str | Path, *, initialize: bool = True) -> None:
@@ -59,6 +68,7 @@ class ReviewOperationStore:
                     task_id TEXT NOT NULL,
                     action TEXT NOT NULL,
                     expected_task_version INTEGER NOT NULL,
+                    expected_worktree_fingerprint TEXT,
                     authorized_budget_json TEXT,
                     status TEXT NOT NULL,
                     created_at TEXT NOT NULL,
@@ -66,6 +76,9 @@ class ReviewOperationStore:
                     result_summary TEXT,
                     error TEXT
                 );
+
+                CREATE INDEX IF NOT EXISTS idx_review_operations_task_status
+                ON review_operations(task_id, status);
                 """
             )
 
@@ -76,26 +89,40 @@ class ReviewOperationStore:
         action: ReviewActionKind,
         *,
         expected_task_version: int,
+        expected_worktree_fingerprint: str | None = None,
         authorized_budget: ContinuationBudget | None = None,
     ) -> ReviewOperationRecord:
         now = utc_now()
         connection = self._connect()
         try:
             connection.execute("BEGIN IMMEDIATE")
+            active = connection.execute(
+                "SELECT operation_id FROM review_operations "
+                "WHERE task_id = ? AND status IN (?, ?)",
+                (task_id, *_ACTIVE_STATUSES),
+            ).fetchone()
+            if active is not None:
+                connection.rollback()
+                raise ActiveOperationExistsError(
+                    f"task {task_id} already has an active operation "
+                    f"{active['operation_id']}; wait for it to finish or "
+                    "inspect it before submitting another"
+                )
             try:
                 connection.execute(
                     """
                     INSERT INTO review_operations (
                         operation_id, task_id, action, expected_task_version,
-                        authorized_budget_json, status, created_at, updated_at,
-                        result_summary, error
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)
+                        expected_worktree_fingerprint, authorized_budget_json,
+                        status, created_at, updated_at, result_summary, error
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)
                     """,
                     (
                         operation_id,
                         task_id,
                         action.value,
                         expected_task_version,
+                        expected_worktree_fingerprint,
                         (
                             authorized_budget.model_dump_json()
                             if authorized_budget is not None
@@ -129,6 +156,25 @@ class ReviewOperationStore:
             raise OperationNotFoundError(operation_id)
         return self._row_to_record(row)
 
+    def find_active_for_task(self, task_id: str) -> ReviewOperationRecord | None:
+        with closing(self._connect()) as connection:
+            row = connection.execute(
+                "SELECT * FROM review_operations "
+                "WHERE task_id = ? AND status IN (?, ?) "
+                "ORDER BY created_at DESC LIMIT 1",
+                (task_id, *_ACTIVE_STATUSES),
+            ).fetchone()
+        return self._row_to_record(row) if row is not None else None
+
+    def list_active(self) -> list[ReviewOperationRecord]:
+        with closing(self._connect()) as connection:
+            rows = connection.execute(
+                "SELECT * FROM review_operations WHERE status IN (?, ?) "
+                "ORDER BY created_at ASC",
+                _ACTIVE_STATUSES,
+            ).fetchall()
+        return [self._row_to_record(row) for row in rows]
+
     def mark_running(self, operation_id: str) -> ReviewOperationRecord:
         return self._transition(
             operation_id,
@@ -152,6 +198,19 @@ class ReviewOperationStore:
             from_statuses={ReviewOperationStatus.RUNNING},
             to_status=ReviewOperationStatus.FAILED,
             error=error,
+        )
+
+    def mark_ambiguous(self, operation_id: str, *, note: str) -> ReviewOperationRecord:
+        """Explicit crash recovery only (ADR 0021, ``review.recovery``):
+        moves a RUNNING operation whose owning process appears to have died
+        into the terminal, inspectable ``AMBIGUOUS`` status. Never called
+        as part of ordinary execution."""
+
+        return self._transition(
+            operation_id,
+            from_statuses={ReviewOperationStatus.RUNNING},
+            to_status=ReviewOperationStatus.AMBIGUOUS,
+            error=note,
         )
 
     def _transition(
@@ -210,6 +269,7 @@ class ReviewOperationStore:
             task_id=row["task_id"],
             action=ReviewActionKind(row["action"]),
             expected_task_version=row["expected_task_version"],
+            expected_worktree_fingerprint=row["expected_worktree_fingerprint"],
             authorized_budget=(
                 ContinuationBudget.model_validate_json(row["authorized_budget_json"])
                 if row["authorized_budget_json"]

@@ -30,6 +30,11 @@ class DuplicateOperationError(ReviewError):
     """Raised when an operation_id has already been submitted."""
 
 
+class ActiveOperationExistsError(ReviewError):
+    """Raised when a task already has a RECORDED or RUNNING operation --
+    only one active operation per task is ever permitted (ADR 0021)."""
+
+
 class OperationNotFoundError(ReviewError):
     """Raised when an operation_id is not present in the operation store."""
 

@@ -45,6 +45,11 @@ class ReviewOperationStatus(StrEnum):
     RUNNING = "running"
     SUCCEEDED = "succeeded"
     FAILED = "failed"
+    # A RUNNING operation whose owning process appears to have died before
+    # reaching SUCCEEDED/FAILED (ADR 0021). Terminal and inspectable, but
+    # never automatically repeated: whether a model call was transmitted
+    # before the process died is genuinely unknown.
+    AMBIGUOUS = "ambiguous"
 
 
 class ContinuationBudget(StrictModel):
@@ -98,10 +103,15 @@ class ReviewCase(StrictModel):
 
 
 class ReviewOperationRecord(StrictModel):
+    """The durable, authoritative record of one human-review operation
+    (ADR 0021). Carries everything needed to execute it -- a worker never
+    needs anything but ``operation_id`` to reload the rest."""
+
     operation_id: str = Field(pattern=r"^RVOP-[A-Za-z0-9._-]+$")
     task_id: str = Field(pattern=r"^TASK-[A-Za-z0-9._-]+$")
     action: ReviewActionKind
     expected_task_version: int = Field(ge=1)
+    expected_worktree_fingerprint: str | None = None
     authorized_budget: ContinuationBudget | None = None
     status: ReviewOperationStatus
     created_at: datetime
