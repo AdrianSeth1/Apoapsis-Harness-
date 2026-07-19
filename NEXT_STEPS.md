@@ -334,10 +334,51 @@ approval, an explicit "approval touches no tracked file" check, and
 server-level session/origin/version-conflict coverage for the new routes);
 full suite 305/305 passing.
 
-### Priority B — review and resume experience
+### Done — Phase C1: deterministic human review and resume (ADR 0020)
 
-The highest-value product gap is a polished continuation path for tasks that end
-in human review. Build this as deterministic control-plane functionality:
+A full inventory of every code path reaching `HUMAN_REVIEW_REQUIRED` found
+exactly five stop reasons (specification rejected, routing requires human,
+one-shot acceptance-coverage-incomplete, local-agent escalation unavailable,
+frontier-agent exhausted) and confirmed `ALLOWED_TRANSITIONS` already had
+real outgoing edges from `HUMAN_REVIEW_REQUIRED` that nothing ever used.
+New `src/apoapsis/review/` package: `ReviewCase` (a deterministic projection
+of stop reason, current diff/worktree fingerprint, consumed/configured
+budgets, and harness-computed eligible actions -- never a model's claim);
+`BoundedAgentSession.resume()` (`agent/session.py`) to continue a bounded
+agent session without resetting prior turns/observations/verification
+state; an idempotent, crash-safe `ReviewOperationStore` (duplicate
+`operation_id` rejected outright; an operation stuck `running` can never be
+silently re-entered); an immutable `ReviewContinuationPackage` written
+before any resumed model call; and `execute_review_action()`, which checks
+optimistic task version, eligible action, worktree-fingerprint match, and
+continuation ceilings before doing anything. Five actions:
+`inspect_only`/`abandon`/`verification_only_retry`/`local_continuation`/
+`frontier_continuation` -- eligibility computed fresh every time (frontier
+availability re-checked against current config, not the stale routing
+decision). CLI: `apoapsis review list/inspect/abandon/retry-verification/
+continue-local/continue-frontier`. 35 new tests
+(`tests/test_review.py`, `tests/test_review_execution.py`,
+`tests/test_review_cli.py`) covering every stop scenario, stale versions,
+changed worktrees, unavailable frontier, exhausted ceilings, duplicate/
+crash-ambiguous operations, counter preservation, continuation-package
+auditing, successful continuation, continued failure, and forbidden model
+authority claims; full suite 340/340 passing. `workflow/states.py` was not
+changed at all -- every transition edge used already existed. Does not
+change one-shot's own execution path, does not let a continuation switch
+which agent resumes, and does not launch a fresh frontier session from a
+local-only stop with no frontier session yet.
+
+**Next (Phase C2, tracked separately):** a Human Review queue and case-detail
+view on the existing local UI, with two-step confirmation for every
+mutating action, optimistic-version/worktree-fingerprint conflict handling,
+and a background worker outside the HTTP request path so a browser
+disconnect can never cancel, duplicate, or repeat an authorized operation.
+
+### Priority B — review and resume experience (service layer done; UI remains, Commit C2)
+
+The highest-value remaining product gap is a polished **UI** continuation
+path for tasks that end in human review -- the deterministic service layer
+above is complete; only the application surface remains:
 
 - list stopped tasks and their exact stop reason;
 - show active constraints, current diff, policy findings, verification failures,

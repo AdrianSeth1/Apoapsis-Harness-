@@ -260,6 +260,50 @@ Validation ceilings are configurable under `[architect.ceilings]` in
 `max_suggested_paths_per_slice`, `max_criteria_per_slice`,
 `max_work_brief_chars`); `apoapsis init` writes explicit defaults.
 
+## Human review and resume (ADR 0020)
+
+A task that stops at `HUMAN_REVIEW_REQUIRED` -- a rejected specification,
+a routing decision that requires a human, incomplete acceptance coverage,
+or an exhausted local/frontier coding agent -- now has a real, deterministic
+resume path instead of a dead end:
+
+```bash
+apoapsis review list
+apoapsis review inspect TASK-ABC123
+```
+
+`inspect` shows the exact stop reason, current diff, active constraints,
+verification/acceptance results, consumed vs. configured budgets, and the
+harness-computed set of actions actually available for this task --
+never a fixed menu. Every mutation requires the task's current version, a
+fresh worktree fingerprint (when a worktree exists), and an explicit,
+caller-supplied `--operation-id`; resubmitting the same operation id is
+always rejected, so a retried or ambiguous request can never silently
+repeat a model call:
+
+```bash
+apoapsis review abandon TASK-ABC123 --expected-version 4 --operation-id RVOP-1
+apoapsis review retry-verification TASK-ABC123 \
+  --expected-version 4 --expected-fingerprint <digest> --operation-id RVOP-2
+apoapsis review continue-local TASK-ABC123 \
+  --expected-version 4 --expected-fingerprint <digest> \
+  --operation-id RVOP-3 --additional-turns 6
+apoapsis review continue-frontier TASK-ABC123 \
+  --expected-version 4 --expected-fingerprint <digest> \
+  --operation-id RVOP-4 --additional-turns 6
+```
+
+`continue-local`/`continue-frontier` resume the exact bounded agent session
+that stopped -- same worktree, same prior turns and observations, same
+verification history -- with only the authorized additional turns (and a
+matching increase to patch-attempt/verification-run budgets) added on top
+of whatever was already consumed; nothing is ever reset. `--additional-turns`
+and the number of continuations per task are both capped by
+`[review]` in `.apoapsis/config.toml` (`max_additional_turns_per_continuation`,
+`max_continuations_per_task`). Frontier continuation is only ever offered
+when a frontier agent session already exists for that task; it never
+launches a fresh frontier attempt from a local-only stop.
+
 ## Diagnostics and evaluation
 
 Check the local toolchain, configured models, context limits, credential

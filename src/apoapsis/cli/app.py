@@ -16,6 +16,11 @@ from apoapsis.architect.audit import PlanAuditStore, write_package_artifact
 from apoapsis.architect.store import SQLitePlanStore
 from apoapsis.architect.validation import validate_plan
 from apoapsis.architect.schema import PlanValidationResult, ValidationSeverity
+from apoapsis.review.case import build_review_case
+from apoapsis.review.errors import ReviewError
+from apoapsis.review.execution import execute_review_action
+from apoapsis.review.schema import ReviewActionKind
+from apoapsis.review.store import ReviewOperationStore
 from apoapsis.config import (
     AgentRoute,
     ExecutionMode,
@@ -254,6 +259,10 @@ max_dependency_depth = 15
 max_suggested_paths_per_slice = 12
 max_criteria_per_slice = 12
 max_work_brief_chars = 2000
+
+[review]
+max_continuations_per_task = 5
+max_additional_turns_per_continuation = 12
 """
 
 
@@ -429,6 +438,51 @@ def build_parser() -> argparse.ArgumentParser:
     plan_approve.add_argument("plan_id")
     plan_approve.add_argument("--expected-version", type=int, required=True)
 
+    review = subparsers.add_parser(
+        "review", help="deterministic human-review and resume (ADR 0020)"
+    )
+    review_subparsers = review.add_subparsers(dest="review_command", required=True)
+    review_subparsers.add_parser(
+        "list", help="list every task currently at HUMAN_REVIEW_REQUIRED"
+    )
+    review_inspect = review_subparsers.add_parser(
+        "inspect", help="show one task's deterministic review case"
+    )
+    review_inspect.add_argument("task_id")
+    review_abandon = review_subparsers.add_parser(
+        "abandon", help="abandon and roll back a task from human review"
+    )
+    review_abandon.add_argument("task_id")
+    review_abandon.add_argument("--expected-version", type=int, required=True)
+    review_abandon.add_argument("--operation-id", required=True)
+    review_retry = review_subparsers.add_parser(
+        "retry-verification", help="re-run configured verification, no model call"
+    )
+    review_retry.add_argument("task_id")
+    review_retry.add_argument("--expected-version", type=int, required=True)
+    review_retry.add_argument("--expected-fingerprint", required=True)
+    review_retry.add_argument("--operation-id", required=True)
+    review_continue_local = review_subparsers.add_parser(
+        "continue-local", help="resume the bounded local coding agent"
+    )
+    review_continue_local.add_argument("task_id")
+    review_continue_local.add_argument("--expected-version", type=int, required=True)
+    review_continue_local.add_argument("--expected-fingerprint", required=True)
+    review_continue_local.add_argument("--operation-id", required=True)
+    review_continue_local.add_argument("--additional-turns", type=int, required=True)
+    review_continue_frontier = review_subparsers.add_parser(
+        "continue-frontier", help="resume the bounded frontier coding agent"
+    )
+    review_continue_frontier.add_argument("task_id")
+    review_continue_frontier.add_argument(
+        "--expected-version", type=int, required=True
+    )
+    review_continue_frontier.add_argument("--expected-fingerprint", required=True)
+    review_continue_frontier.add_argument("--operation-id", required=True)
+    review_continue_frontier.add_argument(
+        "--additional-turns", type=int, required=True
+    )
+
     aggregate = subparsers.add_parser(
         "eval-aggregate",
         help="aggregate one or more persisted evaluation comparison reports",
@@ -462,6 +516,7 @@ def main(argv: list[str] | None = None) -> None:
         ProviderError,
         InstrumentedProviderError,
         ArchitectError,
+        ReviewError,
     ) as exc:
         parser.exit(2, f"error: {exc}\n")
     if result is not None:
@@ -511,6 +566,8 @@ def _dispatch(args: argparse.Namespace) -> dict[str, object] | None:
         return _research_command(
             root, store, args.research_args, requested_mode=args.mode
         )
+    if args.command == "review":
+        return _review_command(root, store, args)
     if args.command == "inspect":
         record = store.get_task(args.task_id)
         result: dict[str, object] = {
@@ -663,6 +720,84 @@ def _plan_approve(
         kind="plan_approval",
     )
     return record.model_dump(mode="json")
+
+
+def _review_operation_store(root: Path) -> ReviewOperationStore:
+    metadata = root / ".apoapsis"
+    if not (metadata / "config.toml").is_file():
+        raise TaskStoreError("Apoapsis is not initialized; run 'apoapsis init' first")
+    return ReviewOperationStore(metadata / "review-operations.db")
+
+
+def _review_command(
+    root: Path, store: SQLiteTaskStore, args: argparse.Namespace
+) -> dict[str, object]:
+    config = ApoapsisConfig.from_toml(root / ".apoapsis" / "config.toml")
+    if args.review_command == "list":
+        cases = [
+            build_review_case(root, store, config, record.task_id).model_dump(
+                mode="json"
+            )
+            for record in store.list_tasks(limit=200)
+            if record.state == WorkflowState.HUMAN_REVIEW_REQUIRED
+        ]
+        return {"cases": cases}
+    if args.review_command == "inspect":
+        return build_review_case(root, store, config, args.task_id).model_dump(
+            mode="json"
+        )
+
+    operation_store = _review_operation_store(root)
+    if args.review_command == "abandon":
+        record = execute_review_action(
+            root,
+            store,
+            operation_store,
+            config,
+            task_id=args.task_id,
+            action=ReviewActionKind.ABANDON,
+            operation_id=args.operation_id,
+            expected_version=args.expected_version,
+        )
+        return record.model_dump(mode="json")
+    if args.review_command == "retry-verification":
+        record = execute_review_action(
+            root,
+            store,
+            operation_store,
+            config,
+            task_id=args.task_id,
+            action=ReviewActionKind.VERIFICATION_ONLY_RETRY,
+            operation_id=args.operation_id,
+            expected_version=args.expected_version,
+            expected_worktree_fingerprint=args.expected_fingerprint,
+        )
+        return record.model_dump(mode="json")
+    if args.review_command in {"continue-local", "continue-frontier"}:
+        _, local_coder_provider, frontier_coder_provider = _build_agent_providers(
+            config
+        )
+        action = (
+            ReviewActionKind.LOCAL_CONTINUATION
+            if args.review_command == "continue-local"
+            else ReviewActionKind.FRONTIER_CONTINUATION
+        )
+        record = execute_review_action(
+            root,
+            store,
+            operation_store,
+            config,
+            task_id=args.task_id,
+            action=action,
+            operation_id=args.operation_id,
+            expected_version=args.expected_version,
+            expected_worktree_fingerprint=args.expected_fingerprint,
+            additional_turns=args.additional_turns,
+            local_coder_provider=local_coder_provider,
+            frontier_coder_provider=frontier_coder_provider,
+        )
+        return record.model_dump(mode="json")
+    raise AssertionError(f"unhandled review command: {args.review_command}")
 
 
 def _task(

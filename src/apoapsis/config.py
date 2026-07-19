@@ -310,6 +310,22 @@ class ArchitectConfig(StrictModel):
     ceilings: ArchitectPlanCeilings = Field(default_factory=ArchitectPlanCeilings)
 
 
+class ReviewConfig(StrictModel):
+    """Ceilings for deterministic human-review continuation (ADR 0020).
+
+    A continuation may only ever add turns/patch-attempts/verification-runs
+    on top of a task's already-consumed budget -- it never resets or
+    replaces it. ``max_additional_turns_per_continuation`` is the single
+    user-authorized number per continuation; the same delta is applied to
+    the resumed agent's turn, patch-attempt, and verification-run ceilings
+    together, so one continuation cannot expand turns while leaving the
+    session unable to ever apply or verify a patch.
+    """
+
+    max_continuations_per_task: int = Field(default=5, ge=1, le=100)
+    max_additional_turns_per_continuation: int = Field(default=12, ge=1, le=50)
+
+
 class ApoapsisConfig(StrictModel):
     models: ModelsConfig
     execution: ExecutionConfig = Field(default_factory=ExecutionConfig)
@@ -318,6 +334,7 @@ class ApoapsisConfig(StrictModel):
     verification: VerificationConfig
     research: ResearchConfig = Field(default_factory=ResearchConfig)
     architect: ArchitectConfig = Field(default_factory=ArchitectConfig)
+    review: ReviewConfig = Field(default_factory=ReviewConfig)
 
     @model_validator(mode="after")
     def validate_provider_separation_and_route(self) -> ApoapsisConfig:
@@ -363,6 +380,7 @@ class ApoapsisConfig(StrictModel):
                 "verification",
                 "research",
                 "architect",
+                "review",
             )
             if key in raw
         }

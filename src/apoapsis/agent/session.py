@@ -199,8 +199,73 @@ class BoundedAgentSession:
         self.verification_cache: dict[str, VerificationResult] = {}
         self.command_results: dict[str, dict[str, VerificationStatus]] = {}
 
-    def run(self) -> AgentSessionResult:
-        for turn in range(1, self.config.max_turns + 1):
+    @classmethod
+    def resume(
+        cls,
+        *,
+        specification: TaskSpecification,
+        worktree: str | Path,
+        initial_context: ContextPackage,
+        context_compiler: ContextCompiler,
+        config: AgentLoopConfig,
+        verification_config: VerificationConfig,
+        audit: TaskAuditStore,
+        model_call: AgentModelCall,
+        apply_patch: PatchApply,
+        prior_result: AgentSessionResult,
+        model_role: ModelRole = ModelRole.CODING_AGENT,
+        audit_prefix: str = "",
+        completion_policy: CompletionPolicy = CompletionPolicy.BASELINE,
+    ) -> "BoundedAgentSession":
+        """Reconstruct a session continuing from ``prior_result`` (ADR 0020).
+
+        Prior turn records, the observation ledger, patch/verification
+        counters, verification results, and acceptance coverage are all
+        seeded from the prior result rather than reset -- ``config`` must
+        already reflect the harness-authorized *cumulative* ceiling (never
+        smaller than what was already consumed), since counters here only
+        ever increase. The identical-verification dedup cache is
+        deliberately not restored: a resumed session may re-run the exact
+        check that was failing when it stopped once more before duplicate
+        rejection resumes, which affects only whether that one re-run is
+        permitted, never any budget or authority boundary.
+        """
+
+        session = cls(
+            specification=specification,
+            worktree=worktree,
+            initial_context=initial_context,
+            context_compiler=context_compiler,
+            config=config,
+            verification_config=verification_config,
+            audit=audit,
+            model_call=model_call,
+            apply_patch=apply_patch,
+            model_role=model_role,
+            audit_prefix=audit_prefix,
+            completion_policy=completion_policy,
+        )
+        session.records = list(prior_result.turn_records)
+        if prior_result.turn_records:
+            last = prior_result.turn_records[-1]
+            session.observations = list(last.observation_ledger)
+            session.observation_chars = last.observation_ledger_chars
+        session.verification_results = list(prior_result.verification_results)
+        session.patch_attempts = prior_result.patch_attempts
+        session.verification_runs = prior_result.verification_runs
+        session.last_acceptance_coverage = list(prior_result.acceptance_coverage)
+        if prior_result.verification_results:
+            current_digest = compute_worktree_fingerprint(session.worktree).digest
+            latest = prior_result.verification_results[-1]
+            session.command_results[current_digest] = {
+                item.name: item.status
+                for item in latest.commands
+                if item.status != VerificationStatus.SKIPPED
+            }
+        return session
+
+    def run(self, *, start_turn: int = 1) -> AgentSessionResult:
+        for turn in range(start_turn, self.config.max_turns + 1):
             context = self._context_for_turn(turn)
             prompt = agent_step_prompt(
                 context,

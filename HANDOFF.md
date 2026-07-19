@@ -15,11 +15,11 @@ must be corrected before the change is considered complete.
 | Item | Current value |
 | --- | --- |
 | Last verified | 2026-07-19 |
-| Working-tree version | `1.0` plus ADR 0013 Windows local-model lifecycle, ADR 0014 first local operator-interface slice, ADR 0015 verification layers and acceptance coverage, ADR 0016's corrective follow-up, ADR 0017's worktree-fingerprint/explicit-acceptance-designation hardening, the opt-in `local-strict` evaluation lane with its first live result, ADR 0018's acceptance-failure-evidence/bounded-specification-correction fixes, and ADR 0019's Architect Mode planning foundation plus its Plans UI surface |
+| Working-tree version | `1.0` plus ADR 0013 Windows local-model lifecycle, ADR 0014 first local operator-interface slice, ADR 0015 verification layers and acceptance coverage, ADR 0016's corrective follow-up, ADR 0017's worktree-fingerprint/explicit-acceptance-designation hardening, the opt-in `local-strict` evaluation lane with its first live result, ADR 0018's acceptance-failure-evidence/bounded-specification-correction fixes, ADR 0019's Architect Mode planning foundation plus its Plans UI surface, and ADR 0020's deterministic human-review-and-resume CLI foundation |
 | Checked-out branch | `main` |
-| Repository state | The 1.0/lifecycle baseline, the ADR 0014 UI slice, the ADR 0015 acceptance-coverage milestone, the ADR 0016 correction, the ADR 0017 hardening, the `local-strict` lane, the ADR 0018 fixes, and ADR 0019's Architect Mode foundation (CLI + Plans UI) are all committed on `main`; live evaluation evidence is committed separately. `DESIGN.md` is preserved as a separate, committed user-supplied design reference. Run `git status` and `git log -1 --oneline` for the exact current state. |
+| Repository state | The 1.0/lifecycle baseline, the ADR 0014 UI slice, the ADR 0015 acceptance-coverage milestone, the ADR 0016 correction, the ADR 0017 hardening, the `local-strict` lane, the ADR 0018 fixes, ADR 0019's Architect Mode foundation (CLI + Plans UI), and ADR 0020's review/resume CLI foundation are all committed on `main`; live evaluation evidence is committed separately. `DESIGN.md` is preserved as a separate, committed user-supplied design reference. Run `git status` and `git log -1 --oneline` for the exact current state. |
 | Preserved substrate tag | `substrate-v0.1` at `4c2e735` |
-| Full deterministic suite | 305 tests, 0 failures, 0 errors, 6 intentional skips (2 live-network, 1 live-Docker, 3 machine currently lacks the Windows privilege to create symlinks) |
+| Full deterministic suite | 340 tests, 0 failures, 0 errors, 6 intentional skips (2 live-network, 1 live-Docker, 3 machine currently lacks the Windows privilege to create symlinks) |
 | Syntax check | `python -m compileall -q src tests` passed |
 | Diff check | `git diff --check` passed; Git reported only expected LF-to-CRLF working-copy warnings |
 | Live local coding result | Qwen3-Coder-Next Q4 completed the controlled download-service task in 10 turns and 3 verification runs |
@@ -70,6 +70,7 @@ commands, and writes a complete usage and audit report.
 | Mark a task complete | Verification engine after all required checks pass; under the strict completion policy (ADR 0015/0016, the default policy for `apoapsis init` projects, but never with an automatically acceptance-designated command -- ADR 0017), additionally only after every active acceptance criterion is deterministically computed as Proven from configured, user-approved acceptance-designated commands that actually passed **for the current shared worktree fingerprint** (tracked and untracked files, ADR 0017) -- a model may propose a criterion's mapping only from the harness-published acceptance-command catalog at specification time, but only the harness computes and grants Proven/Failed/Unproven status, and a stale, earlier-fingerprint pass never counts |
 | Record evidence and usage | Deterministic audit and reporting layers |
 | Decompose a large idea into implementation slices (Architect Mode, ADR 0019) | An external model may only propose an `ArchitecturePlan` via manual export/import; it has no status/approval/execution field, cannot invent a verification-command name or escape the repository in a suggested path, and cannot mark itself validated, approved, or executed -- only `SQLitePlanStore`'s deterministic, optimistic-versioned transitions do that, and approval never executes a slice |
+| Resume a task from HUMAN_REVIEW_REQUIRED (ADR 0020) | A model may only propose search/read/patch/verify actions inside a resumed, harness-bounded agent turn exactly as before; it cannot choose which action is eligible, expand its own budget, pick a workflow transition, or claim completion -- `review.execution.execute_review_action()` alone checks eligibility/version/fingerprint/ceilings and owns every resulting transition |
 
 No provider adapter may bypass this boundary. A larger or hosted model receives
 more capability only through a separately configured budget and context package;
@@ -274,6 +275,39 @@ architecture.
   above.
 - Does not execute any slice, and does not change `workflow/`, `agent/`, or
   `vertical_slice.py` in any way.
+
+### Deterministic human review and resume (ADR 0020)
+
+- `src/apoapsis/review/schema.py`, `classify.py`, `case.py` define
+  `ReviewCase` -- a deterministic projection (never a model's claim) of a
+  task currently at `HUMAN_REVIEW_REQUIRED`: exact stop reason (one of five
+  known scenarios or `UNKNOWN`, fail-closed), current diff/worktree
+  fingerprint/repository HEAD (recomputed fresh every time), consumed vs.
+  configured local/frontier budgets, and the harness-computed
+  `eligible_actions` (`inspect_only`, `abandon`, `verification_only_retry`,
+  `local_continuation`, `frontier_continuation`).
+- `src/apoapsis/agent/session.py`'s `BoundedAgentSession.resume()` seeds a
+  session's turns/observations/verification state from a prior
+  `AgentSessionResult` so a continuation adds turns without ever resetting
+  what was already consumed.
+- `src/apoapsis/review/execution.py`'s `execute_review_action()` is the
+  single mutation entry point: checks optimistic task version, eligible
+  action, worktree-fingerprint match, and continuation ceilings; writes an
+  immutable `ReviewContinuationPackage` (`review/package.py`) before any
+  resumed model call; and drives the same `IMPLEMENTING -> PATCH_READY ->
+  VERIFYING -> COMPLETE` / `... -> ESCALATION_REQUIRED ->
+  HUMAN_REVIEW_REQUIRED` edges the original run used -- no changes to
+  `workflow/states.py` were needed; every edge already existed.
+- `src/apoapsis/review/store.py`'s `ReviewOperationStore` is a small SQLite
+  idempotency ledger (`.apoapsis/review-operations.db`): a caller-supplied
+  `operation_id` can never be submitted twice, and an operation stuck
+  `running` (e.g. after a crash) can never be silently re-entered.
+- CLI: `apoapsis review list/inspect/abandon/retry-verification/
+  continue-local/continue-frontier` (`src/apoapsis/cli/app.py`).
+- A continuation always resumes the exact agent session (local or frontier)
+  that already exists for the task; it never launches a fresh frontier
+  session from a local-only stop. Does not change one-shot mode's own
+  execution path.
 
 ### Verification layers and acceptance coverage (ADR 0015, corrected by ADR 0016, hardened by ADR 0017/0018)
 
@@ -1069,6 +1103,9 @@ direct-frontier comparison claims remain unmeasured.
 | Architect Mode plan schema/validation (cycles, missing deps, duplicate IDs, unknown commands, path escapes, ceilings, authority smuggling) | `tests/test_architect_validation.py` |
 | Architect Mode plan store (optimistic versioning, validate/approve/revision transitions) | `tests/test_architect_store.py` |
 | Architect Mode CLI lifecycle and package/response hash-mismatch rejection | `tests/test_architect_cli.py` |
+| Review classify/eligibility rules and the operation-store idempotency/crash-safety ledger | `tests/test_review.py` |
+| Every HUMAN_REVIEW_REQUIRED scenario, stale versions, changed worktrees, unavailable frontier, exhausted ceilings, duplicate/crash-ambiguous operations, counter preservation, continuation-package auditing, continued failure, forbidden authority claims | `tests/test_review_execution.py` |
+| Review CLI command wiring | `tests/test_review_cli.py` |
 
 Fake providers are the mandatory regression mechanism. Live model or network
 tests supplement them; they must not replace deterministic coverage.
@@ -1102,8 +1139,10 @@ tests supplement them; they must not replace deterministic coverage.
 4. **Historical configuration naming remains.** `models.frontier` still serves
    specification and one-shot roles even when backed by local Ollama.
 5. **No automatic merge/commit.** A successful worktree remains for inspection.
-6. **Human-review continuation is low-level.** The state model supports review,
-   but there is no polished interactive resume experience for every stop case.
+6. **Human-review continuation is CLI-only.** ADR 0020 added a real,
+   deterministic resume mechanism (`apoapsis review ...`) covering all five
+   known `HUMAN_REVIEW_REQUIRED` stop reasons; there is no polished
+   interactive UI resume experience yet (Commit C2, tracked separately).
 7. **Cost is configured, not discovered.** Zero pricing yields a valid but
    economically uninformative report.
 8. **Live network tests are intentionally skipped by default.** Run them only
@@ -1190,6 +1229,17 @@ tests supplement them; they must not replace deterministic coverage.
     oversight. No subscription-backed provider adapter was added for
     `plan export`/`import` — they remain manual, copy-paste workflows,
     consistent with the still-deferred ADR 0008 non-goal.
+15. **Human review and resume (ADR 0020) is CLI-only so far; no UI surface
+    exists yet.** `apoapsis review list/inspect/abandon/retry-verification/
+    continue-local/continue-frontier` are fully implemented and covered by
+    `tests/test_review.py`, `tests/test_review_execution.py`, and
+    `tests/test_review_cli.py`. A continuation always resumes the exact
+    agent session (local or frontier) that already exists for a task; it
+    deliberately does not launch a fresh frontier session from a
+    local-only stop with no frontier session yet, and does not let a
+    continuation switch which agent resumes. `report.json` is not
+    rewritten after a continuation -- `ReviewCase` reads live audit
+    artifacts instead; this is a disclosed simplification, not a bug.
 
 `NEXT_STEPS.md` is the owner and future-agent execution roadmap. The next high-
 value proofs are (1) identical local download-service evaluations
@@ -1223,6 +1273,7 @@ automation as a substitute for those proofs.
 | `0017` | Shared worktree fingerprint (tracked + untracked files) for verification/proof scoping, untracked evidence in `inspect_diff`, and acceptance designation reverted to an explicit owner decision |
 | `0018` | Acceptance-designated command failures now produce real evidence regardless of `required`, and specification extraction gets exactly one bounded correction attempt |
 | `0019` | Architect Mode planning foundation: deterministic plan schemas/validation/store/audit, manual export/import CLI workflow, and a read-only Plans surface on the local UI |
+| `0020` | Deterministic human review and resume: `ReviewCase` projection, bounded-agent-session resume, idempotent/crash-safe continuation operations, and immutable continuation packages |
 
 Add a new ADR for a new architectural decision. Do not rewrite history to make
 old decisions appear current; mark an ADR superseded and link its replacement
