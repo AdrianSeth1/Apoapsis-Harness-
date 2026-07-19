@@ -19,11 +19,11 @@ without replacing this canonical coding-agent handoff.
 | Item | Current value |
 | --- | --- |
 | Last verified | 2026-07-19 |
-| Working-tree version | `1.0` plus ADR 0013 Windows local-model lifecycle, ADR 0014 first local operator-interface slice, ADR 0015 verification layers and acceptance coverage, ADR 0016's corrective follow-up, ADR 0017's worktree-fingerprint/explicit-acceptance-designation hardening, the opt-in `local-strict` evaluation lane with its first live result, ADR 0018's acceptance-failure-evidence/bounded-specification-correction fixes, ADR 0019's Architect Mode planning foundation plus its Plans UI surface, ADR 0020's deterministic human-review-and-resume CLI and UI, ADR 0021's review/resume integrity hardening, ADR 0022's explicit human-authorized fresh frontier stage, ADR 0023's durable new-task intake (CLI/service seam and New Task UI screen), ADR 0024's durable post-approval task execution (CLI/service seam and control-room UI), ADR 0025's shared operation-lease and recovery-integrity hardening across all three operation ledgers, and ADR 0026's immutable execution authorization and truthful live UI |
+| Working-tree version | `1.0` plus ADR 0013 Windows local-model lifecycle, ADR 0014 first local operator-interface slice, ADR 0015 verification layers and acceptance coverage, ADR 0016's corrective follow-up, ADR 0017's worktree-fingerprint/explicit-acceptance-designation hardening, the opt-in `local-strict` evaluation lane with its first live result, ADR 0018's acceptance-failure-evidence/bounded-specification-correction fixes, ADR 0019's Architect Mode planning foundation plus its Plans UI surface, ADR 0020's deterministic human-review-and-resume CLI and UI, ADR 0021's review/resume integrity hardening, ADR 0022's explicit human-authorized fresh frontier stage, ADR 0023's durable new-task intake (CLI/service seam and New Task UI screen), ADR 0024's durable post-approval task execution (CLI/service seam and control-room UI), ADR 0025's shared operation-lease and recovery-integrity hardening across all three operation ledgers, ADR 0026's immutable execution authorization and truthful live UI, and ADR 0027's approved-plan to single-slice execution (CLI seam only; Plans UI slice surface is Commit D3b, not yet built) |
 | Checked-out branch | `main` |
-| Repository state | The 1.0/lifecycle baseline, the ADR 0014 UI slice, the ADR 0015 acceptance-coverage milestone, the ADR 0016 correction, the ADR 0017 hardening, the `local-strict` lane, the ADR 0018 fixes, ADR 0019's Architect Mode foundation (CLI + Plans UI), ADR 0020's review/resume CLI and UI, ADR 0021's hardening, ADR 0022's `authorize_frontier_stage` action, ADR 0023's `apoapsis intake` seam, ADR 0024's `apoapsis execute` seam and control-room UI, ADR 0025's lease/recovery hardening, and ADR 0026's execution-authorization hardening are all committed on `main`; live evaluation evidence is committed separately. `DESIGN.md` is preserved as a separate, committed user-supplied design reference. Run `git status` and `git log -1 --oneline` for the exact current state. |
+| Repository state | The 1.0/lifecycle baseline, the ADR 0014 UI slice, the ADR 0015 acceptance-coverage milestone, the ADR 0016 correction, the ADR 0017 hardening, the `local-strict` lane, the ADR 0018 fixes, ADR 0019's Architect Mode foundation (CLI + Plans UI), ADR 0020's review/resume CLI and UI, ADR 0021's hardening, ADR 0022's `authorize_frontier_stage` action, ADR 0023's `apoapsis intake` seam, ADR 0024's `apoapsis execute` seam and control-room UI, ADR 0025's lease/recovery hardening, ADR 0026's execution-authorization hardening, and ADR 0027's `apoapsis plan slice` seam are all committed on `main`; live evaluation evidence is committed separately. `DESIGN.md` is preserved as a separate, committed user-supplied design reference. Run `git status` and `git log -1 --oneline` for the exact current state. |
 | Preserved substrate tag | `substrate-v0.1` at `4c2e735` |
-| Full deterministic suite | 497 tests, 0 failures, 0 errors, 6 intentional skips (2 live-network, 1 live-Docker, 3 machine currently lacks the Windows privilege to create symlinks) |
+| Full deterministic suite | 514 tests, 0 failures, 0 errors, 6 intentional skips (2 live-network, 1 live-Docker, 3 machine currently lacks the Windows privilege to create symlinks) |
 | Syntax check | `python -m compileall -q src tests` passed |
 | Diff check | `git diff --check` passed; Git reported only expected LF-to-CRLF working-copy warnings |
 | Live local coding result | Qwen3-Coder-Next Q4 completed the controlled download-service task in 10 turns and 3 verification runs |
@@ -742,6 +742,84 @@ architecture.
   `tests/test_execution_ui.py` gained a preview-vs-confirm drift test, a
   turn-ordering test, and the bundled-asset authorization-field guard.
   Full suite: 497 tests, 0 failures, 6 intentional skips.
+
+### Approved-plan to single-slice execution (ADR 0027)
+
+- New `src/apoapsis/architect/slice_schema.py`/`slice_package.py`/
+  `slice_store.py`/`slice_service.py` bridge ADR 0019's plans and ADR
+  0024's durable execution service with zero duplicated routing/context/
+  worktree/agent/patch/verification/escalation/reporting logic --
+  "starting a slice" is, at the moment it actually runs, the existing,
+  unmodified `execute_execution_operation()`/`submit_execution_operation
+  ()` acting on a perfectly normal derived task.
+- `build_plan_slice_execution_package()` deterministically compiles what
+  approving one slice would authorize -- no model call, no task created,
+  no repository mutation: requires the plan `APPROVED` at exactly the
+  expected version; confirms the plan's originating `PlannerRequest
+  Package` still exists and matches the current repository root;
+  revalidates the plan against *current* configuration (`validate_plan()`
+  again, never trusting a stale result); proves every dependency slice
+  (below); copies the slice's exact inherited `HardConstraint`/
+  `AcceptanceCriterion` objects verbatim into a freshly compiled
+  `TaskSpecification` (failing closed if a reference cannot be recovered
+  exactly -- provably unreachable through the normal approval gate, but
+  tested directly as the real mechanism providing that guarantee); and
+  hashes the result (`package_sha256`, ADR 0026's own exclude-the-fresh-
+  identifiers convention: `package_id`/`generated_at` excluded, plus a
+  *deterministic* derived task id -- `sha256(plan_id:slice_id:plan_
+  version)`, never random -- so repackaging an unchanged slice reproduces
+  the same hash).
+- **Dependency readiness is proven, never trusted from a status flag --
+  and a real subtlety here was caught by the test suite itself.**
+  Apoapsis never auto-merges or auto-commits a worktree (ADR 0024,
+  unchanged), so there is no shared "plan workspace" to chain slices
+  through; a dependency is satisfied only if its derived task's real,
+  current state (read fresh from `SQLiteTaskStore`, never a second,
+  independently-stored copy) is `COMPLETE` *and* its worktree branch is a
+  git-ancestor of current HEAD. A first attempt compared against
+  `WorktreeManager.describe()`'s own `base_commit` field -- which turns
+  out to mean the worktree's *current* HEAD, not its original creation-
+  time base -- making the ancestry check trivially always true regardless
+  of whether anything was ever committed or merged, exactly the "never
+  claim a dependency satisfied merely because another isolated worktree
+  reached COMPLETE" failure the requirements warned against. Fixed by
+  reading the *true* original base commit back from the dependency's own
+  `ExecutionOperationRecord.expected_repository_head` (ADR 0024) instead.
+  A human must commit, then merge, a completed dependency slice's work
+  through their own ordinary git workflow before a dependent slice can be
+  packaged -- Apoapsis proves this happened; it never does it itself.
+  This design was chosen specifically because it closes the "abandoning
+  one slice must never silently delete a shared plan workspace with
+  prior completed work" hazard structurally: there is no shared
+  workspace, so there is nothing to accidentally delete.
+- `PlanSliceExecutionStore` (its own database file) deliberately only
+  ever persists `PACKAGED`/`APPROVED` -- the two transitions entirely
+  under harness control before any task exists. `RUNNING`/`COMPLETE`/
+  `HUMAN_REVIEW`/`FAILED` are never separately stored; `project_slice_
+  status()` computes them live, every time, from the derived task's own
+  real workflow state, so this status can never drift from the truth the
+  background execution worker (ADR 0024/0025) is actually advancing
+  asynchronously. At most one slice per plan may be `APPROVED` at a time.
+- Approval (`approve_slice()`) is the one explicit action that creates
+  the derived task -- the normal `INTAKE -> SPEC_DRAFTED -> SPEC_APPROVED`
+  transitions, no new workflow edge -- and never starts it. Starting
+  (`start_slice()`) is a separate, later, explicit action containing no
+  execution logic of its own, only a lookup and a hand-off. Nothing here
+  ever auto-starts a next slice, auto-merges, auto-commits, or marks a
+  plan `EXECUTED`.
+- CLI: `apoapsis plan slice list/inspect/package/approve/status/start`.
+- New `tests/test_architect_slice.py` (17 tests): package determinism and
+  operation/package-id independence; exact constraint/criterion
+  propagation; stale-version, unapproved-plan, and changed-repository
+  rejection; a defense-in-depth unit test for an unrecoverable
+  constraint reference; advisory-path/symbol freedom (the derived spec
+  has no field that could restrict agent-touchable paths); the full
+  dependency-evidence matrix (never packaged, complete-but-uncommitted,
+  complete-and-committed-but-unmerged, genuinely satisfied); package-
+  hash-mismatch and duplicate-approval/start rejection; success and
+  Human-Review status projection from real task state; and proof that
+  approving one slice never auto-approves or auto-starts a dependent
+  one. Full suite: 514 tests, 0 failures, 6 intentional skips.
 
 ### Verification layers and acceptance coverage (ADR 0015, corrected by ADR 0016, hardened by ADR 0017/0018)
 
@@ -1553,6 +1631,7 @@ direct-frontier comparison claims remain unmeasured.
 | Shared operation-lease discipline (ADR 0025): atomic claim/renew/release/expire, legacy-row fail-closed, `LeaseHeartbeat` renewal/lease-lost, and identical semantics proven across review/intake/execution | `tests/test_operation_lease.py` |
 | Immutable execution authorization (ADR 0026): package-hash stability/operation-id independence, no raw secret ever present, and drift rejection (task version, tracked/untracked edit, model/budget/verification-command/completion-policy/backend change) always before provider construction | `tests/test_execution_authorization.py` |
 | `app.js` regression coverage: no duplicate top-level function declarations, route-dispatch targets exist and are unique, Node syntax check, Node boot smoke (skipped with a clear reason when Node is unavailable) | `tests/test_app_js_regression.py` |
+| Approved-plan to single-slice execution (ADR 0027): package determinism, revalidation/repository-identity/stale-version rejection, the full dependency-evidence matrix (git-ancestry proof, not status alone), exact constraint/criterion propagation, advisory-path freedom, duplicate-approval/start rejection, and status projection from real task state | `tests/test_architect_slice.py` |
 
 Fake providers are the mandatory regression mechanism. Live model or network
 tests supplement them; they must not replace deterministic coverage.
@@ -1777,6 +1856,7 @@ automation as a substitute for those proofs.
 | `0024` | Durable post-approval task execution: `VerticalSliceRunner.run()` split into a shared `_run_from_approved`/`execute_approved_task()` continuation (zero duplicated routing/context/agent/patch/verification/escalation/reporting logic), plus `ExecutionOperationRecord`/`ExecutionOperationStore`/`ExecutionWorker` mirroring the review/intake crash-safety ledgers exactly (Commit D2a: CLI/service seam; Commit D2b: control-room UI with live tool-action progress and a fixed pre-existing `reviewView` name-collision bug) |
 | `0025` | Shared, owner-scoped operation-lease discipline (`operations/lease.py`) across review/intake/execution: atomic claim/renew/release/expire, a heartbeat that renews independent of model behavior, injectable-clock recovery, eager background-worker startup closing the duplicate-enqueue race, and an explicit opt-in `--resume-recorded` CLI flag |
 | `0026` | Immutable, hashed `ExecutionAuthorizationPackage` computed by one function reused at preview/prepare/run time; a confirmation authorizes exactly what its preview showed, rejected before any provider construction on task/spec/repository-fingerprint/config drift; a dirty-parent-repository fail-closed check; genuinely live control-room progress in real execution order; and deterministic + optional Node-based `app.js` regression coverage |
+| `0027` | Approved-plan to single-slice execution: an immutable `PlanSliceExecutionPackage` (exact inherited constraints/criteria, git-ancestry-proven dependency evidence, deterministic derived-task id) bridges ADR 0019 plans into ADR 0024's durable execution service with zero duplicated execution logic; slice status is always a live projection of the derived task's real state, never a second, independently-stored copy |
 
 Add a new ADR for a new architectural decision. Do not rewrite history to make
 old decisions appear current; mark an ADR superseded and link its replacement

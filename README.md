@@ -447,6 +447,39 @@ agent produces them, then a usage/telemetry summary once the task finishes. A
 task that stops for a human decision links directly into the existing Human
 Review case view.
 
+## Approved-plan to single-slice execution (ADR 0027)
+
+Once an Architect Mode plan (see below) is approved, one explicitly selected
+slice can become a real, running task through the exact same durable
+execution service above -- never automatically, and never more than one
+slice at a time:
+
+```bash
+apoapsis plan slice list PLAN-ABC123
+apoapsis plan slice inspect PLAN-ABC123 SLICE-1
+apoapsis plan slice package PLAN-ABC123 SLICE-1 --expected-plan-version 3
+apoapsis plan slice approve PLAN-ABC123 SLICE-1 --expected-package-sha256 <hash>
+apoapsis plan slice status PLAN-ABC123 SLICE-1
+apoapsis plan slice start PLAN-ABC123 SLICE-1
+```
+
+`package` deterministically compiles an immutable record of exactly what
+approving the slice would authorize -- its exact inherited hard constraints
+and acceptance criteria (copied verbatim from the plan, never reworded),
+configured verification commands, and dependency evidence -- with no model
+call and no task created yet. A dependency slice is only ever considered
+satisfied once its own task is genuinely complete *and* its finished work
+has actually been committed and merged into the current repository, proven
+by git ancestry -- reaching `COMPLETE` alone is never enough, since Apoapsis
+never merges a worktree automatically; the human commits and merges a
+finished slice's branch themselves before its dependents can be packaged.
+`approve` creates the derived task from that exact package (the normal
+specification-approval transitions, unchanged) but does not start it;
+`start` hands it to the same durable execution service `apoapsis execute
+start` uses. A slice's status is always read live from its derived task's
+real state, never a separate, independently-tracked copy of it. Nothing
+here ever starts a next slice, merges, or commits automatically.
+
 ## Diagnostics and evaluation
 
 Check the local toolchain, configured models, context limits, credential

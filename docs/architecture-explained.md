@@ -504,22 +504,36 @@ button in the browser had not yet been wired to send the new confirmation
 value, so a real click would have been rejected. That was fixed immediately
 and a permanent check was added so it cannot silently regress.
 
-### Following milestone: approved-plan to single-slice execution
+### Done: approved-plan to single-slice execution (ADR 0027)
 
-For one explicitly selected ready slice:
+For one explicitly selected ready slice, exactly as originally planned: the
+plan's approval and version are re-checked; every dependency slice must be
+genuinely finished *and* have its work actually merged into the repository
+(proven by real git history, not just a "done" flag someone could be wrong
+about); an immutable package is compiled containing the slice's exact
+inherited constraints, acceptance criteria, and current repository state;
+a human explicitly approves that exact package, which creates the real task
+but does not start it; a separate, later action starts it through the same
+durable execution service and normal bounded agent tools every other task
+already uses; and the outcome is recorded without ever automatically
+starting the next slice.
 
-- verify the plan is still approved and its version/package hashes match;
-- verify dependency slices have the required recorded outcomes;
-- compile an immutable slice-execution package containing inherited constraints,
-  acceptance criteria, interfaces, verification commands, and current repository
-  fingerprint;
-- ask for explicit user approval to start that slice;
-- run it through the same durable operation service and normal bounded agent
-  tools; and
-- record the slice outcome without automatically starting the next slice.
+One genuine subtlety came up during building this and is worth stating
+plainly: proving a dependency is "really done" turned out to be harder than
+checking whether its task finished successfully, because Apoapsis never
+merges anything into the repository on its own -- a finished slice's changes
+just sit there until a person commits and merges them. An early version of
+this check could have been fooled into thinking a dependency's work was
+already incorporated when it actually was not yet. It was caught and fixed
+before anything shipped: the check now requires proof, via the repository's
+own real history, that a completed slice's work was actually merged in --
+not merely that its task reported success.
 
-There should be no autonomous scheduler or agent swarm. The planner suggests
-the work breakdown; Apoapsis and the user retain execution authority.
+There is no autonomous scheduler or agent swarm here. The planner suggests
+the work breakdown; Apoapsis and the user retain execution authority. What
+remains is giving this the same kind of browser experience "Start coding"
+already has for ordinary tasks -- selecting a ready slice, previewing its
+package, and approving/starting it without touching the CLI.
 
 ### Then prove whether planning helps
 

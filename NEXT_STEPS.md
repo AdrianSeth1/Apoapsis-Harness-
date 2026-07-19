@@ -705,6 +705,60 @@ suite: 497/497 passing, 6 intentional skips. See ADR 0026 and `HANDOFF.md`'s
 "Immutable execution authorization and truthful live UI" section for full
 detail.
 
+### Done — Phase D3a: approved-plan to single-slice execution (ADR 0027)
+
+ADR 0019 gave Apoapsis a planning foundation that deliberately executed
+nothing; ADR 0024 gave it a durable execution service for already-approved
+tasks. This phase is the bridge: turning one explicitly selected, approved
+slice into a real, running task through the existing D2 service, with zero
+duplicated routing/context/worktree/agent/patch/verification/escalation/
+reporting logic.
+
+New `src/apoapsis/architect/slice_schema.py`/`slice_package.py`/
+`slice_store.py`/`slice_service.py`. `build_plan_slice_execution_package()`
+deterministically compiles what approving one slice would authorize (no
+model call, no task yet): requires the plan `APPROVED` at the exact expected
+version, confirms the plan's originating request package still matches the
+current repository, revalidates against *current* configuration, proves
+every dependency slice, copies the slice's exact inherited hard constraints/
+acceptance criteria verbatim, and hashes the result with a deterministic
+derived-task id so repackaging an unchanged slice reproduces the same hash.
+
+**A real design subtlety was caught by the test suite itself, not assumed
+away**: proving a dependency slice's work has actually landed can't just
+check the dependency's task reached COMPLETE, since Apoapsis never auto-
+merges or auto-commits a worktree. A first attempt used git ancestry against
+`WorktreeManager.describe()`'s `base_commit` field -- which turned out to
+mean the worktree's *current* HEAD, not its original creation-time base,
+making the check trivially always true regardless of whether anything was
+ever committed. Fixed by reading the dependency's *true* original base
+commit from its own `ExecutionOperationRecord.expected_repository_head`
+instead. A human must commit, then merge, a completed dependency's work
+through their own ordinary git workflow before a dependent slice can be
+packaged -- Apoapsis proves this happened, never does it itself. This also
+means there is no shared "plan workspace" to build or to accidentally
+damage when abandoning one slice: every slice gets its own, completely
+independent, unmodified D2 worktree.
+
+Slice status (`PACKAGED`/`APPROVED` are the only two values actually
+persisted) is otherwise always a live projection from the derived task's
+real, current workflow state -- never a second, independently-drifting
+copy of it, closing off an entire class of staleness bugs before they could
+exist. CLI: `apoapsis plan slice list/inspect/package/approve/status/start`.
+
+New `tests/test_architect_slice.py` (17 tests) covering package determinism,
+revalidation/repository-identity/stale-version rejection, the full
+dependency-evidence matrix, exact constraint/criterion propagation,
+advisory-path freedom, duplicate-approval/start rejection, and status
+projection from real task state. Full suite: 514/514 passing, 6 intentional
+skips. See ADR 0027 and `HANDOFF.md`'s "Approved-plan to single-slice
+execution" section for full detail.
+
+**Not yet built: the Plans UI slice experience (Commit D3b)** -- selecting
+a ready slice, previewing its immutable package, and approving/starting it
+from the browser, reusing the existing control room for progress. The CLI
+seam above is fully usable today without it.
+
 ### Priority C — extend the accepted application shell (ADR 0014)
 
 The application now has local/offline assets, a capability-protected loopback

@@ -16,6 +16,13 @@ from apoapsis.architect.audit import PlanAuditStore, write_package_artifact
 from apoapsis.architect.store import SQLitePlanStore
 from apoapsis.architect.validation import validate_plan
 from apoapsis.architect.schema import PlanValidationResult, ValidationSeverity
+from apoapsis.architect.slice_service import (
+    approve_slice,
+    package_slice,
+    project_slice_status,
+    start_slice,
+)
+from apoapsis.architect.slice_store import PlanSliceExecutionStore
 from apoapsis.execution.operation_errors import ExecutionOperationError
 from apoapsis.execution.operation_recovery import recover_stale_execution_operations
 from apoapsis.execution.operation_service import (
@@ -450,6 +457,64 @@ def build_parser() -> argparse.ArgumentParser:
     plan_approve.add_argument("plan_id")
     plan_approve.add_argument("--expected-version", type=int, required=True)
 
+    plan_slice = plan_subparsers.add_parser(
+        "slice",
+        help=(
+            "approved-plan to single-slice execution (ADR 0027): package, "
+            "approve, and start one explicitly selected slice through the "
+            "existing durable execution service -- never automatic, never "
+            "more than one active slice per plan"
+        ),
+    )
+    plan_slice_subparsers = plan_slice.add_subparsers(
+        dest="plan_slice_command", required=True
+    )
+    plan_slice_list = plan_slice_subparsers.add_parser(
+        "list", help="show every slice's real, current status for a plan"
+    )
+    plan_slice_list.add_argument("plan_id")
+    plan_slice_inspect = plan_slice_subparsers.add_parser(
+        "inspect", help="show one slice's status, record, and (if packaged) its package"
+    )
+    plan_slice_inspect.add_argument("plan_id")
+    plan_slice_inspect.add_argument("slice_id")
+    plan_slice_package = plan_slice_subparsers.add_parser(
+        "package",
+        help=(
+            "deterministically compile and durably record an immutable "
+            "execution package for one slice -- no model call, no task "
+            "created yet"
+        ),
+    )
+    plan_slice_package.add_argument("plan_id")
+    plan_slice_package.add_argument("slice_id")
+    plan_slice_package.add_argument("--expected-plan-version", type=int, required=True)
+    plan_slice_approve = plan_slice_subparsers.add_parser(
+        "approve",
+        help=(
+            "approve exactly the previewed package: creates and approves "
+            "the derived task, but does not start execution"
+        ),
+    )
+    plan_slice_approve.add_argument("plan_id")
+    plan_slice_approve.add_argument("slice_id")
+    plan_slice_approve.add_argument("--expected-package-sha256", required=True)
+    plan_slice_status = plan_slice_subparsers.add_parser(
+        "status", help="real, current status for one slice, read from persisted facts"
+    )
+    plan_slice_status.add_argument("plan_id")
+    plan_slice_status.add_argument("slice_id")
+    plan_slice_start = plan_slice_subparsers.add_parser(
+        "start",
+        help=(
+            "start an approved slice's derived task through the existing "
+            "D2 durable execution service"
+        ),
+    )
+    plan_slice_start.add_argument("plan_id")
+    plan_slice_start.add_argument("slice_id")
+    plan_slice_start.add_argument("--operation-id")
+
     intake = subparsers.add_parser(
         "intake",
         help=(
@@ -771,9 +836,18 @@ def _plan_store(root: Path) -> SQLitePlanStore:
     return SQLitePlanStore(metadata / "architect-plans.db")
 
 
+def _plan_slice_store(root: Path) -> PlanSliceExecutionStore:
+    metadata = root / ".apoapsis"
+    if not (metadata / "config.toml").is_file():
+        raise TaskStoreError("Apoapsis is not initialized; run 'apoapsis init' first")
+    return PlanSliceExecutionStore(metadata / "plan-slice-executions.db")
+
+
 def _plan_command(root: Path, args: argparse.Namespace) -> dict[str, object]:
     if args.plan_command == "export":
         return _plan_export(root, args.idea)
+    if args.plan_command == "slice":
+        return _plan_slice_command(root, args)
     plan_store = _plan_store(root)
     if args.plan_command == "import":
         return _plan_import(root, plan_store, args.response_path)
@@ -861,6 +935,72 @@ def _plan_approve(
         kind="plan_approval",
     )
     return record.model_dump(mode="json")
+
+
+def _plan_slice_command(root: Path, args: argparse.Namespace) -> dict[str, object]:
+    plan_store = _plan_store(root)
+    slice_store = _plan_slice_store(root)
+    task_store = _store(root)
+    operation_store = _execution_operation_store(root)
+    if args.plan_slice_command == "list":
+        plan_record = plan_store.get_plan(args.plan_id)
+        return {
+            "plan_id": args.plan_id,
+            "slices": [
+                project_slice_status(
+                    root, plan_store, slice_store, task_store, args.plan_id, item.slice_id
+                )
+                for item in plan_record.plan.slices
+            ],
+        }
+    if args.plan_slice_command == "inspect":
+        status = project_slice_status(
+            root, plan_store, slice_store, task_store, args.plan_id, args.slice_id
+        )
+        status["artifacts"] = PlanAuditStore(root, args.plan_id).artifacts()
+        return status
+    if args.plan_slice_command == "status":
+        return project_slice_status(
+            root, plan_store, slice_store, task_store, args.plan_id, args.slice_id
+        )
+    if args.plan_slice_command == "package":
+        config = ApoapsisConfig.from_toml(root / ".apoapsis" / "config.toml")
+        package = package_slice(
+            root,
+            plan_store,
+            slice_store,
+            task_store,
+            operation_store,
+            args.plan_id,
+            args.slice_id,
+            expected_plan_version=args.expected_plan_version,
+            config=config,
+        )
+        return package.model_dump(mode="json")
+    if args.plan_slice_command == "approve":
+        record = approve_slice(
+            root,
+            task_store,
+            slice_store,
+            args.plan_id,
+            args.slice_id,
+            expected_package_sha256=args.expected_package_sha256,
+        )
+        return record.model_dump(mode="json")
+    if args.plan_slice_command == "start":
+        config = ApoapsisConfig.from_toml(root / ".apoapsis" / "config.toml")
+        result = start_slice(
+            root,
+            task_store,
+            slice_store,
+            operation_store,
+            args.plan_id,
+            args.slice_id,
+            config,
+            operation_id=args.operation_id,
+        )
+        return result.model_dump(mode="json")
+    raise AssertionError(f"unhandled plan slice command: {args.plan_slice_command}")
 
 
 def _intake_operation_store(root: Path) -> IntakeOperationStore:
