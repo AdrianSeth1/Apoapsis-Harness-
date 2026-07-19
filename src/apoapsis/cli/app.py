@@ -483,6 +483,22 @@ def build_parser() -> argparse.ArgumentParser:
     review_continue_frontier.add_argument(
         "--additional-turns", type=int, required=True
     )
+    review_authorize_frontier = review_subparsers.add_parser(
+        "authorize-frontier-stage",
+        help=(
+            "start a fresh configured frontier stage after a local session "
+            "stopped (never continues an existing frontier session -- use "
+            "continue-frontier for that)"
+        ),
+    )
+    review_authorize_frontier.add_argument("task_id")
+    review_authorize_frontier.add_argument(
+        "--expected-version", type=int, required=True
+    )
+    review_authorize_frontier.add_argument(
+        "--expected-fingerprint", required=True
+    )
+    review_authorize_frontier.add_argument("--operation-id", required=True)
     review_subparsers.add_parser(
         "recover",
         help=(
@@ -803,6 +819,21 @@ def _review_command(
             expected_worktree_fingerprint=args.expected_fingerprint,
             additional_turns=args.additional_turns,
             local_coder_provider=local_coder_provider,
+            frontier_coder_provider=frontier_coder_provider,
+        )
+        return record.model_dump(mode="json")
+    if args.review_command == "authorize-frontier-stage":
+        _, _, frontier_coder_provider = _build_agent_providers(config)
+        record = execute_review_action(
+            root,
+            store,
+            operation_store,
+            config,
+            task_id=args.task_id,
+            action=ReviewActionKind.AUTHORIZE_FRONTIER_STAGE,
+            operation_id=args.operation_id,
+            expected_version=args.expected_version,
+            expected_worktree_fingerprint=args.expected_fingerprint,
             frontier_coder_provider=frontier_coder_provider,
         )
         return record.model_dump(mode="json")

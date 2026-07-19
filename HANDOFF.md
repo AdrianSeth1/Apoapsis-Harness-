@@ -15,11 +15,11 @@ must be corrected before the change is considered complete.
 | Item | Current value |
 | --- | --- |
 | Last verified | 2026-07-19 |
-| Working-tree version | `1.0` plus ADR 0013 Windows local-model lifecycle, ADR 0014 first local operator-interface slice, ADR 0015 verification layers and acceptance coverage, ADR 0016's corrective follow-up, ADR 0017's worktree-fingerprint/explicit-acceptance-designation hardening, the opt-in `local-strict` evaluation lane with its first live result, ADR 0018's acceptance-failure-evidence/bounded-specification-correction fixes, ADR 0019's Architect Mode planning foundation plus its Plans UI surface, ADR 0020's deterministic human-review-and-resume CLI and UI, and ADR 0021's review/resume integrity hardening |
+| Working-tree version | `1.0` plus ADR 0013 Windows local-model lifecycle, ADR 0014 first local operator-interface slice, ADR 0015 verification layers and acceptance coverage, ADR 0016's corrective follow-up, ADR 0017's worktree-fingerprint/explicit-acceptance-designation hardening, the opt-in `local-strict` evaluation lane with its first live result, ADR 0018's acceptance-failure-evidence/bounded-specification-correction fixes, ADR 0019's Architect Mode planning foundation plus its Plans UI surface, ADR 0020's deterministic human-review-and-resume CLI and UI, ADR 0021's review/resume integrity hardening, and ADR 0022's explicit human-authorized fresh frontier stage |
 | Checked-out branch | `main` |
-| Repository state | The 1.0/lifecycle baseline, the ADR 0014 UI slice, the ADR 0015 acceptance-coverage milestone, the ADR 0016 correction, the ADR 0017 hardening, the `local-strict` lane, the ADR 0018 fixes, ADR 0019's Architect Mode foundation (CLI + Plans UI), ADR 0020's review/resume CLI and UI, and ADR 0021's hardening are all committed on `main`; live evaluation evidence is committed separately. `DESIGN.md` is preserved as a separate, committed user-supplied design reference. Run `git status` and `git log -1 --oneline` for the exact current state. |
+| Repository state | The 1.0/lifecycle baseline, the ADR 0014 UI slice, the ADR 0015 acceptance-coverage milestone, the ADR 0016 correction, the ADR 0017 hardening, the `local-strict` lane, the ADR 0018 fixes, ADR 0019's Architect Mode foundation (CLI + Plans UI), ADR 0020's review/resume CLI and UI, ADR 0021's hardening, and ADR 0022's `authorize_frontier_stage` action are all committed on `main`; live evaluation evidence is committed separately. `DESIGN.md` is preserved as a separate, committed user-supplied design reference. Run `git status` and `git log -1 --oneline` for the exact current state. |
 | Preserved substrate tag | `substrate-v0.1` at `4c2e735` |
-| Full deterministic suite | 373 tests, 0 failures, 0 errors, 6 intentional skips (2 live-network, 1 live-Docker, 3 machine currently lacks the Windows privilege to create symlinks) |
+| Full deterministic suite | 383 tests, 0 failures, 0 errors, 6 intentional skips (2 live-network, 1 live-Docker, 3 machine currently lacks the Windows privilege to create symlinks) |
 | Syntax check | `python -m compileall -q src tests` passed |
 | Diff check | `git diff --check` passed; Git reported only expected LF-to-CRLF working-copy warnings |
 | Live local coding result | Qwen3-Coder-Next Q4 completed the controlled download-service task in 10 turns and 3 verification runs |
@@ -293,7 +293,10 @@ architecture.
   fingerprint/repository HEAD (recomputed fresh every time), consumed vs.
   configured local/frontier budgets, and the harness-computed
   `eligible_actions` (`inspect_only`, `abandon`, `verification_only_retry`,
-  `local_continuation`, `frontier_continuation`).
+  `local_continuation`, `frontier_continuation`,
+  `authorize_frontier_stage`). `frontier_available`/`frontier_model` are
+  always computed against the *current* config, never cached from the
+  original stop.
 - `src/apoapsis/agent/session.py`'s `BoundedAgentSession.resume()` seeds a
   session's turns/observations/verification state from a prior
   `AgentSessionResult` so a continuation adds turns without ever resetting
@@ -344,17 +347,39 @@ architecture.
   operation synchronously, then hands the id to the worker and returns
   immediately (`202 Accepted`) -- a browser disconnect after that point
   cannot cancel, duplicate, or repeat it.
+- `src/apoapsis/review/execution.py`'s `_execute_authorize_frontier_stage`
+  (ADR 0022) is a distinct action, `AUTHORIZE_FRONTIER_STAGE` -- separate
+  from `FRONTIER_CONTINUATION`, which only ever resumes a frontier session
+  that already exists. It starts a *fresh* frontier stage using the full,
+  unmodified `config.execution.frontier_agent` budget (no
+  `additional_turns` input), built via `workflow/escalation.py`'s
+  `build_local_to_frontier_escalation()` -- the exact same function the
+  automatic in-process local-to-frontier escalation path
+  (`VerticalSliceRunner._run_frontier_escalation`) now also calls, so both
+  paths build byte-identical packages. Only offered while
+  `frontier_available` and no `frontier-agent-session.json` exists yet for
+  the task (`ReviewCase.frontier_stage_exists`); once one exists, only
+  `FRONTIER_CONTINUATION` is offered from then on. The package is written
+  to `review-frontier-stage-<operation_id>.json` before the first frontier
+  call.
 - CLI: `apoapsis review list/inspect/abandon/retry-verification/
-  continue-local/continue-frontier/recover` (`src/apoapsis/cli/app.py`).
+  continue-local/continue-frontier/authorize-frontier-stage/recover`
+  (`src/apoapsis/cli/app.py`); `authorize-frontier-stage` takes
+  `--expected-version`/`--expected-fingerprint`/`--operation-id` only -- no
+  turns/budget flag, since a fresh stage always uses the full configured
+  budget.
 - UI (Commit C2): a Human Review queue (`#/reviews`) and case-detail view
   (`#/review/<task-id>`) on the existing ADR 0014 boundary --
   `GET /api/reviews`, `GET /api/reviews/<id>`,
   `POST /api/reviews/<id>/operations`, and
   `GET /api/reviews/<id>/operations/<operation-id>` for polling. Every
   mutating action requires two-step confirmation; continuation actions
-  additionally take an authorized `additional_turns` value. The browser
-  persists the in-flight `operation_id` in `sessionStorage` and resumes
-  polling it on reconnect rather than re-submitting.
+  additionally take an authorized `additional_turns` value.
+  `authorize_frontier_stage`'s confirmation panel displays the exact
+  configured frontier model and turn/patch/verification-run ceiling (fresh,
+  never cached) before the user can confirm; the browser persists the
+  in-flight `operation_id` in `sessionStorage` and resumes polling it on
+  reconnect rather than re-submitting.
 - `ReviewCase.current_diff` (`review/case.py`) is built from the shared
   `RepositoryInspector.diff()` machinery, so permitted untracked text files
   and binary/symlink path-only placeholders appear exactly as they do to
@@ -1167,6 +1192,7 @@ direct-frontier comparison claims remain unmeasured.
 | Review CLI command wiring | `tests/test_review_cli.py` |
 | Human Review UI: service/API/security, background-worker execution, replay (duplicate operation) and reconnect (persisted operation polling from a fresh service instance) | `tests/test_review_ui.py` |
 | Review/resume integrity hardening: queue-delay staleness, one-active-operation-per-task, abandon-before-cleanup ordering, provider-construction failure reaching FAILED, unknown-newest-event classification, untracked files in the diff, fresh post-retry evidence, and crash recovery (reclaim/ambiguous/return-to-review) | `tests/test_review_hardening.py` |
+| Explicit fresh-frontier-stage authorization: eligibility (unconfigured/newly-configured/already-exists), unavailable-frontier rejection, stale-worktree/duplicate-operation rejection, successful and budget-exhausted stage runs, and background-worker/UI submission | `tests/test_review_frontier_stage.py`, `tests/test_review_ui.py` |
 
 Fake providers are the mandatory regression mechanism. Live model or network
 tests supplement them; they must not replace deterministic coverage.
@@ -1290,18 +1316,25 @@ tests supplement them; they must not replace deterministic coverage.
     oversight. No subscription-backed provider adapter was added for
     `plan export`/`import` — they remain manual, copy-paste workflows,
     consistent with the still-deferred ADR 0008 non-goal.
-15. **Human review and resume (ADR 0020, hardened by ADR 0021) now spans
-    CLI and UI with explicit crash recovery.** `apoapsis review
+15. **Human review and resume (ADR 0020, hardened by ADR 0021, extended by
+    ADR 0022) now spans CLI and UI with explicit crash recovery and an
+    explicit fresh-frontier-stage authorization.** `apoapsis review
     list/inspect/abandon/retry-verification/continue-local/
-    continue-frontier/recover` and the local UI's Human Review
-    queue/case-detail views are fully implemented and covered by
-    `tests/test_review.py`, `tests/test_review_execution.py`,
-    `tests/test_review_cli.py`, `tests/test_review_ui.py`, and
-    `tests/test_review_hardening.py`. A continuation always resumes the
-    exact agent session (local or frontier) that already exists for a
-    task; it deliberately does not launch a fresh frontier session from a
-    local-only stop with no frontier session yet, and does not let a
-    continuation switch which agent resumes. `report.json` is not
+    continue-frontier/authorize-frontier-stage/recover` and the local UI's
+    Human Review queue/case-detail views are fully implemented and covered
+    by `tests/test_review.py`, `tests/test_review_execution.py`,
+    `tests/test_review_cli.py`, `tests/test_review_ui.py`,
+    `tests/test_review_hardening.py`, and
+    `tests/test_review_frontier_stage.py`. A continuation (`local_
+    continuation`/`frontier_continuation`) always resumes the exact agent
+    session (local or frontier) that already exists for a task and does
+    not let it switch which agent resumes. `authorize_frontier_stage` is
+    the distinct, human-confirmed action that starts a *fresh* frontier
+    stage from a local-only stop when no frontier session exists yet --
+    it is only ever offered once (per task), using the full configured
+    frontier budget with no partial/turns override; once a frontier
+    session exists, only `frontier_continuation` is offered from then on.
+    `report.json` is not
     rewritten after a continuation -- `ReviewCase` reads live audit
     artifacts (and, for a verification retry or continuation stop, the
     exact fresher evidence that stop produced) instead; this is a
@@ -1351,6 +1384,7 @@ automation as a substitute for those proofs.
 | `0019` | Architect Mode planning foundation: deterministic plan schemas/validation/store/audit, manual export/import CLI workflow, and a read-only Plans surface on the local UI |
 | `0020` | Deterministic human review and resume: `ReviewCase` projection, bounded-agent-session resume, idempotent/crash-safe continuation operations, and immutable continuation packages |
 | `0021` | Review/resume integrity hardening: execution-time precondition recheck, one active operation per task, explicit crash recovery (`recover_stale_operations`), abandon-before-cleanup ordering, newest-event-only stop classification, shared bounded diff/inspection, and fresh post-retry/continuation evidence |
+| `0022` | Explicit, human-authorized fresh frontier stage (`AUTHORIZE_FRONTIER_STAGE`), distinct from `FRONTIER_CONTINUATION`, sharing an extracted `build_local_to_frontier_escalation()` with automatic in-process escalation |
 
 Add a new ADR for a new architectural decision. Do not rewrite history to make
 old decisions appear current; mark an ADR superseded and link its replacement

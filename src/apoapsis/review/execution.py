@@ -56,6 +56,7 @@ from apoapsis.workflow.acceptance import (
     compute_acceptance_coverage,
 )
 from apoapsis.workflow.engine import SQLiteTaskStore
+from apoapsis.workflow.escalation import build_local_to_frontier_escalation
 from apoapsis.workflow.events import WorkflowActor
 from apoapsis.workflow.states import WorkflowState
 
@@ -67,6 +68,7 @@ _WORKTREE_CHECKED_ACTIONS = frozenset(
         ReviewActionKind.VERIFICATION_ONLY_RETRY,
         ReviewActionKind.LOCAL_CONTINUATION,
         ReviewActionKind.FRONTIER_CONTINUATION,
+        ReviewActionKind.AUTHORIZE_FRONTIER_STAGE,
     }
 )
 
@@ -447,6 +449,20 @@ def run_review_operation(
                 budget=record.authorized_budget,
                 provider=provider,
             )
+        elif record.action == ReviewActionKind.AUTHORIZE_FRONTIER_STAGE:
+            assert config.models.frontier_coder is not None
+            provider = frontier_coder_provider or _build_provider(
+                config.models.frontier_coder
+            )
+            summary = _execute_authorize_frontier_stage(
+                root,
+                task_store,
+                config,
+                review_case,
+                record.expected_task_version,
+                operation_id=operation_id,
+                provider=provider,
+            )
         else:
             raise AssertionError(f"unhandled review action: {record.action}")
     except Exception as exc:
@@ -774,6 +790,155 @@ def _execute_continuation(
         expected_version=escalation.version,
     )
     return f"continuation stopped again: {result.stop_reason}"
+
+
+def _execute_authorize_frontier_stage(
+    root: Path,
+    task_store: SQLiteTaskStore,
+    config: ApoapsisConfig,
+    review_case: ReviewCase,
+    expected_version: int,
+    *,
+    operation_id: str,
+    provider: InstrumentedModelProvider,
+) -> str:
+    """Starts a *fresh* frontier coding-agent session after a local session
+    stopped, once a human explicitly authorizes it (ADR 0022) -- distinct
+    from continuing an existing one (``_execute_continuation`` with
+    ``FRONTIER_CONTINUATION``). Reuses the exact same deterministic
+    escalation-package construction the automatic local-to-frontier
+    escalation path uses (``workflow.escalation
+    .build_local_to_frontier_escalation``), and writes that package before
+    the first frontier model call, exactly like the automatic path does.
+    """
+
+    assert review_case.worktree_path is not None
+    assert config.models.frontier_coder is not None
+    task_id = review_case.task_id
+    task_directory = root / ".apoapsis" / "tasks" / task_id
+
+    local_session = read_agent_session(task_directory, "")
+    if local_session is None:
+        raise ReviewError(
+            "no local agent session exists for this task to escalate from"
+        )
+    if read_agent_session(task_directory, "frontier-") is not None:
+        raise ReviewError(
+            "a frontier stage already exists for this task; use "
+            "frontier_continuation to resume it instead of starting a new one"
+        )
+
+    specification = task_store.get_task(task_id).specification
+    local_provider_config = config.models.local_coder or config.models.frontier
+    context_compiler = ContextCompiler(config.context)
+    frontier_context, package = build_local_to_frontier_escalation(
+        task_id=task_id,
+        specification=specification,
+        worktree_path=review_case.worktree_path,
+        local_result=local_session,
+        context_compiler=context_compiler,
+        files_changed=local_session.changed_files,
+        local_provider_name=local_provider_config.provider,
+        local_model_name=local_provider_config.model,
+        frontier_provider_name=provider.provider_name,
+        frontier_model_name=provider.model_name,
+        frontier_budget=config.execution.frontier_agent,
+    )
+
+    audit = TaskAuditStore(root, task_id)
+    audit.write_json(
+        f"review-frontier-stage-{operation_id}.json",
+        package,
+        kind="frontier_escalation_package",
+    )
+
+    started = task_store.transition(
+        task_id,
+        WorkflowState.IMPLEMENTING,
+        actor=WorkflowActor.USER,
+        event_type="review_frontier_stage_started",
+        payload={
+            "reason": "human-authorized fresh frontier stage",
+            "operation_id": operation_id,
+            "frontier_provider": provider.provider_name,
+            "frontier_model": provider.model_name,
+        },
+        expected_version=expected_version,
+    )
+
+    existing_calls = len(list(task_directory.glob("call-*-request.json")))
+    model_call = _ContinuationModelCaller(
+        audit,
+        provider,
+        config.models.frontier_coder,
+        start_call_number=existing_calls + 1,
+    )
+    apply_patch = _make_apply_patch(audit, config, review_case.worktree_path, "frontier-")
+    session = BoundedAgentSession(
+        specification=specification,
+        worktree=review_case.worktree_path,
+        initial_context=frontier_context,
+        context_compiler=context_compiler,
+        config=config.execution.frontier_agent,
+        verification_config=config.verification,
+        audit=audit,
+        model_call=model_call,
+        apply_patch=apply_patch,
+        model_role=ModelRole.FRONTIER_CODING_AGENT,
+        audit_prefix="frontier-",
+        completion_policy=config.execution.completion_policy,
+    )
+    try:
+        result: AgentSessionResult = session.run()
+    except InstrumentedProviderError as exc:
+        result = session.interrupted(
+            f"frontier stage provider call failed: {exc}"
+        )
+
+    if result.outcome == AgentSessionOutcome.COMPLETE:
+        patch_ready = task_store.transition(
+            task_id,
+            WorkflowState.PATCH_READY,
+            actor=WorkflowActor.SYSTEM,
+            event_type="review_continuation_patch_ready",
+            payload={"turns": result.turns, "patch_attempts": result.patch_attempts},
+            expected_version=started.version,
+        )
+        verifying = task_store.transition(
+            task_id,
+            WorkflowState.VERIFYING,
+            actor=WorkflowActor.VERIFICATION_ENGINE,
+            event_type="review_continuation_verification_recorded",
+            payload={"verification_runs": result.verification_runs},
+            expected_version=patch_ready.version,
+        )
+        task_store.transition(
+            task_id,
+            WorkflowState.COMPLETE,
+            actor=WorkflowActor.VERIFICATION_ENGINE,
+            event_type="review_continuation_verification_passed",
+            payload={"stop_reason": result.stop_reason},
+            expected_version=verifying.version,
+        )
+        return "frontier stage completed the task"
+
+    escalation = task_store.transition(
+        task_id,
+        WorkflowState.ESCALATION_REQUIRED,
+        actor=WorkflowActor.SYSTEM,
+        event_type="review_frontier_stage_escalation_required",
+        payload={"reason": result.stop_reason},
+        expected_version=started.version,
+    )
+    task_store.transition(
+        task_id,
+        WorkflowState.HUMAN_REVIEW_REQUIRED,
+        actor=WorkflowActor.SYSTEM,
+        event_type="review_frontier_stage_requires_human",
+        payload={"reason": result.stop_reason},
+        expected_version=escalation.version,
+    )
+    return f"frontier stage stopped: {result.stop_reason}"
 
 
 __all__ = [

@@ -38,6 +38,12 @@ class ReviewActionKind(StrEnum):
     VERIFICATION_ONLY_RETRY = "verification_only_retry"
     LOCAL_CONTINUATION = "local_continuation"
     FRONTIER_CONTINUATION = "frontier_continuation"
+    # Starts a *fresh* configured frontier stage after a local session
+    # stopped, once the user explicitly approves it (ADR 0022) -- distinct
+    # from FRONTIER_CONTINUATION, which only ever resumes a frontier
+    # session that already exists. Never offered once a frontier session
+    # for this task already exists; use FRONTIER_CONTINUATION for that.
+    AUTHORIZE_FRONTIER_STAGE = "authorize_frontier_stage"
 
 
 class ReviewOperationStatus(StrEnum):
@@ -94,6 +100,8 @@ class ReviewCase(StrictModel):
     consumed_frontier_verification_runs: int = Field(default=0, ge=0)
     configured_frontier_budget: AgentLoopConfig | None = None
     frontier_available: bool = False
+    frontier_model: str | None = None
+    frontier_stage_exists: bool = False
     continuations_used: int = Field(default=0, ge=0)
     max_continuations_per_task: int = Field(ge=1)
     max_additional_turns_per_continuation: int = Field(ge=1)

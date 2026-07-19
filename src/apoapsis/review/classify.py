@@ -22,6 +22,7 @@ _EVENT_TYPE_STOP_REASON: dict[str, StopReasonKind] = {
     "review_frontier_continuation_requires_human": (
         StopReasonKind.FRONTIER_AGENT_EXHAUSTED
     ),
+    "review_frontier_stage_requires_human": StopReasonKind.FRONTIER_AGENT_EXHAUSTED,
 }
 
 _BASE_ELIGIBLE_ACTIONS: dict[StopReasonKind, tuple[ReviewActionKind, ...]] = {
@@ -48,6 +49,7 @@ _BASE_ELIGIBLE_ACTIONS: dict[StopReasonKind, tuple[ReviewActionKind, ...]] = {
         ReviewActionKind.ABANDON,
         ReviewActionKind.VERIFICATION_ONLY_RETRY,
         ReviewActionKind.LOCAL_CONTINUATION,
+        ReviewActionKind.AUTHORIZE_FRONTIER_STAGE,
     ),
     StopReasonKind.FRONTIER_AGENT_EXHAUSTED: (
         ReviewActionKind.INSPECT_ONLY,
@@ -91,17 +93,34 @@ def eligible_actions_for(
     frontier_available: bool,
     continuations_used: int,
     max_continuations_per_task: int,
+    frontier_stage_exists: bool = False,
 ) -> list[ReviewActionKind]:
     """The deterministic, harness-computed eligible-action set for a stop
     reason -- filtered by current frontier availability (checked fresh,
-    not from the stale routing decision that originally stopped the task)
-    and the configured per-task continuation ceiling."""
+    not from the stale routing decision that originally stopped the task),
+    the configured per-task continuation ceiling, and whether a frontier
+    stage already exists for this task (ADR 0022): ``authorize_frontier_
+    stage`` is only ever offered when one does not yet exist (it starts a
+    *fresh* one); ``frontier_continuation`` implicitly requires one to
+    already exist, since it only appears under
+    ``StopReasonKind.FRONTIER_AGENT_EXHAUSTED``, which is only ever reached
+    once a frontier session has actually run."""
 
     actions = list(
         _BASE_ELIGIBLE_ACTIONS.get(kind, _BASE_ELIGIBLE_ACTIONS[StopReasonKind.UNKNOWN])
     )
-    if not frontier_available and ReviewActionKind.FRONTIER_CONTINUATION in actions:
-        actions.remove(ReviewActionKind.FRONTIER_CONTINUATION)
+    if not frontier_available:
+        actions = [
+            item
+            for item in actions
+            if item
+            not in {
+                ReviewActionKind.FRONTIER_CONTINUATION,
+                ReviewActionKind.AUTHORIZE_FRONTIER_STAGE,
+            }
+        ]
+    if frontier_stage_exists and ReviewActionKind.AUTHORIZE_FRONTIER_STAGE in actions:
+        actions.remove(ReviewActionKind.AUTHORIZE_FRONTIER_STAGE)
     if continuations_used >= max_continuations_per_task:
         actions = [
             item

@@ -74,10 +74,7 @@ from apoapsis.workflow.acceptance import (
     compute_acceptance_coverage,
 )
 from apoapsis.workflow.engine import SQLiteTaskStore
-from apoapsis.workflow.escalation import (
-    EscalationPackage,
-    add_escalation_evidence,
-)
+from apoapsis.workflow.escalation import build_local_to_frontier_escalation
 from apoapsis.workflow.events import WorkflowActor
 from apoapsis.workflow.routing import RoutingDecision, select_agent_route
 from apoapsis.workflow.states import WorkflowState, transition_is_allowed
@@ -818,29 +815,18 @@ class VerticalSliceRunner:
         assert self.frontier_coder_provider is not None
         assert self.frontier_coder_config is not None
 
-        failures = []
-        for result in local_result.verification_results:
-            if result.status == VerificationStatus.PASSED:
-                continue
-            _, failure = self.failure_normalizer.extract(
-                result, self.worktree_path
-            )
-            failures.append(failure)
-        queries = [
-            text
-            for failure in failures
-            for text in (failure.root_error, failure.relevant_error)
-        ]
-        frontier_context = self.context_compiler.compile(
-            self.specification,
-            self.worktree_path,
-            extra_queries=queries,
-            preferred_paths=self.files_changed,
-            preferred_line_anchors={
-                location.path: location.line
-                for failure in failures
-                for location in failure.locations
-            },
+        frontier_context, package = build_local_to_frontier_escalation(
+            task_id=self.specification.task_id,
+            specification=self.specification,
+            worktree_path=self.worktree_path,
+            local_result=local_result,
+            context_compiler=self.context_compiler,
+            files_changed=self.files_changed,
+            local_provider_name=self.local_coder_provider.provider_name,
+            local_model_name=self.local_coder_provider.model_name,
+            frontier_provider_name=self.frontier_coder_provider.provider_name,
+            frontier_model_name=self.frontier_coder_provider.model_name,
+            frontier_budget=self.config.execution.frontier_agent,
             external_research_brief=(
                 self.research_outcome.brief if self.research_outcome else None
             ),
@@ -849,26 +835,6 @@ class VerticalSliceRunner:
                 if self.research_outcome
                 else []
             ),
-        )
-        frontier_context = add_escalation_evidence(
-            frontier_context, local_result, failures
-        )
-        current_diff = GitRepository(self.worktree_path).run(
-            ["diff", "--no-ext-diff", "--unified=5", "HEAD"]
-        ).stdout
-        package = EscalationPackage(
-            task_id=self.specification.task_id,
-            trigger=local_result.stop_reason,
-            local_provider=self.local_coder_provider.provider_name,
-            local_model=self.local_coder_provider.model_name,
-            frontier_provider=self.frontier_coder_provider.provider_name,
-            frontier_model=self.frontier_coder_provider.model_name,
-            specification=self.specification,
-            active_constraints=self.specification.active_hard_constraints,
-            current_diff=current_diff,
-            local_session=local_result,
-            normalized_failures=failures,
-            frontier_context_sha256=frontier_context.context_sha256 or "0" * 64,
         )
         artifact = self.audit.write_json(
             "frontier-escalation-package.json",

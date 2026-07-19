@@ -2,19 +2,23 @@ from __future__ import annotations
 
 import hashlib
 import json
+from pathlib import Path
 from typing import Literal
 
 from pydantic import Field, model_validator
 
 from apoapsis.agent.session import AgentSessionResult
-from apoapsis.context.compiler import ContextPackage
+from apoapsis.config import AgentLoopConfig
+from apoapsis.context.compiler import ContextCompiler, ContextPackage
 from apoapsis.context.provenance import (
     ContextEvidence,
     EvidenceKind,
     TransmissionPolicy,
 )
+from apoapsis.repository.git import GitRepository
 from apoapsis.specification.schema import HardConstraint, StrictModel, TaskSpecification
-from apoapsis.verification.failures import NormalizedFailure
+from apoapsis.verification.failures import FailureNormalizer, NormalizedFailure
+from apoapsis.verification.results import VerificationStatus
 
 
 class EscalationPackage(StrictModel):
@@ -34,6 +38,7 @@ class EscalationPackage(StrictModel):
     local_session: AgentSessionResult
     normalized_failures: list[NormalizedFailure] = Field(default_factory=list)
     frontier_context_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    frontier_budget: AgentLoopConfig
 
     @model_validator(mode="after")
     def validate_package(self) -> EscalationPackage:
@@ -115,3 +120,75 @@ def add_escalation_evidence(
         research_evidence_ids=context.research_evidence_ids,
         evidence=normalized,
     )
+
+
+def build_local_to_frontier_escalation(
+    *,
+    task_id: str,
+    specification: TaskSpecification,
+    worktree_path: str | Path,
+    local_result: AgentSessionResult,
+    context_compiler: ContextCompiler,
+    files_changed: list[str],
+    local_provider_name: str,
+    local_model_name: str,
+    frontier_provider_name: str,
+    frontier_model_name: str,
+    frontier_budget: AgentLoopConfig,
+    external_research_brief: str | None = None,
+    research_evidence_ids: list[str] | None = None,
+) -> tuple[ContextPackage, EscalationPackage]:
+    """Deterministically build the frontier-facing context and the
+    immutable ``EscalationPackage`` audit record for a local-to-frontier
+    escalation. Shared by the automatic escalation path
+    (``VerticalSliceRunner._run_frontier_escalation``) and the explicit,
+    human-authorized ``AUTHORIZE_FRONTIER_STAGE`` review action (ADR 0022),
+    so both produce byte-for-byte the same deterministic package shape from
+    the same inputs -- no separate, divergent construction logic.
+    """
+
+    failure_normalizer = FailureNormalizer()
+    failures: list[NormalizedFailure] = []
+    for result in local_result.verification_results:
+        if result.status == VerificationStatus.PASSED:
+            continue
+        _, failure = failure_normalizer.extract(result, worktree_path)
+        failures.append(failure)
+    queries = [
+        text
+        for failure in failures
+        for text in (failure.root_error, failure.relevant_error)
+    ]
+    frontier_context = context_compiler.compile(
+        specification,
+        worktree_path,
+        extra_queries=queries,
+        preferred_paths=files_changed,
+        preferred_line_anchors={
+            location.path: location.line
+            for failure in failures
+            for location in failure.locations
+        },
+        external_research_brief=external_research_brief,
+        research_evidence_ids=research_evidence_ids or [],
+    )
+    frontier_context = add_escalation_evidence(frontier_context, local_result, failures)
+    current_diff = GitRepository(worktree_path).run(
+        ["diff", "--no-ext-diff", "--unified=5", "HEAD"]
+    ).stdout
+    package = EscalationPackage(
+        task_id=task_id,
+        trigger=local_result.stop_reason,
+        local_provider=local_provider_name,
+        local_model=local_model_name,
+        frontier_provider=frontier_provider_name,
+        frontier_model=frontier_model_name,
+        specification=specification,
+        active_constraints=specification.active_hard_constraints,
+        current_diff=current_diff,
+        local_session=local_result,
+        normalized_failures=failures,
+        frontier_context_sha256=frontier_context.context_sha256 or "0" * 64,
+        frontier_budget=frontier_budget,
+    )
+    return frontier_context, package

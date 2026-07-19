@@ -308,9 +308,30 @@ matching increase to patch-attempt/verification-run budgets) added on top
 of whatever was already consumed; nothing is ever reset. `--additional-turns`
 and the number of continuations per task are both capped by
 `[review]` in `.apoapsis/config.toml` (`max_additional_turns_per_continuation`,
-`max_continuations_per_task`). Frontier continuation is only ever offered
-when a frontier agent session already exists for that task; it never
-launches a fresh frontier attempt from a local-only stop.
+`max_continuations_per_task`). `continue-frontier` is only ever offered when
+a frontier agent session already exists for that task; it never launches a
+fresh frontier attempt from a local-only stop.
+
+Starting a fresh frontier stage from a local-only stop is a distinct,
+explicitly confirmed action (ADR 0022), never something `continue-frontier`
+does implicitly:
+
+```bash
+apoapsis review authorize-frontier-stage TASK-ABC123 \
+  --expected-version 4 --expected-fingerprint <digest> --operation-id RVOP-5
+```
+
+`authorize-frontier-stage` is only offered while a frontier coder is
+configured and no frontier session exists yet for the task -- once one
+does, only `continue-frontier` is offered from then on. It always uses the
+full configured `[execution.frontier_agent]` budget (there is no
+`--additional-turns` flag for it, since this is a new session, not a
+continuation); both the CLI and the UI display the exact frontier model
+and budget before it runs. Frontier availability is always checked against
+the *current* configuration, not whatever was true at the original stop --
+adding `[models.frontier_coder]` to `.apoapsis/config.toml` after a
+local-only stop is enough to make the action available on the next
+`review inspect`.
 
 Every operation is re-validated against fresh state (task version, worktree
 fingerprint, eligibility, budgets) immediately before it does anything,

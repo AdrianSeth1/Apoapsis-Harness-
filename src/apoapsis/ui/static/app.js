@@ -512,6 +512,7 @@ const REVIEW_ACTION_LABELS = {
   verification_only_retry: "Retry verification",
   local_continuation: "Continue locally",
   frontier_continuation: "Continue with frontier",
+  authorize_frontier_stage: "Authorize a fresh frontier stage",
 };
 
 const REVIEW_OPERATION_STAGE = {
@@ -555,7 +556,7 @@ function reviewDetailView(detail) {
       ${metric("Task version", detail.task_version, "Optimistic concurrency")}
       ${metric("Worktree", detail.worktree_exists ? "Present" : "None", detail.worktree_exists ? "Fingerprint tracked" : "Stopped before implementation began")}
       ${metric("Continuations used", `${detail.continuations_used} / ${detail.max_continuations_per_task}`, "Per-task ceiling")}
-      ${metric("Frontier", detail.frontier_available ? "Configured" : "Not configured", "Checked fresh, not from the original stop")}
+      ${metric("Frontier", detail.frontier_available ? (detail.frontier_model || "Configured") : "Not configured", "Checked fresh, not from the original stop")}
     </div>
 
     ${reviewOperationPanel()}
@@ -624,23 +625,28 @@ function reviewActionButton(action) {
     verification_only_retry: "Re-runs configured verification against the current worktree. No model is called.",
     local_continuation: "Resumes the local coding agent with additional authorized turns.",
     frontier_continuation: "Resumes the frontier coding agent with additional authorized turns.",
+    authorize_frontier_stage: "Starts a brand-new frontier coding-agent stage using the local session's diff, failures, and full configured frontier budget. Never launches automatically.",
   }[action] || "";
   return `<article class="card card-pad"><h3>${e(label)}</h3><p class="muted">${e(description)}</p><button class="button ${action === "inspect_only" ? "ghost" : "primary"}" data-action="review-act-intent" data-review-action="${e(action)}">${e(label)} →</button></article>`;
 }
 
 function reviewConfirmPanel(detail, action) {
   const needsTurns = action === "local_continuation" || action === "frontier_continuation";
+  const isFrontierStage = action === "authorize_frontier_stage";
+  const frontierBudget = detail.configured_frontier_budget;
   const copy = {
     inspect_only: "Records that a human explicitly reviewed this case. No other state changes.",
     abandon: "This cleans up the worktree (if one exists) and marks the task ROLLED_BACK. This cannot be undone.",
     verification_only_retry: "Re-runs configured verification against the current worktree right now. No model is called.",
     local_continuation: "Resumes the local coding agent from exactly where it stopped, with the authorized additional turns. This calls a model.",
     frontier_continuation: "Resumes the frontier coding agent from exactly where it stopped, with the authorized additional turns. This calls a hosted/frontier model and may incur cost.",
+    authorize_frontier_stage: "Starts a fresh frontier coding-agent stage from the local session's exact diff and failures. This is a new session, not a continuation, and calls a hosted/frontier model -- it may incur cost.",
   }[action] || "";
   return `<div class="approval-bar">
     <div>
       <strong>Confirm: ${e(REVIEW_ACTION_LABELS[action] || action)}</strong>
       <span>${e(copy)}</span>
+      ${isFrontierStage ? `<div class="mt-14 mono">MODEL: ${e(detail.frontier_model || "unknown")} · BUDGET: ${e(frontierBudget?.max_turns ?? "—")} turns / ${e(frontierBudget?.max_patch_attempts ?? "—")} patch attempts / ${e(frontierBudget?.max_verification_runs ?? "—")} verify runs</div>` : ""}
       ${needsTurns ? `<div class="mt-14"><label class="section-title mt-0" for="review-additional-turns">Additional turns (max ${e(detail.max_additional_turns_per_continuation)})</label><input id="review-additional-turns" type="number" min="1" max="${e(detail.max_additional_turns_per_continuation)}" value="${e(store.reviewAdditionalTurns)}" class="mono"></div>` : ""}
     </div>
     <div class="approval-actions">

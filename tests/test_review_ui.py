@@ -345,6 +345,80 @@ timeout_seconds = 30
             self.store.get_task(self.task_id).state, WorkflowState.COMPLETE
         )
 
+    def test_authorize_frontier_stage_completes_via_background_worker(self) -> None:
+        # Simulate the user adding frontier credentials *after* the local
+        # stop -- frontier availability is always checked fresh against
+        # the current config, never the stale original routing decision.
+        # A fresh stage always uses the full configured frontier_agent
+        # budget (no additional_turns delta like continuations get), so
+        # this rewrite also raises max_turns enough for the fake session
+        # below (TOML forbids re-declaring [execution.frontier_agent], so
+        # the whole file is rewritten rather than appended).
+        self.config_path.write_text(
+            self.config_path.read_text(encoding="utf-8").replace(
+                "[execution.frontier_agent]\nmax_turns = 3",
+                "[execution.frontier_agent]\nmax_turns = 8",
+            )
+            + """
+[models.frontier_coder]
+provider = "openai_compatible"
+base_url = "https://frontier.invalid/v1"
+model = "fake-frontier-stage-v1"
+""",
+            encoding="utf-8",
+        )
+        detail = self.service.review_case_detail(self.task_id)
+        self.assertIn("authorize_frontier_stage", detail["eligible_actions"])
+        self.assertEqual(detail["frontier_model"], "fake-frontier-stage-v1")
+
+        stage_outputs = [
+            action("propose_patch", unified_diff=IMPLEMENTATION_PATCH),
+            action("submit_for_verification"),
+            action("inspect_diff"),
+            action(
+                "replace_text",
+                path="src/download_service/downloader.py",
+                old_text=(
+                    '        mode = "ab" if offset else "wb"\n'
+                    "        downloaded = offset"
+                ),
+                new_text=(
+                    "        should_append = offset > 0 and "
+                    "response.status_code == 206\n"
+                    '        mode = "ab" if should_append else "wb"\n'
+                    "        downloaded = offset if should_append else 0"
+                ),
+            ),
+            action("run_check", command_name="download-tests"),
+        ]
+        fake = FakeModelProvider(stage_outputs, model_name="fake-frontier-stage-v1")
+        fake_provider = InstrumentedModelProvider(fake, ProviderPricing())
+
+        with patch(
+            "apoapsis.review.execution._build_provider", return_value=fake_provider
+        ):
+            self.service.submit_review_operation(
+                self.task_id,
+                action="authorize_frontier_stage",
+                operation_id="RVOP-UI-STAGE-1",
+                expected_version=detail["task_version"],
+                expected_worktree_fingerprint=detail["worktree_fingerprint"],
+            )
+            final = _poll_until_terminal(self.service, "RVOP-UI-STAGE-1", timeout=20)
+
+        self.assertEqual(final["status"], "succeeded")
+        self.assertEqual(
+            self.store.get_task(self.task_id).state, WorkflowState.COMPLETE
+        )
+        package_path = (
+            self.root
+            / ".apoapsis"
+            / "tasks"
+            / self.task_id
+            / "review-frontier-stage-RVOP-UI-STAGE-1.json"
+        )
+        self.assertTrue(package_path.is_file())
+
 
 class ReviewUIServerTests(ReviewUIServiceTests):
     def setUp(self) -> None:

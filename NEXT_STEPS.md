@@ -440,6 +440,36 @@ corrected. 12 new tests in `tests/test_review_hardening.py`, plus updates to
 existing review tests for the new `classify_stop_reason` signature and the
 duplicate/active-operation distinction; full suite 373/373 passing.
 
+### Done — Phase H2: explicit fresh-frontier authorization (ADR 0022)
+
+Added a distinct review action, `AUTHORIZE_FRONTIER_STAGE`, alongside (not
+overloading) `FRONTIER_CONTINUATION`: the latter only ever resumes a
+frontier session that already exists; the former starts a *fresh* frontier
+stage from a local-only stop once a human explicitly approves it, using the
+full configured `frontier_agent` budget with no partial-turns override, and
+is only ever offered once per task -- once a frontier session exists, only
+`FRONTIER_CONTINUATION` is offered from then on. `frontier_available`/
+`frontier_model`/`frontier_stage_exists` on `ReviewCase` are always computed
+against the *current* config and worktree, never cached from the original
+stop, so adding `[models.frontier_coder]` after a local-only stop makes the
+action eligible immediately. Extracted the previously-inline escalation-
+package-construction logic out of `VerticalSliceRunner._run_frontier_
+escalation` into `workflow/escalation.py`'s `build_local_to_frontier_
+escalation()`, now shared byte-for-byte by both the automatic in-process
+escalation path and this new human-authorized one (verified via the
+existing, unmodified `test_agent_loop`/`test_vertical_slice`/
+`test_evaluation` suites, 62 tests). `AUTHORIZE_FRONTIER_STAGE` reuses ADR
+0021's execution-time precondition recheck/worktree-fingerprint check/
+one-active-operation-per-task guarantee unchanged. CLI:
+`apoapsis review authorize-frontier-stage` (no turns/budget flag). UI:
+confirmation panel shows the exact configured frontier model and turn/
+patch/verification-run ceiling before confirming; never launches
+automatically. New ADR 0022. 8 new tests in
+`tests/test_review_frontier_stage.py` (eligibility transitions,
+unavailable-frontier rejection, stale-worktree/duplicate-operation
+rejection, successful and budget-exhausted stage runs) plus a new
+background-worker/UI test in `tests/test_review_ui.py`; full suite passing.
+
 ### Priority C — extend the accepted application shell (ADR 0014)
 
 The first UI slice is complete: local/offline assets, a capability-protected

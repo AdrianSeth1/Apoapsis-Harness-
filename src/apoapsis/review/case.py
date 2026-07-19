@@ -252,6 +252,10 @@ def build_review_case(
         )
     configured_frontier_budget = None
     frontier_available = config.models.frontier_coder is not None
+    frontier_model = (
+        config.models.frontier_coder.model if frontier_available else None
+    )
+    frontier_stage_exists = frontier_session is not None
     if frontier_available:
         base = config.execution.frontier_agent
         configured_frontier_budget = base.model_copy(
@@ -269,6 +273,7 @@ def build_review_case(
         frontier_available=frontier_available,
         continuations_used=continuations_used,
         max_continuations_per_task=config.review.max_continuations_per_task,
+        frontier_stage_exists=frontier_stage_exists,
     )
 
     audit_artifact_locations: list[str] = []
@@ -314,6 +319,8 @@ def build_review_case(
         ),
         configured_frontier_budget=configured_frontier_budget,
         frontier_available=frontier_available,
+        frontier_model=frontier_model,
+        frontier_stage_exists=frontier_stage_exists,
         continuations_used=continuations_used,
         max_continuations_per_task=config.review.max_continuations_per_task,
         max_additional_turns_per_continuation=(
