@@ -3,6 +3,8 @@
 This is the practical roadmap after the completed Apoapsis 1.0 implementation.
 `HANDOFF.md` remains the canonical architecture and project-status record;
 `AGENTS.md` remains mandatory instructions for coding models.
+The owner-oriented explanation of how the pieces fit together, including the
+held-out oracle, is `docs/architecture-explained.md`.
 
 ## For the owner
 
@@ -472,23 +474,40 @@ background-worker/UI test in `tests/test_review_ui.py`; full suite passing.
 
 ### Priority C — extend the accepted application shell (ADR 0014)
 
-The first UI slice is complete: local/offline assets, a capability-protected
-loopback API, real read-only task/report/environment/evaluation views, and
-optimistic specification approval have deterministic integration and visual
-coverage. CLI and UI approval produce the same persisted transition record.
+The application now has local/offline assets, a capability-protected loopback
+API, real task/report/environment/evaluation/plan/review views, optimistic
+specification and plan approval, and durable Human Review operations with
+bounded continuation, crash recovery, and explicit fresh-frontier-stage
+authorization. It can control existing work safely. The highest-value product
+gap is that it still cannot originate and execute a new task from natural
+language.
 
 Continue in this order:
 
-1. Extract model-assisted task intake into a resumable application service. Do
-   not keep a CLI input callback or HTTP request open while a model is running.
-2. Persist a pending-approval operation and reconnect it to the existing
-   specification extractor, provider telemetry, audit package, and exact
-   verbatim-constraint checks.
-3. Implement the explicit review/resume options from Priority B as typed service
-   commands with optimistic versions and allowed-transition validation.
-4. Add task execution progress through persisted events or a durable operation
-   record; browser disconnects must not grant, cancel, or repeat authority.
-5. Only then choose a packaged native wrapper for the proven loopback surface.
+1. Add an ADR and extract model-assisted task intake into a durable,
+   resumable application service. Persist the operation before the first model
+   call; do not keep a CLI input callback or HTTP request open while inference
+   runs.
+2. Reuse the existing specification extractor, one bounded correction attempt,
+   provider telemetry, call audit package, acceptance-command catalog, and exact
+   verbatim-constraint checks. Persist either a validated pending-approval
+   candidate or a bounded terminal failure. Browser reconnects poll the same
+   operation id and never resubmit the provider call.
+3. After optimistic specification approval, launch the already-approved task
+   through a durable worker. Project progress from workflow events/operation
+   records; browser code must not infer state, run a CLI subprocess, or own a
+   provider. A disconnect must not grant, cancel, duplicate, or repeat work.
+4. Then add an approved-plan-to-single-slice bridge under its own ADR. Compile
+   one explicitly selected ready slice into an immutable execution package,
+   recheck the plan/repository/dependency fingerprints, obtain explicit user
+   approval, and run the normal bounded agent protocol. Suggested paths and
+   symbols remain advisory; never auto-start the next slice or add an autonomous
+   scheduler.
+5. Evaluate one substantial task monolithically versus plan-then-slices under
+   identical model/settings. Compare held-out true success, false success,
+   turns, patch/verification attempts, transmitted context, latency, and hosted
+   calls/cost before claiming Architect Mode improves outcomes.
+6. Only then choose a packaged native wrapper for the proven loopback surface.
 
 Keep `src/apoapsis/ui/application.py` as the authority boundary. Browser code
 must not call providers, construct CLI commands, parse files into invented

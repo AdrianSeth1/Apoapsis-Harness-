@@ -10,6 +10,10 @@ the current system map. `README.md` is the user-facing guide. When they differ,
 the implementation and tests are the operational truth, and the documentation
 must be corrected before the change is considered complete.
 
+The owner-oriented, plain-English explanation is
+`docs/architecture-explained.md`; it explains the system and held-out oracle
+without replacing this canonical coding-agent handoff.
+
 ## Snapshot
 
 | Item | Current value |
@@ -870,11 +874,12 @@ distribution. Merely opening the UI does not prompt or load a model. Home,
 task/specification, workflow timeline, report/audit, evaluations, and configured
 model views are live; Doctor runs only after an explicit UI action.
 
-Specification approval is the only UI mutation in this slice. It requires a
-second in-app confirmation and the current optimistic task version, then calls
-the same store transition used by `apoapsis approve`. Model-assisted new-task
-intake, execution, and review/resume actions remain CLI-only or visibly
-unavailable.
+Specification and plan approval use second-step confirmation and optimistic
+versions, then call the same deterministic store transitions as the CLI. Human
+Review actions are durably recorded, executed outside the HTTP request by the
+background worker, and polled by operation id. Model-assisted new-task intake,
+new-task execution orchestration, plan-slice execution, and native packaging
+remain visibly unavailable.
 
 ### Run the primary flow
 
@@ -1226,10 +1231,11 @@ tests supplement them; they must not replace deterministic coverage.
 4. **Historical configuration naming remains.** `models.frontier` still serves
    specification and one-shot roles even when backed by local Ollama.
 5. **No automatic merge/commit.** A successful worktree remains for inspection.
-6. **Human-review continuation is CLI-only.** ADR 0020 added a real,
-   deterministic resume mechanism (`apoapsis review ...`) covering all five
-   known `HUMAN_REVIEW_REQUIRED` stop reasons; there is no polished
-   interactive UI resume experience yet (Commit C2, tracked separately).
+6. **Human Review is implemented, but new-task orchestration is not.** ADR
+   0020–0022 provide CLI and UI review, deterministic bounded continuation,
+   crash recovery, and explicit fresh-frontier-stage authorization. The UI
+   still cannot originate a natural-language task and durably carry it through
+   model-assisted extraction, approval, and new-task execution.
 7. **Cost is configured, not discovered.** Zero pricing yields a valid but
    economically uninformative report.
 8. **Live network tests are intentionally skipped by default.** Run them only
@@ -1297,13 +1303,15 @@ tests supplement them; they must not replace deterministic coverage.
     turns, a different budget shape, or a more capable model would close
     that gap is unmeasured. Do not begin another live evaluation without
     explicit direction.
-13. **The local application is a first slice, not a complete desktop product.**
-    ADR 0014 now defines a capability-protected loopback application and the
-    black/orange/purple interface has real read-only task/report/environment/
-    evaluation views plus deterministic specification approval. Model-assisted
-    intake, execution progress orchestration, human-review resume choices, and a
-    packaged native wrapper are still missing. Do not implement them as browser
-    provider calls, CLI subprocess construction, or inferred audit-file state.
+13. **The local application is a substantial control surface, not yet a complete
+    desktop product.** ADR 0014/0019/0020–0022 define a capability-protected
+    loopback application with real task/report/environment/evaluation/plan/
+    Human Review views, deterministic specification/plan approval, resumable
+    review operations, and explicit frontier authorization. Model-assisted
+    new-task intake, durable new-task execution progress, approved-plan slice
+    execution, and a packaged native wrapper are still missing. Do not implement
+    them as browser provider calls, CLI subprocess construction, or inferred
+    audit-file state.
 14. **Architect Mode (ADR 0019) produces plans but never executes them.**
     `apoapsis plan export/import/validate/inspect/approve` is fully
     implemented and covered by `tests/test_architect_validation.py`,

@@ -5,10 +5,13 @@ coding agents. It contains the deterministic `substrate-v0.1` baseline, a
 bounded inspect-edit-test coding loop, the original one-shot patch baseline,
 and a quarantined local Research Mode.
 
-Start with [`HANDOFF.md`](HANDOFF.md) for the living architecture, current
-implementation status, known limitations, and the required maintenance contract
-for future coding models. The ADRs remain the decision history; this README is
-the user-facing guide.
+For a plain-English tour of how the system works—including what the held-out
+oracle does and does not know—start with
+[`docs/architecture-explained.md`](docs/architecture-explained.md). Coding
+agents should start with [`HANDOFF.md`](HANDOFF.md) for the canonical living
+architecture, current implementation status, known limitations, and required
+maintenance contract. The ADRs remain the decision history; this README is the
+user-facing guide.
 
 Version 0.7 adopts the complete Apoapsis namespace: the distribution is
 `apoapsis-harness`, the Python package and CLI are `apoapsis`, new project state
@@ -60,8 +63,10 @@ content hashes and worktree pointers are not corrupted; see
   Ollama models from configuration, warm the coding model, and explicitly
   release every configured local model's memory without touching hosted providers.
 - An offline black/orange/purple local operator interface for real repository,
-  task, specification, event, report, evaluation, and model-configuration data,
-  including version-checked deterministic specification approval.
+  task, specification, plan, Human Review, event, report, evaluation, and
+  model-configuration data, including version-checked specification/plan
+  approval, bounded continuation, crash recovery, and explicit fresh-frontier
+  authorization.
 
 See [ADR 0001](docs/adr/0001-mvp-deterministic-substrate.md) for the substrate
 and [ADR 0002](docs/adr/0002-frontier-vertical-slice.md) for the frontier flow.
