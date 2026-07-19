@@ -50,6 +50,15 @@ from apoapsis.workflow.acceptance import (
 )
 
 
+_NOT_PASSED_EXECUTION_STATUSES = frozenset(
+    {
+        VerificationStatus.FAILED,
+        VerificationStatus.TIMED_OUT,
+        VerificationStatus.ERROR,
+    }
+)
+
+
 class AgentSessionOutcome(StrEnum):
     COMPLETE = "complete"
     ESCALATION_REQUIRED = "escalation_required"
@@ -448,7 +457,17 @@ class BoundedAgentSession:
             result,
             kind="verification_result",
         )
-        if result.status != VerificationStatus.PASSED:
+        # An acceptance-designated command's own failure must produce real
+        # failure evidence even when the aggregate `result.status` stays
+        # PASSED because the command is `required = false` (ADR 0018) --
+        # aggregate development-verification semantics are unchanged; this
+        # only widens when informative evidence is extracted, never what
+        # counts as a required development-gating failure.
+        acceptance_command_failed = any(
+            item.acceptance and item.status in _NOT_PASSED_EXECUTION_STATUSES
+            for item in result.commands
+        )
+        if result.status != VerificationStatus.PASSED or acceptance_command_failed:
             _, failure = self.failure_normalizer.extract(result, self.worktree)
             self.audit.write_json(
                 (
@@ -553,11 +572,16 @@ class BoundedAgentSession:
     def _record_verification(
         self, turn: int, action: str, result: VerificationResult
     ) -> None:
+        # An acceptance-designated command counts here too (ADR 0018): the
+        # turn summary must never say "passed" while a check the model
+        # mapped a criterion to actually failed, even though that command
+        # is not required for ordinary development-gating purposes.
         failed = next(
             (
                 item
                 for item in result.commands
-                if item.required and item.status != VerificationStatus.PASSED
+                if (item.required or item.acceptance)
+                and item.status != VerificationStatus.PASSED
             ),
             None,
         )

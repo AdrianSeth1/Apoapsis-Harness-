@@ -392,6 +392,40 @@ class SpecificationExtractorTests(unittest.TestCase):
             specification.acceptance_criteria[0].verification_method
         )
 
+    def test_correction_prompt_includes_errors_schema_catalog_and_prior_response(
+        self,
+    ) -> None:
+        commands = [
+            VerificationCommand(
+                name="unit-tests",
+                category="tests",
+                description="Runs the full test suite.",
+                argv=["python", "-m", "unittest"],
+                acceptance=True,
+            )
+        ]
+        prompt = self.extractor.build_correction_prompt(
+            self.request,
+            "TASK-SPEC-1",
+            commands,
+            previous_response='{"bad": true}',
+            validation_errors="hard_constraints.0.verification_method: null",
+        )
+
+        self.assertIn("VALIDATION_ERRORS", prompt)
+        self.assertIn(
+            "hard_constraints.0.verification_method: null", prompt
+        )
+        self.assertIn("YOUR_PREVIOUS_RESPONSE_START", prompt)
+        self.assertIn('{"bad": true}', prompt)
+        self.assertIn("SCHEMA:", prompt)
+        self.assertIn("ACCEPTANCE_COMMAND_CATALOG:", prompt)
+        self.assertIn("unit-tests", prompt)
+        self.assertIn("Every hard_constraints item's verification_method", prompt)
+        self.assertIn("never null", prompt)
+        self.assertIn('task_id to "TASK-SPEC-1"', prompt)
+        self.assertIn(self.request, prompt)
+
 
 if __name__ == "__main__":
     unittest.main()

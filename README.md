@@ -595,7 +595,7 @@ The Docker backend materially improves isolation but is not a defense
 against container-runtime or kernel vulnerabilities; see ADR 0009's threat
 model for exactly what it does and does not cover.
 
-## Acceptance coverage and the completion policy (ADR 0015, 0016, 0017)
+## Acceptance coverage and the completion policy (ADR 0015, 0016, 0017, 0018)
 
 Configured verification passing is a development signal, not proof that the
 product is done. `apoapsis init` writes `completion_policy = "strict"`, but
@@ -653,6 +653,21 @@ it. `inspect_diff` shows a model the same untracked-file state being
 fingerprinted, as a bounded synthetic diff; untracked binary content and
 symlink targets are never rendered, only a path-only placeholder, matching
 existing binary/symlink policy elsewhere.
+
+A failing acceptance-designated command always produces real, informative
+failure evidence and an accurate turn summary (ADR 0018) -- even though it
+is `required = false` and correctly never fails ordinary aggregate
+verification or becomes a required development gate. Before this, a
+failing optional acceptance command could be misreported as
+`"deterministic verification passed"`, since the summary/evidence logic
+only ever checked `required`.
+
+If specification extraction's first response fails schema/Pydantic/
+verbatim/catalog validation, the harness makes exactly one bounded
+correction call containing the exact validation errors, the model's own
+prior response, and the same schema/catalog/rules (ADR 0018) -- never a
+second attempt, never coerced or nulled fields. If the correction also
+fails, the task stops deterministically at `FAILED`.
 
 `apoapsis eval` always explicitly selects `completion_policy = "baseline"`
 for every lane, regardless of what a real project's configuration selects,

@@ -113,6 +113,127 @@ required = true
         self.assertTrue(config.stop_on_failure)
         self.assertEqual(config.commands[0].argv[-1], "unittest")
 
+    def test_acceptance_flag_is_carried_into_the_command_result(self) -> None:
+        config = VerificationConfig(
+            commands=[
+                VerificationCommand(
+                    name="dev",
+                    category="tests",
+                    argv=[sys.executable, "-c", "pass"],
+                ),
+                VerificationCommand(
+                    name="acc",
+                    category="acceptance",
+                    argv=[sys.executable, "-c", "pass"],
+                    required=False,
+                    acceptance=True,
+                ),
+            ]
+        )
+
+        result = VerificationRunner(config).run("TASK-VERIFY-ACC", self.root)
+
+        by_name = {item.name: item for item in result.commands}
+        self.assertFalse(by_name["dev"].acceptance)
+        self.assertTrue(by_name["acc"].acceptance)
+
+    def test_failing_optional_acceptance_command_does_not_flip_aggregate_status(
+        self,
+    ) -> None:
+        # ADR 0018: an acceptance-designated command that is not required
+        # must never become a required development gate -- the aggregate
+        # status is computed exactly as before.
+        config = VerificationConfig(
+            commands=[
+                VerificationCommand(
+                    name="acc-only",
+                    category="acceptance",
+                    argv=[sys.executable, "-c", "import sys; sys.exit(1)"],
+                    required=False,
+                    acceptance=True,
+                ),
+            ]
+        )
+
+        result = VerificationRunner(config).run("TASK-VERIFY-ACC-FAIL", self.root)
+
+        self.assertEqual(result.commands[0].status, VerificationStatus.FAILED)
+        self.assertTrue(result.commands[0].acceptance)
+        self.assertEqual(result.status, VerificationStatus.PASSED)
+
+    def test_failure_normalizer_selects_a_failing_acceptance_only_command(
+        self,
+    ) -> None:
+        config = VerificationConfig(
+            commands=[
+                VerificationCommand(
+                    name="acc-only",
+                    category="acceptance",
+                    argv=[
+                        sys.executable,
+                        "-c",
+                        "import sys; print('AssertionError: boom', "
+                        "file=sys.stderr); sys.exit(1)",
+                    ],
+                    required=False,
+                    acceptance=True,
+                ),
+            ]
+        )
+        result = VerificationRunner(config).run("TASK-VERIFY-ACC-EVIDENCE", self.root)
+        self.assertEqual(result.status, VerificationStatus.PASSED)
+
+        failed, failure = FailureNormalizer().extract(result, self.root)
+
+        self.assertEqual(failed.name, "acc-only")
+        self.assertIn("AssertionError", failure.relevant_error)
+
+    def test_failure_normalizer_selects_a_timed_out_acceptance_command(self) -> None:
+        config = VerificationConfig(
+            commands=[
+                VerificationCommand(
+                    name="slow-acceptance",
+                    category="acceptance",
+                    argv=[sys.executable, "-c", "import time; time.sleep(2)"],
+                    timeout_seconds=0.05,
+                    required=False,
+                    acceptance=True,
+                ),
+            ]
+        )
+        result = VerificationRunner(config).run("TASK-VERIFY-ACC-TIMEOUT", self.root)
+        self.assertEqual(result.commands[0].status, VerificationStatus.TIMED_OUT)
+        self.assertEqual(result.status, VerificationStatus.PASSED)
+
+        failed, _failure = FailureNormalizer().extract(result, self.root)
+
+        self.assertEqual(failed.name, "slow-acceptance")
+
+    def test_failure_normalizer_still_raises_when_only_a_dev_only_optional_command_fails(
+        self,
+    ) -> None:
+        # A plain optional command (neither required nor acceptance) stays
+        # exactly as before: its failure produces no normalized-failure
+        # evidence -- only `required` or `acceptance` commands ever do.
+        config = VerificationConfig(
+            commands=[
+                VerificationCommand(
+                    name="dev-only",
+                    category="tests",
+                    argv=[sys.executable, "-c", "import sys; sys.exit(1)"],
+                    required=False,
+                    acceptance=False,
+                ),
+            ]
+        )
+        result = VerificationRunner(config).run("TASK-VERIFY-NOOP-FAIL", self.root)
+        self.assertEqual(result.status, VerificationStatus.PASSED)
+
+        with self.assertRaisesRegex(
+            ValueError, "no failed required or"
+        ):
+            FailureNormalizer().extract(result, self.root)
+
     def test_failure_normalizer_extracts_only_worktree_locations(self) -> None:
         source = self.root / "src" / "broken.py"
         source.parent.mkdir()

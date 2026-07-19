@@ -15,15 +15,15 @@ must be corrected before the change is considered complete.
 | Item | Current value |
 | --- | --- |
 | Last verified | 2026-07-18 |
-| Working-tree version | `1.0` plus ADR 0013 Windows local-model lifecycle, ADR 0014 first local operator-interface slice, ADR 0015 verification layers and acceptance coverage, ADR 0016's corrective follow-up, ADR 0017's worktree-fingerprint/explicit-acceptance-designation hardening, and the opt-in `local-strict` evaluation lane with its first live result |
+| Working-tree version | `1.0` plus ADR 0013 Windows local-model lifecycle, ADR 0014 first local operator-interface slice, ADR 0015 verification layers and acceptance coverage, ADR 0016's corrective follow-up, ADR 0017's worktree-fingerprint/explicit-acceptance-designation hardening, the opt-in `local-strict` evaluation lane with its first live result, and ADR 0018's acceptance-failure-evidence/bounded-specification-correction fixes |
 | Checked-out branch | `main` |
-| Repository state | The 1.0/lifecycle baseline, the ADR 0014 UI slice, the ADR 0015 acceptance-coverage milestone, the ADR 0016 correction, the ADR 0017 hardening, and the `local-strict` lane are all committed on `main`; the live evaluation evidence is committed separately. `DESIGN.md` is preserved as a separate, committed user-supplied design reference. Run `git status` and `git log -1 --oneline` for the exact current state. |
+| Repository state | The 1.0/lifecycle baseline, the ADR 0014 UI slice, the ADR 0015 acceptance-coverage milestone, the ADR 0016 correction, the ADR 0017 hardening, the `local-strict` lane, and the ADR 0018 fixes are all committed on `main`; live evaluation evidence is committed separately. `DESIGN.md` is preserved as a separate, committed user-supplied design reference. Run `git status` and `git log -1 --oneline` for the exact current state. |
 | Preserved substrate tag | `substrate-v0.1` at `4c2e735` |
-| Full deterministic suite | 244 tests, 0 failures, 0 errors, 6 intentional skips (2 live-network, 1 live-Docker, 3 machine currently lacks the Windows privilege to create symlinks) |
+| Full deterministic suite | 258 tests, 0 failures, 0 errors, 6 intentional skips (2 live-network, 1 live-Docker, 3 machine currently lacks the Windows privilege to create symlinks) |
 | Syntax check | `python -m compileall -q src tests` passed |
 | Diff check | `git diff --check` passed; Git reported only expected LF-to-CRLF working-copy warnings |
 | Live local coding result | Qwen3-Coder-Next Q4 completed the controlled download-service task in 10 turns and 3 verification runs |
-| Live STRICT evaluation result | Three fresh `apoapsis eval download-service --lane local-strict` attempts (Qwen3-Coder-Next Q4, 64k, 2026-07-18): 0/3 `COMPLETE` (2 `HUMAN_REVIEW_REQUIRED`, 1 specification-extraction failure). Both attempts that reached the mechanism genuinely proposed correct acceptance-catalog mappings and produced code with only a narrow return-value bug remaining, but a newly discovered harness gap (a failing `acceptance = true`, `required = false` command produces no failure evidence or accurate summary) prevented a fair repair attempt. See `docs/evaluation/apoapsis-strict-live-evaluation-2026-07-18.md`. |
+| Live STRICT evaluation result | Three fresh `apoapsis eval download-service --lane local-strict` attempts (Qwen3-Coder-Next Q4, 64k, 2026-07-18): 0/3 `COMPLETE` (2 `HUMAN_REVIEW_REQUIRED`, 1 specification-extraction failure). Both attempts that reached the mechanism genuinely proposed correct acceptance-catalog mappings and produced code with only a narrow return-value bug remaining, but a harness gap (a failing `acceptance = true`, `required = false` command produced no failure evidence or accurate summary) prevented a fair repair attempt. ADR 0018 fixes both that gap and a separate specification-extraction failure mode observed in the same run; a fresh three-attempt re-run under the fix has not yet happened. See `docs/evaluation/apoapsis-strict-live-evaluation-2026-07-18.md`. |
 | Local model lifecycle result | `STOP_APOAPSIS.cmd` ran successfully against this machine's real Ollama service and explicitly unloaded both configured model names while leaving the service running. Start/warmup is covered against a fake loopback Ollama server, and was also live-run for the STRICT evaluation above. |
 | Local UI result | `apoapsis ui` was exercised against the real checkout and a disposable initialized repository at 1440px and 1100px. Home/models/specification/control views rendered without browser errors; a two-step UI approval advanced `SPEC_DRAFTED -> SPEC_APPROVED` and appended the expected user event. No model call was made. |
 | Live hosted escalation result | Not yet run. A repeatable harness (`apoapsis eval download-service --lane forced-escalation` / `--lane hybrid`) now exists to run it once real `[models.frontier_coder]` credentials are configured; the complete two-provider path is otherwise still only covered with fake providers |
@@ -201,7 +201,13 @@ architecture.
 - `src/apoapsis/specification/schema.py` defines strict traceable task, acceptance,
   risk, and hard-constraint records.
 - `src/apoapsis/specification/extractor.py` builds and validates model-assisted
-  extraction.
+  extraction. If the first response fails schema/Pydantic/verbatim/catalog
+  validation, `VerticalSliceRunner.run()` makes exactly one bounded
+  correction call (`build_correction_prompt()`, ADR 0018) containing the
+  exact validation errors, the model's own prior response, and the same
+  schema/catalog/rules as the original prompt. If the correction also
+  fails, the task stops deterministically at `FAILED` -- never a second
+  correction, never coerced/nulled fields, never weakened validation.
 - `src/apoapsis/models/base.py` rejects model requests that omit a disposition for
   any active hard constraint.
 - Constraint wording, interpreted meaning, source, scope, status, verification
@@ -219,8 +225,21 @@ architecture.
   `HUMAN_REVIEW_REQUIRED`, `FAILED`, and `ROLLED_BACK`.
 - Providers never call the transition API.
 
-### Verification layers and acceptance coverage (ADR 0015, corrected by ADR 0016, hardened by ADR 0017)
+### Verification layers and acceptance coverage (ADR 0015, corrected by ADR 0016, hardened by ADR 0017/0018)
 
+- `VerificationCommandResult.acceptance: bool` (ADR 0018) carries whether a
+  command was acceptance-designated *at the time it ran* into the
+  immutable result record, so audit consumers and failure-evidence logic
+  never reconstruct authority from current, mutable configuration. A
+  failing command that is `acceptance = true` but `required = false`
+  (`FailureNormalizer.extract()`, `BoundedAgentSession._verify()`,
+  `_record_verification()`) now always produces real normalized failure
+  evidence, an accurate turn summary, and (once a required command also
+  passes at the same fingerprint) failed acceptance coverage -- it is
+  never again reported as `"deterministic verification passed"`.
+  `VerificationRunner`'s aggregate `status` computation is unchanged: an
+  optional acceptance command's failure still never fails the aggregate
+  result or becomes a required development gate.
 - `src/apoapsis/repository/fingerprint.py` (`compute_worktree_fingerprint()`,
   ADR 0017) is the single, shared, deterministic notion of "current code"
   used to scope verification caching, command results, and acceptance
@@ -978,6 +997,7 @@ direct-frontier comparison claims remain unmeasured.
 | Local UI service, capability/origin security, static shell, and CLI-equivalent specification approval | `tests/test_ui.py` |
 | Verification layers, acceptance-command catalog, coverage tri-state, completion policy | `tests/test_acceptance_coverage.py` |
 | Shared worktree fingerprint (tracked/untracked/binary/symlink) and `inspect_diff` untracked exposure | `tests/test_worktree_fingerprint.py` |
+| Bounded specification-extraction correction (one attempt, telemetry, retry ceiling) | `tests/test_specification_correction.py` |
 
 Fake providers are the mandatory regression mechanism. Live model or network
 tests supplement them; they must not replace deterministic coverage.
@@ -1051,30 +1071,32 @@ tests supplement them; they must not replace deterministic coverage.
     specification-drafting failure is not yet attributable to profile width
     versus general model variance.
 12. **Strict acceptance-coverage completion is the product default,
-    deterministically well-tested, and now has a first live-model result --
-    0 of 3 completions, and a genuine harness gap identified, not yet
-    fixed.** `CompletionPolicy.STRICT` (ADR 0015, corrected by ADR 0016,
-    hardened by ADR 0017) is fully implemented and covered by 32
-    deterministic fake-provider/unit scenarios across
-    `tests/test_acceptance_coverage.py` and `tests/test_worktree_
-    fingerprint.py`, plus fake-provider coverage for the opt-in
-    `local-strict` eval lane (`tests/test_evaluation.py`). `apoapsis init`
-    writes `completion_policy = "strict"` but its default command stays
-    `acceptance = false` -- acceptance designation is always an explicit
-    owner decision (Doctor and the UI overview both warn when none is
-    designated). `docs/evaluation/apoapsis-strict-live-evaluation-2026-07-18.md`
-    records the first three live `--lane local-strict` attempts
-    (Qwen3-Coder-Next Q4, 64k): 0 completions (2 human review, 1
-    specification-extraction failure), but in both attempts that reached
-    it the model genuinely discovered and correctly used the new
-    acceptance-command catalog, and came close to a correct fix. The run
-    surfaced a real, disclosed-but-unfixed harness gap: a failing
-    `acceptance = true`, `required = false` command does not produce
-    failure evidence or an accurate turn summary (both key on `required`),
-    so the model saw a misleading "passed" message and never got a fair
-    repair attempt. Fixing that gap, then re-running `local-strict`, is the
-    natural next step -- do not begin it, or any other live evaluation,
-    without explicit direction.
+    deterministically well-tested, and its first live-model result (0 of 3
+    completions) has driven one corrective fix (ADR 0018) -- a fair
+    re-run has not yet happened.** `CompletionPolicy.STRICT` (ADR 0015,
+    corrected by ADR 0016, hardened by ADR 0017, evidence-fixed by ADR
+    0018) is fully implemented and covered by deterministic fake-provider/
+    unit scenarios across `tests/test_acceptance_coverage.py`,
+    `tests/test_worktree_fingerprint.py`, `tests/test_verification.py`,
+    and `tests/test_specification_correction.py`, plus fake-provider
+    coverage for the opt-in `local-strict` eval lane
+    (`tests/test_evaluation.py`). `apoapsis init` writes `completion_policy
+    = "strict"` but its default command stays `acceptance = false` --
+    acceptance designation is always an explicit owner decision (Doctor
+    and the UI overview both warn when none is designated).
+    `docs/evaluation/apoapsis-strict-live-evaluation-2026-07-18.md` records
+    the first three live `--lane local-strict` attempts (Qwen3-Coder-Next
+    Q4, 64k): 0 completions (2 human review, 1 specification-extraction
+    failure), but in both attempts that reached it the model genuinely
+    discovered and correctly used the new acceptance-command catalog, and
+    came close to a correct fix. The run surfaced two real gaps, both now
+    fixed by ADR 0018: a failing `acceptance = true`, `required = false`
+    command previously produced no failure evidence or accurate turn
+    summary; and a specification-extraction failure previously stopped the
+    task outright with no chance at a mechanical, one-call correction. A
+    fresh three-attempt `local-strict` run under these fixes has not yet
+    happened -- do not begin it, or any other live evaluation, without
+    explicit direction.
 13. **The local application is a first slice, not a complete desktop product.**
     ADR 0014 now defines a capability-protected loopback application and the
     black/orange/purple interface has real read-only task/report/environment/
@@ -1113,6 +1135,7 @@ automation as a substitute for those proofs.
 | `0015` | Verification layers (development, user-approved acceptance, held-out oracle) and deterministic acceptance-coverage gating on completion |
 | `0016` | Acceptance-command catalog at extraction time, digest-scoped (non-stale) coverage computation, and STRICT as the practical product default |
 | `0017` | Shared worktree fingerprint (tracked + untracked files) for verification/proof scoping, untracked evidence in `inspect_diff`, and acceptance designation reverted to an explicit owner decision |
+| `0018` | Acceptance-designated command failures now produce real evidence regardless of `required`, and specification extraction gets exactly one bounded correction attempt |
 
 Add a new ADR for a new architectural decision. Do not rewrite history to make
 old decisions appear current; mark an ADR superseded and link its replacement

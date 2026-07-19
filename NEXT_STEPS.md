@@ -231,6 +231,48 @@ before re-running `local-strict` to get a first real completion-rate
 measurement. Do not begin it, or any further live evaluation, without
 explicit direction.
 
+### Done — Phase A: made the strict experiment fair (ADR 0018)
+
+Fixed exactly the two gaps identified above, both deterministically tested,
+neither yet re-validated live:
+
+1. **Acceptance-designated command failures now produce real evidence.**
+   `VerificationCommandResult.acceptance` carries the flag into the
+   immutable result record. `FailureNormalizer.extract()`,
+   `BoundedAgentSession._verify()`'s failure-evidence trigger, and
+   `_record_verification()`'s turn summary all widen from `required` to
+   `required or acceptance`. A failing optional acceptance command now
+   always gets a real normalized-failure record, an accurate turn summary,
+   and (once a required command also passes at the same fingerprint)
+   failed acceptance coverage -- and the model can edit and retry within
+   its existing budgets. `VerificationRunner`'s aggregate status
+   computation is unchanged: an optional acceptance command's failure
+   still never becomes a required development gate. An unchanged duplicate
+   check is still rejected, but only after the original evidence was
+   already produced.
+2. **Exactly one bounded specification-extraction correction attempt.**
+   When the first response fails schema/Pydantic/verbatim/catalog
+   validation, `VerticalSliceRunner.run()` persists the failure and makes
+   one more model call with `SpecificationExtractor
+   .build_correction_prompt()` -- the exact validation errors, the
+   model's own prior response, and the same schema/catalog/rules as the
+   original prompt. If that also fails, the task stops deterministically
+   at `FAILED`; there is never a second correction, and nothing coerces,
+   nulls, or weakens validation to force success.
+
+Full suite: 258 tests (up from 244; 14 new across
+`tests/test_verification.py`, `tests/test_acceptance_coverage.py`,
+`tests/test_specification_correction.py`, and
+`tests/test_provider_and_specification.py`). See ADR 0018.
+
+**Not yet done: re-running `local-strict` live under these fixes.** That
+is the natural next step -- three fresh Qwen3-Coder-Next Q4 attempts at
+64k, identical conditions, comparing specification-correction behavior,
+acceptance-failure evidence, whether the model edits after seeing the real
+error, strict completion, held-out correctness, false success, human
+review, turns/verification attempts/tokens/latency against the first
+run. Do not begin it without explicit direction.
+
 ### Priority B — review and resume experience
 
 The highest-value product gap is a polished continuation path for tasks that end

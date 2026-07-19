@@ -810,6 +810,161 @@ class AcceptanceCoverageTests(unittest.TestCase):
         self.assertIn("src/download_service/new_helper.py", content)
         self.assertIn("+def helper():", content)
 
+    # ADR 0018: a failing acceptance-designated command that is not
+    # required must still produce real, informative failure evidence and
+    # an accurate turn summary -- never "deterministic verification
+    # passed" -- even though it correctly does not become a required
+    # development gate.
+    def test_failing_optional_acceptance_command_gives_evidence_and_accurate_summary(
+        self,
+    ) -> None:
+        spec = specification_with_mapping(
+            ac1_method="download-tests", ac2_method="download-tests-again"
+        )
+        fake = FakeModelProvider(
+            [
+                spec,
+                action("propose_patch", unified_diff=IMPLEMENTATION_PATCH),
+                action("run_check", command_name="download-tests"),
+            ]
+        )
+        report = self._run(self._stale_digest_config(local_turns=2), fake)
+
+        self.assertNotEqual(report.outcome, TaskOutcome.COMPLETE)
+        audit = self.root / ".apoapsis" / "tasks" / report.task_id
+        second_turn = json.loads(
+            (audit / "agent-turn-002.json").read_text(encoding="utf-8")
+        )
+        self.assertNotIn(
+            "deterministic verification passed", second_turn["summary"]
+        )
+        self.assertIn("download-tests", second_turn["summary"])
+        self.assertIn("failed", second_turn["summary"])
+
+        failure_path = audit / "verification-failure-001.json"
+        self.assertTrue(failure_path.is_file())
+        failure = json.loads(failure_path.read_text(encoding="utf-8"))
+        self.assertEqual(failure["command_name"], "download-tests")
+        self.assertIn("AssertionError", failure["relevant_error"])
+
+        ledger = second_turn["observation_ledger"]
+        self.assertTrue(any(item["kind"] == "failure" for item in ledger))
+
+    # The model can act on that evidence: edit and re-verify within its
+    # existing budgets, reaching a genuine STRICT completion.
+    def test_repair_after_seeing_acceptance_failure_evidence_then_completes(
+        self,
+    ) -> None:
+        spec = specification_with_mapping(
+            ac1_method="download-tests", ac2_method="download-tests-again"
+        )
+        fake = FakeModelProvider(
+            [
+                spec,
+                action("propose_patch", unified_diff=IMPLEMENTATION_PATCH),
+                action("run_check", command_name="sanity"),
+                action("run_check", command_name="download-tests"),
+                action(
+                    "replace_text",
+                    path="src/download_service/downloader.py",
+                    old_text=REPLACEMENT_OLD_TEXT,
+                    new_text=REPLACEMENT_NEW_TEXT,
+                ),
+                action("run_check", command_name="sanity"),
+                action("run_check", command_name="download-tests"),
+                action("run_check", command_name="download-tests-again"),
+            ]
+        )
+        report = self._run(self._stale_digest_config(local_turns=7), fake)
+
+        self.assertEqual(report.outcome, TaskOutcome.COMPLETE)
+        self.assertEqual(report.agent_turns, 7)
+        self.assertTrue(
+            all(
+                item.status == AcceptanceCoverageStatus.PROVEN
+                for item in report.acceptance_coverage
+            )
+        )
+        audit = self.root / ".apoapsis" / "tasks" / report.task_id
+        third_turn = json.loads(
+            (audit / "agent-turn-003.json").read_text(encoding="utf-8")
+        )
+        self.assertIn("download-tests", third_turn["summary"])
+        self.assertIn("failed", third_turn["summary"])
+
+    # An unchanged, identical re-check is still rejected -- but only after
+    # the original failing run has already produced its evidence.
+    def test_unchanged_duplicate_check_is_rejected_only_after_first_evidence(
+        self,
+    ) -> None:
+        spec = specification_with_mapping(
+            ac1_method="download-tests", ac2_method="download-tests-again"
+        )
+        fake = FakeModelProvider(
+            [
+                spec,
+                action("propose_patch", unified_diff=IMPLEMENTATION_PATCH),
+                action("run_check", command_name="download-tests"),
+                action("run_check", command_name="download-tests"),
+            ]
+        )
+        report = self._run(self._stale_digest_config(local_turns=3), fake)
+
+        audit = self.root / ".apoapsis" / "tasks" / report.task_id
+        second_turn = json.loads(
+            (audit / "agent-turn-002.json").read_text(encoding="utf-8")
+        )
+        third_turn = json.loads(
+            (audit / "agent-turn-003.json").read_text(encoding="utf-8")
+        )
+        self.assertTrue(second_turn["accepted"])
+        self.assertIn("failed", second_turn["summary"])
+        self.assertFalse(third_turn["accepted"])
+        self.assertIn("identical verification already ran", third_turn["summary"])
+        self.assertTrue((audit / "verification-failure-001.json").is_file())
+
+    # Ordinary required-command semantics are completely unaffected: a
+    # failing required command still produces evidence and an accurate
+    # summary exactly as before this change.
+    def test_failing_required_command_semantics_are_unaffected(self) -> None:
+        spec = specification_with_mapping(
+            ac1_method="download-tests", ac2_method="download-tests-again"
+        )
+        config = self._stale_digest_config(local_turns=2)
+        # Make the required "sanity" command itself fail.
+        commands = list(config.verification.commands)
+        commands[0] = commands[0].model_copy(
+            update={"argv": [sys.executable, "-c", "import sys; sys.exit(3)"]}
+        )
+        config = config.model_copy(
+            update={
+                "verification": config.verification.model_copy(
+                    update={"commands": commands}
+                )
+            }
+        )
+        fake = FakeModelProvider(
+            [
+                spec,
+                action("propose_patch", unified_diff=IMPLEMENTATION_PATCH),
+                action("run_check", command_name="sanity"),
+            ]
+        )
+        report = self._run(config, fake)
+
+        self.assertNotEqual(report.outcome, TaskOutcome.COMPLETE)
+        audit = self.root / ".apoapsis" / "tasks" / report.task_id
+        second_turn = json.loads(
+            (audit / "agent-turn-002.json").read_text(encoding="utf-8")
+        )
+        self.assertIn("sanity", second_turn["summary"])
+        self.assertIn("failed", second_turn["summary"])
+        self.assertTrue((audit / "verification-failure-001.json").is_file())
+        failure = json.loads(
+            (audit / "verification-failure-001.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(failure["command_name"], "sanity")
+
 
 class ComputeAcceptanceCoverageUnitTests(unittest.TestCase):
     """Direct, fast unit coverage of the tri-state execution semantics

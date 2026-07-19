@@ -35,6 +35,28 @@ def _acceptance_catalog_json(commands: Sequence[VerificationCommand]) -> str:
     return json.dumps(catalog, sort_keys=True)
 
 
+_RULES = """Rules:
+- Return one JSON object only. Do not use Markdown fences or prose.
+- Set schema_version to "1.0" and task_id to "{task_id}".
+- Preserve each user hard constraint exactly in verbatim_source. It must be an
+  exact, case-sensitive substring of USER_REQUEST.
+- Use source "user" for direct user statements and "derived" only for
+  conservative acceptance criteria or questions.
+- Do not invent repository facts. Put uncertainties in open_questions.
+- requested_output must be "unified_diff".
+- Every hard_constraints item's verification_method must be a non-empty
+  string naming how that constraint is checked (free text describing the
+  check, not restricted to any catalog). It is never null.
+- An acceptance_criteria item's verification_method may be set only to a
+  "name" value that appears in ACCEPTANCE_COMMAND_CATALOG below, or left
+  null if no configured command proves it. Never invent a command name and
+  never propose a shell command directly -- the catalog is the complete,
+  closed vocabulary; only commands with "acceptance_designated": true can
+  ever prove a criterion, but you may name any catalog entry if you are
+  unsure. The user reviews and approves this mapping together with the
+  rest of the specification before it takes effect."""
+
+
 class SpecificationExtractor:
     def build_prompt(
         self,
@@ -44,31 +66,56 @@ class SpecificationExtractor:
     ) -> str:
         schema = json.dumps(TaskSpecification.model_json_schema(), sort_keys=True)
         catalog = _acceptance_catalog_json(acceptance_catalog)
+        rules = _RULES.format(task_id=task_id)
         return f"""You extract a coding request into the supplied JSON schema.
 
-Rules:
-- Return one JSON object only. Do not use Markdown fences or prose.
-- Set schema_version to \"1.0\" and task_id to \"{task_id}\".
-- Preserve each user hard constraint exactly in verbatim_source. It must be an
-  exact, case-sensitive substring of USER_REQUEST.
-- Use source \"user\" for direct user statements and \"derived\" only for
-  conservative acceptance criteria or questions.
-- Do not invent repository facts. Put uncertainties in open_questions.
-- requested_output must be \"unified_diff\".
-- An acceptance_criteria item's verification_method may be set only to a
-  "name" value that appears in ACCEPTANCE_COMMAND_CATALOG below, or left
-  null if no configured command proves it. Never invent a command name and
-  never propose a shell command directly -- the catalog is the complete,
-  closed vocabulary; only commands with "acceptance_designated": true can
-  ever prove a criterion, but you may name any catalog entry if you are
-  unsure. The user reviews and approves this mapping together with the
-  rest of the specification before it takes effect.
+{rules}
 
 SCHEMA:
 {schema}
 
 ACCEPTANCE_COMMAND_CATALOG:
 {catalog}
+
+USER_REQUEST_START
+{request}
+USER_REQUEST_END
+"""
+
+    def build_correction_prompt(
+        self,
+        request: str,
+        task_id: str,
+        acceptance_catalog: Sequence[VerificationCommand],
+        previous_response: str,
+        validation_errors: str,
+    ) -> str:
+        """The single, bounded correction attempt (ADR 0018): repeats the
+        exact schema, acceptance-command catalog, and hard-constraint
+        rules from the original extraction prompt, plus the exact
+        validation errors and the model's own prior (invalid) response, so
+        it can fix precisely what failed without guessing. Callers must
+        never call this more than once per task."""
+
+        schema = json.dumps(TaskSpecification.model_json_schema(), sort_keys=True)
+        catalog = _acceptance_catalog_json(acceptance_catalog)
+        rules = _RULES.format(task_id=task_id)
+        return f"""Your previous response below failed validation against the required JSON schema and could not be used. This is your one bounded correction attempt: return a single, complete, fully valid specification object that addresses every validation error listed below. Do not just patch the error location -- return the entire object again.
+
+VALIDATION_ERRORS:
+{validation_errors}
+
+{rules}
+
+SCHEMA:
+{schema}
+
+ACCEPTANCE_COMMAND_CATALOG:
+{catalog}
+
+YOUR_PREVIOUS_RESPONSE_START
+{previous_response}
+YOUR_PREVIOUS_RESPONSE_END
 
 USER_REQUEST_START
 {request}

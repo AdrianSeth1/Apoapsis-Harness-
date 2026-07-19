@@ -21,6 +21,16 @@ class VerificationCommandResult(StrictModel):
     category: str = Field(min_length=1)
     argv: list[str] = Field(min_length=1)
     required: bool = True
+    acceptance: bool = Field(
+        default=False,
+        description=(
+            "Whether this command was configured as an approved "
+            "acceptance check at the time it ran. Carried into this "
+            "immutable result record (ADR 0018) so audit consumers and "
+            "failure-evidence logic never need to reconstruct authority "
+            "from mutable, current configuration."
+        ),
+    )
     cwd: str
     status: VerificationStatus
     exit_code: int | None = None

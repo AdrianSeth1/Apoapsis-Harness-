@@ -52,12 +52,16 @@ class FailureNormalizer:
             (
                 item
                 for item in result.commands
-                if item.required and item.status != VerificationStatus.PASSED
+                if (item.required or item.acceptance)
+                and item.status != VerificationStatus.PASSED
             ),
             None,
         )
         if failed is None:
-            raise ValueError("verification result has no failed required command")
+            raise ValueError(
+                "verification result has no failed required or "
+                "acceptance-designated command"
+            )
         combined = "\n".join(part for part in [failed.stdout, failed.stderr] if part)
         normalized = _ANSI.sub("", combined).replace("\r\n", "\n").replace("\r", "\n")
         locations = self._locations(normalized, Path(worktree).resolve())

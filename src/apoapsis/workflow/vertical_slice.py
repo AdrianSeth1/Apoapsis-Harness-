@@ -56,7 +56,10 @@ from apoapsis.reporting.report import (
 from apoapsis.repository.git import GitRepository
 from apoapsis.research.engine import ResearchEngine, ResearchExecutionResult
 from apoapsis.research.schemas import ResearchMode, ResearchOutcome
-from apoapsis.specification.extractor import SpecificationExtractor
+from apoapsis.specification.extractor import (
+    SpecificationExtractionError,
+    SpecificationExtractor,
+)
 from apoapsis.specification.schema import (
     SourceKind,
     TaskSpecification,
@@ -167,12 +170,48 @@ class VerticalSliceRunner:
                 spec_context,
                 requested_output="task_specification_json",
             )
-            specification = self.extractor.parse(
-                spec_response.content,
-                request,
-                task_id,
-                self.config.verification.commands,
-            )
+            try:
+                specification = self.extractor.parse(
+                    spec_response.content,
+                    request,
+                    task_id,
+                    self.config.verification.commands,
+                )
+            except SpecificationExtractionError as exc:
+                # Exactly one bounded correction attempt (ADR 0018): the
+                # failed response and its telemetry are already persisted
+                # by `_model_call` above. A model never gets a second
+                # correction -- if this one also fails to parse, the
+                # exception propagates uncaught to the outer handler and
+                # the task stops deterministically at FAILED.
+                self.audit.write_json(
+                    "specification-extraction-failure-001.json",
+                    {
+                        "attempt": 1,
+                        "error": str(exc),
+                        "raw_response": spec_response.content,
+                    },
+                    kind="specification_extraction_failure",
+                )
+                correction_prompt = self.extractor.build_correction_prompt(
+                    request,
+                    task_id,
+                    self.config.verification.commands,
+                    spec_response.content,
+                    str(exc),
+                )
+                correction_response = self._model_call(
+                    ModelOperation.DRAFT_SPECIFICATION,
+                    correction_prompt,
+                    spec_context,
+                    requested_output="task_specification_json",
+                )
+                specification = self.extractor.parse(
+                    correction_response.content,
+                    request,
+                    task_id,
+                    self.config.verification.commands,
+                )
             self.specification = specification
             self.store.update_specification(
                 specification,
