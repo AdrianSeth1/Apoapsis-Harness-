@@ -8,6 +8,8 @@ from apoapsis.architect.schema import ArchitecturePlan, PlanRecord, PlanStatus
 from apoapsis.architect.store import SQLitePlanStore
 from apoapsis.config import ApoapsisConfig, ExecutionMode
 from apoapsis.doctor import run_doctor
+from apoapsis.execution.authorization import build_execution_authorization_package
+from apoapsis.execution.operation_errors import ExecutionAuthorizationDriftError
 from apoapsis.execution.operation_service import prepare_execution_operation
 from apoapsis.execution.operation_store import ExecutionOperationStore
 from apoapsis.execution.operation_worker import ExecutionWorker
@@ -188,18 +190,47 @@ class ApoapsisUIService:
         }
 
     def submit_execution_operation(
-        self, task_id: str, *, operation_id: str, expected_version: int
+        self,
+        task_id: str,
+        *,
+        operation_id: str,
+        expected_version: int,
+        expected_authorization_sha256: str,
     ) -> dict[str, Any]:
         """Validate and durably record an execution operation, then hand it
         to the background worker -- this method itself never calls a model,
         creates a worktree, or runs a command; only ``ExecutionWorker`` (on
-        its own thread) does."""
+        its own thread) does.
+
+        ``expected_authorization_sha256`` must match the package hash the
+        preview showed (ADR 0026): the confirmation authorizes exactly
+        what was previewed, not whatever the task/specification/repository/
+        configuration happen to be by the time the confirmation arrives.
+        Rejected before ``prepare_execution_operation`` -- and therefore
+        before any audit write, worktree mutation, or provider
+        construction -- if the task, specification, repository state, or
+        execution configuration changed since the preview was rendered."""
 
         store = self._require_store()
         config = self._config()
         if config is None:
             raise TaskStoreError(
                 "Apoapsis is not initialized; run 'apoapsis init' first"
+            )
+        task = store.get_task(task_id)
+        current_package = build_execution_authorization_package(
+            self.project_root,
+            operation_id=operation_id,
+            task_id=task_id,
+            task_version=task.version,
+            specification=task.specification,
+            config=config,
+        )
+        if current_package.package_sha256 != expected_authorization_sha256:
+            raise ExecutionAuthorizationDriftError(
+                "the previewed authorization no longer matches the current "
+                "task, specification, repository state, or execution "
+                "configuration -- reload the task page and try again"
             )
         operation_store = self._execution_operation_store()
         prepare_execution_operation(
@@ -209,6 +240,7 @@ class ApoapsisUIService:
             task_id=task_id,
             operation_id=operation_id,
             expected_version=expected_version,
+            config=config,
         )
         self._execution_worker_instance().submit(operation_id)
         return operation_store.get(operation_id).model_dump(mode="json")
@@ -226,16 +258,26 @@ class ApoapsisUIService:
             self._execution_worker = ExecutionWorker(self.project_root)
         return self._execution_worker
 
-    @staticmethod
     def _execution_preview(
-        record: TaskRecord, config: ApoapsisConfig
+        self, record: TaskRecord, config: ApoapsisConfig
     ) -> dict[str, Any] | None:
         """A read-only, deterministic preview of what starting execution
         would do -- computed with the exact same ``select_agent_route()``
         the real execution service uses, never a separate guess. Only
         meaningful once a route can actually be decided (the specification
         already exists), so it is always returned regardless of task
-        state; the UI only offers to start execution at ``SPEC_APPROVED``."""
+        state; the UI only offers to start execution at ``SPEC_APPROVED``.
+
+        Also builds the exact ``ExecutionAuthorizationPackage`` (ADR 0026)
+        a real submission would authorize, using a placeholder
+        ``operation_id`` (a real one is chosen client-side only once the
+        user actually confirms) -- ``package_sha256`` excludes
+        ``operation_id`` from its input, so this preview's hash is
+        reproducible against the real operation_id at submission time as
+        long as nothing about the task, specification, repository state,
+        or configuration has changed. Never writes anything -- purely a
+        read, unlike ``prepare_execution_operation``, which builds the
+        same package again and persists it."""
 
         frontier_available = config.models.frontier_coder is not None
         routing_decision = None
@@ -248,8 +290,18 @@ class ApoapsisUIService:
             if config.models.local_coder is not None
             else config.models.frontier.model
         )
+        authorization_package = build_execution_authorization_package(
+            self.project_root,
+            operation_id="EXOP-PREVIEW",
+            task_id=record.task_id,
+            task_version=record.version,
+            specification=record.specification,
+            config=config,
+        )
         return {
             "execution_mode": config.execution.mode.value,
+            "authorization_sha256": authorization_package.package_sha256,
+            "authority_rules": authorization_package.authority_rules,
             "predicted_route": (
                 routing_decision.route.value if routing_decision is not None else None
             ),
@@ -272,8 +324,17 @@ class ApoapsisUIService:
             "frontier_budget": config.execution.frontier_agent.model_dump(mode="json"),
         }
 
-    @staticmethod
-    def _recent_agent_turns(task_directory: Path, *, limit: int = 20) -> list[dict[str, Any]]:
+    # A session always runs every local turn (if any) before ever
+    # escalating to a frontier turn -- never interleaved -- so this is a
+    # genuine execution-order priority, not an alphabetical accident (the
+    # previous ``(stage, turn)`` sort put "frontier" before "local"
+    # alphabetically, showing an escalated session's turns backwards).
+    _STAGE_EXECUTION_ORDER = {"local": 0, "frontier": 1}
+
+    @classmethod
+    def _recent_agent_turns(
+        cls, task_directory: Path, *, limit: int = 20
+    ) -> list[dict[str, Any]]:
         if not task_directory.is_dir():
             return []
         turns: list[dict[str, Any]] = []
@@ -292,7 +353,12 @@ class ApoapsisUIService:
                     **record.model_dump(mode="json", exclude={"observation_ledger"}),
                 }
             )
-        turns.sort(key=lambda item: (item["stage"], item["turn"]))
+        turns.sort(
+            key=lambda item: (
+                cls._STAGE_EXECUTION_ORDER.get(item["stage"], 2),
+                item["turn"],
+            )
+        )
         return turns[-limit:]
 
     def approve_specification(

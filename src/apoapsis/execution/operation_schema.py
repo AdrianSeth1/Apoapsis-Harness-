@@ -40,6 +40,15 @@ class ExecutionOperationRecord(StrictModel):
     task_id: str = Field(pattern=r"^TASK-[A-Za-z0-9._-]+$")
     expected_task_version: int = Field(ge=1)
     expected_repository_head: str = Field(min_length=1)
+    # The immutable authorization package's own hash (ADR 0026), computed
+    # and persisted at ``prepare_execution_operation`` time, before this
+    # operation is ever enqueued. ``run_execution_operation`` recomputes
+    # the package fresh from current state and rejects before any
+    # provider construction if the hash no longer matches -- the task,
+    # specification, repository state, or execution configuration changed
+    # since this operation was authorized. ``None`` only for legacy rows
+    # written before this migration.
+    authorization_sha256: str | None = None
     status: ExecutionOperationStatus
     created_at: datetime
     updated_at: datetime

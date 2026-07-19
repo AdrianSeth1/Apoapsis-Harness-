@@ -3,8 +3,14 @@ from __future__ import annotations
 from datetime import timedelta
 from pathlib import Path
 
+from apoapsis.audit.store import TaskAuditStore
 from apoapsis.config import ApoapsisConfig, FrontierProviderConfig
+from apoapsis.execution.authorization import (
+    build_execution_authorization_package,
+    write_execution_authorization_package,
+)
 from apoapsis.execution.operation_errors import (
+    ExecutionAuthorizationDriftError,
     ExecutionOperationError,
     StaleExecutionStartError,
 )
@@ -20,6 +26,7 @@ from apoapsis.operations.lease import (
     new_owner_id,
 )
 from apoapsis.repository.git import GitRepository
+from apoapsis.repository.readiness import require_clean_parent_repository
 from apoapsis.workflow.engine import SQLiteTaskStore
 from apoapsis.workflow.states import WorkflowState
 from apoapsis.workflow.vertical_slice import VerticalSliceRunner
@@ -62,6 +69,7 @@ def prepare_execution_operation(
     task_id: str,
     operation_id: str,
     expected_version: int,
+    config: ApoapsisConfig,
 ) -> ExecutionOperationRecord:
     """Fast, synchronous, deterministic operation-record creation -- never
     a model call, worktree mutation, or command execution. Safe to call
@@ -70,10 +78,14 @@ def prepare_execution_operation(
 
     Requires the task to be at ``SPEC_APPROVED`` and at exactly the
     caller-supplied ``expected_version`` (``StaleExecutionStartError``
-    otherwise). Captures the current repository HEAD so
-    ``run_execution_operation`` can later detect the parent repository
-    changing underneath a queued operation, then durably records the
-    operation as ``RECORDED``.
+    otherwise). Builds and writes an immutable
+    ``ExecutionAuthorizationPackage`` (ADR 0026) to the task's audit area
+    -- capturing the current repository HEAD, full parent-repository
+    fingerprint, specification, and effective configuration -- before
+    anything else runs, and persists its hash on the operation record so
+    ``run_execution_operation`` can later reject a drifted authorization
+    before any provider construction, worktree mutation, or command
+    execution.
     """
 
     root = Path(project_root).resolve()
@@ -87,12 +99,21 @@ def prepare_execution_operation(
             f"task {task_id} is not eligible for execution: expected "
             f"SPEC_APPROVED, found {task.state.value}"
         )
-    head = GitRepository(root).run(["rev-parse", "HEAD"]).stdout.strip()
+    package = build_execution_authorization_package(
+        root,
+        operation_id=operation_id,
+        task_id=task_id,
+        task_version=expected_version,
+        specification=task.specification,
+        config=config,
+    )
+    write_execution_authorization_package(TaskAuditStore(root, task_id), package)
     return operation_store.create(
         operation_id,
         task_id,
         expected_task_version=expected_version,
-        expected_repository_head=head,
+        expected_repository_head=package.repository_head_commit,
+        authorization_sha256=package.package_sha256,
     )
 
 
@@ -175,6 +196,24 @@ def run_execution_operation(
                 f"authorized (expected {record.expected_repository_head}, "
                 f"found {current_head})"
             )
+        require_clean_parent_repository(root)
+        if record.authorization_sha256 is not None:
+            fresh_package = build_execution_authorization_package(
+                root,
+                operation_id=operation_id,
+                task_id=record.task_id,
+                task_version=task.version,
+                specification=task.specification,
+                config=config,
+            )
+            if fresh_package.package_sha256 != record.authorization_sha256:
+                raise ExecutionAuthorizationDriftError(
+                    f"operation {operation_id}'s authorization no longer "
+                    "matches what was recorded -- the task, its "
+                    "specification, the repository's tracked/untracked "
+                    "state, or the execution configuration changed since "
+                    "this operation was authorized; refusing to proceed"
+                )
         # Constructing an adapter is side-effect-free (no network I/O
         # happens until `.complete()` is actually called), so the natural,
         # configured providers are always built and only overridden by
@@ -235,6 +274,7 @@ def execute_execution_operation(
         task_id=task_id,
         operation_id=operation_id,
         expected_version=expected_version,
+        config=config,
     )
     return run_execution_operation(
         project_root,

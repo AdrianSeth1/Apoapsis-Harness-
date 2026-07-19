@@ -19,11 +19,11 @@ without replacing this canonical coding-agent handoff.
 | Item | Current value |
 | --- | --- |
 | Last verified | 2026-07-19 |
-| Working-tree version | `1.0` plus ADR 0013 Windows local-model lifecycle, ADR 0014 first local operator-interface slice, ADR 0015 verification layers and acceptance coverage, ADR 0016's corrective follow-up, ADR 0017's worktree-fingerprint/explicit-acceptance-designation hardening, the opt-in `local-strict` evaluation lane with its first live result, ADR 0018's acceptance-failure-evidence/bounded-specification-correction fixes, ADR 0019's Architect Mode planning foundation plus its Plans UI surface, ADR 0020's deterministic human-review-and-resume CLI and UI, ADR 0021's review/resume integrity hardening, ADR 0022's explicit human-authorized fresh frontier stage, ADR 0023's durable new-task intake (CLI/service seam and New Task UI screen), ADR 0024's durable post-approval task execution (CLI/service seam and control-room UI), and ADR 0025's shared operation-lease and recovery-integrity hardening across all three operation ledgers |
+| Working-tree version | `1.0` plus ADR 0013 Windows local-model lifecycle, ADR 0014 first local operator-interface slice, ADR 0015 verification layers and acceptance coverage, ADR 0016's corrective follow-up, ADR 0017's worktree-fingerprint/explicit-acceptance-designation hardening, the opt-in `local-strict` evaluation lane with its first live result, ADR 0018's acceptance-failure-evidence/bounded-specification-correction fixes, ADR 0019's Architect Mode planning foundation plus its Plans UI surface, ADR 0020's deterministic human-review-and-resume CLI and UI, ADR 0021's review/resume integrity hardening, ADR 0022's explicit human-authorized fresh frontier stage, ADR 0023's durable new-task intake (CLI/service seam and New Task UI screen), ADR 0024's durable post-approval task execution (CLI/service seam and control-room UI), ADR 0025's shared operation-lease and recovery-integrity hardening across all three operation ledgers, and ADR 0026's immutable execution authorization and truthful live UI |
 | Checked-out branch | `main` |
-| Repository state | The 1.0/lifecycle baseline, the ADR 0014 UI slice, the ADR 0015 acceptance-coverage milestone, the ADR 0016 correction, the ADR 0017 hardening, the `local-strict` lane, the ADR 0018 fixes, ADR 0019's Architect Mode foundation (CLI + Plans UI), ADR 0020's review/resume CLI and UI, ADR 0021's hardening, ADR 0022's `authorize_frontier_stage` action, ADR 0023's `apoapsis intake` seam, ADR 0024's `apoapsis execute` seam and control-room UI, and ADR 0025's lease/recovery hardening are all committed on `main`; live evaluation evidence is committed separately. `DESIGN.md` is preserved as a separate, committed user-supplied design reference. Run `git status` and `git log -1 --oneline` for the exact current state. |
+| Repository state | The 1.0/lifecycle baseline, the ADR 0014 UI slice, the ADR 0015 acceptance-coverage milestone, the ADR 0016 correction, the ADR 0017 hardening, the `local-strict` lane, the ADR 0018 fixes, ADR 0019's Architect Mode foundation (CLI + Plans UI), ADR 0020's review/resume CLI and UI, ADR 0021's hardening, ADR 0022's `authorize_frontier_stage` action, ADR 0023's `apoapsis intake` seam, ADR 0024's `apoapsis execute` seam and control-room UI, ADR 0025's lease/recovery hardening, and ADR 0026's execution-authorization hardening are all committed on `main`; live evaluation evidence is committed separately. `DESIGN.md` is preserved as a separate, committed user-supplied design reference. Run `git status` and `git log -1 --oneline` for the exact current state. |
 | Preserved substrate tag | `substrate-v0.1` at `4c2e735` |
-| Full deterministic suite | 478 tests, 0 failures, 0 errors, 6 intentional skips (2 live-network, 1 live-Docker, 3 machine currently lacks the Windows privilege to create symlinks) |
+| Full deterministic suite | 497 tests, 0 failures, 0 errors, 6 intentional skips (2 live-network, 1 live-Docker, 3 machine currently lacks the Windows privilege to create symlinks) |
 | Syntax check | `python -m compileall -q src tests` passed |
 | Diff check | `git diff --check` passed; Git reported only expected LF-to-CRLF working-copy warnings |
 | Live local coding result | Qwen3-Coder-Next Q4 completed the controlled download-service task in 10 turns and 3 verification runs |
@@ -197,11 +197,14 @@ architecture.
   prototype runtime and illustrative model names are not shipped.
 - Read-only task/report/plan/review views, deterministic specification/plan
   approval, deterministic human-review continuation (abandon, retry
-  verification, continue locally/with frontier), and durable natural-language
-  new-task intake (New Task screen, ADR 0023) are all live. Task execution
-  orchestration for new tasks, plan-slice execution, and native desktop
-  packaging remain unavailable until their resumable service and authority
-  contracts are implemented.
+  verification, continue locally/with frontier), durable natural-language
+  new-task intake (New Task screen, ADR 0023), and durable post-approval task
+  execution with a two-step, immutably-authorized "Start coding" confirmation
+  and live running progress (control room, ADR 0024, hardened by ADR 0026)
+  are all live -- a user can go from a typed request to a completed or
+  Human-Review-stopped task entirely from the browser. Plan-slice execution
+  and native desktop packaging remain unavailable until their resumable
+  service and authority contracts are implemented.
 
 ### Owner model lifecycle
 
@@ -643,6 +646,102 @@ architecture.
   (report-only leaves the operation untouched; with the flag and a
   patched fake provider, the operation actually runs to completion).
   Full suite: 478 tests, 0 failures, 6 intentional skips.
+
+### Immutable execution authorization and truthful live UI (ADR 0026)
+
+- `src/apoapsis/execution/authorization.py` is new:
+  `build_execution_authorization_package()` deterministically computes,
+  with zero model calls or mutating side effects, exactly what a "Start
+  coding" confirmation would authorize right now -- task id/version and a
+  sha256 of the specification; the full parent-repository fingerprint
+  (`compute_worktree_fingerprint()`, ADR 0017 -- tracked diff *and*
+  untracked files, not `git rev-parse HEAD` alone) plus the repository
+  root and HEAD commit; a sha256 of the effective configuration; the
+  predicted route/reason (`select_agent_route()`, the exact function the
+  real service uses); provider kinds and model names per role; the
+  local/frontier `AgentLoopConfig` budgets and `ContextCompilerConfig`
+  ceilings verbatim; completion policy; verification backend and
+  command-name catalog plus a sha256 of the full verification
+  configuration; a fixed list of authority-rule statements; and
+  `package_sha256`, a sha256 over the whole package excluding
+  `generated_at` and `operation_id` (a fresh id is chosen client-side only
+  once the user confirms, so excluding it lets the same content hash a
+  preview showed be reproduced against the real id at submission and run
+  time). `_safe_config_payload()` strips
+  `VerificationCommand.environment`'s raw values (replaced by sorted key
+  names) before any hashing or serialization -- the one place a user could
+  put a literal secret into configuration; `FrontierProviderConfig
+  .api_key_env` only ever names an environment variable, never the secret
+  itself, so the rest of `ApoapsisConfig` is already safe.
+- The same function is called from three places, so there is exactly one
+  definition of "the same authorization": the UI preview
+  (`_execution_preview()`, placeholder `operation_id`, never writes
+  anything); `prepare_execution_operation()` (now requires `config:
+  ApoapsisConfig`), which writes the package to
+  `execution-authorization-<operation-id>.json` and persists its hash as
+  the new `authorization_sha256` column on `ExecutionOperationRecord`
+  (additive migration, legacy rows simply skip the recheck); and
+  `run_execution_operation()`, which recomputes the package fresh and
+  compares hashes -- before `_build_providers()` is ever called -- raising
+  the new `ExecutionAuthorizationDriftError` on any mismatch.
+- `submit_execution_operation()` now requires `expected_authorization_
+  sha256`: it rebuilds the package from current state and rejects on
+  mismatch before `prepare_execution_operation` even runs, so before any
+  audit write. `POST /api/tasks/<id>/execute` requires the field in its
+  body (400 if absent, 409 on drift, matching existing precondition
+  checks). `app.js`'s confirmation panel displays the hash and carries it
+  on the "Confirm & start" button. **A live-browser pass against a real
+  local Ollama model caught a real gap here first**: the backend was
+  written and unit-tested before `app.js` was updated to actually send the
+  new field, so every real "Start coding" click would have failed with a
+  400 -- fixed before this ADR closed, with a bundled-asset regression
+  test now guarding against it recurring silently.
+- `src/apoapsis/repository/readiness.py` is new:
+  `require_clean_parent_repository()` raises `DirtyParentRepositoryError`
+  whenever the parent repository has any uncommitted tracked or untracked
+  changes -- addressing a real mismatch where `_run_from_approved()`
+  compiles initial context from the parent checkout while the task
+  worktree is created from clean HEAD, so a dirty parent could silently
+  make the two disagree about what the repository contains.
+  `run_execution_operation()` calls this before `_build_providers()`.
+  Deliberately scoped to the durable execution service only, not
+  `apoapsis run`'s direct synchronous path (a separately-reviewable,
+  larger change against that path's own large pre-existing test suite).
+  Never stashes, resets, deletes, or commits anything automatically.
+- `pollExecutionOperation()` in `app.js` no longer skips refreshing
+  `store.task` while `RUNNING` -- it now refreshes persisted workflow
+  events and recent agent turns on every poll tick, not only once the
+  operation reaches a terminal status, so the control room's timeline and
+  tool-action feed are genuinely live. `_recent_agent_turns()`'s sort was
+  `(stage, turn)`, alphabetically ordering "frontier" before "local" --
+  the opposite of actual execution order, since a session always exhausts
+  local turns (if any) before ever escalating; fixed with an explicit
+  stage-priority sort.
+- New `tests/test_app_js_regression.py`: deterministic, Node-independent
+  static checks (no duplicate top-level function declarations -- exactly
+  the bug class ADR 0024's live pass found by accident when two functions
+  were both named `reviewView`; route-dispatch targets exist and are
+  unique) that always run, plus Node-based syntax/boot smoke tests
+  (skipped with a clear reason, not silently passed, when Node is
+  unavailable) using only Node's built-in `vm` module -- no npm dependency
+  added anywhere.
+- Full real-browser smoke pass against a real local Ollama model
+  (`qwen3-coder-next:q4_K_M`): New Task extraction, approval, "Start
+  coding" (showing the real authorization hash), live running progress
+  updating in real time without a reload, local-budget exhaustion
+  correctly stopping at `HUMAN_REVIEW_REQUIRED`, and the "Open the Human
+  Review case" link correctly opening the real case detail view. No
+  console errors observed.
+- New `tests/test_execution_authorization.py` (11 tests: package-hash
+  stability and operation-id independence; no raw secret ever present in
+  the package; authorization drift for a tracked edit, an untracked edit,
+  a model change, a budget change, a verification-command change, a
+  completion-policy change, and a backend change, each verified to be
+  rejected before `_build_providers()` is ever called; a negative control
+  confirming an unmodified re-authorization is not flagged).
+  `tests/test_execution_ui.py` gained a preview-vs-confirm drift test, a
+  turn-ordering test, and the bundled-asset authorization-field guard.
+  Full suite: 497 tests, 0 failures, 6 intentional skips.
 
 ### Verification layers and acceptance coverage (ADR 0015, corrected by ADR 0016, hardened by ADR 0017/0018)
 
@@ -1124,9 +1223,10 @@ model views are live; Doctor runs only after an explicit UI action.
 Specification and plan approval use second-step confirmation and optimistic
 versions, then call the same deterministic store transitions as the CLI. Human
 Review actions are durably recorded, executed outside the HTTP request by the
-background worker, and polled by operation id. Model-assisted new-task intake,
-new-task execution orchestration, plan-slice execution, and native packaging
-remain visibly unavailable.
+background worker, and polled by operation id. Model-assisted new-task intake
+(ADR 0023) and post-approval task execution with immutable, hashed
+authorization (ADR 0024, ADR 0026) are both live the same way. Only
+plan-slice execution and native packaging remain visibly unavailable.
 
 ### Run the primary flow
 
@@ -1451,6 +1551,8 @@ direct-frontier comparison claims remain unmeasured.
 | Durable post-approval execution: local/frontier/one-shot completion, escalation, critical-risk-before-worktree, budget-exhausted human review, duplicate/simultaneous operations, stale version/repository-HEAD rejection, provider-construction failure, and crash recovery (reclaim/ambiguous-with-worktree-preserved/return-to-review) | `tests/test_execution_operations.py` |
 | Execution control-room UI: service/API/security, background-worker execution, duplicate/reconnect, ambiguous-operation visibility, `task_detail`'s execution-preview/active-operation/recent-turns fields, bundled-asset sanity, and eager-startup reclaim without submission | `tests/test_execution_ui.py` |
 | Shared operation-lease discipline (ADR 0025): atomic claim/renew/release/expire, legacy-row fail-closed, `LeaseHeartbeat` renewal/lease-lost, and identical semantics proven across review/intake/execution | `tests/test_operation_lease.py` |
+| Immutable execution authorization (ADR 0026): package-hash stability/operation-id independence, no raw secret ever present, and drift rejection (task version, tracked/untracked edit, model/budget/verification-command/completion-policy/backend change) always before provider construction | `tests/test_execution_authorization.py` |
+| `app.js` regression coverage: no duplicate top-level function declarations, route-dispatch targets exist and are unique, Node syntax check, Node boot smoke (skipped with a clear reason when Node is unavailable) | `tests/test_app_js_regression.py` |
 
 Fake providers are the mandatory regression mechanism. Live model or network
 tests supplement them; they must not replace deterministic coverage.
@@ -1674,6 +1776,7 @@ automation as a substitute for those proofs.
 | `0023` | Durable model-assisted new-task intake: `IntakeOperationRecord`/`IntakeOperationStore`/`IntakeWorker` mirroring the review-operation crash-safety ledger, reusing `SpecificationExtractor`'s exact bounded-correction contract, stopping at `SPEC_DRAFTED` without executing the task (Commit D1a: CLI/service seam; Commit D1b: New Task UI screen, reusing the existing, unmodified specification-approval action) |
 | `0024` | Durable post-approval task execution: `VerticalSliceRunner.run()` split into a shared `_run_from_approved`/`execute_approved_task()` continuation (zero duplicated routing/context/agent/patch/verification/escalation/reporting logic), plus `ExecutionOperationRecord`/`ExecutionOperationStore`/`ExecutionWorker` mirroring the review/intake crash-safety ledgers exactly (Commit D2a: CLI/service seam; Commit D2b: control-room UI with live tool-action progress and a fixed pre-existing `reviewView` name-collision bug) |
 | `0025` | Shared, owner-scoped operation-lease discipline (`operations/lease.py`) across review/intake/execution: atomic claim/renew/release/expire, a heartbeat that renews independent of model behavior, injectable-clock recovery, eager background-worker startup closing the duplicate-enqueue race, and an explicit opt-in `--resume-recorded` CLI flag |
+| `0026` | Immutable, hashed `ExecutionAuthorizationPackage` computed by one function reused at preview/prepare/run time; a confirmation authorizes exactly what its preview showed, rejected before any provider construction on task/spec/repository-fingerprint/config drift; a dirty-parent-repository fail-closed check; genuinely live control-room progress in real execution order; and deterministic + optional Node-based `app.js` regression coverage |
 
 Add a new ADR for a new architectural decision. Do not rewrite history to make
 old decisions appear current; mark an ADR superseded and link its replacement

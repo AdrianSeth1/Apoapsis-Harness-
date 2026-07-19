@@ -413,6 +413,7 @@ class OperationLedgerTests(ExecutionOperationTestsBase):
                 task_id=task_id,
                 operation_id="EXOP-STALE-VERSION",
                 expected_version=version + 1,
+                config=self._one_shot_config(),
             )
 
     def test_task_not_at_spec_approved_is_rejected(self) -> None:
@@ -427,6 +428,7 @@ class OperationLedgerTests(ExecutionOperationTestsBase):
                 task_id=task_id,
                 operation_id="EXOP-WRONG-STATE",
                 expected_version=created.version,
+                config=self._one_shot_config(),
             )
 
     def test_repository_head_changed_between_prepare_and_run_is_rejected(self) -> None:
@@ -439,6 +441,7 @@ class OperationLedgerTests(ExecutionOperationTestsBase):
             task_id=task_id,
             operation_id="EXOP-STALE-HEAD",
             expected_version=version,
+            config=config,
         )
         (self.root / "surprise.txt").write_text("changed after prepare\n", encoding="utf-8")
         self._git("add", ".")
@@ -471,6 +474,7 @@ class OperationLedgerTests(ExecutionOperationTestsBase):
             task_id=task_id,
             operation_id="EXOP-BUILD-FAIL",
             expected_version=version,
+            config=config,
         )
         with patch(
             "apoapsis.execution.operation_service._build_providers",
@@ -501,6 +505,7 @@ class RecoveryTests(ExecutionOperationTestsBase):
             task_id=task_id,
             operation_id="EXOP-RECLAIM",
             expected_version=version,
+            config=self._one_shot_config(),
         )
         report = recover_stale_execution_operations(self.store, self.operation_store)
         self.assertEqual(report.reclaimed_operation_ids, ["EXOP-RECLAIM"])
@@ -520,6 +525,7 @@ class RecoveryTests(ExecutionOperationTestsBase):
             task_id=task_id,
             operation_id="EXOP-CRASH-1",
             expected_version=version,
+            config=self._one_shot_config(),
         )
         # Simulate a crash mid-execution: the task reached REPOSITORY_ANALYZED
         # (partway through `_run_from_approved`) but the operation itself
@@ -595,6 +601,7 @@ class RecoveryTests(ExecutionOperationTestsBase):
             task_id=task_id,
             operation_id="EXOP-RECENT",
             expected_version=version,
+            config=self._one_shot_config(),
         )
         self.operation_store.mark_running("EXOP-RECENT", owner_id=new_owner_id())
         report = recover_stale_execution_operations(self.store, self.operation_store)

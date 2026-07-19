@@ -181,12 +181,15 @@ The first slice provides:
 - an explicit **Run doctor** action. Merely opening the UI does not probe or
   load a model.
 
-Natural-language task extraction and workflow execution for new tasks, and
-plan-slice execution, are visibly unavailable in this first slice. Continue
-using the CLI for those operations until their resumable application
-services and deterministic transition contracts are implemented. The
-supplied Claude Design export is a visual reference only; its external
-prototype runtime is not shipped.
+Natural-language task extraction (New Task screen, ADR 0023) and
+post-approval task execution (Control room, ADR 0024, hardened by ADR 0026)
+are both live from the browser -- a user can go from a typed request to a
+completed or Human-Review-stopped task without touching the CLI. Only
+plan-slice execution remains visibly unavailable in this slice; continue
+using the CLI for that until its resumable application service and
+deterministic transition contract are implemented. The supplied Claude
+Design export is a visual reference only; its external prototype runtime is
+not shipped.
 
 ## Current CLI workflow
 
@@ -430,13 +433,19 @@ abandonable through the existing `apoapsis review` commands.
 The local UI (`apoapsis ui`) has the same flow as the task page's **Control
 room** tab: once a task reaches `SPEC_APPROVED`, a "Start coding" action shows
 a two-step confirmation with the exact predicted route, models, budgets,
-completion policy, sandbox, and verification commands before anything runs.
-Submission returns immediately; the control room polls persisted progress
-(safe to close the tab and reconnect from any browser, since it discovers an
-in-progress operation from the task itself, not client-side storage) and
-shows real tool actions as the bounded agent produces them, then a usage/
-telemetry summary once the task finishes. A task that stops for a human
-decision links directly into the existing Human Review case view.
+completion policy, sandbox, verification commands, and a hash of exactly what
+will be authorized (ADR 0026). Confirming sends that hash back, and it is
+rechecked -- before any provider is constructed -- against a fresh
+recomputation from the task, specification, repository state, and
+configuration; if any of those changed since the preview was shown, the
+confirmation is rejected rather than silently running something different
+from what was shown. Submission then returns immediately; the control room
+polls persisted progress (safe to close the tab and reconnect from any
+browser, since it discovers an in-progress operation from the task itself,
+not client-side storage) and shows real tool actions live, as the bounded
+agent produces them, then a usage/telemetry summary once the task finishes. A
+task that stops for a human decision links directly into the existing Human
+Review case view.
 
 ## Diagnostics and evaluation
 

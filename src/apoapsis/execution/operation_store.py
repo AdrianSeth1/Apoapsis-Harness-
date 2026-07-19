@@ -91,6 +91,25 @@ class ExecutionOperationStore:
                 """
             )
             ensure_lease_columns(connection, _TABLE)
+            self._ensure_authorization_column(connection)
+
+    @staticmethod
+    def _ensure_authorization_column(connection: sqlite3.Connection) -> None:
+        """Additive migration (ADR 0026): a legacy row written before this
+        column existed simply has ``authorization_sha256 IS NULL`` --
+        readable, never rewritten, and never authorization-rechecked
+        (there is nothing to compare against)."""
+
+        existing = {
+            str(row["name"])
+            for row in connection.execute(
+                f"PRAGMA table_info({_TABLE})"
+            ).fetchall()
+        }
+        if "authorization_sha256" not in existing:
+            connection.execute(
+                f"ALTER TABLE {_TABLE} ADD COLUMN authorization_sha256 TEXT"
+            )
 
     def create(
         self,
@@ -99,6 +118,7 @@ class ExecutionOperationStore:
         *,
         expected_task_version: int,
         expected_repository_head: str,
+        authorization_sha256: str | None = None,
     ) -> ExecutionOperationRecord:
         now = utc_now()
         connection = self._connect()
@@ -122,8 +142,9 @@ class ExecutionOperationStore:
                     INSERT INTO execution_operations (
                         operation_id, task_id, expected_task_version,
                         expected_repository_head, status, created_at,
-                        updated_at, result_summary, error, report_path
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL)
+                        updated_at, result_summary, error, report_path,
+                        authorization_sha256
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?)
                     """,
                     (
                         operation_id,
@@ -133,6 +154,7 @@ class ExecutionOperationStore:
                         ExecutionOperationStatus.RECORDED.value,
                         now.isoformat(),
                         now.isoformat(),
+                        authorization_sha256,
                     ),
                 )
             except sqlite3.IntegrityError as exc:
@@ -406,6 +428,7 @@ class ExecutionOperationStore:
             report_path=row["report_path"],
             lease_owner_id=row["lease_owner_id"],
             lease_expires_at=row["lease_expires_at"],
+            authorization_sha256=row["authorization_sha256"],
         )
 
 

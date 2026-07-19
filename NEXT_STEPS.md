@@ -67,9 +67,12 @@ evaluation, and model-configuration data. Specification approval is live and
 uses the same optimistic transition/event record as the CLI. Opening the UI does
 not load or prompt a model; Doctor runs only when explicitly selected.
 
-Natural-language model-assisted intake, execution orchestration, review/resume
-choices, and native desktop packaging remain intentionally unavailable. Use the
-CLI for those operations until the deterministic application services below are
+Natural-language model-assisted intake (New Task), post-approval execution
+orchestration (Control room), and review/resume choices (Human Review queue)
+are all live from the browser now, each behind the same durable, crash-safe
+operation ledgers and two-step confirmations the CLI uses. Only plan-slice
+execution and native desktop packaging remain intentionally unavailable; use
+the CLI for those until their own deterministic application services are
 built.
 
 ## For future coding agents
@@ -652,6 +655,55 @@ operation with no submission call. `tests/test_intake_cli.py` gained two
 tests for `--resume-recorded`. Full suite: 478/478 passing, 6 intentional
 skips. See ADR 0025 and `HANDOFF.md`'s "Operation lease and recovery
 integrity" section for full detail.
+
+### Done — Phase H4: immutable execution authorization and truthful live UI (ADR 0026)
+
+The two-step "Start coding" confirmation showed a preview but nothing tied
+the shown preview to the executed reality: the task, specification,
+repository state, or configuration could drift between preview and
+confirmation (or between recording an operation and a worker actually
+running it) and the operation would still run as if nothing changed.
+Separately, two real bugs existed: `_run_from_approved()` compiles initial
+context from the parent checkout while the task worktree is created from
+clean HEAD, so an uncommitted parent change could make the two silently
+disagree; and the control room's poll loop only refreshed persisted events/
+turns once an operation reached a terminal status, leaving the live-progress
+view frozen for the entire RUNNING duration.
+
+New `src/apoapsis/execution/authorization.py`:
+`build_execution_authorization_package()` deterministically computes what a
+confirmation would authorize (task/spec hash, full parent-repository
+fingerprint, effective-config hash, predicted route, provider/model names,
+budgets, completion policy, verification backend/catalog/hash, authority
+rules, and a `package_sha256` excluding `operation_id`/`generated_at`) --
+called identically from the UI preview, `prepare_execution_operation()`
+(which persists the hash), and `run_execution_operation()` (which
+recomputes and rejects on mismatch before any provider construction).
+`VerificationCommand.environment` values are never serialized or hashed in
+raw form. New `src/apoapsis/repository/readiness.py`:
+`require_clean_parent_repository()` fails closed (never stashes, resets, or
+commits automatically) when the parent repository is dirty, called before
+`_build_providers()`. `app.js`'s poll loop now refreshes live progress on
+every tick while RUNNING, and turn ordering is fixed to real execution order
+(local before frontier, not alphabetical).
+
+**A live-browser pass against a real local Ollama model caught a real gap
+the deterministic suite alone did not**: the backend authorization checks
+were written and tested first, but `app.js`'s confirmation button never
+actually sent the new required field, so every real "Start coding" click
+would have failed with a 400. Fixed before this phase closed, with a
+bundled-asset regression test guarding against it recurring silently. The
+full pass (New Task → approval → Start coding → live running progress →
+Human Review navigation) succeeded end to end.
+
+New `tests/test_execution_authorization.py` (11 tests) and
+`tests/test_app_js_regression.py` (4 tests: duplicate-declaration and
+route-dispatch static checks always run; Node syntax/boot smoke tests skip
+cleanly when Node is unavailable). `tests/test_execution_ui.py` gained
+preview-vs-confirm drift, turn-ordering, and bundled-asset-field tests. Full
+suite: 497/497 passing, 6 intentional skips. See ADR 0026 and `HANDOFF.md`'s
+"Immutable execution authorization and truthful live UI" section for full
+detail.
 
 ### Priority C — extend the accepted application shell (ADR 0014)
 

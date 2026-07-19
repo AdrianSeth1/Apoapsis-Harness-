@@ -126,16 +126,23 @@ class ApoapsisUIRequestHandler(BaseHTTPRequestHandler):
             body = self._read_json_body()
             operation_id = body.get("operation_id")
             expected_version = body.get("expected_version")
+            expected_authorization_sha256 = body.get("expected_authorization_sha256")
             if not isinstance(operation_id, str) or not operation_id:
                 raise ValueError("operation_id is required")
             if not isinstance(expected_version, int) or isinstance(
                 expected_version, bool
             ):
                 raise ValueError("expected_version must be an integer")
+            if (
+                not isinstance(expected_authorization_sha256, str)
+                or not expected_authorization_sha256
+            ):
+                raise ValueError("expected_authorization_sha256 is required")
             payload = self.server.service.submit_execution_operation(
                 task_id,
                 operation_id=operation_id,
                 expected_version=expected_version,
+                expected_authorization_sha256=expected_authorization_sha256,
             )
         except TaskNotFoundError:
             self._send_error(HTTPStatus.NOT_FOUND, "task not found")

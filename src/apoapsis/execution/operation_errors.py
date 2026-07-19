@@ -29,3 +29,12 @@ class ExecutionOperationAlreadyRunningError(ExecutionOperationError):
 class StaleExecutionStartError(ExecutionOperationError):
     """Raised when the task's version or the repository HEAD no longer
     match what was observed when this operation was recorded."""
+
+
+class ExecutionAuthorizationDriftError(ExecutionOperationError):
+    """Raised when a freshly recomputed ``ExecutionAuthorizationPackage``
+    hash (ADR 0026) no longer matches what was authorized -- the task,
+    its specification, the repository's tracked/untracked state, or the
+    execution configuration changed since the authorization was recorded
+    or previewed. Always raised before any provider construction,
+    worktree mutation, or command execution."""

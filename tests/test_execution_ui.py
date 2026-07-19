@@ -149,6 +149,13 @@ timeout_seconds = 30
             self.root / ".apoapsis" / "execution-operations.db"
         )
 
+    def _config(self) -> ApoapsisConfig:
+        return ApoapsisConfig.from_toml(self.config_path)
+
+    def _authorization_sha256(self, task_id: str | None = None) -> str:
+        detail = self.service.task_detail(task_id or self.task_id)
+        return detail["execution_preview"]["authorization_sha256"]
+
     def test_task_detail_exposes_execution_preview_and_no_active_operation(self) -> None:
         detail = self.service.task_detail(self.task_id)
         self.assertIn("start_execution", detail["available_actions"])
@@ -157,6 +164,31 @@ timeout_seconds = 30
         self.assertEqual(preview["execution_mode"], "agent")
         self.assertIn(preview["predicted_route"], {"local_only", "human_review_required"})
         self.assertEqual(preview["verification_commands"], ["download-tests"])
+
+    def test_recent_agent_turns_are_ordered_local_then_frontier(self) -> None:
+        """ADR 0026: a session always exhausts every local turn (if any)
+        before ever escalating to a frontier turn -- never interleaved --
+        so ``recent_agent_turns`` must show local turns first, in actual
+        execution order, not alphabetically ("frontier" < "local")."""
+
+        task_directory = self.root / ".apoapsis" / "tasks" / self.task_id
+        task_directory.mkdir(parents=True, exist_ok=True)
+        turn = lambda turn_number: json.dumps(
+            {
+                "turn": turn_number,
+                "action": "search_repository",
+                "accepted": True,
+                "summary": "ok",
+            }
+        )
+        (task_directory / "agent-turn-001.json").write_text(turn(1), encoding="utf-8")
+        (task_directory / "agent-turn-002.json").write_text(turn(2), encoding="utf-8")
+        (task_directory / "frontier-agent-turn-001.json").write_text(
+            turn(1), encoding="utf-8"
+        )
+        detail = self.service.task_detail(self.task_id)
+        stages = [item["stage"] for item in detail["recent_agent_turns"]]
+        self.assertEqual(stages, ["local", "local", "frontier"])
 
     def test_submit_execution_operation_completes_via_background_worker(self) -> None:
         local_outputs = [
@@ -189,6 +221,7 @@ timeout_seconds = 30
                 self.task_id,
                 operation_id="EXOP-UI-1",
                 expected_version=self.task_version,
+                expected_authorization_sha256=self._authorization_sha256(),
             )
             self.assertIn(submitted["status"], {"recorded", "running"})
             final = _poll_until_terminal(self.service, "EXOP-UI-1")
@@ -209,16 +242,19 @@ timeout_seconds = 30
                 InstrumentedModelProvider(FakeModelProvider([action("search_repository", query="x")])),
                 None,
             )
+            authorization_sha256 = self._authorization_sha256()
             self.service.submit_execution_operation(
                 self.task_id,
                 operation_id="EXOP-UI-REPLAY",
                 expected_version=self.task_version,
+                expected_authorization_sha256=authorization_sha256,
             )
             with self.assertRaises(Exception):
                 self.service.submit_execution_operation(
                     self.task_id,
                     operation_id="EXOP-UI-REPLAY",
                     expected_version=self.task_version,
+                    expected_authorization_sha256=authorization_sha256,
                 )
             _poll_until_terminal(self.service, "EXOP-UI-REPLAY")
 
@@ -237,6 +273,7 @@ timeout_seconds = 30
                 self.task_id,
                 operation_id="EXOP-UI-RECONNECT",
                 expected_version=self.task_version,
+                expected_authorization_sha256=self._authorization_sha256(),
             )
             _poll_until_terminal(self.service, "EXOP-UI-RECONNECT")
 
@@ -244,12 +281,31 @@ timeout_seconds = 30
         record = reconnected_service.execution_operation_status("EXOP-UI-RECONNECT")
         self.assertEqual(record["status"], "succeeded")
 
+    def test_stale_preview_hash_is_rejected_before_prepare(self) -> None:
+        """ADR 0026: the confirmation must authorize exactly what the
+        preview showed. A stale ``expected_authorization_sha256`` (as if
+        the browser rendered its preview, then the task/config/repository
+        changed before the user clicked "Start coding") is rejected
+        before ``prepare_execution_operation`` ever runs -- no audit
+        write, no operation record, nothing durably created."""
+
+        with self.assertRaises(Exception):
+            self.service.submit_execution_operation(
+                self.task_id,
+                operation_id="EXOP-UI-STALE-PREVIEW",
+                expected_version=self.task_version,
+                expected_authorization_sha256="0" * 64,
+            )
+        with self.assertRaises(Exception):
+            self._execution_operation_store().get("EXOP-UI-STALE-PREVIEW")
+
     def test_stale_task_version_is_rejected(self) -> None:
         with self.assertRaises(Exception):
             self.service.submit_execution_operation(
                 self.task_id,
                 operation_id="EXOP-UI-STALE",
                 expected_version=self.task_version + 1,
+                expected_authorization_sha256=self._authorization_sha256(),
             )
 
     def test_ambiguous_operation_is_visible_via_service(self) -> None:
@@ -263,6 +319,7 @@ timeout_seconds = 30
             task_id=self.task_id,
             operation_id="EXOP-UI-AMBIGUOUS",
             expected_version=self.task_version,
+            config=self._config(),
         )
         operation_store.mark_running(
             "EXOP-UI-AMBIGUOUS",
@@ -282,7 +339,10 @@ timeout_seconds = 30
         service = ApoapsisUIService(Path(self.temporary_directory.name) / "not-a-project")
         with self.assertRaises(Exception):
             service.submit_execution_operation(
-                "TASK-DOES-NOT-EXIST", operation_id="EXOP-NONE", expected_version=1
+                "TASK-DOES-NOT-EXIST",
+                operation_id="EXOP-NONE",
+                expected_version=1,
+                expected_authorization_sha256="0" * 64,
             )
 
     def test_start_background_workers_reclaims_stranded_recorded_operation(
@@ -305,6 +365,7 @@ timeout_seconds = 30
             task_id=self.task_id,
             operation_id="EXOP-UI-STRANDED",
             expected_version=self.task_version,
+            config=self._config(),
         )
         self.assertEqual(operation_store.get("EXOP-UI-STRANDED").status.value, "recorded")
 
@@ -340,6 +401,13 @@ class ExecutionUIServerTests(ExecutionUIServiceTests):
     def origin(self) -> str:
         return self.server.origin
 
+    def _http_authorization_sha256(self, task_id: str | None = None) -> str:
+        with self.request(
+            f"/api/tasks/{task_id or self.task_id}", token=self.token
+        ) as response:
+            detail = json.load(response)
+        return detail["execution_preview"]["authorization_sha256"]
+
     def request(
         self,
         path: str,
@@ -364,7 +432,11 @@ class ExecutionUIServerTests(ExecutionUIServiceTests):
             self.request(
                 f"/api/tasks/{self.task_id}/execute",
                 method="POST",
-                payload={"operation_id": "EXOP-NOAUTH", "expected_version": self.task_version},
+                payload={
+                    "operation_id": "EXOP-NOAUTH",
+                    "expected_version": self.task_version,
+                    "expected_authorization_sha256": "0" * 64,
+                },
             )
         self.assertEqual(unauthorized.exception.code, 401)
         unauthorized.exception.close()
@@ -392,7 +464,11 @@ class ExecutionUIServerTests(ExecutionUIServiceTests):
             with self.request(
                 f"/api/tasks/{self.task_id}/execute",
                 method="POST",
-                payload={"operation_id": "EXOP-HTTP-1", "expected_version": self.task_version},
+                payload={
+                    "operation_id": "EXOP-HTTP-1",
+                    "expected_version": self.task_version,
+                    "expected_authorization_sha256": self._http_authorization_sha256(),
+                },
                 token=self.token,
             ) as response:
                 self.assertEqual(response.status, 202)
@@ -413,22 +489,48 @@ class ExecutionUIServerTests(ExecutionUIServiceTests):
             self.assertEqual(record["status"], "succeeded")
 
     def test_http_duplicate_operation_id_returns_409(self) -> None:
-        with self.request(
-            f"/api/tasks/{self.task_id}/execute",
-            method="POST",
-            payload={"operation_id": "EXOP-HTTP-DUP", "expected_version": self.task_version},
-            token=self.token,
-        ) as response:
-            json.load(response)
-        with self.assertRaises(urllib.error.HTTPError) as conflict:
-            self.request(
+        authorization_sha256 = self._http_authorization_sha256()
+        with patch(
+            "apoapsis.execution.operation_service._build_providers"
+        ) as build_providers:
+            build_providers.return_value = (
+                InstrumentedModelProvider(FakeModelProvider([action("search_repository", query="x")])),
+                InstrumentedModelProvider(FakeModelProvider([action("search_repository", query="x")])),
+                None,
+            )
+            with self.request(
                 f"/api/tasks/{self.task_id}/execute",
                 method="POST",
-                payload={"operation_id": "EXOP-HTTP-DUP", "expected_version": self.task_version},
+                payload={
+                    "operation_id": "EXOP-HTTP-DUP",
+                    "expected_version": self.task_version,
+                    "expected_authorization_sha256": authorization_sha256,
+                },
                 token=self.token,
-            )
-        self.assertEqual(conflict.exception.code, 409)
-        conflict.exception.close()
+            ) as response:
+                json.load(response)
+            with self.assertRaises(urllib.error.HTTPError) as conflict:
+                self.request(
+                    f"/api/tasks/{self.task_id}/execute",
+                    method="POST",
+                    payload={
+                        "operation_id": "EXOP-HTTP-DUP",
+                        "expected_version": self.task_version,
+                        "expected_authorization_sha256": authorization_sha256,
+                    },
+                    token=self.token,
+                )
+            self.assertEqual(conflict.exception.code, 409)
+            conflict.exception.close()
+            deadline = time.monotonic() + 15
+            while time.monotonic() < deadline:
+                with self.request(
+                    "/api/execution/operations/EXOP-HTTP-DUP", token=self.token
+                ) as response:
+                    record = json.load(response)
+                if record["status"] in {"succeeded", "failed"}:
+                    break
+                time.sleep(0.05)
 
     def test_static_asset_bundles_control_room_actions(self) -> None:
         with self.request("/app.js", token=self.token) as response:
@@ -436,6 +538,12 @@ class ExecutionUIServerTests(ExecutionUIServiceTests):
         self.assertIn("submitExecutionStart", content)
         self.assertIn("/api/execution/operations", content)
         self.assertIn("execution-start-confirm", content)
+        # ADR 0026: the confirmation must send back the exact hash the
+        # preview showed -- a live-browser pass caught this once already
+        # (the JS never sent it, so every real "Start coding" click failed
+        # with a 400 the deterministic suite could not see).
+        self.assertIn("expected_authorization_sha256", content)
+        self.assertIn("authorizationSha256", content)
 
 
 if __name__ == "__main__":

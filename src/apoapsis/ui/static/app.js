@@ -907,7 +907,7 @@ function executionGenerateOperationId() {
   return `EXOP-${raw.replaceAll("-", "").slice(0, 24).toUpperCase()}`;
 }
 
-async function submitExecutionStart(taskId, version) {
+async function submitExecutionStart(taskId, version, authorizationSha256) {
   const operationId = executionGenerateOperationId();
   store.busy = true;
   store.error = null;
@@ -916,7 +916,11 @@ async function submitExecutionStart(taskId, version) {
   try {
     const record = await api(`/api/tasks/${encodeURIComponent(taskId)}/execute`, {
       method: "POST",
-      body: JSON.stringify({ operation_id: operationId, expected_version: version }),
+      body: JSON.stringify({
+        operation_id: operationId,
+        expected_version: version,
+        expected_authorization_sha256: authorizationSha256,
+      }),
     });
     store.executionOperation = record;
     pollExecutionOperation(taskId, operationId);
@@ -940,14 +944,16 @@ async function pollExecutionOperation(taskId, operationId) {
       `/api/execution/operations/${encodeURIComponent(operationId)}`
     );
     store.executionOperation = record;
+    // Refresh persisted task events and recent agent turns on every tick,
+    // not only once the operation reaches a terminal status -- otherwise
+    // the control room's timeline and turn feed stay frozen at whatever
+    // they were when the page loaded for the entire RUNNING duration.
+    if (store.route.name === "task" && store.route.taskId === taskId) {
+      store.task = await api(`/api/tasks/${encodeURIComponent(taskId)}`);
+    }
     render();
     if (record.status === "recorded" || record.status === "running") {
       executionPollHandle = setTimeout(() => pollExecutionOperation(taskId, operationId), 2000);
-      return;
-    }
-    if (store.route.name === "task" && store.route.taskId === taskId) {
-      store.task = await api(`/api/tasks/${encodeURIComponent(taskId)}`);
-      render();
     }
   } catch (error) {
     store.error = error.message;
@@ -1064,10 +1070,11 @@ function executionStartPanel(detail) {
       ${preview.frontier_available ? `<div class="mt-14 mono">FRONTIER BUDGET: ${e(frontierBudget?.max_turns ?? "—")} turns / ${e(frontierBudget?.max_patch_attempts ?? "—")} patch attempts / ${e(frontierBudget?.max_verification_runs ?? "—")} verify runs</div>` : ""}
       <div class="mt-14 mono">COMPLETION POLICY: ${e(preview.completion_policy)} · SANDBOX: ${e(preview.verification_backend)}</div>
       <div class="mt-14 mono">VERIFICATION COMMANDS: ${e((preview.verification_commands || []).join(", ") || "none configured")}</div>
+      <div class="mt-14 mono">AUTHORIZATION: ${e(preview.authorization_sha256 || "unavailable")}</div>
     </div>
     <div class="approval-actions">
       <button class="button ghost" data-action="execution-start-cancel">Cancel</button>
-      <button class="button primary" data-action="execution-start-confirm" data-task-id="${e(task.task_id)}" data-version="${e(task.version)}" ${store.busy ? "disabled" : ""}>Confirm &amp; start →</button>
+      <button class="button primary" data-action="execution-start-confirm" data-task-id="${e(task.task_id)}" data-version="${e(task.version)}" data-authorization-sha256="${e(preview.authorization_sha256 || "")}" ${store.busy ? "disabled" : ""}>Confirm &amp; start →</button>
     </div>
   </div>`;
 }
@@ -1301,7 +1308,11 @@ root.addEventListener("click", (event) => {
     render();
   }
   if (button.dataset.action === "execution-start-confirm") {
-    submitExecutionStart(button.dataset.taskId, Number(button.dataset.version));
+    submitExecutionStart(
+      button.dataset.taskId,
+      Number(button.dataset.version),
+      button.dataset.authorizationSha256
+    );
   }
 });
 

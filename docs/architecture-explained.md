@@ -5,7 +5,7 @@ ideas and safety boundaries without assuming you already know the codebase.
 `HANDOFF.md` remains the canonical technical record for coding agents; the ADRs
 under `docs/adr/` preserve why individual decisions were made.
 
-Current as of 2026-07-19, after ADR 0024 (Commits D2a and D2b).
+Current as of 2026-07-19, after ADR 0026 (hardening ADR 0024's Commits D2a and D2b).
 
 ## The short version
 
@@ -460,6 +460,49 @@ found a second genuine, pre-existing bug the deterministic suite could never
 catch (it never executes `app.js`): two unrelated functions were both named
 `reviewView`, so the Human Review case route always ran the wrong one and
 crashed. Fixed as part of this milestone.
+
+### Done: operation lease and recovery integrity (ADR 0025)
+
+Auditing the review/intake/execution operation ledgers against real crash
+scenarios found two shared gaps: an operation recorded just before a crash
+could sit stranded until an unrelated new request happened to wake the
+right background worker, and "is this still running or did it crash?" was
+judged only by a fixed time window, so a genuinely long, healthy run could
+be mistaken for a dead one. Every operation now runs under a real lease --
+a unique owner id with an expiring, self-renewing claim -- so a long run
+survives as long as its own process keeps renewing, and a lease that stops
+renewing is reclaimed exactly once, with the original owner permanently
+locked out of overwriting the result afterward. The local UI now starts all
+three background workers the moment it launches, so a stranded operation is
+picked up immediately rather than waiting for the next unrelated request.
+
+### Done: immutable execution authorization and truthful live UI (ADR 0026)
+
+Two more gaps, closed together. First: nothing tied what the "Start coding"
+preview showed to what actually ran -- the task, its specification, the
+repository, or the configuration could change between preview and
+confirmation (or while an operation sat queued) and execution would proceed
+anyway. Now a single function computes a hash of everything that matters
+(task version, specification, the full repository fingerprint -- not just
+which commit, but whether anything is uncommitted -- and the effective
+configuration); the preview shows that hash, the confirmation must send it
+back, and it is recomputed and checked again immediately before any model
+provider is even constructed. Second: the code that builds a task's initial
+context reads the user's actual working folder, but the isolated workspace
+the model edits is always built fresh from the last commit -- so if the
+user had uncommitted changes sitting in their folder, the model could be
+shown file content that the workspace it actually edits does not have.
+Execution now refuses to start at all until the user's working folder is
+clean, with a plain explanation of what to do, and never touches the user's
+uncommitted work itself. The control room's live feed was also fixed to
+actually update while a task is running (it previously froze until the task
+finished) and to show steps in the order they really happened.
+
+A live test against a real local model caught one more real gap along the
+way: the safety check above was built and verified in isolation, but the
+button in the browser had not yet been wired to send the new confirmation
+value, so a real click would have been rejected. That was fixed immediately
+and a permanent check was added so it cannot silently regress.
 
 ### Following milestone: approved-plan to single-slice execution
 
