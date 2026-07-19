@@ -6,8 +6,11 @@ from typing import Any
 
 from apoapsis.architect.schema import ArchitecturePlan, PlanRecord, PlanStatus
 from apoapsis.architect.store import SQLitePlanStore
-from apoapsis.config import ApoapsisConfig
+from apoapsis.config import ApoapsisConfig, ExecutionMode
 from apoapsis.doctor import run_doctor
+from apoapsis.execution.operation_service import prepare_execution_operation
+from apoapsis.execution.operation_store import ExecutionOperationStore
+from apoapsis.execution.operation_worker import ExecutionWorker
 from apoapsis.intake.execution import prepare_intake_operation
 from apoapsis.intake.store import IntakeOperationStore
 from apoapsis.intake.worker import IntakeWorker
@@ -18,6 +21,7 @@ from apoapsis.review.execution import prepare_review_operation
 from apoapsis.review.schema import ReviewActionKind
 from apoapsis.review.store import ReviewOperationStore
 from apoapsis.review.worker import ReviewWorker
+from apoapsis.agent.session import AgentTurnRecord
 from apoapsis.workflow.engine import (
     SQLiteTaskStore,
     TaskNotFoundError,
@@ -25,6 +29,7 @@ from apoapsis.workflow.engine import (
     TaskStoreError,
 )
 from apoapsis.workflow.events import WorkflowActor
+from apoapsis.workflow.routing import select_agent_route
 from apoapsis.workflow.states import WorkflowState
 
 
@@ -82,6 +87,7 @@ class ApoapsisUIService:
         self.metadata_root = self.project_root / ".apoapsis"
         self._review_worker: ReviewWorker | None = None
         self._intake_worker: IntakeWorker | None = None
+        self._execution_worker: ExecutionWorker | None = None
 
     def overview(self) -> dict[str, Any]:
         config = self._config()
@@ -136,6 +142,14 @@ class ApoapsisUIService:
                 for path in sorted(task_directory.rglob("*"))
                 if path.is_file()
             ]
+        active_operation = None
+        config = self._config()
+        if config is not None:
+            active_record = self._execution_operation_store().find_active_for_task(
+                record.task_id
+            )
+            if active_record is not None:
+                active_operation = active_record.model_dump(mode="json")
         return {
             "task": record.model_dump(mode="json"),
             "events": [
@@ -144,7 +158,120 @@ class ApoapsisUIService:
             "report": report,
             "artifacts": artifacts,
             "available_actions": self._available_actions(record),
+            "execution_preview": (
+                self._execution_preview(record, config) if config is not None else None
+            ),
+            "active_execution_operation": active_operation,
+            "recent_agent_turns": self._recent_agent_turns(task_directory),
         }
+
+    def submit_execution_operation(
+        self, task_id: str, *, operation_id: str, expected_version: int
+    ) -> dict[str, Any]:
+        """Validate and durably record an execution operation, then hand it
+        to the background worker -- this method itself never calls a model,
+        creates a worktree, or runs a command; only ``ExecutionWorker`` (on
+        its own thread) does."""
+
+        store = self._require_store()
+        config = self._config()
+        if config is None:
+            raise TaskStoreError(
+                "Apoapsis is not initialized; run 'apoapsis init' first"
+            )
+        operation_store = self._execution_operation_store()
+        prepare_execution_operation(
+            self.project_root,
+            store,
+            operation_store,
+            task_id=task_id,
+            operation_id=operation_id,
+            expected_version=expected_version,
+        )
+        self._execution_worker_instance().submit(operation_id)
+        return operation_store.get(operation_id).model_dump(mode="json")
+
+    def execution_operation_status(self, operation_id: str) -> dict[str, Any]:
+        return self._execution_operation_store().get(operation_id).model_dump(
+            mode="json"
+        )
+
+    def _execution_operation_store(self) -> ExecutionOperationStore:
+        return ExecutionOperationStore(self.metadata_root / "execution-operations.db")
+
+    def _execution_worker_instance(self) -> ExecutionWorker:
+        if self._execution_worker is None:
+            self._execution_worker = ExecutionWorker(self.project_root)
+        return self._execution_worker
+
+    @staticmethod
+    def _execution_preview(
+        record: TaskRecord, config: ApoapsisConfig
+    ) -> dict[str, Any] | None:
+        """A read-only, deterministic preview of what starting execution
+        would do -- computed with the exact same ``select_agent_route()``
+        the real execution service uses, never a separate guess. Only
+        meaningful once a route can actually be decided (the specification
+        already exists), so it is always returned regardless of task
+        state; the UI only offers to start execution at ``SPEC_APPROVED``."""
+
+        frontier_available = config.models.frontier_coder is not None
+        routing_decision = None
+        if config.execution.mode == ExecutionMode.AGENT:
+            routing_decision = select_agent_route(
+                record.specification, config.execution, frontier_available=frontier_available
+            )
+        local_model = (
+            config.models.local_coder.model
+            if config.models.local_coder is not None
+            else config.models.frontier.model
+        )
+        return {
+            "execution_mode": config.execution.mode.value,
+            "predicted_route": (
+                routing_decision.route.value if routing_decision is not None else None
+            ),
+            "predicted_route_reason": (
+                routing_decision.reason if routing_decision is not None else None
+            ),
+            "completion_policy": config.execution.completion_policy.value,
+            "verification_backend": config.verification.backend.backend.value,
+            "verification_commands": [
+                item.name for item in config.verification.commands
+            ],
+            "local_model": local_model,
+            "frontier_model": (
+                config.models.frontier_coder.model
+                if config.models.frontier_coder is not None
+                else None
+            ),
+            "frontier_available": frontier_available,
+            "local_budget": config.execution.agent.model_dump(mode="json"),
+            "frontier_budget": config.execution.frontier_agent.model_dump(mode="json"),
+        }
+
+    @staticmethod
+    def _recent_agent_turns(task_directory: Path, *, limit: int = 20) -> list[dict[str, Any]]:
+        if not task_directory.is_dir():
+            return []
+        turns: list[dict[str, Any]] = []
+        for path in task_directory.glob("*agent-turn-*.json"):
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            try:
+                record = AgentTurnRecord.model_validate(payload)
+            except ValueError:
+                continue
+            turns.append(
+                {
+                    "stage": "frontier" if path.name.startswith("frontier-") else "local",
+                    **record.model_dump(mode="json", exclude={"observation_ledger"}),
+                }
+            )
+        turns.sort(key=lambda item: (item["stage"], item["turn"]))
+        return turns[-limit:]
 
     def approve_specification(
         self, task_id: str, *, expected_version: int
@@ -468,6 +595,8 @@ class ApoapsisUIService:
     def _available_actions(record: TaskRecord) -> list[str]:
         if record.state == WorkflowState.SPEC_DRAFTED:
             return ["approve_specification"]
+        if record.state == WorkflowState.SPEC_APPROVED:
+            return ["start_execution"]
         return []
 
     @staticmethod

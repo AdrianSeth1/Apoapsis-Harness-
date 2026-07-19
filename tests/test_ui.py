@@ -156,7 +156,8 @@ class UIServiceTests(unittest.TestCase):
 
         self.assertEqual(result["task"]["state"], "SPEC_APPROVED")
         self.assertEqual(result["task"]["version"], before.version + 1)
-        self.assertEqual(result["available_actions"], [])
+        # A SPEC_APPROVED task can now start durable execution (ADR 0024).
+        self.assertEqual(result["available_actions"], ["start_execution"])
         event = result["events"][-1]
         self.assertEqual(event["event_type"], "specification_approved")
         self.assertEqual(event["actor"], "user")

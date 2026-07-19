@@ -563,6 +563,44 @@ through the existing, unmodified review machinery. CLI: `apoapsis execute
 start/inspect/recover`. New ADR 0024. 15 new tests in `tests/
 test_execution_operations.py`; full suite 433/433 passing.
 
+### Done — Phase D2b: control-room UI (ADR 0024)
+
+`ApoapsisUIService.task_detail()` gained three read-only fields:
+`execution_preview` (route/models/budgets/completion-policy/sandbox,
+computed with the exact same `select_agent_route()` the real service
+uses), `active_execution_operation` (via `find_active_for_task()` -- the
+primary reconnect mechanism, needing no `sessionStorage`, unlike review/
+intake's operation panels), and `recent_agent_turns` (the last 20 turn
+records parsed directly from the `agent-turn-*.json`/`frontier-agent-
+turn-*.json` files the bounded agent already writes incrementally --
+genuine live progress while an operation is still `RUNNING`).
+`_available_actions()` now returns `["start_execution"]` at
+`SPEC_APPROVED`. `submit_execution_operation()`/`execution_operation_
+status()` mirror the review/intake service methods exactly; `POST
+/api/tasks/<id>/execute` / `GET /api/execution/operations/<operation-id>`
+sit behind the same session/origin checks as every other route. The
+control room (`#/task/<id>/control`) adds a two-step "Start coding"
+confirmation showing the full preview, background submission with
+automatic reconnect, a live tool-action feed, a usage/telemetry panel
+once a report exists, and a direct link into the existing, unmodified
+Human Review case detail view when a task stops there.
+
+Live-verified end to end in a real browser against a real local Ollama
+model: "Start coding" showed an accurate preview and ran a real bounded
+local-agent session that stopped for human review with an accurate error
+message; the new "Open the Human Review case" link correctly opened the
+real case detail view. **This live check found and fixed a second real,
+pre-existing bug** the deterministic suite could never have caught (it
+never executes `app.js`): two unrelated functions were both named
+`reviewView`, so the top-level `#/review/<task-id>` route always executed
+the wrong one and crashed -- Human Review navigation had been silently
+broken since whichever earlier change introduced the second definition.
+Fixed by renaming the task-page sub-tab placeholder to
+`taskReviewTabView(detail)`. 19 new tests in `tests/test_execution_ui.py`;
+one existing `tests/test_ui.py` assertion updated to reflect
+`start_execution` correctly appearing at `SPEC_APPROVED`. Full suite:
+452/452 passing.
+
 ### Priority C — extend the accepted application shell (ADR 0014)
 
 The application now has local/offline assets, a capability-protected loopback
@@ -570,10 +608,9 @@ API, real task/report/environment/evaluation/plan/review views, optimistic
 specification and plan approval, durable Human Review operations with
 bounded continuation, crash recovery, explicit fresh-frontier-stage
 authorization, durable new-task intake (CLI, service, and UI), and durable
-post-approval execution (CLI and service so far). It can control existing
-work safely and durably draft, approve, and (via CLI) execute a new task
-from a natural-language request. The highest-value remaining product gap
-is that execution has no UI screen yet.
+post-approval execution (CLI, service, and UI). A user can now go from a
+typed natural-language request to a completed (or Human-Review-stopped)
+task entirely from the browser.
 
 Continue in this order:
 
@@ -581,13 +618,12 @@ Continue in this order:
    at `SPEC_DRAFTED`, with both a CLI/service seam (Commit D1a) and a New
    Task UI screen (Commit D1b) reusing the existing, unmodified
    specification-approval action.
-2. Done (ADR 0024, Commit D2a): durable post-approval execution service,
-   reusing `VerticalSliceRunner`'s existing implementation exactly. Add the
-   corresponding UI screen (Commit D2b): a "Start coding" action, two-step
-   confirmation, and a live control-room view projected from persisted
-   workflow events/operation records -- browser code must not infer state,
-   run a CLI subprocess, or own a provider. A disconnect must not grant,
-   cancel, duplicate, or repeat work.
+2. Done (ADR 0024): durable post-approval execution, reusing
+   `VerticalSliceRunner`'s existing implementation exactly, with both a
+   CLI/service seam (Commit D2a) and a control-room UI screen (Commit D2b)
+   projecting live progress from persisted workflow events/operation
+   records -- browser code never infers state, runs a CLI subprocess, or
+   owns a provider.
 3. Then add an approved-plan-to-single-slice bridge under its own ADR. Compile
    one explicitly selected ready slice into an immutable execution package,
    recheck the plan/repository/dependency fingerprints, obtain explicit user

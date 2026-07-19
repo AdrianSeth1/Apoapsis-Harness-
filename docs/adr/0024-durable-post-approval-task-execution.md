@@ -242,3 +242,91 @@ worktree exactly as the crash left it, inspectable and abandonable
 through the existing review machinery. Nothing about local/frontier
 routing, budgets, escalation, verification, or reporting changed -- it is
 the same, single, well-tested implementation `apoapsis run` always used.
+
+## Commit D2b: the control-room UI
+
+`ApoapsisUIService.task_detail()` now returns three additional, read-only
+fields, computed entirely from persisted facts or deterministic,
+side-effect-free config reads -- never a model call, never invented by
+browser code:
+
+- `execution_preview`: computed with the exact same `select_agent_route()`
+  the real execution service uses (not a separate guess), showing the
+  predicted route, execution mode, completion policy, sandbox
+  (`verification.backend`), configured verification commands, local/
+  frontier models, and local/frontier turn-patch-verification budgets --
+  everything the two-step "Start coding" confirmation needs, before
+  anything runs.
+- `active_execution_operation`: `ExecutionOperationStore.find_active_for
+  _task()` for this task, if any. This is the primary reconnect mechanism
+  -- unlike the review/intake operation panels (which rely on a
+  `sessionStorage`-persisted operation id), the control room discovers an
+  in-progress execution purely from server-side state, so *any* browser
+  tab loading the task page picks up live polling automatically, with no
+  client-side storage required.
+- `recent_agent_turns`: the last 20 `AgentTurnRecord`s (local and
+  frontier, merged, `observation_ledger` excluded to keep the payload
+  small), parsed directly from the `agent-turn-*.json`/`frontier-agent-
+  turn-*.json` files `BoundedAgentSession._record()` already writes
+  incrementally, one per turn, as execution progresses -- genuine live
+  progress, not a synthetic status message, visible while an operation is
+  still `RUNNING`.
+
+`_available_actions()` now returns `["start_execution"]` for a task at
+`SPEC_APPROVED` (previously `[]`), mirroring `["approve_specification"]`
+at `SPEC_DRAFTED`. `submit_execution_operation()` / `execution_operation
+_status()` mirror `submit_review_operation()`/`submit_intake_operation()`
+exactly: validate and durably record via `prepare_execution_operation()`,
+hand off to a lazily-constructed `ExecutionWorker`, return immediately --
+the service itself never calls a model, creates a worktree, or runs a
+command. `POST /api/tasks/<id>/execute` / `GET /api/execution/operations/
+<operation-id>` sit behind the same session/origin checks as every other
+route.
+
+The control room (`#/task/<id>/control`, `src/apoapsis/ui/static/app.js`)
+adds: a "Start coding" action shown only when `available_actions` offers
+it and no operation is already active for the task; a two-step
+confirmation panel rendering `execution_preview` in full (route, models,
+budgets, completion policy, sandbox, verification commands) before
+anything runs; background submission that returns immediately and begins
+`sessionStorage`-independent polling (seeded from `active_execution_
+operation` on load, so a reload or a second tab reconnects automatically);
+a live progress feed built directly from `recent_agent_turns` (tool
+actions and rejections, most recent first); and, once a report exists,
+a usage/telemetry panel (tokens, estimated cost, latency, audit-artifact
+count) drawn from the same `FinalTaskReport` the CLI has always produced.
+`COMPLETE`, `FAILED`, and `AMBIGUOUS` are terminal, inspectable operation
+states rendered with the same pill styling used elsewhere; a task that
+reaches `HUMAN_REVIEW_REQUIRED` shows a direct link into the existing,
+unmodified Human Review case detail view.
+
+**A genuine, pre-existing bug was found and fixed during this commit's
+live browser verification, not by the deterministic suite:** `app.js` had
+two unrelated functions both named `reviewView` -- one for the top-level
+`#/review/<task-id>` route (`if (!store.review) return loadingView();
+return reviewDetailView(store.review);`), and one for the task page's
+static "Review" sub-tab (a placeholder taking a `detail` parameter).
+JavaScript's last-function-declaration-wins semantics meant every call to
+the zero-argument top-level route handler actually executed the
+sub-tab's body instead, crashing on `detail.task` (`detail` being
+`undefined`) -- so clicking into a Human Review case from *anywhere* in
+the app has been broken since whichever earlier change introduced the
+second definition, invisibly, because no existing test executes `app.js`
+in a JS engine. Live-clicking the new "Open the Human Review case" link
+surfaced it immediately. Fixed by renaming the task-sub-tab placeholder
+to `taskReviewTabView(detail)` and updating its one call site; the
+top-level `reviewView()` route handler (and the real Human Review
+experience it renders) is unaffected and was verified working, end to
+end, against a real local Ollama model afterward.
+
+New tests: `tests/test_execution_ui.py` (19 tests: service/HTTP security,
+duplicate/reconnect, ambiguous-operation visibility, `task_detail`'s new
+fields, bundled-asset sanity); one existing assertion in `tests/test_ui.py`
+was updated (`SPEC_APPROVED`'s `available_actions` is now
+`["start_execution"]`, not `[]`) to reflect the new, correct behavior.
+Full suite: 452 tests, 0 failures, 6 intentional skips. Live-verified in a
+real browser against a real local Ollama model: "Start coding" reached a
+real routing decision and ran a real bounded local-agent session that
+stopped for human review with an accurate, real error message, and the
+new "Open the Human Review case" link correctly opened the real case
+detail view (after the bug above was fixed).

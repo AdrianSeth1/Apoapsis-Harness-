@@ -66,7 +66,8 @@ content hashes and worktree pointers are not corrupted; see
   release every configured local model's memory without touching hosted providers.
 - An offline black/orange/purple local operator interface for real repository,
   task, specification, plan, Human Review, event, report, evaluation, and
-  model-configuration data, including a durable New Task intake screen,
+  model-configuration data, including a durable New Task intake screen, a
+  durable control-room execution screen with live tool-action progress,
   version-checked specification/plan approval, bounded continuation, crash
   recovery, and explicit fresh-frontier authorization.
 
@@ -412,6 +413,17 @@ whenever `apoapsis ui` starts) marks a stale in-progress operation ambiguous
 -- never automatically repeated -- and returns a task stranded mid-execution
 to human review **with its worktree left exactly as it was**, inspectable
 and abandonable through the existing `apoapsis review` commands.
+
+The local UI (`apoapsis ui`) has the same flow as the task page's **Control
+room** tab: once a task reaches `SPEC_APPROVED`, a "Start coding" action shows
+a two-step confirmation with the exact predicted route, models, budgets,
+completion policy, sandbox, and verification commands before anything runs.
+Submission returns immediately; the control room polls persisted progress
+(safe to close the tab and reconnect from any browser, since it discovers an
+in-progress operation from the task itself, not client-side storage) and
+shows real tool actions as the bounded agent produces them, then a usage/
+telemetry summary once the task finishes. A task that stops for a human
+decision links directly into the existing Human Review case view.
 
 ## Diagnostics and evaluation
 

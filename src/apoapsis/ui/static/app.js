@@ -23,6 +23,8 @@ const store = {
   reviewAdditionalTurns: 5,
   intakeOperation: null,
   intakeRequestText: "",
+  executionOperation: null,
+  executionConfirmPending: false,
   route: { name: "home" },
   busy: false,
   error: null,
@@ -111,6 +113,7 @@ async function syncRoute() {
   store.error = null;
   store.approvalPending = false;
   store.planApprovalPending = false;
+  store.executionConfirmPending = false;
   if (store.route.name !== "review") {
     store.reviewConfirm = null;
   }
@@ -119,6 +122,7 @@ async function syncRoute() {
       if (!store.task || store.task.task.task_id !== store.route.taskId) {
         store.busy = true;
         render();
+        store.executionOperation = null;
         store.task = await api(`/api/tasks/${encodeURIComponent(store.route.taskId)}`);
       }
     } else if (store.route.name === "evaluations" && store.evaluations === null) {
@@ -896,6 +900,61 @@ function resumePendingIntakeOperationPoll() {
   }
 }
 
+function executionGenerateOperationId() {
+  const raw = (window.crypto && window.crypto.randomUUID)
+    ? window.crypto.randomUUID()
+    : `${Date.now()}-${Math.random()}`;
+  return `EXOP-${raw.replaceAll("-", "").slice(0, 24).toUpperCase()}`;
+}
+
+async function submitExecutionStart(taskId, version) {
+  const operationId = executionGenerateOperationId();
+  store.busy = true;
+  store.error = null;
+  store.executionConfirmPending = false;
+  render();
+  try {
+    const record = await api(`/api/tasks/${encodeURIComponent(taskId)}/execute`, {
+      method: "POST",
+      body: JSON.stringify({ operation_id: operationId, expected_version: version }),
+    });
+    store.executionOperation = record;
+    pollExecutionOperation(taskId, operationId);
+  } catch (error) {
+    store.error = error.message;
+  } finally {
+    store.busy = false;
+    render();
+  }
+}
+
+let executionPollHandle = null;
+
+async function pollExecutionOperation(taskId, operationId) {
+  if (executionPollHandle) {
+    clearTimeout(executionPollHandle);
+    executionPollHandle = null;
+  }
+  try {
+    const record = await api(
+      `/api/execution/operations/${encodeURIComponent(operationId)}`
+    );
+    store.executionOperation = record;
+    render();
+    if (record.status === "recorded" || record.status === "running") {
+      executionPollHandle = setTimeout(() => pollExecutionOperation(taskId, operationId), 2000);
+      return;
+    }
+    if (store.route.name === "task" && store.route.taskId === taskId) {
+      store.task = await api(`/api/tasks/${encodeURIComponent(taskId)}`);
+      render();
+    }
+  } catch (error) {
+    store.error = error.message;
+    render();
+  }
+}
+
 function taskView() {
   if (!store.task) return loadingView();
   const detail = store.task;
@@ -903,7 +962,7 @@ function taskView() {
   switch (store.route.view) {
     case "control": body = controlView(detail); break;
     case "changes": body = changesView(detail); break;
-    case "review": body = reviewView(detail); break;
+    case "review": body = taskReviewTabView(detail); break;
     case "report": body = reportView(detail); break;
     default: body = specificationView(detail);
   }
@@ -938,19 +997,94 @@ function constraintCard(constraint) {
   return `<article class="constraint"><div class="constraint-head"><span class="constraint-id">${e(constraint.id)} · VERBATIM</span><span class="pill ${constraint.status === "active" ? "good" : "warn"}">${e(constraint.status)}</span></div><blockquote>“${e(constraint.verbatim_source)}”</blockquote><div class="interpretation"><strong>Deterministic interpretation</strong><br>${e(constraint.interpreted_meaning)}<br><span class="meta">VERIFY: ${e(constraint.verification_method)}</span></div></article>`;
 }
 
+const EXECUTION_OPERATION_STAGE = {
+  recorded: { label: "Recorded", pill: "warn" },
+  running: { label: "Running", pill: "purple" },
+  succeeded: { label: "Succeeded", pill: "good" },
+  failed: { label: "Failed", pill: "bad" },
+  ambiguous: { label: "Ambiguous", pill: "bad" },
+};
+
 function controlView(detail) {
   const report = detail.report;
   const events = detail.events || [];
+  const task = detail.task;
+  const canStart = (detail.available_actions || []).includes("start_execution");
+  const activeOp = detail.active_execution_operation;
+  if (
+    activeOp &&
+    (!store.executionOperation || store.executionOperation.operation_id !== activeOp.operation_id)
+  ) {
+    store.executionOperation = activeOp;
+    if (activeOp.status === "recorded" || activeOp.status === "running") {
+      pollExecutionOperation(task.task_id, activeOp.operation_id);
+    }
+  }
+  const operationActive = store.executionOperation
+    && ["recorded", "running"].includes(store.executionOperation.status);
   return `<main class="content">
-    <div class="page-heading"><div><p class="eyebrow">CONTROL ROOM / EVENT RECORD</p><h1>Every transition is evidence.</h1><p>The timeline comes from persisted workflow events. Models cannot append, remove, or advance these states.</p></div><span class="pill ${statusClass(detail.task.state)}">${e(detail.task.state)}</span></div>
-    <div class="split">
+    <div class="page-heading"><div><p class="eyebrow">CONTROL ROOM / EVENT RECORD</p><h1>Every transition is evidence.</h1><p>The timeline comes from persisted workflow events and durable operation records. Models cannot append, remove, or advance these states.</p></div><span class="pill ${statusClass(task.state)}">${e(titleCase(task.state))}</span></div>
+
+    ${canStart && !operationActive ? executionStartPanel(detail) : ""}
+    ${store.executionOperation ? executionOperationPanel(detail) : ""}
+    ${task.state === "HUMAN_REVIEW_REQUIRED" ? `<div class="notice mt-16">This task stopped for a human decision. <a href="#/review/${encodeURIComponent(task.task_id)}">Open the Human Review case →</a></div>` : ""}
+
+    <div class="split mt-18">
       <section class="card"><div class="card-header"><div><h2>Workflow timeline</h2><p>${events.length} deterministic events</p></div></div><div class="card-body"><div class="timeline">${events.map(eventCard).join("")}</div></div></section>
       <aside class="grid">
         <section class="card card-pad"><p class="section-title mt-0">Bounded execution</p><div class="grid two">${metric("Turns", report?.agent_turns ?? 0, "Recorded")}${metric("Patch attempts", report?.agent_patch_attempts ?? 0, "Recorded")}${metric("Verify runs", report?.agent_verification_runs ?? 0, "Recorded")}${metric("Calls", report?.number_of_calls ?? 0, "Provider telemetry")}</div></section>
-        <section class="card card-pad"><p class="section-title mt-0">Authority boundary</p><div class="notice">The UI observes workflow events. It does not run shell commands, apply patches, decide completion, or extend retry ceilings.</div></section>
+        ${report ? `<section class="card card-pad"><p class="section-title mt-0">Usage &amp; telemetry</p><div class="grid two">${metric("Tokens in/out", `${compactNumber(report.input_tokens)} / ${compactNumber(report.output_tokens)}`, "Provider telemetry")}${metric("Estimated cost", `$${report.estimated_cost_usd.toFixed(4)}`, "Configured pricing")}${metric("Latency", `${report.latency_seconds.toFixed(1)}s`, "Wall-clock provider time")}${metric("Audit artifacts", report.audit_artifact_locations.length, "Persisted files")}</div></section>` : ""}
+        <section class="card card-pad"><p class="section-title mt-0">Authority boundary</p><div class="notice">The UI observes workflow events and operation records. It does not run shell commands, apply patches, decide completion, choose routing, or extend retry ceilings.</div></section>
       </aside>
     </div>
+
+    ${(detail.recent_agent_turns || []).length ? `<p class="section-title">Recent tool actions · ${detail.recent_agent_turns.length}</p><section class="card card-pad"><div class="verification-list">${detail.recent_agent_turns.slice().reverse().map(agentTurnItem).join("")}</div></section>` : ""}
   </main>`;
+}
+
+function agentTurnItem(turn) {
+  return `<div class="file-item"><span class="pill ${turn.accepted ? "good" : "bad"}">${e(turn.stage)} · turn ${e(turn.turn)}</span><code>${e(turn.action)}</code><span class="meta">${e((turn.summary || "").slice(0, 140))}</span></div>`;
+}
+
+function executionStartPanel(detail) {
+  const task = detail.task;
+  const preview = detail.execution_preview || {};
+  if (!store.executionConfirmPending) {
+    return `<div class="approval-bar mt-16"><div><strong>Ready to execute</strong><span>Route, models, budgets, and verification are shown before anything runs.</span></div><div class="approval-actions"><button class="button primary" data-action="execution-start-intent">Start coding →</button></div></div>`;
+  }
+  const localBudget = preview.local_budget;
+  const frontierBudget = preview.frontier_budget;
+  return `<div class="approval-bar mt-16">
+    <div>
+      <strong>Confirm: start coding</strong>
+      <span>This calls a model and creates an isolated worktree. Nothing has run yet.</span>
+      <div class="mt-14 mono">MODE: ${e(preview.execution_mode)} · PREDICTED ROUTE: ${e(preview.predicted_route || "n/a")}</div>
+      <div class="mt-14 mono">LOCAL MODEL: ${e(preview.local_model || "unknown")} ${preview.frontier_available ? `· FRONTIER MODEL: ${e(preview.frontier_model || "unknown")}` : "· FRONTIER: not configured"}</div>
+      <div class="mt-14 mono">LOCAL BUDGET: ${e(localBudget?.max_turns ?? "—")} turns / ${e(localBudget?.max_patch_attempts ?? "—")} patch attempts / ${e(localBudget?.max_verification_runs ?? "—")} verify runs</div>
+      ${preview.frontier_available ? `<div class="mt-14 mono">FRONTIER BUDGET: ${e(frontierBudget?.max_turns ?? "—")} turns / ${e(frontierBudget?.max_patch_attempts ?? "—")} patch attempts / ${e(frontierBudget?.max_verification_runs ?? "—")} verify runs</div>` : ""}
+      <div class="mt-14 mono">COMPLETION POLICY: ${e(preview.completion_policy)} · SANDBOX: ${e(preview.verification_backend)}</div>
+      <div class="mt-14 mono">VERIFICATION COMMANDS: ${e((preview.verification_commands || []).join(", ") || "none configured")}</div>
+    </div>
+    <div class="approval-actions">
+      <button class="button ghost" data-action="execution-start-cancel">Cancel</button>
+      <button class="button primary" data-action="execution-start-confirm" data-task-id="${e(task.task_id)}" data-version="${e(task.version)}" ${store.busy ? "disabled" : ""}>Confirm &amp; start →</button>
+    </div>
+  </div>`;
+}
+
+function executionOperationPanel(detail) {
+  const op = store.executionOperation;
+  if (!op) return "";
+  const stage = EXECUTION_OPERATION_STAGE[op.status] || { label: op.status, pill: "warn" };
+  let note;
+  if (op.status === "running") note = "A background worker is executing this task now. It is safe to close this tab -- progress is persisted and will still be here on reconnect.";
+  else if (op.status === "recorded") note = "Accepted and durably recorded; waiting for the background worker to pick it up.";
+  else if (op.status === "ambiguous") note = "The process running this operation may have crashed. Its outcome is unknown and it was never automatically repeated; the task was returned to Human Review with its worktree preserved.";
+  else note = op.result_summary || op.error || "";
+  return `<section class="card card-pad mt-16">
+    <div class="constraint-head"><span class="constraint-id">OPERATION ${e(op.operation_id)}</span><span class="pill ${stage.pill}">${e(stage.label)}</span></div>
+    <p class="muted">${e(note)}</p>
+  </section>`;
 }
 
 function eventCard(event) {
@@ -987,12 +1121,12 @@ function verificationItem(command, aggregate) {
   return `<div class="verification-item"><div><strong>${e(command.name)}</strong><p class="mono">${e((command.argv || []).join(" "))}</p><p>${e(command.backend)} · ${Number(command.duration_seconds || 0).toFixed(2)}s</p></div><span class="pill ${statusClass(command.status || aggregate.status)}">${e(command.status || aggregate.status)}</span></div>`;
 }
 
-function reviewView(detail) {
+function taskReviewTabView(detail) {
   const required = detail.task.state === "HUMAN_REVIEW_REQUIRED";
   return `<main class="content narrow">
     <div class="page-heading"><div><p class="eyebrow">HUMAN REVIEW / EXPLICIT CONTROL</p><h1>${required ? "A person must decide." : "No review stop is active."}</h1><p>Resume choices must come from workflow state and deterministic policy. This first interface slice does not invent generic approve or retry buttons.</p></div><span class="pill ${required ? "warn" : "good"}">${required ? "Review required" : "No active stop"}</span></div>
     <section class="card result-hero"><div class="result-outcome"><span class="result-orb ${required ? "failed" : ""}"></span><div><h2>${required ? "Paused" : "Clear"}</h2><p>${required ? "Inspect the persisted event timeline and audit artifacts before choosing a supported resume path." : "The deterministic workflow has not requested human intervention."}</p></div></div></section>
-    <div class="grid three mt-18">${reviewOption("Resume local", "Only when the workflow exposes this transition.")}${reviewOption("Escalate frontier", "Only through deterministic routing and configured ceilings.")}${reviewOption("Roll back", "Recoverable worktree cleanup remains a CLI action today.")}</div>
+    ${required ? `<div class="notice mt-16">Open the full <a href="#/review/${encodeURIComponent(detail.task.task_id)}">Human Review case →</a> to inspect the exact stop reason and available actions.</div>` : `<div class="grid three mt-18">${reviewOption("Resume local", "Only when the workflow exposes this transition.")}${reviewOption("Escalate frontier", "Only through deterministic routing and configured ceilings.")}${reviewOption("Roll back", "Recoverable worktree cleanup remains a CLI action today.")}</div>`}
   </main>`;
 }
 
@@ -1157,6 +1291,17 @@ root.addEventListener("click", (event) => {
     store.intakeOperation = null;
     store.intakeRequestText = "";
     render();
+  }
+  if (button.dataset.action === "execution-start-intent") {
+    store.executionConfirmPending = true;
+    render();
+  }
+  if (button.dataset.action === "execution-start-cancel") {
+    store.executionConfirmPending = false;
+    render();
+  }
+  if (button.dataset.action === "execution-start-confirm") {
+    submitExecutionStart(button.dataset.taskId, Number(button.dataset.version));
   }
 });
 

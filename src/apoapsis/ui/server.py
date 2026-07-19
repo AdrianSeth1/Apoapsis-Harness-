@@ -17,6 +17,10 @@ from apoapsis.architect.errors import (
     PlanNotFoundError,
     PlanStoreError,
 )
+from apoapsis.execution.operation_errors import (
+    ExecutionOperationError,
+    ExecutionOperationNotFoundError,
+)
 from apoapsis.intake.errors import IntakeError, IntakeOperationNotFoundError
 from apoapsis.review.errors import FrontierUnavailableError, OperationNotFoundError, ReviewError
 from apoapsis.ui.application import ApoapsisUIService, UIActionError
@@ -86,6 +90,9 @@ class ApoapsisUIRequestHandler(BaseHTTPRequestHandler):
         if path.startswith("/api/tasks/") and path.endswith("/approve"):
             self._handle_task_approve(path)
             return
+        if path.startswith("/api/tasks/") and path.endswith("/execute"):
+            self._handle_task_execute(path)
+            return
         if path.startswith("/api/plans/") and path.endswith("/approve"):
             self._handle_plan_approve(path)
             return
@@ -112,6 +119,32 @@ class ApoapsisUIRequestHandler(BaseHTTPRequestHandler):
             self._send_error(HTTPStatus.BAD_REQUEST, str(exc))
         else:
             self._send_json(HTTPStatus.OK, payload)
+
+    def _handle_task_execute(self, path: str) -> None:
+        task_id = unquote(path[len("/api/tasks/") : -len("/execute")]).strip("/")
+        try:
+            body = self._read_json_body()
+            operation_id = body.get("operation_id")
+            expected_version = body.get("expected_version")
+            if not isinstance(operation_id, str) or not operation_id:
+                raise ValueError("operation_id is required")
+            if not isinstance(expected_version, int) or isinstance(
+                expected_version, bool
+            ):
+                raise ValueError("expected_version must be an integer")
+            payload = self.server.service.submit_execution_operation(
+                task_id,
+                operation_id=operation_id,
+                expected_version=expected_version,
+            )
+        except TaskNotFoundError:
+            self._send_error(HTTPStatus.NOT_FOUND, "task not found")
+        except ExecutionOperationError as exc:
+            self._send_error(HTTPStatus.CONFLICT, str(exc))
+        except (TaskStoreError, ValueError, json.JSONDecodeError) as exc:
+            self._send_error(HTTPStatus.BAD_REQUEST, str(exc))
+        else:
+            self._send_json(HTTPStatus.ACCEPTED, payload)
 
     def _handle_plan_approve(self, path: str) -> None:
         plan_id = unquote(path[len("/api/plans/") : -len("/approve")]).strip("/")
@@ -239,6 +272,11 @@ class ApoapsisUIRequestHandler(BaseHTTPRequestHandler):
                     path[len("/api/intake/operations/") :]
                 ).strip("/")
                 payload = self.server.service.intake_operation_status(operation_id)
+            elif path.startswith("/api/execution/operations/"):
+                operation_id = unquote(
+                    path[len("/api/execution/operations/") :]
+                ).strip("/")
+                payload = self.server.service.execution_operation_status(operation_id)
             else:
                 self._send_error(HTTPStatus.NOT_FOUND, "route not found")
                 return
@@ -247,6 +285,7 @@ class ApoapsisUIRequestHandler(BaseHTTPRequestHandler):
             PlanNotFoundError,
             OperationNotFoundError,
             IntakeOperationNotFoundError,
+            ExecutionOperationNotFoundError,
         ):
             self._send_error(HTTPStatus.NOT_FOUND, "not found")
         except (
@@ -254,6 +293,7 @@ class ApoapsisUIRequestHandler(BaseHTTPRequestHandler):
             PlanStoreError,
             ReviewError,
             IntakeError,
+            ExecutionOperationError,
             ValueError,
         ) as exc:
             self._send_error(HTTPStatus.BAD_REQUEST, str(exc))

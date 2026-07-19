@@ -5,7 +5,7 @@ ideas and safety boundaries without assuming you already know the codebase.
 `HANDOFF.md` remains the canonical technical record for coding agents; the ADRs
 under `docs/adr/` preserve why individual decisions were made.
 
-Current as of 2026-07-19, after ADR 0024 (Commit D2a).
+Current as of 2026-07-19, after ADR 0024 (Commits D2a and D2b).
 
 ## The short version
 
@@ -378,11 +378,13 @@ result, and how much did it cost?"
 - The black/orange/purple offline loopback UI for real project, task,
   specification, plan, review, verification, evaluation, report, and model
   facts.
-- Durable, crash-safe post-approval task execution as a CLI/service seam
-  (`apoapsis execute start/inspect/recover`), reusing the exact same
-  routing/context/agent/patch/verification/reporting implementation
-  `apoapsis run` always used -- a UI control-room screen is the next step.
-- 433 deterministic tests in the current repository snapshot, with six
+- Durable, crash-safe post-approval task execution, both as a CLI/service
+  seam (`apoapsis execute start/inspect/recover`) and a control-room UI
+  screen with live tool-action progress, reusing the exact same routing/
+  context/agent/patch/verification/reporting implementation `apoapsis run`
+  always used. A user can now go from a typed request to a completed (or
+  Human-Review-stopped) task entirely from the browser.
+- 452 deterministic tests in the current repository snapshot, with six
   intentional environment-gated skips.
 
 ### Proven with real local inference
@@ -438,18 +440,26 @@ returns a stranded task to human review, worktree intact, for inspection
 through the existing review machinery. Available today only as a
 CLI/service seam (`apoapsis execute start/inspect/recover`).
 
-### Next milestone: the control-room UI
+### Done: the control-room UI (ADR 0024, Commit D2b)
 
-The one remaining piece of "type an idea into the app and watch it run" is
-the browser side: a "Start coding" action after specification approval,
-two-step confirmation showing the route/models/budgets/verification
-commands, background submission, reconnect-safe polling, and a live
-control-room view (state, stage, turns/budgets, tool actions, diff summary,
-verification/acceptance status, escalation/Human-Review status) projected
-entirely from persisted events and operation records -- never invented by
-browser code. This closes the biggest remaining product gap: typing an idea
-into the designed app and watching a real, auditable task run to completion
-or a Human Review stop, without ever leaving the browser.
+"Type an idea into the app and watch it run" is now complete end to end. A
+"Start coding" action appears once a task is approved, with a two-step
+confirmation showing the route/models/budgets/completion-policy/sandbox/
+verification commands before anything runs -- computed with the exact same
+deterministic routing function the real execution service uses. Submission
+returns immediately; the control room reconnects automatically (it reads
+whether an operation is active for the task from the server, not client-side
+storage) and shows real tool actions and rejections as the bounded agent
+produces them, parsed directly from the same turn files already written to
+disk. A finished task shows usage/telemetry (tokens, cost, latency, audit
+locations); a task that stops for a human decision links straight into the
+existing, unmodified Human Review case view.
+
+Live-verifying this in a real browser against a real local Ollama model
+found a second genuine, pre-existing bug the deterministic suite could never
+catch (it never executes `app.js`): two unrelated functions were both named
+`reviewView`, so the Human Review case route always ran the wrong one and
+crashed. Fixed as part of this milestone.
 
 ### Following milestone: approved-plan to single-slice execution
 
