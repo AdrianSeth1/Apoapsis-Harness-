@@ -15,11 +15,11 @@ must be corrected before the change is considered complete.
 | Item | Current value |
 | --- | --- |
 | Last verified | 2026-07-19 |
-| Working-tree version | `1.0` plus ADR 0013 Windows local-model lifecycle, ADR 0014 first local operator-interface slice, ADR 0015 verification layers and acceptance coverage, ADR 0016's corrective follow-up, ADR 0017's worktree-fingerprint/explicit-acceptance-designation hardening, the opt-in `local-strict` evaluation lane with its first live result, ADR 0018's acceptance-failure-evidence/bounded-specification-correction fixes, and ADR 0019's Architect Mode planning foundation |
+| Working-tree version | `1.0` plus ADR 0013 Windows local-model lifecycle, ADR 0014 first local operator-interface slice, ADR 0015 verification layers and acceptance coverage, ADR 0016's corrective follow-up, ADR 0017's worktree-fingerprint/explicit-acceptance-designation hardening, the opt-in `local-strict` evaluation lane with its first live result, ADR 0018's acceptance-failure-evidence/bounded-specification-correction fixes, and ADR 0019's Architect Mode planning foundation plus its Plans UI surface |
 | Checked-out branch | `main` |
-| Repository state | The 1.0/lifecycle baseline, the ADR 0014 UI slice, the ADR 0015 acceptance-coverage milestone, the ADR 0016 correction, the ADR 0017 hardening, the `local-strict` lane, the ADR 0018 fixes, and ADR 0019's Architect Mode foundation are all committed on `main`; live evaluation evidence is committed separately. `DESIGN.md` is preserved as a separate, committed user-supplied design reference. Run `git status` and `git log -1 --oneline` for the exact current state. |
+| Repository state | The 1.0/lifecycle baseline, the ADR 0014 UI slice, the ADR 0015 acceptance-coverage milestone, the ADR 0016 correction, the ADR 0017 hardening, the `local-strict` lane, the ADR 0018 fixes, and ADR 0019's Architect Mode foundation (CLI + Plans UI) are all committed on `main`; live evaluation evidence is committed separately. `DESIGN.md` is preserved as a separate, committed user-supplied design reference. Run `git status` and `git log -1 --oneline` for the exact current state. |
 | Preserved substrate tag | `substrate-v0.1` at `4c2e735` |
-| Full deterministic suite | 294 tests, 0 failures, 0 errors, 6 intentional skips (2 live-network, 1 live-Docker, 3 machine currently lacks the Windows privilege to create symlinks) |
+| Full deterministic suite | 305 tests, 0 failures, 0 errors, 6 intentional skips (2 live-network, 1 live-Docker, 3 machine currently lacks the Windows privilege to create symlinks) |
 | Syntax check | `python -m compileall -q src tests` passed |
 | Diff check | `git diff --check` passed; Git reported only expected LF-to-CRLF working-copy warnings |
 | Live local coding result | Qwen3-Coder-Next Q4 completed the controlled download-service task in 10 turns and 3 verification runs |
@@ -164,23 +164,28 @@ architecture.
 ### Local operator interface
 
 - `src/apoapsis/ui/application.py` is the deterministic application boundary.
-  It exposes repository/configuration/task/event/report/evaluation/lifecycle
-  facts and one typed mutation: optimistic specification approval through the
-  existing workflow store. It does not call providers, shell commands, patch
-  application, verification, retry, completion, or arbitrary filesystem APIs.
+  It exposes repository/configuration/task/event/report/evaluation/lifecycle/
+  plan facts and two typed mutations: optimistic specification approval and
+  optimistic plan approval, both through their respective existing stores. It
+  does not call providers, shell commands, patch application, verification,
+  retry, completion, or arbitrary filesystem APIs.
 - `src/apoapsis/ui/server.py` serves packaged offline assets on loopback for
   `apoapsis ui`. Each run generates an ephemeral session capability; API calls
   require it, foreign origins are rejected, CORS is disabled, and responses use
-  CSP, no-referrer, no-frame, and no-sniff headers. See ADR 0014.
+  CSP, no-referrer, no-frame, and no-sniff headers. See ADR 0014. `GET /api/
+  plans`, `GET /api/plans/<id>`, and `POST /api/plans/<id>/approve` (ADR 0019
+  Commit B2) sit behind the exact same checks as every other route.
 - `src/apoapsis/ui/static/` implements the accepted black/orange/purple product
   language for Home, specification, control, changes/verification, review,
-  report, evaluations, and models/environment states. All displayed task and
-  model values come from Apoapsis services; the Claude prototype runtime and
-  illustrative model names are not shipped.
-- Read-only task/report views and deterministic specification approval are live.
-  Natural-language intake, task execution orchestration, review/resume commands,
-  and native desktop packaging remain unavailable until their resumable service
-  and authority contracts are implemented.
+  report, evaluations, models/environment, and Plans (index + overview/slices
+  detail) states. All displayed task, model, and plan values come from
+  Apoapsis services; the Claude prototype runtime and illustrative model names
+  are not shipped.
+- Read-only task/report/plan views and deterministic specification/plan
+  approval are live. Natural-language intake, task execution orchestration,
+  review/resume commands, slice execution, and native desktop packaging
+  remain unavailable until their resumable service and authority contracts
+  are implemented.
 
 ### Owner model lifecycle
 
@@ -262,6 +267,11 @@ architecture.
 - CLI: `apoapsis plan export/import/validate/inspect/approve`
   (`src/apoapsis/cli/app.py`). Manual, subscription-friendly workflow: no
   API credentials, no hosted-provider adapter added.
+- A read-only Plans surface on the local UI (Commit B2, ADR 0014 boundary):
+  Plans index, plan detail (overview: idea, architecture summary, decisions,
+  validation findings, package/provenance; slices: dependency-ordered slice
+  cards), and a deterministic approve action. See "Local operator interface"
+  above.
 - Does not execute any slice, and does not change `workflow/`, `agent/`, or
   `vertical_slice.py` in any way.
 
@@ -1052,7 +1062,7 @@ direct-frontier comparison claims remain unmeasured.
 | Context measurement, compaction metrics, and patch attribution | `tests/test_context_measurement.py` |
 | Context measurement wired through the vertical slice/report/audit | `tests/test_context_measurement_integration.py` |
 | Windows owner lifecycle / loopback model warmup and unload | `tests/test_operator_lifecycle.py` |
-| Local UI service, capability/origin security, static shell, and CLI-equivalent specification approval | `tests/test_ui.py` |
+| Local UI service, capability/origin security, static shell, CLI-equivalent specification approval, and the Plans index/detail/approval surface | `tests/test_ui.py` |
 | Verification layers, acceptance-command catalog, coverage tri-state, completion policy | `tests/test_acceptance_coverage.py` |
 | Shared worktree fingerprint (tracked/untracked/binary/symlink) and `inspect_diff` untracked exposure | `tests/test_worktree_fingerprint.py` |
 | Bounded specification-extraction correction (one attempt, telemetry, retry ceiling) | `tests/test_specification_correction.py` |
@@ -1171,13 +1181,15 @@ tests supplement them; they must not replace deterministic coverage.
 14. **Architect Mode (ADR 0019) produces plans but never executes them.**
     `apoapsis plan export/import/validate/inspect/approve` is fully
     implemented and covered by `tests/test_architect_validation.py`,
-    `tests/test_architect_store.py`, and `tests/test_architect_cli.py`, and
-    Commit B2 added a read-only Plans surface to the local UI. There is no
-    code path anywhere that turns an approved `ImplementationSlice` into a
-    running task; that is deliberately future work with its own design and
-    review, not an oversight. No subscription-backed provider adapter was
-    added for `plan export`/`import` — they remain manual, copy-paste
-    workflows, consistent with the still-deferred ADR 0008 non-goal.
+    `tests/test_architect_store.py`, and `tests/test_architect_cli.py`.
+    Commit B2 added a read-only Plans index/detail surface and a
+    deterministic approve action to the local UI, covered by the new plan
+    tests in `tests/test_ui.py`. There is no code path anywhere -- CLI or
+    UI -- that turns an approved `ImplementationSlice` into a running task;
+    that is deliberately future work with its own design and review, not an
+    oversight. No subscription-backed provider adapter was added for
+    `plan export`/`import` — they remain manual, copy-paste workflows,
+    consistent with the still-deferred ADR 0008 non-goal.
 
 `NEXT_STEPS.md` is the owner and future-agent execution roadmap. The next high-
 value proofs are (1) identical local download-service evaluations

@@ -14,10 +14,13 @@ const store = {
   task: null,
   doctor: null,
   evaluations: null,
+  plans: null,
+  plan: null,
   route: { name: "home" },
   busy: false,
   error: null,
   approvalPending: false,
+  planApprovalPending: false,
 };
 
 const e = (value) => String(value ?? "")
@@ -64,6 +67,13 @@ function acceptanceStatusClass(status) {
   return "warn";
 }
 
+function planStatusClass(status) {
+  const normalized = String(status || "").toLowerCase();
+  if (normalized === "approved" || normalized === "executed") return "good";
+  if (normalized === "validated") return "purple";
+  return "warn";
+}
+
 async function api(path, options = {}) {
   const headers = new Headers(options.headers || {});
   headers.set("X-Apoapsis-Session", sessionToken || "");
@@ -79,7 +89,10 @@ function parseRoute() {
   if (parts[0] === "task" && parts[1]) {
     return { name: "task", taskId: decodeURIComponent(parts[1]), view: parts[2] || "spec" };
   }
-  const allowed = new Set(["home", "new", "evaluations", "models"]);
+  if (parts[0] === "plan" && parts[1]) {
+    return { name: "plan", planId: decodeURIComponent(parts[1]), view: parts[2] || "overview" };
+  }
+  const allowed = new Set(["home", "new", "evaluations", "models", "plans"]);
   return { name: allowed.has(parts[0]) ? parts[0] : "home" };
 }
 
@@ -87,6 +100,7 @@ async function syncRoute() {
   store.route = parseRoute();
   store.error = null;
   store.approvalPending = false;
+  store.planApprovalPending = false;
   try {
     if (store.route.name === "task") {
       if (!store.task || store.task.task.task_id !== store.route.taskId) {
@@ -98,6 +112,16 @@ async function syncRoute() {
       store.busy = true;
       render();
       store.evaluations = await api("/api/evaluations");
+    } else if (store.route.name === "plans" && store.plans === null) {
+      store.busy = true;
+      render();
+      store.plans = await api("/api/plans");
+    } else if (store.route.name === "plan") {
+      if (!store.plan || store.plan.plan.plan_id !== store.route.planId) {
+        store.busy = true;
+        render();
+        store.plan = await api(`/api/plans/${encodeURIComponent(store.route.planId)}`);
+      }
     }
   } catch (error) {
     store.error = error.message;
@@ -120,6 +144,13 @@ function sidebar() {
       ${taskNavLink("review", "Human review")}
       ${taskNavLink("report", "Report & audit")}
     </div>` : "";
+  const plan = route.name === "plan" ? store.plan?.plan : null;
+  const planLinks = plan ? `
+    <p class="nav-label">Current plan · ${e(plan.plan_id)}</p>
+    <div class="nav-list current-task-nav">
+      ${planNavLink("overview", "Overview")}
+      ${planNavLink("slices", "Implementation slices")}
+    </div>` : "";
   return `
     <aside class="sidebar">
       <a class="brand" href="#/home" aria-label="Apoapsis home">
@@ -130,10 +161,12 @@ function sidebar() {
       <nav class="nav-list" aria-label="Workspace">
         <a class="nav-link${active("home")}" href="#/home"><span class="nav-dot"></span><span>Projects</span></a>
         <a class="nav-link${active("new")}" href="#/new"><span class="nav-dot"></span><span>New task</span></a>
+        <a class="nav-link${active("plans")}" href="#/plans"><span class="nav-dot"></span><span>Plans</span></a>
         <a class="nav-link${active("evaluations")}" href="#/evaluations"><span class="nav-dot"></span><span>Evaluations</span></a>
         <a class="nav-link${active("models")}" href="#/models"><span class="nav-dot"></span><span>Models & environment</span></a>
       </nav>
       ${taskLinks}
+      ${planLinks}
       <div class="authority-card">
         <div class="mini-rule"><span class="nav-dot"></span> DETERMINISTIC AUTHORITY</div>
         <p><strong>Models propose.</strong> Apoapsis alone controls files, commands, verification, retries, transitions, and completion.</p>
@@ -145,6 +178,12 @@ function taskNavLink(view, label, extra = "") {
   const route = store.route;
   const current = route.name === "task" && route.view === view ? " active" : "";
   return `<a class="nav-link${current}" href="#/task/${encodeURIComponent(route.taskId)}/${view}"><span class="nav-dot"></span><span class="task-objective">${e(label)}</span>${extra}</a>`;
+}
+
+function planNavLink(view, label, extra = "") {
+  const route = store.route;
+  const current = route.name === "plan" && route.view === view ? " active" : "";
+  return `<a class="nav-link${current}" href="#/plan/${encodeURIComponent(route.planId)}/${view}"><span class="nav-dot"></span><span class="task-objective">${e(label)}</span>${extra}</a>`;
 }
 
 function topbar() {
@@ -302,6 +341,147 @@ function evalRow(run) {
   return `<tr><td><strong>${e(report.run_id || "Unknown run")}</strong><div class="meta">${e(formatDate(report.generated_at))}</div></td><td>${e(report.context_profile || "default")}</td><td>${lanes.length}</td><td>${e(evidence.map(titleCase).join(", ") || "Unmeasured")}</td><td><code>${e(run.artifact)}</code></td></tr>`;
 }
 
+function plansView() {
+  const plans = store.plans?.plans || [];
+  return `<main class="content">
+    <div class="page-heading"><div><p class="eyebrow">ARCHITECT MODE / PLANS</p><h1>Ideas, decomposed<br>into small, verifiable slices.</h1><p>Plans are proposed by a strong model you run manually (<span class="mono orange">apoapsis plan export</span>), then reviewed and approved here. Approving a plan never executes anything.</p></div><span class="pill ${plans.length ? "good" : "warn"}">${plans.length ? `${plans.length} recorded` : "No plans yet"}</span></div>
+    <section class="card">
+      ${plans.length ? `<div class="task-list">${plans.map(planRow).join("")}</div>` : emptyState("No plans yet", 'Run apoapsis plan export "<idea>" to create a reproducible planning package, then apoapsis plan import <response.json> once a model responds.')}
+    </section>
+  </main>`;
+}
+
+function planRow(plan) {
+  return `<a class="task-row" href="#/plan/${encodeURIComponent(plan.plan_id)}/overview">
+    <div class="task-main"><strong>${e(plan.architecture_summary)}</strong><span>${e(plan.plan_id)} · v${e(plan.version)} · ${e(plan.slice_count)} slice(s)</span></div>
+    <span class="pill ${planStatusClass(plan.status)}">${e(titleCase(plan.status))}</span>
+    <span class="meta">${e(formatDate(plan.updated_at))}</span><span class="arrow">→</span>
+  </a>`;
+}
+
+function planView() {
+  if (!store.plan) return loadingView();
+  const detail = store.plan;
+  let body;
+  switch (store.route.view) {
+    case "slices": body = planSlicesView(detail); break;
+    default: body = planOverviewView(detail);
+  }
+  return `${planBanner(detail)}${body}`;
+}
+
+function planBanner(detail) {
+  const record = detail.plan;
+  const views = ["overview", "slices"];
+  const labels = { overview: "Overview", slices: "Implementation slices" };
+  return `
+    <section class="task-banner">
+      <div class="task-banner-main">
+        <div class="task-title">
+          <p>${e(record.plan_id)} · VERSION ${e(record.version)}</p>
+          <h1>${e(record.plan.architecture_summary)}</h1>
+          <p>${e(titleCase(record.status))} · UPDATED ${e(formatDate(record.updated_at))}</p>
+        </div>
+        <nav class="phase-nav" aria-label="Plan views">
+          ${views.map((view) => `<a class="${store.route.view === view ? "current" : ""}" href="#/plan/${encodeURIComponent(record.plan_id)}/${view}">${e(labels[view])}</a>`).join("")}
+        </nav>
+      </div>
+    </section>`;
+}
+
+function planOverviewView(detail) {
+  const record = detail.plan;
+  const plan = record.plan;
+  const decisions = plan.decisions || [];
+  const validation = record.validation;
+  const findings = validation?.findings || [];
+  const canApprove = detail.available_actions?.includes("approve_plan");
+  return `<main class="content narrow">
+    <div class="page-heading"><div><p class="eyebrow">ARCHITECTURE / DECISIONS</p><h1>Design record,<br>not an execution order.</h1><p>Architect Mode designs; it never runs a shell command, edits a file, or executes a slice. Approving this plan only records a reviewed status -- nothing executes as a result.</p></div><span class="pill ${planStatusClass(record.status)}">${e(titleCase(record.status))}</span></div>
+    <article class="card card-pad"><p class="section-title mt-0">Idea</p><blockquote class="objective">${e(record.idea_text)}</blockquote></article>
+    <p class="section-title">Architecture summary</p>
+    <article class="card card-pad"><p class="objective">${e(plan.architecture_summary)}</p></article>
+    <p class="section-title">Decisions · ${decisions.length}</p>
+    ${decisions.length ? decisions.map(decisionCard).join("") : `<div class="notice">No decisions were recorded for this plan.</div>`}
+    <p class="section-title">Validation findings · ${findings.length}</p>
+    <section class="card card-pad">
+      ${validation ? (findings.length ? `<div class="verification-list">${findings.map(findingItem).join("")}</div>` : `<p class="muted">No findings -- the plan validated cleanly against the current configuration.</p>`) : `<p class="muted">This plan has not been validated yet. Run <span class="mono orange">apoapsis plan validate ${e(record.plan_id)}</span>.</p>`}
+    </section>
+    <p class="section-title">Package & provenance</p>
+    <section class="card card-pad">
+      <div class="file-item"><span>Originating package</span><code>${e(record.package_id)}</code></div>
+      <div class="file-item"><span>Plan version</span><strong>${e(record.version)}</strong></div>
+      <div class="file-item"><span>Created</span><strong>${e(formatDate(record.created_at))}</strong></div>
+      <div class="file-item"><span>Updated</span><strong>${e(formatDate(record.updated_at))}</strong></div>
+    </section>
+    <p class="section-title">Audit artifacts · ${(detail.artifacts || []).length}</p>
+    <section class="card card-pad">${(detail.artifacts || []).length ? `<div class="artifact-list">${detail.artifacts.map((artifact) => `<div class="artifact-item"><code>${e(artifact)}</code></div>`).join("")}</div>` : `<p class="muted">No plan artifacts were discovered.</p>`}</section>
+    ${canApprove ? `<div class="approval-bar"><div><strong>${store.planApprovalPending ? "Confirm this version" : "Validated — ready for approval"}</strong><span>${store.planApprovalPending ? `Approve version ${e(record.version)} of ${e(record.plan_id)}. This records a reviewed status only; it does not execute any slice.` : "A human must explicitly approve before this plan is considered reviewed. Approval never executes a slice."}</span></div><div class="approval-actions">${store.planApprovalPending ? `<button class="button ghost" data-action="plan-approve-cancel">Cancel</button><button class="button primary" data-action="plan-approve-confirm" data-plan-id="${e(record.plan_id)}" data-version="${e(record.version)}" ${store.busy ? "disabled" : ""}>Confirm approval →</button>` : `<button class="button primary" data-action="plan-approve-intent">Approve plan →</button>`}</div></div>` : ""}
+  </main>`;
+}
+
+function decisionCard(decision) {
+  const alternatives = decision.alternatives_considered || [];
+  return `<article class="constraint"><div class="constraint-head"><span class="constraint-id">${e(decision.decision_id)}</span></div><blockquote>${e(decision.title)}</blockquote><div class="interpretation"><strong>Rationale</strong><br>${e(decision.rationale)}${alternatives.length ? `<br><span class="meta">ALTERNATIVES CONSIDERED: ${alternatives.map((item) => e(item)).join("; ")}</span>` : ""}</div></article>`;
+}
+
+function findingItem(finding) {
+  return `<div class="verification-item"><div><strong>${e(finding.code)}</strong><p>${e(finding.message)}</p>${finding.slice_id ? `<p class="mono">${e(finding.slice_id)}</p>` : ""}</div><span class="pill ${finding.severity === "error" ? "bad" : "warn"}">${e(titleCase(finding.severity))}</span></div>`;
+}
+
+function planSlicesView(detail) {
+  const record = detail.plan;
+  const plan = record.plan;
+  const order = detail.dependency_order && detail.dependency_order.length
+    ? detail.dependency_order
+    : plan.slices.map((item) => item.slice_id);
+  const byId = new Map(plan.slices.map((item) => [item.slice_id, item]));
+  const orderedSlices = order.map((id) => byId.get(id)).filter(Boolean);
+  return `<main class="content">
+    <div class="page-heading"><div><p class="eyebrow">IMPLEMENTATION SLICES / DEPENDENCY ORDER</p><h1>Small, independently<br>verifiable work packets.</h1><p>Rendered in dependency order. Suggested paths and symbols are advisory hints for the local coding model, not a grant to write outside the repository.</p></div><span class="pill purple">${orderedSlices.length} slice(s)</span></div>
+    ${orderedSlices.length ? orderedSlices.map(sliceCard).join("") : emptyState("No slices in this plan", "The imported plan did not include any implementation slices.")}
+  </main>`;
+}
+
+function sliceRiskClass(risk) {
+  const normalized = String(risk || "unclassified").toLowerCase();
+  if (normalized === "low") return "good";
+  if (normalized === "medium") return "warn";
+  if (normalized === "high" || normalized === "critical") return "bad";
+  return "purple";
+}
+
+function sliceCard(slice) {
+  const references = [...(slice.inherited_constraint_ids || []), ...(slice.acceptance_criterion_ids || [])];
+  return `<article class="card card-pad mt-16">
+    <div class="constraint-head"><span class="constraint-id">${e(slice.slice_id)}</span><span class="pill ${sliceRiskClass(slice.risk_level)}">${e(titleCase(slice.risk_level || "unclassified"))} risk</span></div>
+    <h3>${e(slice.title)}</h3>
+    <p class="objective">${e(slice.objective)}</p>
+    <div class="grid two mt-14">
+      <div>
+        <p class="section-title mt-0">Exclusions</p>
+        ${(slice.exclusions || []).length ? `<ul>${slice.exclusions.map((item) => `<li>${e(item)}</li>`).join("")}</ul>` : `<p class="muted">None recorded.</p>`}
+        <p class="section-title">Dependencies</p>
+        <p class="mono">${(slice.dependencies || []).map((item) => e(item)).join(", ") || "None -- no prerequisite slices."}</p>
+        <p class="section-title">Inherited constraints / criteria</p>
+        <p class="mono">${references.map((item) => e(item)).join(", ") || "None recorded."}</p>
+      </div>
+      <div>
+        <p class="section-title mt-0">Verification commands</p>
+        <p class="mono">${(slice.verification_commands || []).map((item) => e(item)).join(", ") || "None named -- validation will flag this."}</p>
+        <p class="section-title">Suggested paths (advisory)</p>
+        <p class="mono">${(slice.suggested_paths || []).map((item) => e(item)).join(", ") || "None suggested."}</p>
+        <p class="section-title">Stop / escalation conditions</p>
+        ${(slice.stop_conditions || []).length ? `<ul>${slice.stop_conditions.map((item) => `<li>${e(item)}</li>`).join("")}</ul>` : `<p class="muted">None recorded.</p>`}
+      </div>
+    </div>
+    <p class="section-title">Local-model-fit rationale</p>
+    <blockquote>${e(slice.local_model_fit_rationale)}</blockquote>
+    <p class="section-title">Work brief</p>
+    <blockquote>${e(slice.work_brief)}</blockquote>
+  </article>`;
+}
+
 function taskView() {
   if (!store.task) return loadingView();
   const detail = store.task;
@@ -451,6 +631,8 @@ function render() {
   }
   let view;
   if (store.route.name === "task") view = taskView();
+  else if (store.route.name === "plan") view = planView();
+  else if (store.route.name === "plans") view = plansView();
   else if (store.route.name === "new") view = newTaskView();
   else if (store.route.name === "evaluations") view = evaluationsView();
   else if (store.route.name === "models") view = modelsView();
@@ -494,6 +676,28 @@ async function approve(button) {
   }
 }
 
+async function approvePlan(button) {
+  const planId = button.dataset.planId;
+  const version = Number(button.dataset.version);
+  store.busy = true;
+  store.error = null;
+  render();
+  try {
+    await api(`/api/plans/${encodeURIComponent(planId)}/approve`, {
+      method: "POST",
+      body: JSON.stringify({ expected_version: version }),
+    });
+    store.plan = await api(`/api/plans/${encodeURIComponent(planId)}`);
+    store.plans = null;
+    store.planApprovalPending = false;
+  } catch (error) {
+    store.error = error.message;
+  } finally {
+    store.busy = false;
+    render();
+  }
+}
+
 root.addEventListener("click", (event) => {
   const button = event.target.closest("[data-action]");
   if (!button) return;
@@ -507,6 +711,15 @@ root.addEventListener("click", (event) => {
     render();
   }
   if (button.dataset.action === "approve-confirm") approve(button);
+  if (button.dataset.action === "plan-approve-intent") {
+    store.planApprovalPending = true;
+    render();
+  }
+  if (button.dataset.action === "plan-approve-cancel") {
+    store.planApprovalPending = false;
+    render();
+  }
+  if (button.dataset.action === "plan-approve-confirm") approvePlan(button);
 });
 
 window.addEventListener("hashchange", syncRoute);

@@ -157,15 +157,20 @@ The first slice provides:
   workflow event as `apoapsis approve`;
 - workflow timelines, change/verification summaries, final usage reports, and
   audit-artifact locations;
-- persisted evaluation comparisons and actual configured model roles; and
+- persisted evaluation comparisons and actual configured model roles;
+- a **Plans** index and detail view (ADR 0019): architecture summary,
+  decisions, dependency-ordered implementation slices, validation findings,
+  package/provenance, and a deterministic, optimistic-version-checked
+  approve action that states explicitly it does not execute any slice; and
 - an explicit **Run doctor** action. Merely opening the UI does not probe or
   load a model.
 
-Natural-language task extraction, workflow execution, and human-review resume
-actions are visibly unavailable in this first slice. Continue using the CLI for
-those operations until their resumable application services and deterministic
-transition contracts are implemented. The supplied Claude Design export is a
-visual reference only; its external prototype runtime is not shipped.
+Natural-language task extraction, workflow execution, human-review resume
+actions, and slice execution are visibly unavailable in this first slice.
+Continue using the CLI for those operations until their resumable
+application services and deterministic transition contracts are
+implemented. The supplied Claude Design export is a visual reference only;
+its external prototype runtime is not shipped.
 
 ## Current CLI workflow
 

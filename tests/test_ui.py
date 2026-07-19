@@ -9,6 +9,8 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+from apoapsis.architect.schema import PlanValidationResult
+from apoapsis.architect.store import SQLitePlanStore
 from apoapsis.cli.app import _init, build_parser
 from apoapsis.specification.schema import (
     AcceptanceCriterion,
@@ -22,6 +24,7 @@ from apoapsis.ui.server import create_ui_server
 from apoapsis.workflow.engine import SQLiteTaskStore
 from apoapsis.workflow.events import WorkflowActor
 from apoapsis.workflow.states import WorkflowState
+from tests.architect_helpers import make_plan
 
 
 class UIServiceTests(unittest.TestCase):
@@ -99,6 +102,20 @@ class UIServiceTests(unittest.TestCase):
             event_type="deterministic_specification_drafted",
         )
 
+        self.plan_store = SQLitePlanStore(self.root / ".apoapsis" / "architect-plans.db")
+        self.plan_id = "PLAN-UI-001"
+        self.plan = make_plan()
+        self.plan_store.create_plan(
+            self.plan_id, "PKG-UI-001", self.plan.idea_text, self.plan
+        )
+        self.plan_store.record_validation(
+            self.plan_id,
+            PlanValidationResult(
+                plan_id=self.plan_id, plan_version=1, valid=True, findings=[]
+            ),
+            expected_version=1,
+        )
+
     def test_overview_and_detail_expose_persisted_facts(self) -> None:
         service = ApoapsisUIService(self.root)
 
@@ -145,6 +162,70 @@ class UIServiceTests(unittest.TestCase):
         self.assertEqual(event["actor"], "user")
         self.assertEqual(event["from_state"], "SPEC_DRAFTED")
         self.assertEqual(event["to_state"], "SPEC_APPROVED")
+
+    def test_plans_index_lists_the_persisted_plan(self) -> None:
+        service = ApoapsisUIService(self.root)
+
+        index = service.plans()
+
+        self.assertEqual(len(index["plans"]), 1)
+        summary = index["plans"][0]
+        self.assertEqual(summary["plan_id"], self.plan_id)
+        self.assertEqual(summary["status"], "validated")
+        self.assertEqual(summary["slice_count"], len(self.plan.slices))
+
+    def test_plan_detail_exposes_dependency_order_and_validation(self) -> None:
+        service = ApoapsisUIService(self.root)
+
+        detail = service.plan_detail(self.plan_id)
+
+        self.assertEqual(detail["plan"]["status"], "validated")
+        self.assertEqual(detail["plan"]["validation"]["valid"], True)
+        self.assertEqual(detail["dependency_order"], ["SLICE-1"])
+        self.assertEqual(detail["available_actions"], ["approve_plan"])
+
+    def test_plan_approval_uses_the_same_deterministic_transition_record(self) -> None:
+        service = ApoapsisUIService(self.root)
+        before = self.plan_store.get_plan(self.plan_id)
+
+        result = service.approve_plan(self.plan_id, expected_version=before.version)
+
+        self.assertEqual(result["plan"]["status"], "approved")
+        self.assertEqual(result["plan"]["version"], before.version + 1)
+        self.assertEqual(result["available_actions"], [])
+        event = result["events"][-1]
+        self.assertEqual(event["event_type"], "plan_approved")
+        self.assertEqual(event["actor"], "user")
+        self.assertEqual(event["to_status"], "approved")
+
+    def test_approving_a_plan_never_executes_a_slice(self) -> None:
+        """Approval only ever records a status transition -- there is no
+        code path from ``approve_plan`` that touches the filesystem, Git,
+        or a verification runner."""
+
+        service = ApoapsisUIService(self.root)
+        before = self.plan_store.get_plan(self.plan_id)
+        snapshot_before = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=self.root,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+
+        service.approve_plan(self.plan_id, expected_version=before.version)
+
+        snapshot_after = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=self.root,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+        # Only the plan's own SQLite/audit bookkeeping under .apoapsis may
+        # have changed; that directory is gitignored, so the tracked-file
+        # git status is unaffected by approval.
+        self.assertEqual(snapshot_before, snapshot_after)
 
 
 class UIServerTests(UIServiceTests):
@@ -236,6 +317,50 @@ class UIServerTests(UIServiceTests):
         with self.assertRaises(urllib.error.HTTPError) as conflict:
             self.request(
                 f"/api/tasks/{self.task_id}/approve",
+                method="POST",
+                payload={"expected_version": version},
+                token=self.token,
+            )
+        self.assertEqual(conflict.exception.code, 409)
+        conflict.exception.close()
+
+    def test_plans_index_and_detail_require_session(self) -> None:
+        with self.assertRaises(urllib.error.HTTPError) as unauthorized:
+            self.request("/api/plans")
+        self.assertEqual(unauthorized.exception.code, 401)
+        unauthorized.exception.close()
+
+        with self.request("/api/plans", token=self.token) as response:
+            payload = json.load(response)
+        self.assertEqual(payload["plans"][0]["plan_id"], self.plan_id)
+
+        with self.request(
+            f"/api/plans/{self.plan_id}", token=self.token
+        ) as response:
+            detail = json.load(response)
+        self.assertEqual(detail["plan"]["plan_id"], self.plan_id)
+        self.assertEqual(detail["dependency_order"], ["SLICE-1"])
+
+    def test_unknown_plan_returns_404(self) -> None:
+        with self.assertRaises(urllib.error.HTTPError) as not_found:
+            self.request("/api/plans/PLAN-DOES-NOT-EXIST", token=self.token)
+        self.assertEqual(not_found.exception.code, 404)
+        not_found.exception.close()
+
+    def test_http_plan_approval_requires_optimistic_plan_version(self) -> None:
+        version = self.plan_store.get_plan(self.plan_id).version
+        with self.request(
+            f"/api/plans/{self.plan_id}/approve",
+            method="POST",
+            payload={"expected_version": version},
+            token=self.token,
+        ) as response:
+            payload = json.load(response)
+        self.assertEqual(payload["plan"]["status"], "approved")
+
+        with self.assertRaises(urllib.error.HTTPError) as conflict:
+            self.request(
+                f"/api/plans/{self.plan_id}/approve",
                 method="POST",
                 payload={"expected_version": version},
                 token=self.token,

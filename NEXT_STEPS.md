@@ -310,12 +310,29 @@ tests (`tests/test_architect_validation.py`, `tests/test_architect_store.py`,
 does not execute any slice and does not touch `workflow/`, `agent/`, or
 `vertical_slice.py`.
 
-**Next (Phase B2, tracked separately):** a read-only Plans surface on the
-existing ADR 0014 local UI -- plans index, plan detail (architecture summary,
-decisions, dependency-ordered slices, validation findings, package/provenance,
-version history), and a deterministic approve action with optimistic version
-checking, using the existing black/orange/purple design language and stating
-visibly that approval does not execute anything.
+### Done — Phase B2: Plans surface on the local UI (ADR 0014 + ADR 0019)
+
+Extended `ApoapsisUIService` with `plans()`, `plan_detail()`, and
+`approve_plan()` -- read-only listing/detail plus the one deterministic,
+optimistic-version-checked mutation, exactly mirroring the existing
+specification-approval pattern. `ui/server.py` added `GET /api/plans`,
+`GET /api/plans/<id>`, and `POST /api/plans/<id>/approve` behind the same
+capability-token/origin checks as every other route. `ui/static/app.js`
+added a Plans index and a two-tab plan-detail view (Overview: idea,
+architecture summary, decisions, validation findings, package/provenance,
+audit artifacts; Implementation slices: dependency-ordered slice cards with
+objective, exclusions, dependencies, inherited constraints/criteria,
+verification commands, suggested paths, risk, local-model-fit rationale,
+and stop conditions) using only existing `.pill`/`.card`/`.constraint`/
+`.metric` CSS classes -- no new design system. Status pills render the real
+`PlanStatus` value (`proposed`/`validated`/`approved`/`superseded`/
+`executed`), and the approval bar states explicitly that approving a plan
+does not execute any slice. Added no slice-execution UI, no background task
+execution, no upload endpoint, and no provider call from any HTTP handler.
+11 new tests in `tests/test_ui.py` (service-level plan listing/detail/
+approval, an explicit "approval touches no tracked file" check, and
+server-level session/origin/version-conflict coverage for the new routes);
+full suite 305/305 passing.
 
 ### Priority B — review and resume experience
 

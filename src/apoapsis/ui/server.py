@@ -10,6 +10,13 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlsplit
 
+from apoapsis.architect.errors import (
+    ConcurrentPlanTransitionError,
+    InvalidPlanTransitionError,
+    PlanActionError,
+    PlanNotFoundError,
+    PlanStoreError,
+)
 from apoapsis.ui.application import ApoapsisUIService, UIActionError
 from apoapsis.workflow.engine import (
     ConcurrentTransitionError,
@@ -74,17 +81,18 @@ class ApoapsisUIRequestHandler(BaseHTTPRequestHandler):
             if not path.startswith("/api/"):
                 self._send_error(HTTPStatus.NOT_FOUND, "route not found")
             return
-        if not path.startswith("/api/tasks/") or not path.endswith("/approve"):
-            self._send_error(HTTPStatus.NOT_FOUND, "route not found")
+        if path.startswith("/api/tasks/") and path.endswith("/approve"):
+            self._handle_task_approve(path)
             return
+        if path.startswith("/api/plans/") and path.endswith("/approve"):
+            self._handle_plan_approve(path)
+            return
+        self._send_error(HTTPStatus.NOT_FOUND, "route not found")
+
+    def _handle_task_approve(self, path: str) -> None:
         task_id = unquote(path[len("/api/tasks/") : -len("/approve")]).strip("/")
         try:
-            body = self._read_json_body()
-            expected_version = body.get("expected_version")
-            if not isinstance(expected_version, int) or isinstance(
-                expected_version, bool
-            ):
-                raise ValueError("expected_version must be an integer")
+            expected_version = self._read_expected_version()
             payload = self.server.service.approve_specification(
                 task_id, expected_version=expected_version
             )
@@ -97,6 +105,33 @@ class ApoapsisUIRequestHandler(BaseHTTPRequestHandler):
         else:
             self._send_json(HTTPStatus.OK, payload)
 
+    def _handle_plan_approve(self, path: str) -> None:
+        plan_id = unquote(path[len("/api/plans/") : -len("/approve")]).strip("/")
+        try:
+            expected_version = self._read_expected_version()
+            payload = self.server.service.approve_plan(
+                plan_id, expected_version=expected_version
+            )
+        except PlanNotFoundError:
+            self._send_error(HTTPStatus.NOT_FOUND, "plan not found")
+        except (
+            ConcurrentPlanTransitionError,
+            InvalidPlanTransitionError,
+            PlanActionError,
+        ) as exc:
+            self._send_error(HTTPStatus.CONFLICT, str(exc))
+        except (PlanStoreError, ValueError, json.JSONDecodeError) as exc:
+            self._send_error(HTTPStatus.BAD_REQUEST, str(exc))
+        else:
+            self._send_json(HTTPStatus.OK, payload)
+
+    def _read_expected_version(self) -> int:
+        body = self._read_json_body()
+        expected_version = body.get("expected_version")
+        if not isinstance(expected_version, int) or isinstance(expected_version, bool):
+            raise ValueError("expected_version must be an integer")
+        return expected_version
+
     def _handle_api_get(self, path: str) -> None:
         try:
             if path == "/api/overview":
@@ -105,15 +140,20 @@ class ApoapsisUIRequestHandler(BaseHTTPRequestHandler):
                 payload = self.server.service.doctor()
             elif path == "/api/evaluations":
                 payload = self.server.service.evaluations()
+            elif path == "/api/plans":
+                payload = self.server.service.plans()
             elif path.startswith("/api/tasks/"):
                 task_id = unquote(path[len("/api/tasks/") :]).strip("/")
                 payload = self.server.service.task_detail(task_id)
+            elif path.startswith("/api/plans/"):
+                plan_id = unquote(path[len("/api/plans/") :]).strip("/")
+                payload = self.server.service.plan_detail(plan_id)
             else:
                 self._send_error(HTTPStatus.NOT_FOUND, "route not found")
                 return
-        except TaskNotFoundError:
-            self._send_error(HTTPStatus.NOT_FOUND, "task not found")
-        except (TaskStoreError, ValueError) as exc:
+        except (TaskNotFoundError, PlanNotFoundError):
+            self._send_error(HTTPStatus.NOT_FOUND, "not found")
+        except (TaskStoreError, PlanStoreError, ValueError) as exc:
             self._send_error(HTTPStatus.BAD_REQUEST, str(exc))
         else:
             self._send_json(HTTPStatus.OK, payload)
