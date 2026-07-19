@@ -14,12 +14,12 @@ must be corrected before the change is considered complete.
 
 | Item | Current value |
 | --- | --- |
-| Last verified | 2026-07-18 |
-| Working-tree version | `1.0` plus ADR 0013 Windows local-model lifecycle, ADR 0014 first local operator-interface slice, ADR 0015 verification layers and acceptance coverage, ADR 0016's corrective follow-up, ADR 0017's worktree-fingerprint/explicit-acceptance-designation hardening, the opt-in `local-strict` evaluation lane with its first live result, and ADR 0018's acceptance-failure-evidence/bounded-specification-correction fixes |
+| Last verified | 2026-07-19 |
+| Working-tree version | `1.0` plus ADR 0013 Windows local-model lifecycle, ADR 0014 first local operator-interface slice, ADR 0015 verification layers and acceptance coverage, ADR 0016's corrective follow-up, ADR 0017's worktree-fingerprint/explicit-acceptance-designation hardening, the opt-in `local-strict` evaluation lane with its first live result, ADR 0018's acceptance-failure-evidence/bounded-specification-correction fixes, and ADR 0019's Architect Mode planning foundation |
 | Checked-out branch | `main` |
-| Repository state | The 1.0/lifecycle baseline, the ADR 0014 UI slice, the ADR 0015 acceptance-coverage milestone, the ADR 0016 correction, the ADR 0017 hardening, the `local-strict` lane, and the ADR 0018 fixes are all committed on `main`; live evaluation evidence is committed separately. `DESIGN.md` is preserved as a separate, committed user-supplied design reference. Run `git status` and `git log -1 --oneline` for the exact current state. |
+| Repository state | The 1.0/lifecycle baseline, the ADR 0014 UI slice, the ADR 0015 acceptance-coverage milestone, the ADR 0016 correction, the ADR 0017 hardening, the `local-strict` lane, the ADR 0018 fixes, and ADR 0019's Architect Mode foundation are all committed on `main`; live evaluation evidence is committed separately. `DESIGN.md` is preserved as a separate, committed user-supplied design reference. Run `git status` and `git log -1 --oneline` for the exact current state. |
 | Preserved substrate tag | `substrate-v0.1` at `4c2e735` |
-| Full deterministic suite | 258 tests, 0 failures, 0 errors, 6 intentional skips (2 live-network, 1 live-Docker, 3 machine currently lacks the Windows privilege to create symlinks) |
+| Full deterministic suite | 294 tests, 0 failures, 0 errors, 6 intentional skips (2 live-network, 1 live-Docker, 3 machine currently lacks the Windows privilege to create symlinks) |
 | Syntax check | `python -m compileall -q src tests` passed |
 | Diff check | `git diff --check` passed; Git reported only expected LF-to-CRLF working-copy warnings |
 | Live local coding result | Qwen3-Coder-Next Q4 completed the controlled download-service task in 10 turns and 3 verification runs |
@@ -69,6 +69,7 @@ commands, and writes a complete usage and audit report.
 | Retry or escalate | Fixed configuration and controller rules |
 | Mark a task complete | Verification engine after all required checks pass; under the strict completion policy (ADR 0015/0016, the default policy for `apoapsis init` projects, but never with an automatically acceptance-designated command -- ADR 0017), additionally only after every active acceptance criterion is deterministically computed as Proven from configured, user-approved acceptance-designated commands that actually passed **for the current shared worktree fingerprint** (tracked and untracked files, ADR 0017) -- a model may propose a criterion's mapping only from the harness-published acceptance-command catalog at specification time, but only the harness computes and grants Proven/Failed/Unproven status, and a stale, earlier-fingerprint pass never counts |
 | Record evidence and usage | Deterministic audit and reporting layers |
+| Decompose a large idea into implementation slices (Architect Mode, ADR 0019) | An external model may only propose an `ArchitecturePlan` via manual export/import; it has no status/approval/execution field, cannot invent a verification-command name or escape the repository in a suggested path, and cannot mark itself validated, approved, or executed -- only `SQLitePlanStore`'s deterministic, optimistic-versioned transitions do that, and approval never executes a slice |
 
 No provider adapter may bypass this boundary. A larger or hosted model receives
 more capability only through a separately configured budget and context package;
@@ -225,6 +226,44 @@ architecture.
 - Controlled branches include `LOCAL_REPAIR`, `ESCALATION_REQUIRED`,
   `HUMAN_REVIEW_REQUIRED`, `FAILED`, and `ROLLED_BACK`.
 - Providers never call the transition API.
+
+### Architect Mode planning foundation (ADR 0019)
+
+- `src/apoapsis/architect/schema.py` defines `ArchitecturePlan`,
+  `ArchitectureDecision`, `ImplementationSlice`, `PlannerRequestPackage`,
+  `PlannerResponseEnvelope`, `PlanValidationResult`, `PlanEvent`, and
+  versioned `PlanRecord`/`PlanStatus`. `ArchitecturePlan` has no status,
+  approval, or execution field of any kind (`extra="forbid"` rejects any
+  attempt to smuggle one in).
+- `src/apoapsis/architect/validation.py`'s `validate_plan()` is the sole
+  deterministic authority on plan well-formedness (unique IDs, no
+  dependency cycles/missing dependencies, no unknown constraint/criterion
+  references, no invented verification-command names, every active hard
+  constraint represented, every slice has executable verification intent,
+  configurable ceilings, non-escaping repository-relative paths). It
+  returns findings rather than raising, so an invalid plan is still stored
+  and inspectable.
+- `src/apoapsis/architect/package.py` builds a reproducible
+  `PlannerRequestPackage` for a free-text idea, reusing
+  `ContextCompiler`/`ContextPackage`/`GitRepository` exactly rather than a
+  parallel evidence format, plus the configured verification catalog,
+  documentation references, the plan JSON schema, and fixed authority
+  rules.
+- `src/apoapsis/architect/store.py`'s `SQLitePlanStore` mirrors
+  `workflow.engine.SQLiteTaskStore`'s optimistic-versioning discipline
+  exactly, in its own `.apoapsis/architect-plans.db`. Revisions bump the
+  version and reset to `PROPOSED` rather than overwriting an approved
+  plan's immutable snapshot.
+- `src/apoapsis/architect/audit.py` and `src/apoapsis/architect/importer.py`
+  provide the same atomic-write audit discipline as `audit.store
+  .TaskAuditStore`, and reject an imported planner response whose
+  `request_package_sha256` does not match the stored request package
+  exactly.
+- CLI: `apoapsis plan export/import/validate/inspect/approve`
+  (`src/apoapsis/cli/app.py`). Manual, subscription-friendly workflow: no
+  API credentials, no hosted-provider adapter added.
+- Does not execute any slice, and does not change `workflow/`, `agent/`, or
+  `vertical_slice.py` in any way.
 
 ### Verification layers and acceptance coverage (ADR 0015, corrected by ADR 0016, hardened by ADR 0017/0018)
 
@@ -1017,6 +1056,9 @@ direct-frontier comparison claims remain unmeasured.
 | Verification layers, acceptance-command catalog, coverage tri-state, completion policy | `tests/test_acceptance_coverage.py` |
 | Shared worktree fingerprint (tracked/untracked/binary/symlink) and `inspect_diff` untracked exposure | `tests/test_worktree_fingerprint.py` |
 | Bounded specification-extraction correction (one attempt, telemetry, retry ceiling) | `tests/test_specification_correction.py` |
+| Architect Mode plan schema/validation (cycles, missing deps, duplicate IDs, unknown commands, path escapes, ceilings, authority smuggling) | `tests/test_architect_validation.py` |
+| Architect Mode plan store (optimistic versioning, validate/approve/revision transitions) | `tests/test_architect_store.py` |
+| Architect Mode CLI lifecycle and package/response hash-mismatch rejection | `tests/test_architect_cli.py` |
 
 Fake providers are the mandatory regression mechanism. Live model or network
 tests supplement them; they must not replace deterministic coverage.
@@ -1126,6 +1168,16 @@ tests supplement them; they must not replace deterministic coverage.
     intake, execution progress orchestration, human-review resume choices, and a
     packaged native wrapper are still missing. Do not implement them as browser
     provider calls, CLI subprocess construction, or inferred audit-file state.
+14. **Architect Mode (ADR 0019) produces plans but never executes them.**
+    `apoapsis plan export/import/validate/inspect/approve` is fully
+    implemented and covered by `tests/test_architect_validation.py`,
+    `tests/test_architect_store.py`, and `tests/test_architect_cli.py`, and
+    Commit B2 added a read-only Plans surface to the local UI. There is no
+    code path anywhere that turns an approved `ImplementationSlice` into a
+    running task; that is deliberately future work with its own design and
+    review, not an oversight. No subscription-backed provider adapter was
+    added for `plan export`/`import` — they remain manual, copy-paste
+    workflows, consistent with the still-deferred ADR 0008 non-goal.
 
 `NEXT_STEPS.md` is the owner and future-agent execution roadmap. The next high-
 value proofs are (1) identical local download-service evaluations
@@ -1158,6 +1210,7 @@ automation as a substitute for those proofs.
 | `0016` | Acceptance-command catalog at extraction time, digest-scoped (non-stale) coverage computation, and STRICT as the practical product default |
 | `0017` | Shared worktree fingerprint (tracked + untracked files) for verification/proof scoping, untracked evidence in `inspect_diff`, and acceptance designation reverted to an explicit owner decision |
 | `0018` | Acceptance-designated command failures now produce real evidence regardless of `required`, and specification extraction gets exactly one bounded correction attempt |
+| `0019` | Architect Mode planning foundation: deterministic plan schemas/validation/store/audit, manual export/import CLI workflow, and a read-only Plans surface on the local UI |
 
 Add a new ADR for a new architectural decision. Do not rewrite history to make
 old decisions appear current; mark an ADR superseded and link its replacement

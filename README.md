@@ -206,6 +206,55 @@ apoapsis rollback TASK-ABC123 --delete-branch
 `PATCH_READY`. `rollback` is explicit and may discard uncommitted task-worktree
 changes. Normal cleanup APIs refuse dirty worktrees unless force is requested.
 
+## Architect Mode: deterministic planning foundation (ADR 0019)
+
+Architect Mode lets a stronger model (Claude, Codex, Fabel, or any other
+model you already have access to -- manually, no new subscription or API
+credential required) design an architecture and decompose a large idea into
+small implementation slices sized for the local coding model's existing
+bounded-agent loop. It never executes anything itself: it produces a plan, a
+human reviews it, and only an explicit, version-checked approval action ever
+changes its status.
+
+```bash
+apoapsis plan export "Add resumable downloads with a pluggable storage backend"
+```
+
+This writes an immutable `PlannerRequestPackage` (idea text, repository
+identity, deterministic context evidence, the configured verification
+catalog, documentation references, the plan JSON schema, and explicit
+authority rules) to `.apoapsis/plan-packages/<package_id>/request-package.json`
+and prints it. Paste the package into any capable chat model, ask it to
+return an `ArchitecturePlan` matching the included schema, and save its
+response (wrapped with `package_id` and `request_package_sha256`, matching
+the package) to a file:
+
+```bash
+apoapsis plan import response.json
+apoapsis plan validate PLAN-ABC123
+apoapsis plan inspect PLAN-ABC123
+apoapsis plan approve PLAN-ABC123 --expected-version 2
+```
+
+`plan import` rejects a response whose `request_package_sha256` does not
+match the stored package exactly. `plan validate` runs deterministic checks
+(unique IDs, no dependency cycles or missing dependencies, no unknown
+constraint/criterion references, no invented verification-command names,
+every active hard constraint represented in some slice, every slice names a
+real configured verification command, configurable ceilings, and
+repository-relative non-escaping suggested paths) and never raises for
+content problems -- an invalid plan is still stored with concrete findings.
+`plan approve` requires the plan's last validation to be valid and uses the
+same optimistic-version discipline as `apoapsis approve`. A plan can never
+mark itself approved or executed: `ArchitecturePlan` has no such field, and
+approving a plan never executes any slice -- executing an approved slice is
+explicitly out of scope for this milestone.
+
+Validation ceilings are configurable under `[architect.ceilings]` in
+`.apoapsis/config.toml` (`max_slices`, `max_dependency_depth`,
+`max_suggested_paths_per_slice`, `max_criteria_per_slice`,
+`max_work_brief_chars`); `apoapsis init` writes explicit defaults.
+
 ## Diagnostics and evaluation
 
 Check the local toolchain, configured models, context limits, credential

@@ -294,6 +294,22 @@ class ResearchConfig(StrictModel):
     cache: ResearchCacheConfig = Field(default_factory=ResearchCacheConfig)
 
 
+class ArchitectPlanCeilings(StrictModel):
+    """Configurable ceilings deterministic plan validation enforces (ADR
+    0019). Defaults are generous but finite -- every plan, regardless of
+    which model proposed it, is bounded."""
+
+    max_slices: int = Field(default=40, ge=1, le=500)
+    max_dependency_depth: int = Field(default=15, ge=1, le=100)
+    max_suggested_paths_per_slice: int = Field(default=12, ge=1, le=200)
+    max_criteria_per_slice: int = Field(default=12, ge=1, le=200)
+    max_work_brief_chars: int = Field(default=2000, ge=100, le=20_000)
+
+
+class ArchitectConfig(StrictModel):
+    ceilings: ArchitectPlanCeilings = Field(default_factory=ArchitectPlanCeilings)
+
+
 class ApoapsisConfig(StrictModel):
     models: ModelsConfig
     execution: ExecutionConfig = Field(default_factory=ExecutionConfig)
@@ -301,6 +317,7 @@ class ApoapsisConfig(StrictModel):
     patch: PatchPolicyConfig = Field(default_factory=PatchPolicyConfig)
     verification: VerificationConfig
     research: ResearchConfig = Field(default_factory=ResearchConfig)
+    architect: ArchitectConfig = Field(default_factory=ArchitectConfig)
 
     @model_validator(mode="after")
     def validate_provider_separation_and_route(self) -> ApoapsisConfig:
@@ -345,6 +362,7 @@ class ApoapsisConfig(StrictModel):
                 "patch",
                 "verification",
                 "research",
+                "architect",
             )
             if key in raw
         }

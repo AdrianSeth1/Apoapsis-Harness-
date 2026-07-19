@@ -289,6 +289,34 @@ reliability under the one-correction-attempt fix (never exercised live
 this round, since all three extracted validly on the first try). Do not
 begin another live evaluation without explicit direction.
 
+### Done — Phase B1: Architect Mode planning foundation (ADR 0019)
+
+Deterministic plan schemas (`ArchitecturePlan`, `ImplementationSlice`,
+`ArchitectureDecision`, `PlannerRequestPackage`, `PlannerResponseEnvelope`,
+`PlanValidationResult`, `PlanRecord`/`PlanStatus`), a standalone
+`validate_plan()` covering unique IDs, dependency cycles/missing
+dependencies, unknown constraint/criterion references, invented
+verification-command names, unrepresented active hard constraints, missing
+verification intent, configurable ceilings, and repository-escaping paths;
+a reproducible `PlannerRequestPackage` builder reusing
+`ContextCompiler`/`GitRepository` and the existing verification catalog; a
+`SQLitePlanStore` mirroring `SQLiteTaskStore`'s optimistic-versioning
+discipline in its own database; atomic-write plan audit artifacts; a
+package/response hash-integrity importer; and the
+`apoapsis plan export/import/validate/inspect/approve` CLI group -- manual,
+credential-free, usable with any external model by hand. 36 new deterministic
+tests (`tests/test_architect_validation.py`, `tests/test_architect_store.py`,
+`tests/test_architect_cli.py`); full suite 294/294 passing. Architect Mode
+does not execute any slice and does not touch `workflow/`, `agent/`, or
+`vertical_slice.py`.
+
+**Next (Phase B2, tracked separately):** a read-only Plans surface on the
+existing ADR 0014 local UI -- plans index, plan detail (architecture summary,
+decisions, dependency-ordered slices, validation findings, package/provenance,
+version history), and a deterministic approve action with optimistic version
+checking, using the existing black/orange/purple design language and stating
+visibly that approval does not execute anything.
+
 ### Priority B — review and resume experience
 
 The highest-value product gap is a polished continuation path for tasks that end

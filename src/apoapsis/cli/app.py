@@ -9,6 +9,13 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
+from apoapsis.architect.errors import ArchitectError, PlanImportError
+from apoapsis.architect.importer import import_planner_response
+from apoapsis.architect.package import build_planner_request_package
+from apoapsis.architect.audit import PlanAuditStore, write_package_artifact
+from apoapsis.architect.store import SQLitePlanStore
+from apoapsis.architect.validation import validate_plan
+from apoapsis.architect.schema import PlanValidationResult, ValidationSeverity
 from apoapsis.config import (
     AgentRoute,
     ExecutionMode,
@@ -240,6 +247,13 @@ required = true
 # command, and tasks with active acceptance criteria correctly stop at
 # HUMAN_REVIEW_REQUIRED instead of silently reaching COMPLETE.
 acceptance = false
+
+[architect.ceilings]
+max_slices = 40
+max_dependency_depth = 15
+max_suggested_paths_per_slice = 12
+max_criteria_per_slice = 12
+max_work_brief_chars = 2000
 """
 
 
@@ -389,6 +403,32 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         help="directory for fixture copies and the comparison report",
     )
+    plan = subparsers.add_parser(
+        "plan", help="Architect Mode: deterministic planning workflow"
+    )
+    plan_subparsers = plan.add_subparsers(dest="plan_command", required=True)
+    plan_export = plan_subparsers.add_parser(
+        "export", help="export a reproducible planner request package for an idea"
+    )
+    plan_export.add_argument("idea")
+    plan_import = plan_subparsers.add_parser(
+        "import", help="import a manually-obtained planner response as a new plan"
+    )
+    plan_import.add_argument("response_path", type=Path)
+    plan_validate = plan_subparsers.add_parser(
+        "validate", help="run deterministic validation against a plan"
+    )
+    plan_validate.add_argument("plan_id")
+    plan_inspect = plan_subparsers.add_parser(
+        "inspect", help="show a plan, its events, and its audit artifacts"
+    )
+    plan_inspect.add_argument("plan_id")
+    plan_approve = plan_subparsers.add_parser(
+        "approve", help="approve a validated plan"
+    )
+    plan_approve.add_argument("plan_id")
+    plan_approve.add_argument("--expected-version", type=int, required=True)
+
     aggregate = subparsers.add_parser(
         "eval-aggregate",
         help="aggregate one or more persisted evaluation comparison reports",
@@ -421,6 +461,7 @@ def main(argv: list[str] | None = None) -> None:
         ResearchModelError,
         ProviderError,
         InstrumentedProviderError,
+        ArchitectError,
     ) as exc:
         parser.exit(2, f"error: {exc}\n")
     if result is not None:
@@ -444,6 +485,8 @@ def _dispatch(args: argparse.Namespace) -> dict[str, object] | None:
         )
     if args.command == "eval-aggregate":
         return _aggregate_eval_reports(root, args.comparisons, args.output_dir)
+    if args.command == "plan":
+        return _plan_command(root, args)
     store = _store(root)
     if args.command == "task":
         return _task(
@@ -521,6 +564,105 @@ def _store(root: Path) -> SQLiteTaskStore:
     if not (metadata / "config.toml").is_file():
         raise TaskStoreError("Apoapsis is not initialized; run 'apoapsis init' first")
     return SQLiteTaskStore(metadata / "apoapsis.db")
+
+
+def _plan_store(root: Path) -> SQLitePlanStore:
+    metadata = root / ".apoapsis"
+    if not (metadata / "config.toml").is_file():
+        raise TaskStoreError("Apoapsis is not initialized; run 'apoapsis init' first")
+    return SQLitePlanStore(metadata / "architect-plans.db")
+
+
+def _plan_command(root: Path, args: argparse.Namespace) -> dict[str, object]:
+    if args.plan_command == "export":
+        return _plan_export(root, args.idea)
+    plan_store = _plan_store(root)
+    if args.plan_command == "import":
+        return _plan_import(root, plan_store, args.response_path)
+    if args.plan_command == "validate":
+        return _plan_validate(root, plan_store, args.plan_id)
+    if args.plan_command == "inspect":
+        return _plan_inspect(root, plan_store, args.plan_id)
+    if args.plan_command == "approve":
+        return _plan_approve(root, plan_store, args.plan_id, args.expected_version)
+    raise AssertionError(f"unhandled plan command: {args.plan_command}")
+
+
+def _plan_export(root: Path, idea: str) -> dict[str, object]:
+    config = ApoapsisConfig.from_toml(root / ".apoapsis" / "config.toml")
+    package = build_planner_request_package(root, idea, config)
+    artifact_path = write_package_artifact(root, package)
+    return {"package": package.model_dump(mode="json"), "artifact_path": artifact_path}
+
+
+def _plan_import(
+    root: Path, plan_store: SQLitePlanStore, response_path: Path
+) -> dict[str, object]:
+    resolved = response_path.resolve()
+    if not resolved.is_file():
+        raise PlanImportError(f"planner response file not found: {resolved}")
+    try:
+        raw_payload = json.loads(resolved.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise PlanImportError(f"planner response is not valid JSON: {exc}") from exc
+    if not isinstance(raw_payload, dict):
+        raise PlanImportError("planner response must be a JSON object")
+    record = import_planner_response(root, plan_store, raw_payload)
+    return record.model_dump(mode="json")
+
+
+def _plan_validate(
+    root: Path, plan_store: SQLitePlanStore, plan_id: str
+) -> dict[str, object]:
+    config = ApoapsisConfig.from_toml(root / ".apoapsis" / "config.toml")
+    record = plan_store.get_plan(plan_id)
+    configured_names = {command.name for command in config.verification.commands}
+    findings = validate_plan(
+        record.plan,
+        configured_verification_commands=configured_names,
+        ceilings=config.architect.ceilings,
+    )
+    result = PlanValidationResult(
+        plan_id=plan_id,
+        plan_version=record.version,
+        valid=not any(item.severity == ValidationSeverity.ERROR for item in findings),
+        findings=findings,
+    )
+    updated = plan_store.record_validation(
+        plan_id, result, expected_version=record.version
+    )
+    PlanAuditStore(root, plan_id).write_json(
+        f"validation-v{record.version}.json", result, kind="plan_validation_result"
+    )
+    return {"plan": updated.model_dump(mode="json"), "validation": result.model_dump(mode="json")}
+
+
+def _plan_inspect(
+    root: Path, plan_store: SQLitePlanStore, plan_id: str
+) -> dict[str, object]:
+    record = plan_store.get_plan(plan_id)
+    events = plan_store.events(plan_id)
+    return {
+        "plan": record.model_dump(mode="json"),
+        "events": [event.model_dump(mode="json") for event in events],
+        "artifacts": PlanAuditStore(root, plan_id).artifacts(),
+    }
+
+
+def _plan_approve(
+    root: Path, plan_store: SQLitePlanStore, plan_id: str, expected_version: int
+) -> dict[str, object]:
+    record = plan_store.approve_plan(plan_id, expected_version=expected_version)
+    PlanAuditStore(root, plan_id).write_json(
+        "approval-event.json",
+        {
+            "plan_id": plan_id,
+            "approved_version": record.version,
+            "approved_at": record.updated_at.isoformat(),
+        },
+        kind="plan_approval",
+    )
+    return record.model_dump(mode="json")
 
 
 def _task(
