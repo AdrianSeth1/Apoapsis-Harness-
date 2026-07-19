@@ -219,6 +219,29 @@ def project_slice_status(
     }
 
 
+def read_latest_slice_package(
+    project_root: str | Path, plan_id: str, slice_id: str
+) -> PlanSliceExecutionPackage | None:
+    """Read-only: the most recently written package artifact for this
+    slice, if any -- regardless of the slice's current status, since the
+    artifact remains on disk permanently once written (an immutable audit
+    record, never cleaned up). Returns ``None`` rather than raising if
+    nothing has ever been packaged; callers that require one existing
+    (approval) use ``_load_latest_package`` instead, which raises."""
+
+    root = Path(project_root).resolve()
+    plans_dir = root / ".apoapsis" / "plans" / plan_id
+    candidates = sorted(
+        plans_dir.glob(f"slice-{slice_id}-package-*.json"),
+        key=lambda path: path.stat().st_mtime,
+    )
+    if not candidates:
+        return None
+    return PlanSliceExecutionPackage.model_validate_json(
+        candidates[-1].read_text(encoding="utf-8")
+    )
+
+
 def _load_latest_package(
     root: Path, plan_id: str, slice_id: str, slice_store: PlanSliceExecutionStore
 ) -> PlanSliceExecutionPackage:
@@ -228,23 +251,18 @@ def _load_latest_package(
             f"slice {plan_id}/{slice_id} must be PACKAGED to approve, "
             f"found {record.status.value}"
         )
-    plans_dir = root / ".apoapsis" / "plans" / plan_id
-    candidates = sorted(
-        plans_dir.glob(f"slice-{slice_id}-package-*.json"),
-        key=lambda path: path.stat().st_mtime,
-    )
-    if not candidates:
+    package = read_latest_slice_package(root, plan_id, slice_id)
+    if package is None:
         raise SliceApprovalError(
             f"no package artifact found for slice {plan_id}/{slice_id}"
         )
-    return PlanSliceExecutionPackage.model_validate_json(
-        candidates[-1].read_text(encoding="utf-8")
-    )
+    return package
 
 
 __all__ = [
     "approve_slice",
     "package_slice",
     "project_slice_status",
+    "read_latest_slice_package",
     "start_slice",
 ]

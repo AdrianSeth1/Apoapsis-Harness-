@@ -5,6 +5,13 @@ from pathlib import Path
 from typing import Any
 
 from apoapsis.architect.schema import ArchitecturePlan, PlanRecord, PlanStatus
+from apoapsis.architect.slice_service import (
+    approve_slice,
+    package_slice,
+    project_slice_status,
+    read_latest_slice_package,
+)
+from apoapsis.architect.slice_store import PlanSliceExecutionStore
 from apoapsis.architect.store import SQLitePlanStore
 from apoapsis.config import ApoapsisConfig, ExecutionMode
 from apoapsis.doctor import run_doctor
@@ -411,7 +418,118 @@ class ApoapsisUIService:
             "artifacts": artifacts,
             "dependency_order": _slice_dependency_order(record.plan),
             "available_actions": self._plan_available_actions(record),
+            "slices": self._plan_slice_statuses(record),
         }
+
+    def plan_slice_detail(self, plan_id: str, slice_id: str) -> dict[str, Any]:
+        """Everything the app needs to let a person select, inspect,
+        package, and approve exactly one plan slice -- read-only, no
+        model call, no repository mutation of its own (ADR 0027)."""
+
+        plan_store = self._require_plan_store()
+        task_store = self._require_store()
+        plan_record = plan_store.get_plan(plan_id)
+        slice_obj = next(
+            (item for item in plan_record.plan.slices if item.slice_id == slice_id),
+            None,
+        )
+        if slice_obj is None:
+            raise TaskStoreError(f"plan {plan_id} has no slice {slice_id}")
+        status = project_slice_status(
+            self.project_root,
+            plan_store,
+            self._plan_slice_store(),
+            task_store,
+            plan_id,
+            slice_id,
+        )
+        package = read_latest_slice_package(self.project_root, plan_id, slice_id)
+        task = None
+        record = status.get("record")
+        if record and record.get("task_id"):
+            try:
+                task = self.task_detail(record["task_id"])
+            except TaskNotFoundError:
+                task = None
+        return {
+            "plan_id": plan_id,
+            "slice_id": slice_id,
+            "plan_version": plan_record.version,
+            "slice": slice_obj.model_dump(mode="json"),
+            "status": status,
+            "package": package.model_dump(mode="json") if package is not None else None,
+            "task": task,
+        }
+
+    def package_plan_slice(
+        self, plan_id: str, slice_id: str, *, expected_plan_version: int
+    ) -> dict[str, Any]:
+        """Deterministically compiles and durably records an immutable
+        execution package for one slice -- no model call, no task created
+        yet (ADR 0027)."""
+
+        config = self._config()
+        if config is None:
+            raise TaskStoreError(
+                "Apoapsis is not initialized; run 'apoapsis init' first"
+            )
+        package = package_slice(
+            self.project_root,
+            self._require_plan_store(),
+            self._plan_slice_store(),
+            self._require_store(),
+            self._execution_operation_store(),
+            plan_id,
+            slice_id,
+            expected_plan_version=expected_plan_version,
+            config=config,
+        )
+        return package.model_dump(mode="json")
+
+    def approve_plan_slice(
+        self, plan_id: str, slice_id: str, *, expected_package_sha256: str
+    ) -> dict[str, Any]:
+        """Approves exactly the previewed package: creates and approves
+        the derived task through the normal specification-approval
+        transitions, but never starts it -- starting is a separate,
+        explicit action on the resulting task's own control room (ADR
+        0027; the exact same durable execution service ADR 0024 built,
+        unmodified)."""
+
+        record = approve_slice(
+            self.project_root,
+            self._require_store(),
+            self._plan_slice_store(),
+            plan_id,
+            slice_id,
+            expected_package_sha256=expected_package_sha256,
+        )
+        return record.model_dump(mode="json")
+
+    def _plan_slice_store(self) -> PlanSliceExecutionStore:
+        return PlanSliceExecutionStore(
+            self.metadata_root / "plan-slice-executions.db"
+        )
+
+    def _plan_slice_statuses(self, record: PlanRecord) -> list[dict[str, Any]]:
+        task_store = self._store()
+        if task_store is None:
+            return []
+        slice_store = self._plan_slice_store()
+        statuses = []
+        for item in record.plan.slices:
+            status = project_slice_status(
+                self.project_root,
+                self._require_plan_store(),
+                slice_store,
+                task_store,
+                record.plan_id,
+                item.slice_id,
+            )
+            status["title"] = item.title
+            status["dependencies"] = list(item.dependencies)
+            statuses.append(status)
+        return statuses
 
     def approve_plan(self, plan_id: str, *, expected_version: int) -> dict[str, Any]:
         store = self._require_plan_store()

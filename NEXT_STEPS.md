@@ -754,10 +754,29 @@ projection from real task state. Full suite: 514/514 passing, 6 intentional
 skips. See ADR 0027 and `HANDOFF.md`'s "Approved-plan to single-slice
 execution" section for full detail.
 
-**Not yet built: the Plans UI slice experience (Commit D3b)** -- selecting
-a ready slice, previewing its immutable package, and approving/starting it
-from the browser, reusing the existing control room for progress. The CLI
-seam above is fully usable today without it.
+### Done — Phase D3b: the Plans UI slice experience (ADR 0027)
+
+Adds the browser surface on top of D3a with zero new execution, routing, or
+completion logic: `plan_detail()` and a new `plan_slice_detail()` compose
+live per-slice status, the latest immutable package, and the derived task's
+own state from the exact service functions D3a already built and tested.
+The Implementation Slices tab shows real status; Inspect renders the
+immutable package preview (exact inherited constraints/criteria,
+verification commands, dependency evidence, advisory hints) behind a
+"Package this slice" action, then a two-step Approve action mirroring ADR
+0026's own preview/confirm discipline. Once approved, the view links to the
+derived task's existing, unmodified control room, changes view, and report
+view rather than duplicating any of that machinery -- no "Run all" button,
+no scheduler, anywhere in this surface.
+
+New `tests/test_architect_slice_ui.py` (12 tests). Full suite: 526/526
+passing, 6 intentional skips. Verified live in a real browser end to end:
+Plans list -> plan detail -> Implementation Slices tab -> Inspect -> package
+preview -> two-step approve -> derived-task links -> the existing control
+room correctly recognizing the slice-derived task at `SPEC_APPROVED` with
+its normal "Start coding" action present, untouched. See ADR 0027's D3b
+addendum and `HANDOFF.md`'s "Plans UI slice experience" section for full
+detail.
 
 ### Priority C — extend the accepted application shell (ADR 0014)
 
@@ -782,12 +801,14 @@ Continue in this order:
    projecting live progress from persisted workflow events/operation
    records -- browser code never infers state, runs a CLI subprocess, or
    owns a provider.
-3. Then add an approved-plan-to-single-slice bridge under its own ADR. Compile
-   one explicitly selected ready slice into an immutable execution package,
-   recheck the plan/repository/dependency fingerprints, obtain explicit user
-   approval, and run the normal bounded agent protocol. Suggested paths and
-   symbols remain advisory; never auto-start the next slice or add an autonomous
-   scheduler.
+3. Done (ADR 0027): an approved-plan-to-single-slice bridge, with both a
+   CLI/service seam (Commit D3a) and a Plans UI slice experience (Commit
+   D3b). Compiles one explicitly selected ready slice into an immutable
+   execution package, rechecks the plan/repository/dependency fingerprints
+   (git-ancestry proof, not a trusted status flag), obtains explicit user
+   approval, and hands off to the exact same durable execution service every
+   other task uses. Suggested paths and symbols remain advisory; nothing
+   auto-starts the next slice or adds an autonomous scheduler.
 4. Evaluate one substantial task monolithically versus plan-then-slices under
    identical model/settings. Compare held-out true success, false success,
    turns, patch/verification attempts, transmitted context, latency, and hosted

@@ -19,11 +19,11 @@ without replacing this canonical coding-agent handoff.
 | Item | Current value |
 | --- | --- |
 | Last verified | 2026-07-19 |
-| Working-tree version | `1.0` plus ADR 0013 Windows local-model lifecycle, ADR 0014 first local operator-interface slice, ADR 0015 verification layers and acceptance coverage, ADR 0016's corrective follow-up, ADR 0017's worktree-fingerprint/explicit-acceptance-designation hardening, the opt-in `local-strict` evaluation lane with its first live result, ADR 0018's acceptance-failure-evidence/bounded-specification-correction fixes, ADR 0019's Architect Mode planning foundation plus its Plans UI surface, ADR 0020's deterministic human-review-and-resume CLI and UI, ADR 0021's review/resume integrity hardening, ADR 0022's explicit human-authorized fresh frontier stage, ADR 0023's durable new-task intake (CLI/service seam and New Task UI screen), ADR 0024's durable post-approval task execution (CLI/service seam and control-room UI), ADR 0025's shared operation-lease and recovery-integrity hardening across all three operation ledgers, ADR 0026's immutable execution authorization and truthful live UI, and ADR 0027's approved-plan to single-slice execution (CLI seam only; Plans UI slice surface is Commit D3b, not yet built) |
+| Working-tree version | `1.0` plus ADR 0013 Windows local-model lifecycle, ADR 0014 first local operator-interface slice, ADR 0015 verification layers and acceptance coverage, ADR 0016's corrective follow-up, ADR 0017's worktree-fingerprint/explicit-acceptance-designation hardening, the opt-in `local-strict` evaluation lane with its first live result, ADR 0018's acceptance-failure-evidence/bounded-specification-correction fixes, ADR 0019's Architect Mode planning foundation plus its Plans UI surface, ADR 0020's deterministic human-review-and-resume CLI and UI, ADR 0021's review/resume integrity hardening, ADR 0022's explicit human-authorized fresh frontier stage, ADR 0023's durable new-task intake (CLI/service seam and New Task UI screen), ADR 0024's durable post-approval task execution (CLI/service seam and control-room UI), ADR 0025's shared operation-lease and recovery-integrity hardening across all three operation ledgers, ADR 0026's immutable execution authorization and truthful live UI, and ADR 0027's approved-plan to single-slice execution (CLI/service seam plus the Plans UI slice experience, Commit D3b) |
 | Checked-out branch | `main` |
-| Repository state | The 1.0/lifecycle baseline, the ADR 0014 UI slice, the ADR 0015 acceptance-coverage milestone, the ADR 0016 correction, the ADR 0017 hardening, the `local-strict` lane, the ADR 0018 fixes, ADR 0019's Architect Mode foundation (CLI + Plans UI), ADR 0020's review/resume CLI and UI, ADR 0021's hardening, ADR 0022's `authorize_frontier_stage` action, ADR 0023's `apoapsis intake` seam, ADR 0024's `apoapsis execute` seam and control-room UI, ADR 0025's lease/recovery hardening, ADR 0026's execution-authorization hardening, and ADR 0027's `apoapsis plan slice` seam are all committed on `main`; live evaluation evidence is committed separately. `DESIGN.md` is preserved as a separate, committed user-supplied design reference. Run `git status` and `git log -1 --oneline` for the exact current state. |
+| Repository state | The 1.0/lifecycle baseline, the ADR 0014 UI slice, the ADR 0015 acceptance-coverage milestone, the ADR 0016 correction, the ADR 0017 hardening, the `local-strict` lane, the ADR 0018 fixes, ADR 0019's Architect Mode foundation (CLI + Plans UI), ADR 0020's review/resume CLI and UI, ADR 0021's hardening, ADR 0022's `authorize_frontier_stage` action, ADR 0023's `apoapsis intake` seam, ADR 0024's `apoapsis execute` seam and control-room UI, ADR 0025's lease/recovery hardening, ADR 0026's execution-authorization hardening, and ADR 0027's `apoapsis plan slice` seam plus its Plans UI slice experience (Commit D3b) are all committed on `main`; live evaluation evidence is committed separately. `DESIGN.md` is preserved as a separate, committed user-supplied design reference. Run `git status` and `git log -1 --oneline` for the exact current state. |
 | Preserved substrate tag | `substrate-v0.1` at `4c2e735` |
-| Full deterministic suite | 514 tests, 0 failures, 0 errors, 6 intentional skips (2 live-network, 1 live-Docker, 3 machine currently lacks the Windows privilege to create symlinks) |
+| Full deterministic suite | 526 tests, 0 failures, 0 errors, 6 intentional skips (2 live-network, 1 live-Docker, 3 machine currently lacks the Windows privilege to create symlinks) |
 | Syntax check | `python -m compileall -q src tests` passed |
 | Diff check | `git diff --check` passed; Git reported only expected LF-to-CRLF working-copy warnings |
 | Live local coding result | Qwen3-Coder-Next Q4 completed the controlled download-service task in 10 turns and 3 verification runs |
@@ -34,6 +34,7 @@ without replacing this canonical coding-agent handoff.
 | Live New Task intake result | The New Task screen (`#/new`) was exercised end to end against a disposable initialized repository and a real local Ollama model: a typed natural-language request reached `SPEC_DRAFTED` via one real extraction call (no correction needed), and the two-step approval on the linked task page advanced it to `SPEC_APPROVED` -- confirmed via `apoapsis inspect`'s event log (`task_created -> specification_updated -> intake_specification_drafted -> specification_approved`). A real bug (`INTAKE_OPERATION_STAGE` referenced before being defined) was caught by this live check, not by the deterministic suite, and fixed before commit. |
 | Live control-room execution result | The control room (`#/task/<id>/control`) was exercised end to end against a disposable initialized repository and a real local Ollama model: "Start coding" showed a real, accurate preview (predicted route, real configured local model, real budgets/policy/sandbox/verification commands), submitted a real execution operation, and the task genuinely ran through routing/worktree/bounded-agent stages to a real `HUMAN_REVIEW_REQUIRED` stop with an accurate error message. The new "Open the Human Review case" link was clicked and correctly opened the full, real review case detail view. This live check found and fixed a second real, pre-existing bug: two unrelated `app.js` functions were both named `reviewView` (JavaScript's last-declaration-wins semantics meant the top-level `#/review/<task-id>` route always executed the wrong one and crashed on `detail.task`), invisible to every existing test because none execute `app.js`. Fixed by renaming the task-page sub-tab placeholder to `taskReviewTabView(detail)`. |
 | Live hosted escalation result | Not yet run. A repeatable harness (`apoapsis eval download-service --lane forced-escalation` / `--lane hybrid`) now exists to run it once real `[models.frontier_coder]` credentials are configured; the complete two-provider path is otherwise still only covered with fake providers |
+| Live Plans UI slice-experience result | Exercised end to end against a disposable initialized repository with a real approved plan (one CLI-created and CLI-approved plan, no model call needed for the plan itself): Plans list -> plan detail (live slice status rendered) -> Implementation Slices tab -> Inspect -> "Package this slice" (immutable preview rendered, real inherited constraint shown) -> two-step Approve (intent, then confirm) -> derived-task links rendered -> the existing, unmodified control room correctly showed the slice-derived task at `SPEC_APPROVED` with its real approval history and its normal "Start coding" action present and untouched. No JavaScript errors observed. |
 
 Update this table whenever its claims change. Never describe an uncommitted
 version as a committed release. Never claim that a provider path was proven
@@ -820,6 +821,48 @@ architecture.
   Human-Review status projection from real task state; and proof that
   approving one slice never auto-approves or auto-starts a dependent
   one. Full suite: 514 tests, 0 failures, 6 intentional skips.
+
+### Plans UI slice experience (ADR 0027, Commit D3b)
+
+- `ApoapsisUIService.plan_detail()` gains a `slices` array, and a new
+  `plan_slice_detail(plan_id, slice_id)` composes the slice definition, its
+  live status (the exact `project_slice_status()` D3a already built), its
+  latest package (`read_latest_slice_package()`, `None` before packaging),
+  and the derived task's own state/links once approved -- zero new
+  persisted state, zero new status computation.
+- `package_plan_slice()`/`approve_plan_slice()` are thin service wrappers
+  around D3a's own `package_slice()`/`approve_slice()`; the HTTP handlers in
+  `ui/server.py` (`GET /api/plans/<id>/slices/<id>`, `POST .../package`,
+  `POST .../approve`, all inserted *before* the generic plan-level routes
+  since a slice-approve URL also ends in `/approve`) only validate, call the
+  one matching service function, and translate its typed exceptions to
+  status codes -- no direct model/command/Git call, no invented state, no
+  routing/budget/completion decision.
+- New UI surface: the Implementation Slices tab now shows real per-slice
+  status; an Inspect view renders an immutable package preview (exact
+  inherited constraints/criteria, verification commands, repository
+  fingerprint, dependency evidence, advisory hints, nothing re-derived in
+  JavaScript) behind a "Package this slice" action, then a two-step
+  Approve action (`intent -> confirm`, mirroring ADR 0026's own preview/
+  confirm discipline). Once approved, the view links to the derived task's
+  existing, completely unmodified control room, changes/verification view,
+  and report/audit view rather than duplicating any of that machinery.
+  No "Run all" button, no scheduler.
+- New `tests/test_architect_slice_ui.py` (12 tests): live status
+  projection before/after packaging; package-then-approve through the
+  service layer creating a real derived task at `SPEC_APPROVED`; package-
+  hash-mismatch rejection; dependency reasons surfaced pre-packaging; the
+  full HTTP lifecycle (401 unauthenticated -> package -> approve -> plan
+  detail reflects `approved`); 409 on hash mismatch; 400 on an unknown
+  slice or missing fields; and a bundled-asset guard confirming `app.js`
+  ships the new slice-action hooks. Full suite: 526 tests, 0 failures, 6
+  intentional skips.
+- Verified live in a real browser against a disposable project end to end:
+  Plans list -> plan detail -> Implementation Slices tab -> Inspect ->
+  package preview -> two-step approve -> derived-task links -> the
+  existing control room correctly showing the slice-derived task at
+  `SPEC_APPROVED` with its real approval history and its normal "Start
+  coding" action present, untouched.
 
 ### Verification layers and acceptance coverage (ADR 0015, corrected by ADR 0016, hardened by ADR 0017/0018)
 
@@ -1632,6 +1675,7 @@ direct-frontier comparison claims remain unmeasured.
 | Immutable execution authorization (ADR 0026): package-hash stability/operation-id independence, no raw secret ever present, and drift rejection (task version, tracked/untracked edit, model/budget/verification-command/completion-policy/backend change) always before provider construction | `tests/test_execution_authorization.py` |
 | `app.js` regression coverage: no duplicate top-level function declarations, route-dispatch targets exist and are unique, Node syntax check, Node boot smoke (skipped with a clear reason when Node is unavailable) | `tests/test_app_js_regression.py` |
 | Approved-plan to single-slice execution (ADR 0027): package determinism, revalidation/repository-identity/stale-version rejection, the full dependency-evidence matrix (git-ancestry proof, not status alone), exact constraint/criterion propagation, advisory-path freedom, duplicate-approval/start rejection, and status projection from real task state | `tests/test_architect_slice.py` |
+| Plans UI slice experience (ADR 0027, Commit D3b): live status projection through `plan_detail`/`plan_slice_detail`, package-then-approve creating a real derived task, package-hash-mismatch rejection, dependency reasons surfaced pre-packaging, full HTTP lifecycle (401/package/approve/409/400), and bundled-asset slice-action guard | `tests/test_architect_slice_ui.py` |
 
 Fake providers are the mandatory regression mechanism. Live model or network
 tests supplement them; they must not replace deterministic coverage.
@@ -1856,7 +1900,7 @@ automation as a substitute for those proofs.
 | `0024` | Durable post-approval task execution: `VerticalSliceRunner.run()` split into a shared `_run_from_approved`/`execute_approved_task()` continuation (zero duplicated routing/context/agent/patch/verification/escalation/reporting logic), plus `ExecutionOperationRecord`/`ExecutionOperationStore`/`ExecutionWorker` mirroring the review/intake crash-safety ledgers exactly (Commit D2a: CLI/service seam; Commit D2b: control-room UI with live tool-action progress and a fixed pre-existing `reviewView` name-collision bug) |
 | `0025` | Shared, owner-scoped operation-lease discipline (`operations/lease.py`) across review/intake/execution: atomic claim/renew/release/expire, a heartbeat that renews independent of model behavior, injectable-clock recovery, eager background-worker startup closing the duplicate-enqueue race, and an explicit opt-in `--resume-recorded` CLI flag |
 | `0026` | Immutable, hashed `ExecutionAuthorizationPackage` computed by one function reused at preview/prepare/run time; a confirmation authorizes exactly what its preview showed, rejected before any provider construction on task/spec/repository-fingerprint/config drift; a dirty-parent-repository fail-closed check; genuinely live control-room progress in real execution order; and deterministic + optional Node-based `app.js` regression coverage |
-| `0027` | Approved-plan to single-slice execution: an immutable `PlanSliceExecutionPackage` (exact inherited constraints/criteria, git-ancestry-proven dependency evidence, deterministic derived-task id) bridges ADR 0019 plans into ADR 0024's durable execution service with zero duplicated execution logic; slice status is always a live projection of the derived task's real state, never a second, independently-stored copy |
+| `0027` | Approved-plan to single-slice execution: an immutable `PlanSliceExecutionPackage` (exact inherited constraints/criteria, git-ancestry-proven dependency evidence, deterministic derived-task id) bridges ADR 0019 plans into ADR 0024's durable execution service with zero duplicated execution logic; slice status is always a live projection of the derived task's real state, never a second, independently-stored copy. Commit D3b adds the Plans UI slice experience on top with zero new execution logic: live status, immutable package preview, two-step approve, and links into the derived task's existing, unmodified control room |
 
 Add a new ADR for a new architectural decision. Do not rewrite history to make
 old decisions appear current; mark an ADR superseded and link its replacement

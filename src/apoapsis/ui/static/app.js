@@ -16,6 +16,8 @@ const store = {
   evaluations: null,
   plans: null,
   plan: null,
+  planSlice: null,
+  planSliceApprovalPending: false,
   reviews: null,
   review: null,
   reviewOperation: null,
@@ -98,6 +100,13 @@ function parseRoute() {
   if (parts[0] === "task" && parts[1]) {
     return { name: "task", taskId: decodeURIComponent(parts[1]), view: parts[2] || "spec" };
   }
+  if (parts[0] === "plan" && parts[1] && parts[2] === "slice" && parts[3]) {
+    return {
+      name: "planSlice",
+      planId: decodeURIComponent(parts[1]),
+      sliceId: decodeURIComponent(parts[3]),
+    };
+  }
   if (parts[0] === "plan" && parts[1]) {
     return { name: "plan", planId: decodeURIComponent(parts[1]), view: parts[2] || "overview" };
   }
@@ -139,6 +148,13 @@ async function syncRoute() {
         render();
         store.plan = await api(`/api/plans/${encodeURIComponent(store.route.planId)}`);
       }
+    } else if (store.route.name === "planSlice") {
+      store.busy = true;
+      store.planSliceApprovalPending = false;
+      render();
+      store.planSlice = await api(
+        `/api/plans/${encodeURIComponent(store.route.planId)}/slices/${encodeURIComponent(store.route.sliceId)}`
+      );
     } else if (store.route.name === "reviews" && store.reviews === null) {
       store.busy = true;
       render();
@@ -532,9 +548,10 @@ function planSlicesView(detail) {
     : plan.slices.map((item) => item.slice_id);
   const byId = new Map(plan.slices.map((item) => [item.slice_id, item]));
   const orderedSlices = order.map((id) => byId.get(id)).filter(Boolean);
+  const statusById = new Map((detail.slices || []).map((item) => [item.slice_id, item]));
   return `<main class="content">
-    <div class="page-heading"><div><p class="eyebrow">IMPLEMENTATION SLICES / DEPENDENCY ORDER</p><h1>Small, independently<br>verifiable work packets.</h1><p>Rendered in dependency order. Suggested paths and symbols are advisory hints for the local coding model, not a grant to write outside the repository.</p></div><span class="pill purple">${orderedSlices.length} slice(s)</span></div>
-    ${orderedSlices.length ? orderedSlices.map(sliceCard).join("") : emptyState("No slices in this plan", "The imported plan did not include any implementation slices.")}
+    <div class="page-heading"><div><p class="eyebrow">IMPLEMENTATION SLICES / DEPENDENCY ORDER</p><h1>Small, independently<br>verifiable work packets.</h1><p>Rendered in dependency order. Suggested paths and symbols are advisory hints for the local coding model, not a grant to write outside the repository. Status is read live from each slice's derived task -- there is no "run all" button and no automatic scheduler.</p></div><span class="pill purple">${orderedSlices.length} slice(s)</span></div>
+    ${orderedSlices.length ? orderedSlices.map((slice) => sliceCard(slice, record.plan_id, statusById.get(slice.slice_id))).join("") : emptyState("No slices in this plan", "The imported plan did not include any implementation slices.")}
   </main>`;
 }
 
@@ -546,10 +563,41 @@ function sliceRiskClass(risk) {
   return "purple";
 }
 
-function sliceCard(slice) {
+const SLICE_STATUS_LABELS = {
+  ready_or_blocked: "Ready or blocked",
+  packaged: "Packaged",
+  approved: "Approved",
+  running: "Running",
+  complete: "Complete",
+  human_review: "Human review",
+  failed: "Failed",
+  superseded: "Superseded",
+};
+
+function sliceStatusClass(status) {
+  if (status === "complete") return "good";
+  if (status === "running" || status === "approved") return "purple";
+  if (status === "packaged") return "warn";
+  if (status === "failed" || status === "superseded") return "bad";
+  if (status === "human_review") return "warn";
+  return "purple";
+}
+
+function sliceStatusLabel(statusEntry) {
+  const status = statusEntry?.status || "ready_or_blocked";
+  return SLICE_STATUS_LABELS[status] || titleCase(status);
+}
+
+function sliceCard(slice, planId, statusEntry) {
   const references = [...(slice.inherited_constraint_ids || []), ...(slice.acceptance_criterion_ids || [])];
+  const status = statusEntry?.status || "ready_or_blocked";
   return `<article class="card card-pad mt-16">
-    <div class="constraint-head"><span class="constraint-id">${e(slice.slice_id)}</span><span class="pill ${sliceRiskClass(slice.risk_level)}">${e(titleCase(slice.risk_level || "unclassified"))} risk</span></div>
+    <div class="constraint-head">
+      <span class="constraint-id">${e(slice.slice_id)}</span>
+      <span class="pill ${sliceRiskClass(slice.risk_level)}">${e(titleCase(slice.risk_level || "unclassified"))} risk</span>
+      <span class="pill ${sliceStatusClass(status)}">${e(sliceStatusLabel(statusEntry))}</span>
+      <a class="button ghost" href="#/plan/${encodeURIComponent(planId)}/slice/${encodeURIComponent(slice.slice_id)}">Inspect →</a>
+    </div>
     <h3>${e(slice.title)}</h3>
     <p class="objective">${e(slice.objective)}</p>
     <div class="grid two mt-14">
@@ -575,6 +623,117 @@ function sliceCard(slice) {
     <p class="section-title">Work brief</p>
     <blockquote>${e(slice.work_brief)}</blockquote>
   </article>`;
+}
+
+function planSliceView() {
+  if (!store.planSlice) return loadingView();
+  const detail = store.planSlice;
+  const status = detail.status;
+  const slice = detail.slice;
+  const pkg = detail.package;
+  const task = detail.task;
+  return `<main class="content narrow">
+    <p><a href="#/plan/${encodeURIComponent(detail.plan_id)}/slices">← Back to implementation slices</a></p>
+    <div class="page-heading">
+      <div><p class="eyebrow">PLAN SLICE / ${e(detail.plan_id)}</p><h1>${e(slice.title)}</h1><p>${e(slice.objective)}</p></div>
+      <span class="pill ${sliceStatusClass(status.status)}">${e(sliceStatusLabel(status))}</span>
+    </div>
+    ${sliceDependencySection(slice, pkg)}
+    ${pkg ? slicePackagePreview(pkg) : slicePackageActionPanel(detail)}
+    ${pkg && status.status === "packaged" ? sliceApproveActionPanel(detail) : ""}
+    ${task ? sliceTaskLinksSection(detail) : ""}
+  </main>`;
+}
+
+function sliceDependencySection(slice, pkg) {
+  const dependencies = slice.dependencies || [];
+  if (!dependencies.length) return "";
+  const evidence = pkg?.dependency_evidence || [];
+  return `<section class="card card-pad mt-16">
+    <p class="section-title mt-0">Dependency evidence · ${dependencies.length}</p>
+    ${evidence.length
+      ? `<div class="verification-list">${evidence.map(sliceDependencyEvidenceItem).join("")}</div>`
+      : `<p class="muted">Depends on ${dependencies.map((item) => e(item)).join(", ")}. Package this slice to compute real, git-proven dependency evidence -- reaching COMPLETE alone is never enough; a dependency's work must actually be committed and merged into the current repository first.</p>`}
+  </section>`;
+}
+
+function sliceDependencyEvidenceItem(item) {
+  return `<div class="verification-item"><div><strong>${e(item.slice_id)}</strong><p>${e(item.reason)}</p>${item.dependency_branch ? `<p class="mono">${e(item.dependency_branch)}</p>` : ""}</div><span class="pill ${item.satisfied ? "good" : "bad"}">${item.satisfied ? "Satisfied" : "Not satisfied"}</span></div>`;
+}
+
+function slicePackageActionPanel(detail) {
+  return `<section class="card card-pad mt-16">
+    <p class="section-title mt-0">Package this slice</p>
+    <p class="muted">Deterministically compiles an immutable record of exactly what approving this slice would authorize -- the exact inherited hard constraints and acceptance criteria, configured verification commands, and dependency evidence. No model call, no task created yet.</p>
+    <button class="button primary" data-action="slice-package" data-plan-id="${e(detail.plan_id)}" data-slice-id="${e(detail.slice_id)}" data-plan-version="${e(detail.plan_version)}" ${store.busy ? "disabled" : ""}>Package this slice →</button>
+  </section>`;
+}
+
+function slicePackagePreview(pkg) {
+  const criteria = pkg.acceptance_criteria || [];
+  const constraints = pkg.inherited_hard_constraints || [];
+  return `<section class="card card-pad mt-16">
+    <p class="section-title mt-0">Immutable package · ${e(pkg.package_id)}</p>
+    <div class="mono">HASH ${e(pkg.package_sha256)}</div>
+    <div class="mt-14 mono">REPOSITORY: ${e(pkg.repository_root)}</div>
+    <div class="mono">HEAD ${e(pkg.repository_head_commit)} · FINGERPRINT ${e(pkg.repository_fingerprint)}</div>
+    <p class="section-title">Exclusions</p>
+    ${(pkg.exclusions || []).length ? `<ul>${pkg.exclusions.map((item) => `<li>${e(item)}</li>`).join("")}</ul>` : `<p class="muted">None recorded.</p>`}
+    <p class="section-title">Interface contracts</p>
+    ${(pkg.interface_contracts || []).length ? `<ul>${pkg.interface_contracts.map((item) => `<li class="mono">${e(item)}</li>`).join("")}</ul>` : `<p class="muted">None recorded.</p>`}
+    <p class="section-title">Inherited hard constraints · ${constraints.length}</p>
+    ${constraints.length ? constraints.map(constraintCard).join("") : `<p class="muted">None inherited.</p>`}
+    <p class="section-title">Acceptance criteria · ${criteria.length}</p>
+    ${criteria.length ? criteria.map(sliceCriterionCard).join("") : `<p class="muted">None inherited.</p>`}
+    <p class="section-title">Configured verification commands</p>
+    <p class="mono">${(pkg.verification_commands || []).map((item) => e(item)).join(", ") || "None named."}</p>
+    <p class="section-title">Advisory (hints for the local coding model, never a filesystem allowlist)</p>
+    <div class="file-item"><span>Suggested paths</span><code>${e((pkg.advisory_suggested_paths || []).join(", ") || "none")}</code></div>
+    <div class="file-item"><span>Suggested symbols</span><code>${e((pkg.advisory_suggested_symbols || []).join(", ") || "none")}</code></div>
+    <div class="file-item"><span>Context seeds</span><code>${e((pkg.advisory_context_seeds || []).join(", ") || "none")}</code></div>
+  </section>`;
+}
+
+function sliceCriterionCard(criterion) {
+  return `<article class="constraint"><div class="constraint-head"><span class="constraint-id">${e(criterion.id)}</span><span class="pill ${criterion.status === "active" ? "good" : "warn"}">${e(criterion.status)}</span></div><blockquote>${e(criterion.text)}</blockquote>${criterion.verification_method ? `<div class="interpretation"><span class="meta">VERIFY: ${e(criterion.verification_method)}</span></div>` : ""}</article>`;
+}
+
+function sliceApproveActionPanel(detail) {
+  const pkg = detail.package;
+  if (!store.planSliceApprovalPending) {
+    return `<div class="approval-bar mt-16"><div><strong>Ready for approval</strong><span>Approving authorizes exactly the package above. This creates the derived task but does not start it -- starting is always a separate, later action.</span></div><div class="approval-actions"><button class="button primary" data-action="slice-approve-intent">Approve this slice →</button></div></div>`;
+  }
+  return `<div class="approval-bar mt-16">
+    <div>
+      <strong>Confirm: approve this slice</strong>
+      <span>This creates a real task from the exact package above, through the normal specification-approval transitions. Nothing executes yet.</span>
+      <div class="mt-14 mono">PACKAGE HASH: ${e(pkg.package_sha256)}</div>
+    </div>
+    <div class="approval-actions">
+      <button class="button ghost" data-action="slice-approve-cancel">Cancel</button>
+      <button class="button primary" data-action="slice-approve-confirm" data-plan-id="${e(detail.plan_id)}" data-slice-id="${e(detail.slice_id)}" data-package-sha256="${e(pkg.package_sha256)}" ${store.busy ? "disabled" : ""}>Confirm approval →</button>
+    </div>
+  </div>`;
+}
+
+function sliceTaskLinksSection(detail) {
+  const task = detail.task;
+  const taskRecord = task.task;
+  const taskId = taskRecord.task_id;
+  const preview = task.execution_preview;
+  const humanReview = taskRecord.state === "HUMAN_REVIEW_REQUIRED";
+  return `<section class="card card-pad mt-16">
+    <p class="section-title mt-0">Derived task · ${e(taskId)}</p>
+    <p class="muted">This slice's approved package became this task (currently ${e(titleCase(taskRecord.state))}). Starting it runs through the exact same durable execution service every other task uses -- open the control room to start coding.</p>
+    ${preview ? `<div class="mt-14 mono">PREDICTED ROUTE: ${e(preview.predicted_route || "n/a")} · LOCAL MODEL: ${e(preview.local_model || "unknown")}${preview.frontier_available ? ` · FRONTIER MODEL: ${e(preview.frontier_model || "unknown")}` : " · FRONTIER: not configured"}</div>
+    <div class="mono">COMPLETION POLICY: ${e(preview.completion_policy)} · SANDBOX: ${e(preview.verification_backend)}</div>` : ""}
+    <div class="approval-actions mt-14">
+      <a class="button primary" href="#/task/${encodeURIComponent(taskId)}/control">Open control room →</a>
+      <a class="button ghost" href="#/task/${encodeURIComponent(taskId)}/changes">Changes & verification</a>
+      <a class="button ghost" href="#/task/${encodeURIComponent(taskId)}/report">Report & audit</a>
+      ${humanReview ? `<a class="button ghost" href="#/review/${encodeURIComponent(taskId)}">Open Human Review case →</a>` : ""}
+    </div>
+  </section>`;
 }
 
 const REVIEW_ACTION_LABELS = {
@@ -1186,6 +1345,7 @@ function render() {
   }
   let view;
   if (store.route.name === "task") view = taskView();
+  else if (store.route.name === "planSlice") view = planSliceView();
   else if (store.route.name === "plan") view = planView();
   else if (store.route.name === "plans") view = plansView();
   else if (store.route.name === "review") view = reviewView();
@@ -1255,6 +1415,54 @@ async function approvePlan(button) {
   }
 }
 
+async function packagePlanSlice(button) {
+  const planId = button.dataset.planId;
+  const sliceId = button.dataset.sliceId;
+  const planVersion = Number(button.dataset.planVersion);
+  store.busy = true;
+  store.error = null;
+  render();
+  try {
+    await api(
+      `/api/plans/${encodeURIComponent(planId)}/slices/${encodeURIComponent(sliceId)}/package`,
+      { method: "POST", body: JSON.stringify({ expected_plan_version: planVersion }) }
+    );
+    store.planSlice = await api(
+      `/api/plans/${encodeURIComponent(planId)}/slices/${encodeURIComponent(sliceId)}`
+    );
+  } catch (error) {
+    store.error = error.message;
+  } finally {
+    store.busy = false;
+    render();
+  }
+}
+
+async function approvePlanSlice(button) {
+  const planId = button.dataset.planId;
+  const sliceId = button.dataset.sliceId;
+  const packageSha256 = button.dataset.packageSha256;
+  store.busy = true;
+  store.error = null;
+  render();
+  try {
+    await api(
+      `/api/plans/${encodeURIComponent(planId)}/slices/${encodeURIComponent(sliceId)}/approve`,
+      { method: "POST", body: JSON.stringify({ expected_package_sha256: packageSha256 }) }
+    );
+    store.planSlice = await api(
+      `/api/plans/${encodeURIComponent(planId)}/slices/${encodeURIComponent(sliceId)}`
+    );
+    store.planSliceApprovalPending = false;
+    store.plan = null;
+  } catch (error) {
+    store.error = error.message;
+  } finally {
+    store.busy = false;
+    render();
+  }
+}
+
 root.addEventListener("click", (event) => {
   const button = event.target.closest("[data-action]");
   if (!button) return;
@@ -1277,6 +1485,16 @@ root.addEventListener("click", (event) => {
     render();
   }
   if (button.dataset.action === "plan-approve-confirm") approvePlan(button);
+  if (button.dataset.action === "slice-package") packagePlanSlice(button);
+  if (button.dataset.action === "slice-approve-intent") {
+    store.planSliceApprovalPending = true;
+    render();
+  }
+  if (button.dataset.action === "slice-approve-cancel") {
+    store.planSliceApprovalPending = false;
+    render();
+  }
+  if (button.dataset.action === "slice-approve-confirm") approvePlanSlice(button);
   if (button.dataset.action === "review-act-intent") {
     store.reviewConfirm = { action: button.dataset.reviewAction };
     render();

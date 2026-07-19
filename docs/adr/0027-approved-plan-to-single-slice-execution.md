@@ -231,7 +231,68 @@ Full suite: 514 tests, 0 failures, 6 intentional skips.
 - Does not auto-start a next slice, auto-approve a plan revision, or mark
   a plan `EXECUTED` -- a plan's own `PlanStatus.EXECUTED` value exists in
   ADR 0019's schema but nothing in this milestone ever sets it.
-- Not yet a UI surface -- that is Commit D3b, tracked separately.
+- Commit D3a itself added no UI surface -- see the D3b addendum below.
+
+## Addendum: Commit D3b -- the Plans UI slice experience
+
+Everything above is reachable only through `apoapsis plan slice ...`. This
+addendum adds the browser surface, with zero new execution, routing, or
+completion logic of its own -- every service function it calls is the exact
+one D3a already built and tested.
+
+`ApoapsisUIService.plan_detail()` now includes a `slices` array (each entry
+`{slice_id, status, record}`, from the same `project_slice_status()` D3a
+already exposes to the CLI) so the Plans list and the Implementation Slices
+tab show real, live per-slice status without any new persisted field.
+`plan_slice_detail(plan_id, slice_id)` composes the slice definition, its
+live status, its latest package (via the new public
+`read_latest_slice_package()`, `None` before packaging), and the derived
+task's own `available_actions`/links once one exists.
+`package_plan_slice()`/`approve_plan_slice()` are thin service wrappers
+around `package_slice()`/`approve_slice()` -- no new validation, no new
+state, no new error type beyond re-exporting D3a's own exceptions to the
+HTTP layer.
+
+`ui/server.py` adds `GET /api/plans/<plan_id>/slices/<slice_id>` and
+`POST .../package` and `.../approve`, inserted **before** the existing
+generic `/api/plans/` and `.../approve` routes, since a slice-approve URL
+also ends in `/approve` and would otherwise be caught by the plan-level
+handler first. Handlers only validate the request body, call the one
+matching service function, and translate its typed exceptions to status
+codes (400 for packaging/lookup errors, 409 for a package-hash mismatch at
+approval) -- no direct model, command, or Git call, no invented state, no
+routing or completion decision, matching every other handler in this file.
+
+The UI's only genuinely new surface is the slice list, an immutable package
+preview (exact inherited constraints/criteria, verification commands,
+repository fingerprint, dependency evidence, advisory hints -- all read
+verbatim off the package, nothing re-derived in JavaScript), and a two-step
+Approve action (`intent -> confirm`, mirroring ADR 0026's own preview/confirm
+discipline for "Start coding"). Once a slice is approved, its derived task
+is deliberately indistinguishable from any other task: D3b renders links to
+that task's existing, completely unmodified control room, changes/
+verification view, and report/audit view rather than duplicating any of
+that machinery. There is no "Run all" button and no scheduler anywhere in
+this surface -- starting a slice's derived task still requires the same
+explicit "Start coding" confirmation every other task requires.
+
+New `tests/test_architect_slice_ui.py` (12 tests): live slice-status
+projection on `plan_detail`/`plan_slice_detail` before and after packaging;
+package-then-approve through the service layer creating a real derived task
+at `SPEC_APPROVED`; package-hash-mismatch rejection at approval; dependency
+reasons surfaced before packaging; the full HTTP lifecycle (unauthenticated
+-> 401, package -> approve -> plan detail reflects `approved`); hash-
+mismatch over HTTP -> 409; unknown slice -> 400; missing request fields ->
+400; and a bundled-asset guard confirming `app.js` actually ships the new
+slice-action hooks. Full suite: 526 tests, 0 failures, 6 intentional skips.
+`python -m compileall -q src tests` and `git diff --check` both clean.
+
+Verified live in a real browser against a disposable project: plan list ->
+plan detail (slice status renders) -> Implementation Slices tab -> Inspect
+-> package preview -> two-step approve -> derived-task links -> the
+existing, unmodified control room recognizing the slice-derived task at
+`SPEC_APPROVED` with its real specification-approval history and its normal
+"Start coding" action present and untouched.
 
 ## Consequences
 

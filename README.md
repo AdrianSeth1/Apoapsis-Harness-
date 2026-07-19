@@ -480,6 +480,13 @@ start` uses. A slice's status is always read live from its derived task's
 real state, never a separate, independently-tracked copy of it. Nothing
 here ever starts a next slice, merges, or commits automatically.
 
+The same flow is available from the browser: a plan's Implementation Slices
+tab shows live per-slice status, an Inspect view renders the same immutable
+package preview, and a two-step Approve action creates the derived task --
+which then behaves exactly like any other task, including the existing
+control room's own "Start coding" confirmation. There is no "Run all"
+button and no scheduler in the UI.
+
 ## Diagnostics and evaluation
 
 Check the local toolchain, configured models, context limits, credential

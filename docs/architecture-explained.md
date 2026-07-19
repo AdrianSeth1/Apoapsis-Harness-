@@ -530,10 +530,23 @@ own real history, that a completed slice's work was actually merged in --
 not merely that its task reported success.
 
 There is no autonomous scheduler or agent swarm here. The planner suggests
-the work breakdown; Apoapsis and the user retain execution authority. What
-remains is giving this the same kind of browser experience "Start coding"
-already has for ordinary tasks -- selecting a ready slice, previewing its
-package, and approving/starting it without touching the CLI.
+the work breakdown; Apoapsis and the user retain execution authority.
+
+### Done: the same experience, from the browser (ADR 0027, Commit D3b)
+
+Everything above is now also reachable without the CLI. A plan's
+Implementation Slices tab shows real, live status per slice; opening one
+renders the exact same immutable package preview described above (inherited
+constraints, acceptance criteria, dependency evidence, advisory hints);
+approving it is a deliberate two-step action (choose, then confirm) that
+creates the real derived task. From that point on, the task is genuinely
+indistinguishable from any other task in the application -- it shows up in
+the same control room, with the same "Start coding" confirmation, the same
+live progress feed, and the same links to its diff, verification results,
+and Human Review case if it stops for one. Nothing about starting or
+tracking a slice's execution was duplicated to make this work; the UI's
+only new code is the slice list, the package preview, and the approval
+action itself. There is still no "Run all" button anywhere.
 
 ### Then prove whether planning helps
 

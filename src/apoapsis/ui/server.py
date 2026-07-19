@@ -11,11 +11,16 @@ from typing import Any
 from urllib.parse import unquote, urlsplit
 
 from apoapsis.architect.errors import (
+    ActiveSliceExecutionExistsError,
     ConcurrentPlanTransitionError,
+    ConcurrentSliceExecutionTransitionError,
     InvalidPlanTransitionError,
     PlanActionError,
     PlanNotFoundError,
     PlanStoreError,
+    SliceApprovalError,
+    SliceExecutionNotFoundError,
+    SlicePackagingError,
 )
 from apoapsis.execution.operation_errors import (
     ExecutionOperationError,
@@ -93,6 +98,12 @@ class ApoapsisUIRequestHandler(BaseHTTPRequestHandler):
         if path.startswith("/api/tasks/") and path.endswith("/execute"):
             self._handle_task_execute(path)
             return
+        if "/slices/" in path and path.endswith("/package"):
+            self._handle_plan_slice_package(path)
+            return
+        if "/slices/" in path and path.endswith("/approve"):
+            self._handle_plan_slice_approve(path)
+            return
         if path.startswith("/api/plans/") and path.endswith("/approve"):
             self._handle_plan_approve(path)
             return
@@ -169,6 +180,59 @@ class ApoapsisUIRequestHandler(BaseHTTPRequestHandler):
         ) as exc:
             self._send_error(HTTPStatus.CONFLICT, str(exc))
         except (PlanStoreError, ValueError, json.JSONDecodeError) as exc:
+            self._send_error(HTTPStatus.BAD_REQUEST, str(exc))
+        else:
+            self._send_json(HTTPStatus.OK, payload)
+
+    @staticmethod
+    def _parse_plan_slice_path(path: str, suffix: str) -> tuple[str, str]:
+        remainder = path[len("/api/plans/") : -len(suffix)].strip("/")
+        plan_part, _, slice_part = remainder.partition("/slices/")
+        return unquote(plan_part), unquote(slice_part)
+
+    def _handle_plan_slice_package(self, path: str) -> None:
+        plan_id, slice_id = self._parse_plan_slice_path(path, "/package")
+        try:
+            body = self._read_json_body()
+            expected_plan_version = body.get("expected_plan_version")
+            if not isinstance(expected_plan_version, int) or isinstance(
+                expected_plan_version, bool
+            ):
+                raise ValueError("expected_plan_version must be an integer")
+            payload = self.server.service.package_plan_slice(
+                plan_id, slice_id, expected_plan_version=expected_plan_version
+            )
+        except (PlanNotFoundError, SliceExecutionNotFoundError):
+            self._send_error(HTTPStatus.NOT_FOUND, "not found")
+        except SlicePackagingError as exc:
+            self._send_error(HTTPStatus.CONFLICT, str(exc))
+        except (TaskStoreError, PlanStoreError, ValueError, json.JSONDecodeError) as exc:
+            self._send_error(HTTPStatus.BAD_REQUEST, str(exc))
+        else:
+            self._send_json(HTTPStatus.OK, payload)
+
+    def _handle_plan_slice_approve(self, path: str) -> None:
+        plan_id, slice_id = self._parse_plan_slice_path(path, "/approve")
+        try:
+            body = self._read_json_body()
+            expected_package_sha256 = body.get("expected_package_sha256")
+            if (
+                not isinstance(expected_package_sha256, str)
+                or not expected_package_sha256
+            ):
+                raise ValueError("expected_package_sha256 is required")
+            payload = self.server.service.approve_plan_slice(
+                plan_id, slice_id, expected_package_sha256=expected_package_sha256
+            )
+        except (PlanNotFoundError, SliceExecutionNotFoundError):
+            self._send_error(HTTPStatus.NOT_FOUND, "not found")
+        except (
+            SliceApprovalError,
+            ActiveSliceExecutionExistsError,
+            ConcurrentSliceExecutionTransitionError,
+        ) as exc:
+            self._send_error(HTTPStatus.CONFLICT, str(exc))
+        except (TaskStoreError, PlanStoreError, ValueError, json.JSONDecodeError) as exc:
             self._send_error(HTTPStatus.BAD_REQUEST, str(exc))
         else:
             self._send_json(HTTPStatus.OK, payload)
@@ -259,6 +323,12 @@ class ApoapsisUIRequestHandler(BaseHTTPRequestHandler):
             elif path.startswith("/api/tasks/"):
                 task_id = unquote(path[len("/api/tasks/") :]).strip("/")
                 payload = self.server.service.task_detail(task_id)
+            elif "/slices/" in path and path.startswith("/api/plans/"):
+                remainder = path[len("/api/plans/") :].strip("/")
+                plan_part, _, slice_part = remainder.partition("/slices/")
+                payload = self.server.service.plan_slice_detail(
+                    unquote(plan_part), unquote(slice_part)
+                )
             elif path.startswith("/api/plans/"):
                 plan_id = unquote(path[len("/api/plans/") :]).strip("/")
                 payload = self.server.service.plan_detail(plan_id)
@@ -293,6 +363,7 @@ class ApoapsisUIRequestHandler(BaseHTTPRequestHandler):
             OperationNotFoundError,
             IntakeOperationNotFoundError,
             ExecutionOperationNotFoundError,
+            SliceExecutionNotFoundError,
         ):
             self._send_error(HTTPStatus.NOT_FOUND, "not found")
         except (
