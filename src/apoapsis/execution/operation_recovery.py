@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime
 
 from pydantic import Field
 
+from apoapsis.execution.operation_errors import ExecutionOperationError
 from apoapsis.execution.operation_schema import ExecutionOperationStatus
 from apoapsis.execution.operation_store import ExecutionOperationStore
 from apoapsis.specification.schema import StrictModel, utc_now
@@ -24,8 +25,6 @@ _NO_FURTHER_ACTION_STATES = frozenset(
     }
 )
 
-DEFAULT_RUNNING_EXPIRY = timedelta(minutes=15)
-
 
 class ExecutionRecoveryReport(StrictModel):
     """What one recovery pass actually did -- never speculative, only
@@ -40,11 +39,11 @@ def recover_stale_execution_operations(
     task_store: SQLiteTaskStore,
     operation_store: ExecutionOperationStore,
     *,
-    running_expiry: timedelta = DEFAULT_RUNNING_EXPIRY,
+    now: datetime | None = None,
 ) -> ExecutionRecoveryReport:
     """Explicit crash recovery for the execution-operation ledger (ADR
-    0024), structurally mirroring ``review.recovery
-    .recover_stale_operations`` and ``intake.recovery
+    0024, lease discipline hardened by ADR 0025), structurally mirroring
+    ``review.recovery.recover_stale_operations`` and ``intake.recovery
     .recover_stale_intake_operations``.
 
     ``RECORDED`` operations have never transmitted anything or created a
@@ -56,40 +55,49 @@ def recover_stale_execution_operations(
     ``RUNNING`` operations are different: a provider call, patch
     application, or verification run may or may not have completed before
     the owning process died, so this function never touches a ``RUNNING``
-    row that is still within ``running_expiry`` of its last update. Only
-    once a ``RUNNING`` row has gone stale beyond ``running_expiry`` is it
-    moved to the terminal, inspectable ``AMBIGUOUS`` status -- never
-    automatically repeated, never silently resolved either way, and the
-    task's worktree (if one was created) is never touched here -- only an
-    explicit, separate ``abandon`` action ever cleans one up. If the
-    task is stuck anywhere between ``SPEC_APPROVED`` and a terminal state,
-    it is returned to ``HUMAN_REVIEW_REQUIRED`` through whichever
-    permitted transition edge already exists from its current state (every
+    row whose lease has not actually expired -- a healthy operation that
+    is still being renewed by its own :class:`~apoapsis.operations.lease
+    .LeaseHeartbeat` is left alone regardless of how long it has been
+    running. Only once a lease has genuinely expired (checked atomically,
+    never by reading ``updated_at`` and guessing) is the row moved to the
+    terminal, inspectable ``AMBIGUOUS`` status -- never automatically
+    repeated, never silently resolved either way, and the task's worktree
+    (if one was created) is never touched here -- only an explicit,
+    separate ``abandon`` action ever cleans one up. If the task is stuck
+    anywhere between ``SPEC_APPROVED`` and a terminal state, it is
+    returned to ``HUMAN_REVIEW_REQUIRED`` through whichever permitted
+    transition edge already exists from its current state (every
     intermediate state has one), with an event that makes no claim about
     whether the interrupted work succeeded or failed.
     """
 
     report = ExecutionRecoveryReport()
-    now = utc_now()
+    moment = now if now is not None else utc_now()
     for record in operation_store.list_active():
         if record.status == ExecutionOperationStatus.RECORDED:
             report.reclaimed_operation_ids.append(record.operation_id)
             continue
 
-        age = now - record.updated_at
-        if age < running_expiry:
-            continue
+        if record.lease_expires_at is not None and record.lease_expires_at >= moment:
+            continue  # a healthy operation, still renewing its own lease
 
-        operation_store.mark_ambiguous(
-            record.operation_id,
-            note=(
-                f"no update for {age}; the process running this operation "
-                "may have crashed. Whether execution completed before "
-                "that happened is unknown -- this operation is not "
-                "automatically repeated, and any worktree it created is "
-                "left untouched."
-            ),
-        )
+        try:
+            operation_store.mark_ambiguous(
+                record.operation_id,
+                note=(
+                    "this operation's lease expired without renewal; the "
+                    "process running it may have crashed. Whether "
+                    "execution completed before that happened is unknown "
+                    "-- this operation is not automatically repeated, and "
+                    "any worktree it created is left untouched."
+                ),
+                now=moment,
+            )
+        except ExecutionOperationError:
+            # Lost the race: the owner renewed the lease (or the row
+            # otherwise changed) between our read and this attempt. Leave
+            # it alone -- it is not actually stale.
+            continue
         report.ambiguous_operation_ids.append(record.operation_id)
 
         try:
@@ -121,8 +129,4 @@ def recover_stale_execution_operations(
     return report
 
 
-__all__ = [
-    "DEFAULT_RUNNING_EXPIRY",
-    "ExecutionRecoveryReport",
-    "recover_stale_execution_operations",
-]
+__all__ = ["ExecutionRecoveryReport", "recover_stale_execution_operations"]

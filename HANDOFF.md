@@ -19,11 +19,11 @@ without replacing this canonical coding-agent handoff.
 | Item | Current value |
 | --- | --- |
 | Last verified | 2026-07-19 |
-| Working-tree version | `1.0` plus ADR 0013 Windows local-model lifecycle, ADR 0014 first local operator-interface slice, ADR 0015 verification layers and acceptance coverage, ADR 0016's corrective follow-up, ADR 0017's worktree-fingerprint/explicit-acceptance-designation hardening, the opt-in `local-strict` evaluation lane with its first live result, ADR 0018's acceptance-failure-evidence/bounded-specification-correction fixes, ADR 0019's Architect Mode planning foundation plus its Plans UI surface, ADR 0020's deterministic human-review-and-resume CLI and UI, ADR 0021's review/resume integrity hardening, ADR 0022's explicit human-authorized fresh frontier stage, ADR 0023's durable new-task intake (CLI/service seam and New Task UI screen), and ADR 0024's durable post-approval task execution (CLI/service seam and control-room UI) |
+| Working-tree version | `1.0` plus ADR 0013 Windows local-model lifecycle, ADR 0014 first local operator-interface slice, ADR 0015 verification layers and acceptance coverage, ADR 0016's corrective follow-up, ADR 0017's worktree-fingerprint/explicit-acceptance-designation hardening, the opt-in `local-strict` evaluation lane with its first live result, ADR 0018's acceptance-failure-evidence/bounded-specification-correction fixes, ADR 0019's Architect Mode planning foundation plus its Plans UI surface, ADR 0020's deterministic human-review-and-resume CLI and UI, ADR 0021's review/resume integrity hardening, ADR 0022's explicit human-authorized fresh frontier stage, ADR 0023's durable new-task intake (CLI/service seam and New Task UI screen), ADR 0024's durable post-approval task execution (CLI/service seam and control-room UI), and ADR 0025's shared operation-lease and recovery-integrity hardening across all three operation ledgers |
 | Checked-out branch | `main` |
-| Repository state | The 1.0/lifecycle baseline, the ADR 0014 UI slice, the ADR 0015 acceptance-coverage milestone, the ADR 0016 correction, the ADR 0017 hardening, the `local-strict` lane, the ADR 0018 fixes, ADR 0019's Architect Mode foundation (CLI + Plans UI), ADR 0020's review/resume CLI and UI, ADR 0021's hardening, ADR 0022's `authorize_frontier_stage` action, and ADR 0023's `apoapsis intake` seam are all committed on `main`; live evaluation evidence is committed separately. `DESIGN.md` is preserved as a separate, committed user-supplied design reference. Run `git status` and `git log -1 --oneline` for the exact current state. |
+| Repository state | The 1.0/lifecycle baseline, the ADR 0014 UI slice, the ADR 0015 acceptance-coverage milestone, the ADR 0016 correction, the ADR 0017 hardening, the `local-strict` lane, the ADR 0018 fixes, ADR 0019's Architect Mode foundation (CLI + Plans UI), ADR 0020's review/resume CLI and UI, ADR 0021's hardening, ADR 0022's `authorize_frontier_stage` action, ADR 0023's `apoapsis intake` seam, ADR 0024's `apoapsis execute` seam and control-room UI, and ADR 0025's lease/recovery hardening are all committed on `main`; live evaluation evidence is committed separately. `DESIGN.md` is preserved as a separate, committed user-supplied design reference. Run `git status` and `git log -1 --oneline` for the exact current state. |
 | Preserved substrate tag | `substrate-v0.1` at `4c2e735` |
-| Full deterministic suite | 452 tests, 0 failures, 0 errors, 6 intentional skips (2 live-network, 1 live-Docker, 3 machine currently lacks the Windows privilege to create symlinks) |
+| Full deterministic suite | 478 tests, 0 failures, 0 errors, 6 intentional skips (2 live-network, 1 live-Docker, 3 machine currently lacks the Windows privilege to create symlinks) |
 | Syntax check | `python -m compileall -q src tests` passed |
 | Diff check | `git diff --check` passed; Git reported only expected LF-to-CRLF working-copy warnings |
 | Live local coding result | Qwen3-Coder-Next Q4 completed the controlled download-service task in 10 turns and 3 verification runs |
@@ -576,6 +576,73 @@ architecture.
   executed the wrong one and crashed) -- invisible to every existing test
   because none of them execute `app.js`. Fixed by renaming the task-page
   sub-tab placeholder to `taskReviewTabView(detail)`.
+
+### Operation lease and recovery integrity (ADR 0025)
+
+- `src/apoapsis/operations/lease.py` is new, deliberately shared code (the
+  one intentional exception to review/intake/execution's usual mirroring
+  convention): table-name-parameterized `claim_lease()`/`renew_lease()`/
+  `release_lease()`/`expire_lease_to_ambiguous()`/`ensure_lease_columns()`,
+  each a single atomically-guarded `UPDATE ... WHERE` -- never a
+  read-then-write -- plus `LeaseHeartbeat`, a daemon-thread ticker that
+  renews on a fixed wall-clock interval independent of how long the
+  underlying model call or agent turn actually takes.
+- All three operation records
+  (`Review`/`Intake`/`ExecutionOperationRecord`) gained `lease_owner_id`/
+  `lease_expires_at` (additive SQLite migration, `ensure_lease_columns()`,
+  safe against both fresh and pre-existing databases). `mark_running()`
+  now requires `owner_id` and claims the lease; `mark_succeeded()`/
+  `mark_failed()`/`mark_pending_approval()` require the same `owner_id`
+  and release it atomically, raising `LeaseLostError` if a different
+  owner or recovery already won the row (a row still at `RECORDED`
+  instead raises the store's own domain error -- an invalid transition,
+  not a lease race). Each `run_*_operation()` function claims a fresh
+  `owner_id`, starts a `LeaseHeartbeat` renewing it, and stops the
+  heartbeat in a `finally` block regardless of outcome.
+- Recovery (`recover_stale_operations`/`recover_stale_intake_operations`/
+  `recover_stale_execution_operations`) no longer guesses staleness from
+  `updated_at` plus a fixed `running_expiry` window; it reads each
+  `RUNNING` record's own `lease_expires_at` and takes an injectable
+  `now: datetime | None = None` for deterministic tests. A long-but-healthy
+  operation renewed by its own heartbeat survives arbitrarily many former
+  15-minute staleness windows; a lease that stops being renewed is
+  reclaimed and marked `AMBIGUOUS` exactly once, atomically, with the
+  original (now-expired) owner permanently locked out of overwriting that
+  outcome. A legacy `RUNNING` row with `NULL` lease columns (written
+  before this migration) is treated as unconditionally expired -- fail
+  closed, since there is no signal to prove such a row's owner is alive.
+- `ApoapsisUIService.start_background_workers()` is new:
+  `create_ui_server()` calls it immediately after constructing the
+  service, eagerly constructing all three operation workers (each running
+  its own startup recovery pass) before the HTTP server ever accepts a
+  request. This closes two gaps at once: a stranded `RECORDED` operation
+  is reclaimed and queued the moment `apoapsis ui` starts, not only when
+  an unrelated new submission happens to lazily construct that worker for
+  the first time; and the previous duplicate-enqueue race (preparing a
+  `RECORDED` row, then lazily constructing a worker whose own startup scan
+  discovers and enqueues that same row a second time, right alongside the
+  caller's own explicit `.submit()`) is structurally closed, since the
+  worker now always already exists by the time any record is prepared.
+- CLI: `apoapsis review/intake/execute recover` stays report-only by
+  default (unchanged). A new `--resume-recorded` flag makes running
+  reclaimed work an explicit, foreground, opt-in CLI action -- for every
+  reclaimed `RECORDED` id, the CLI process itself calls the matching
+  `run_*_operation()` synchronously and returns the results under
+  `result["resumed"]`. Recovering *data* (what happened) is never
+  conflated with authorizing a *model* to run.
+- New `tests/test_operation_lease.py` (22 tests: the shared primitives
+  directly; `LeaseHeartbeat`'s renewal/lease-lost behavior on injected
+  millisecond intervals; and one shared parametrized base class proving
+  review/intake/execution all exhibit identical lease semantics -- long
+  healthy survival across simulated staleness windows, heartbeat-stops-
+  then-ambiguous, old-owner-locked-out-after-recovery-wins, and
+  duplicate-claim rejection). `tests/test_execution_ui.py` gained a test
+  proving `start_background_workers()` alone reclaims and completes a
+  stranded operation with no submission call at all.
+  `tests/test_intake_cli.py` gained two tests for `--resume-recorded`
+  (report-only leaves the operation untouched; with the flag and a
+  patched fake provider, the operation actually runs to completion).
+  Full suite: 478 tests, 0 failures, 6 intentional skips.
 
 ### Verification layers and acceptance coverage (ADR 0015, corrected by ADR 0016, hardened by ADR 0017/0018)
 
@@ -1382,7 +1449,8 @@ direct-frontier comparison claims remain unmeasured.
 | Intake CLI seam (`submit`/`inspect`/`recover`) and unaffected `run`/`task` commands | `tests/test_intake_cli.py` |
 | Intake UI: service/API/security, background-worker execution, duplicate/reconnect, ambiguous-operation visibility, and the New Task screen's bundled JS | `tests/test_intake_ui.py` |
 | Durable post-approval execution: local/frontier/one-shot completion, escalation, critical-risk-before-worktree, budget-exhausted human review, duplicate/simultaneous operations, stale version/repository-HEAD rejection, provider-construction failure, and crash recovery (reclaim/ambiguous-with-worktree-preserved/return-to-review) | `tests/test_execution_operations.py` |
-| Execution control-room UI: service/API/security, background-worker execution, duplicate/reconnect, ambiguous-operation visibility, `task_detail`'s execution-preview/active-operation/recent-turns fields, and bundled-asset sanity | `tests/test_execution_ui.py` |
+| Execution control-room UI: service/API/security, background-worker execution, duplicate/reconnect, ambiguous-operation visibility, `task_detail`'s execution-preview/active-operation/recent-turns fields, bundled-asset sanity, and eager-startup reclaim without submission | `tests/test_execution_ui.py` |
+| Shared operation-lease discipline (ADR 0025): atomic claim/renew/release/expire, legacy-row fail-closed, `LeaseHeartbeat` renewal/lease-lost, and identical semantics proven across review/intake/execution | `tests/test_operation_lease.py` |
 
 Fake providers are the mandatory regression mechanism. Live model or network
 tests supplement them; they must not replace deterministic coverage.
@@ -1431,7 +1499,17 @@ tests supplement them; they must not replace deterministic coverage.
    implementation exactly) as a crash-safe operation, with live progress
    projected from persisted turn records and operation state. A user can
    now go from a typed natural-language request to a completed (or
-   Human-Review-stopped) task entirely from the browser.
+   Human-Review-stopped) task entirely from the browser. ADR 0025
+   hardens all three ledgers with a shared, owner-scoped lease
+   (`operations/lease.py`): `RUNNING` is a live claim with a renewed
+   deadline, not a last-write-timestamp guess, so a long-but-healthy
+   operation survives arbitrarily many former staleness windows while a
+   genuinely crashed one is reclaimed exactly once; `create_ui_server()`
+   now starts all three background workers eagerly, so a stranded
+   `RECORDED` operation is reclaimed the moment the UI server starts,
+   with no unrelated second task required; and `apoapsis */recover
+   --resume-recorded` makes running reclaimed work an explicit,
+   opt-in CLI action, separate from merely reporting it.
 7. **Cost is configured, not discovered.** Zero pricing yields a valid but
    economically uninformative report.
 8. **Live network tests are intentionally skipped by default.** Run them only
@@ -1595,6 +1673,7 @@ automation as a substitute for those proofs.
 | `0022` | Explicit, human-authorized fresh frontier stage (`AUTHORIZE_FRONTIER_STAGE`), distinct from `FRONTIER_CONTINUATION`, sharing an extracted `build_local_to_frontier_escalation()` with automatic in-process escalation |
 | `0023` | Durable model-assisted new-task intake: `IntakeOperationRecord`/`IntakeOperationStore`/`IntakeWorker` mirroring the review-operation crash-safety ledger, reusing `SpecificationExtractor`'s exact bounded-correction contract, stopping at `SPEC_DRAFTED` without executing the task (Commit D1a: CLI/service seam; Commit D1b: New Task UI screen, reusing the existing, unmodified specification-approval action) |
 | `0024` | Durable post-approval task execution: `VerticalSliceRunner.run()` split into a shared `_run_from_approved`/`execute_approved_task()` continuation (zero duplicated routing/context/agent/patch/verification/escalation/reporting logic), plus `ExecutionOperationRecord`/`ExecutionOperationStore`/`ExecutionWorker` mirroring the review/intake crash-safety ledgers exactly (Commit D2a: CLI/service seam; Commit D2b: control-room UI with live tool-action progress and a fixed pre-existing `reviewView` name-collision bug) |
+| `0025` | Shared, owner-scoped operation-lease discipline (`operations/lease.py`) across review/intake/execution: atomic claim/renew/release/expire, a heartbeat that renews independent of model behavior, injectable-clock recovery, eager background-worker startup closing the duplicate-enqueue race, and an explicit opt-in `--resume-recorded` CLI flag |
 
 Add a new ADR for a new architectural decision. Do not rewrite history to make
 old decisions appear current; mark an ADR superseded and link its replacement

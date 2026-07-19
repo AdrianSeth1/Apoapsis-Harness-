@@ -394,9 +394,15 @@ def create_ui_server(
         raise ValueError("the Apoapsis UI may bind only to a loopback address")
     if not 0 <= port <= 65535:
         raise ValueError("port must be between 0 and 65535")
+    service = ApoapsisUIService(project_root)
+    # Start every operation worker (and its startup recovery pass, ADR
+    # 0025) immediately, before this server ever accepts a request --
+    # not lazily, on whichever operation type happens to be submitted
+    # first.
+    service.start_background_workers()
     return ApoapsisUIHTTPServer(
         (host, port),
-        ApoapsisUIService(project_root),
+        service,
         session_token or secrets.token_urlsafe(32),
     )
 

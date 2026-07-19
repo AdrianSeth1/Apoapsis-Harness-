@@ -2,8 +2,18 @@ from __future__ import annotations
 
 import sqlite3
 from contextlib import closing
+from datetime import datetime, timedelta
 from pathlib import Path
 
+from apoapsis.operations.lease import (
+    DEFAULT_LEASE_DURATION,
+    LeaseLostError,
+    claim_lease,
+    ensure_lease_columns,
+    expire_lease_to_ambiguous,
+    release_lease,
+    renew_lease as _renew_lease,
+)
 from apoapsis.review.errors import (
     ActiveOperationExistsError,
     DuplicateOperationError,
@@ -23,22 +33,23 @@ _ACTIVE_STATUSES = (
     ReviewOperationStatus.RECORDED.value,
     ReviewOperationStatus.RUNNING.value,
 )
+_TABLE = "review_operations"
 
 
 class ReviewOperationStore:
     """Persistent, idempotent ledger of human-review operations (ADR 0020,
-    hardened by ADR 0021).
+    hardened by ADR 0021, lease discipline hardened by ADR 0025).
 
     ``operation_id`` is a stable, caller-supplied idempotency key: creating
     the same ``operation_id`` twice is rejected outright
-    (``DuplicateOperationError``), and only one RECORDED/RUNNING operation
-    may exist per task at a time (``ActiveOperationExistsError``). An
-    operation left ``RUNNING`` -- for example because the process crashed
-    after a provider request had possibly already been transmitted -- can
-    never be silently re-entered (``OperationAlreadyRunningError``); explicit
-    recovery (``review.recovery.recover_stale_operations``) is the only path
-    that ever moves a stuck ``RUNNING`` operation forward, into the terminal,
-    inspectable ``AMBIGUOUS`` status -- never back into execution.
+    (``DuplicateOperationError``), and only one ``RECORDED``/``RUNNING``
+    operation may exist per task at a time (``ActiveOperationExistsError``,
+    checked atomically inside the same transaction as the insert). A
+    ``RUNNING`` operation is owned by a unique lease (``operations.lease``):
+    only the owning lease may mark it succeeded or failed
+    (``LeaseLostError`` otherwise), and only an atomic expired-lease check
+    may move it to the terminal, inspectable ``AMBIGUOUS`` status -- only
+    explicit recovery ever moves it forward, never back into execution.
     """
 
     def __init__(self, database_path: str | Path, *, initialize: bool = True) -> None:
@@ -81,6 +92,7 @@ class ReviewOperationStore:
                 ON review_operations(task_id, status);
                 """
             )
+            ensure_lease_columns(connection, _TABLE)
 
     def create(
         self,
@@ -175,85 +187,30 @@ class ReviewOperationStore:
             ).fetchall()
         return [self._row_to_record(row) for row in rows]
 
-    def mark_running(self, operation_id: str) -> ReviewOperationRecord:
-        return self._transition(
-            operation_id,
-            from_statuses={ReviewOperationStatus.RECORDED},
-            to_status=ReviewOperationStatus.RUNNING,
-        )
-
-    def mark_succeeded(
-        self, operation_id: str, *, result_summary: str
-    ) -> ReviewOperationRecord:
-        return self._transition(
-            operation_id,
-            from_statuses={ReviewOperationStatus.RUNNING},
-            to_status=ReviewOperationStatus.SUCCEEDED,
-            result_summary=result_summary,
-        )
-
-    def mark_failed(self, operation_id: str, *, error: str) -> ReviewOperationRecord:
-        return self._transition(
-            operation_id,
-            from_statuses={ReviewOperationStatus.RUNNING},
-            to_status=ReviewOperationStatus.FAILED,
-            error=error,
-        )
-
-    def mark_ambiguous(self, operation_id: str, *, note: str) -> ReviewOperationRecord:
-        """Explicit crash recovery only (ADR 0021, ``review.recovery``):
-        moves a RUNNING operation whose owning process appears to have died
-        into the terminal, inspectable ``AMBIGUOUS`` status. Never called
-        as part of ordinary execution."""
-
-        return self._transition(
-            operation_id,
-            from_statuses={ReviewOperationStatus.RUNNING},
-            to_status=ReviewOperationStatus.AMBIGUOUS,
-            error=note,
-        )
-
-    def _transition(
+    def mark_running(
         self,
         operation_id: str,
         *,
-        from_statuses: set[ReviewOperationStatus],
-        to_status: ReviewOperationStatus,
-        result_summary: str | None = None,
-        error: str | None = None,
+        owner_id: str,
+        lease_duration: timedelta = DEFAULT_LEASE_DURATION,
+        now: datetime | None = None,
     ) -> ReviewOperationRecord:
-        now = utc_now()
+        now = now if now is not None else utc_now()
         connection = self._connect()
         try:
             connection.execute("BEGIN IMMEDIATE")
-            row = connection.execute(
-                "SELECT status FROM review_operations WHERE operation_id = ?",
-                (operation_id,),
-            ).fetchone()
-            if row is None:
-                raise OperationNotFoundError(operation_id)
-            current = ReviewOperationStatus(row["status"])
-            if current == ReviewOperationStatus.RUNNING and to_status == (
-                ReviewOperationStatus.RUNNING
-            ):
-                raise OperationAlreadyRunningError(
-                    f"operation {operation_id} is already RUNNING; refusing to "
-                    "start it again -- inspect it before creating a new operation"
-                )
-            if current not in from_statuses:
-                raise ReviewError(
-                    f"operation {operation_id} cannot move to {to_status.value} "
-                    f"from {current.value}"
-                )
-            connection.execute(
-                """
-                UPDATE review_operations
-                SET status = ?, updated_at = ?, result_summary = COALESCE(?, result_summary),
-                    error = COALESCE(?, error)
-                WHERE operation_id = ?
-                """,
-                (to_status.value, now.isoformat(), result_summary, error, operation_id),
+            claimed = claim_lease(
+                connection,
+                _TABLE,
+                operation_id,
+                owner_id=owner_id,
+                lease_duration=lease_duration,
+                now=now,
+                from_status=ReviewOperationStatus.RECORDED.value,
+                to_status=ReviewOperationStatus.RUNNING.value,
             )
+            if not claimed:
+                self._raise_for_failed_claim(connection, operation_id)
             connection.commit()
         except Exception:
             connection.rollback()
@@ -261,6 +218,169 @@ class ReviewOperationStore:
         finally:
             connection.close()
         return self.get(operation_id)
+
+    def renew_lease(
+        self,
+        operation_id: str,
+        *,
+        owner_id: str,
+        lease_duration: timedelta = DEFAULT_LEASE_DURATION,
+        now: datetime | None = None,
+    ) -> bool:
+        now = now if now is not None else utc_now()
+        with closing(self._connect()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                renewed = _renew_lease(
+                    connection,
+                    _TABLE,
+                    operation_id,
+                    owner_id=owner_id,
+                    lease_duration=lease_duration,
+                    now=now,
+                    running_status=ReviewOperationStatus.RUNNING.value,
+                )
+                connection.commit()
+            except Exception:
+                connection.rollback()
+                raise
+        return renewed
+
+    def mark_succeeded(
+        self, operation_id: str, *, owner_id: str, result_summary: str
+    ) -> ReviewOperationRecord:
+        return self._release(
+            operation_id,
+            owner_id=owner_id,
+            to_status=ReviewOperationStatus.SUCCEEDED,
+            extra_assignments={"result_summary": result_summary},
+        )
+
+    def mark_failed(
+        self, operation_id: str, *, owner_id: str, error: str
+    ) -> ReviewOperationRecord:
+        return self._release(
+            operation_id,
+            owner_id=owner_id,
+            to_status=ReviewOperationStatus.FAILED,
+            extra_assignments={"error": error},
+        )
+
+    def mark_ambiguous(
+        self, operation_id: str, *, note: str, now=None
+    ) -> ReviewOperationRecord:
+        """Explicit crash recovery only (``review.recovery``): atomically
+        moves a RUNNING operation whose lease has expired (or which never
+        had one -- a legacy row) into the terminal, inspectable
+        ``AMBIGUOUS`` status. Never called as part of ordinary execution."""
+
+        moment = now if now is not None else utc_now()
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            expired = expire_lease_to_ambiguous(
+                connection,
+                _TABLE,
+                operation_id,
+                running_status=ReviewOperationStatus.RUNNING.value,
+                ambiguous_status=ReviewOperationStatus.AMBIGUOUS.value,
+                now=moment,
+                note=note,
+            )
+            if not expired:
+                row = connection.execute(
+                    "SELECT status, lease_expires_at FROM review_operations "
+                    "WHERE operation_id = ?",
+                    (operation_id,),
+                ).fetchone()
+                if row is None:
+                    raise OperationNotFoundError(operation_id)
+                raise ReviewError(
+                    f"operation {operation_id} cannot be marked ambiguous: "
+                    f"status={row['status']!r}, lease_expires_at="
+                    f"{row['lease_expires_at']!r} is not yet expired as of "
+                    f"{moment.isoformat()}"
+                )
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+        return self.get(operation_id)
+
+    def _release(
+        self,
+        operation_id: str,
+        *,
+        owner_id: str,
+        to_status: ReviewOperationStatus,
+        extra_assignments: dict[str, object],
+    ) -> ReviewOperationRecord:
+        now = utc_now()
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            released = release_lease(
+                connection,
+                _TABLE,
+                operation_id,
+                owner_id=owner_id,
+                running_status=ReviewOperationStatus.RUNNING.value,
+                to_status=to_status.value,
+                now=now,
+                extra_assignments=extra_assignments,
+            )
+            if not released:
+                row = connection.execute(
+                    "SELECT status, lease_owner_id FROM review_operations "
+                    "WHERE operation_id = ?",
+                    (operation_id,),
+                ).fetchone()
+                connection.rollback()
+                if row is None:
+                    raise OperationNotFoundError(operation_id)
+                if row["status"] == ReviewOperationStatus.RECORDED.value:
+                    # Never claimed by any owner at all -- an invalid
+                    # lifecycle transition, not a lease race.
+                    raise ReviewError(
+                        f"operation {operation_id} cannot move to "
+                        f"{to_status.value} from {row['status']!r}"
+                    )
+                raise LeaseLostError(
+                    f"operation {operation_id} is no longer owned by {owner_id} "
+                    f"(status={row['status']!r}, current owner="
+                    f"{row['lease_owner_id']!r}); this worker's result cannot "
+                    "be recorded -- the operation is already AMBIGUOUS or was "
+                    "claimed by another owner"
+                )
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+        return self.get(operation_id)
+
+    def _raise_for_failed_claim(
+        self, connection: sqlite3.Connection, operation_id: str
+    ) -> None:
+        row = connection.execute(
+            "SELECT status FROM review_operations WHERE operation_id = ?",
+            (operation_id,),
+        ).fetchone()
+        if row is None:
+            raise OperationNotFoundError(operation_id)
+        current = ReviewOperationStatus(row["status"])
+        if current == ReviewOperationStatus.RUNNING:
+            raise OperationAlreadyRunningError(
+                f"operation {operation_id} is already RUNNING; refusing to "
+                "start it again -- inspect it before creating a new operation"
+            )
+        raise ReviewError(
+            f"operation {operation_id} cannot move to {ReviewOperationStatus.RUNNING.value} "
+            f"from {current.value}"
+        )
 
     @staticmethod
     def _row_to_record(row: sqlite3.Row) -> ReviewOperationRecord:
@@ -280,6 +400,8 @@ class ReviewOperationStore:
             updated_at=row["updated_at"],
             result_summary=row["result_summary"],
             error=row["error"],
+            lease_owner_id=row["lease_owner_id"],
+            lease_expires_at=row["lease_expires_at"],
         )
 
 

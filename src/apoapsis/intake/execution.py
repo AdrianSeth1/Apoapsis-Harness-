@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import uuid
+from datetime import timedelta
 from pathlib import Path
 
 from apoapsis.audit.store import TaskAuditStore
@@ -21,6 +22,12 @@ from apoapsis.models.frontier import OpenAICompatibleFrontierProvider
 from apoapsis.models.local import OllamaProvider
 from apoapsis.models.provider import ModelRole, ProviderInvocation
 from apoapsis.models.telemetry import InstrumentedModelProvider, InstrumentedProviderError
+from apoapsis.operations.lease import (
+    DEFAULT_HEARTBEAT_INTERVAL,
+    DEFAULT_LEASE_DURATION,
+    LeaseHeartbeat,
+    new_owner_id,
+)
 from apoapsis.repository.git import GitRepository
 from apoapsis.specification.extractor import (
     SpecificationExtractionError,
@@ -192,6 +199,8 @@ def run_intake_operation(
     *,
     operation_id: str,
     provider: InstrumentedModelProvider | None = None,
+    lease_duration: timedelta = DEFAULT_LEASE_DURATION,
+    heartbeat_interval: timedelta = DEFAULT_HEARTBEAT_INTERVAL,
 ) -> IntakeOperationRecord:
     """The actual work -- one model-assisted specification-extraction call,
     plus at most one bounded correction call -- for an operation ``prepare
@@ -209,137 +218,158 @@ def run_intake_operation(
     rechecks its identity (still ``INTAKE``) and version against the
     operation's own recorded expectation before doing anything else.
 
+    Claims a fresh, unique lease (ADR 0025) and starts a wall-clock
+    heartbeat that renews it independent of model latency; the heartbeat
+    always stops before this function returns.
+
     Intended to run on a background worker thread, never inside an HTTP
     request handler.
     """
 
     root = Path(project_root).resolve()
     record = operation_store.get(operation_id)
-    operation_store.mark_running(operation_id)
+    owner_id = new_owner_id()
+    operation_store.mark_running(
+        operation_id, owner_id=owner_id, lease_duration=lease_duration
+    )
+    heartbeat = LeaseHeartbeat(
+        lambda: operation_store.renew_lease(
+            operation_id, owner_id=owner_id, lease_duration=lease_duration
+        ),
+        interval=heartbeat_interval,
+    )
+    heartbeat.start()
     try:
-        task = task_store.get_task(record.task_id)
-        if (
-            task.state != WorkflowState.INTAKE
-            or task.version != record.expected_task_version
-        ):
-            raise IntakeError(
-                f"task {record.task_id} is no longer eligible for intake "
-                f"extraction (state={task.state.value}, version="
-                f"{task.version}, expected version="
-                f"{record.expected_task_version})"
-            )
-        audit = TaskAuditStore(root, record.task_id)
-        selected_provider = provider or _build_provider(config.models.frontier)
-        head = GitRepository(root).run(["rev-parse", "HEAD"]).stdout.strip()
-        spec_context = ContextPackage.specification_only(task.specification, head)
-        extractor = SpecificationExtractor()
-        prompt = extractor.build_prompt(
-            record.request_text, record.task_id, config.verification.commands
-        )
-        response = _perform_intake_model_call(
-            audit,
-            selected_provider,
-            config.models.frontier,
-            prompt=prompt,
-            context=spec_context,
-            call_number=1,
-        )
         try:
-            specification = extractor.parse(
-                response.content,
-                record.request_text,
-                record.task_id,
-                config.verification.commands,
+            task = task_store.get_task(record.task_id)
+            if (
+                task.state != WorkflowState.INTAKE
+                or task.version != record.expected_task_version
+            ):
+                raise IntakeError(
+                    f"task {record.task_id} is no longer eligible for intake "
+                    f"extraction (state={task.state.value}, version="
+                    f"{task.version}, expected version="
+                    f"{record.expected_task_version})"
+                )
+            audit = TaskAuditStore(root, record.task_id)
+            selected_provider = provider or _build_provider(config.models.frontier)
+            head = GitRepository(root).run(["rev-parse", "HEAD"]).stdout.strip()
+            spec_context = ContextPackage.specification_only(task.specification, head)
+            extractor = SpecificationExtractor()
+            prompt = extractor.build_prompt(
+                record.request_text, record.task_id, config.verification.commands
             )
-        except SpecificationExtractionError as exc:
-            # Exactly one bounded correction attempt (mirrors ADR 0018):
-            # the failed response and its telemetry are already persisted
-            # by `_perform_intake_model_call` above. A model never gets a
-            # second correction -- if this one also fails to parse, the
-            # exception is caught below and the task stops deterministically
-            # at FAILED.
-            audit.write_json(
-                "specification-extraction-failure-001.json",
-                {
-                    "attempt": 1,
-                    "error": str(exc),
-                    "raw_response": response.content,
-                },
-                kind="specification_extraction_failure",
-            )
-            correction_prompt = extractor.build_correction_prompt(
-                record.request_text,
-                record.task_id,
-                config.verification.commands,
-                response.content,
-                str(exc),
-            )
-            correction_response = _perform_intake_model_call(
+            response = _perform_intake_model_call(
                 audit,
                 selected_provider,
                 config.models.frontier,
-                prompt=correction_prompt,
+                prompt=prompt,
                 context=spec_context,
-                call_number=2,
+                call_number=1,
             )
-            specification = extractor.parse(
-                correction_response.content,
-                record.request_text,
-                record.task_id,
-                config.verification.commands,
+            try:
+                specification = extractor.parse(
+                    response.content,
+                    record.request_text,
+                    record.task_id,
+                    config.verification.commands,
+                )
+            except SpecificationExtractionError as exc:
+                # Exactly one bounded correction attempt (mirrors ADR 0018):
+                # the failed response and its telemetry are already persisted
+                # by `_perform_intake_model_call` above. A model never gets a
+                # second correction -- if this one also fails to parse, the
+                # exception is caught below and the task stops deterministically
+                # at FAILED.
+                audit.write_json(
+                    "specification-extraction-failure-001.json",
+                    {
+                        "attempt": 1,
+                        "error": str(exc),
+                        "raw_response": response.content,
+                    },
+                    kind="specification_extraction_failure",
+                )
+                correction_prompt = extractor.build_correction_prompt(
+                    record.request_text,
+                    record.task_id,
+                    config.verification.commands,
+                    response.content,
+                    str(exc),
+                )
+                correction_response = _perform_intake_model_call(
+                    audit,
+                    selected_provider,
+                    config.models.frontier,
+                    prompt=correction_prompt,
+                    context=spec_context,
+                    call_number=2,
+                )
+                specification = extractor.parse(
+                    correction_response.content,
+                    record.request_text,
+                    record.task_id,
+                    config.verification.commands,
+                )
+        except SpecificationExtractionError as exc:
+            # Both attempts failed: a bounded, deterministic, expected outcome
+            # -- not a crash -- so this stops cleanly at FAILED rather than
+            # propagating an exception to the caller.
+            audit.write_json(
+                "intake-extraction-failed.json",
+                {"operation_id": operation_id, "error": str(exc)},
+                kind="fatal_error",
             )
-    except SpecificationExtractionError as exc:
-        # Both attempts failed: a bounded, deterministic, expected outcome
-        # -- not a crash -- so this stops cleanly at FAILED rather than
-        # propagating an exception to the caller.
-        audit.write_json(
-            "intake-extraction-failed.json",
-            {"operation_id": operation_id, "error": str(exc)},
-            kind="fatal_error",
+            if transition_is_allowed(task.state, WorkflowState.FAILED):
+                task_store.transition(
+                    record.task_id,
+                    WorkflowState.FAILED,
+                    actor=WorkflowActor.SYSTEM,
+                    event_type="intake_extraction_failed",
+                    payload={"operation_id": operation_id, "error": str(exc)},
+                    expected_version=task.version,
+                )
+            return operation_store.mark_failed(
+                operation_id,
+                owner_id=owner_id,
+                error=str(exc),
+                audit_artifact_locations=[item.path for item in audit.artifacts()],
+            )
+        except Exception as exc:
+            operation_store.mark_failed(
+                operation_id, owner_id=owner_id, error=f"{type(exc).__name__}: {exc}"
+            )
+            raise
+
+        updated = task_store.update_specification(
+            specification, actor=WorkflowActor.SYSTEM, expected_version=task.version
         )
-        if transition_is_allowed(task.state, WorkflowState.FAILED):
-            task_store.transition(
-                record.task_id,
-                WorkflowState.FAILED,
-                actor=WorkflowActor.SYSTEM,
-                event_type="intake_extraction_failed",
-                payload={"operation_id": operation_id, "error": str(exc)},
-                expected_version=task.version,
-            )
-        return operation_store.mark_failed(
+        task_store.transition(
+            record.task_id,
+            WorkflowState.SPEC_DRAFTED,
+            actor=WorkflowActor.SYSTEM,
+            event_type="intake_specification_drafted",
+            payload={
+                "operation_id": operation_id,
+                "constraints": len(specification.hard_constraints),
+                "verbatim_constraints_validated": True,
+            },
+            expected_version=updated.version,
+        )
+        audit.write_json(
+            "approved-specification-candidate.json",
+            specification,
+            kind="specification_candidate",
+        )
+        return operation_store.mark_pending_approval(
             operation_id,
-            error=str(exc),
+            owner_id=owner_id,
+            result_summary="specification drafted; pending human approval",
             audit_artifact_locations=[item.path for item in audit.artifacts()],
         )
-    except Exception as exc:
-        operation_store.mark_failed(operation_id, error=f"{type(exc).__name__}: {exc}")
-        raise
-
-    updated = task_store.update_specification(
-        specification, actor=WorkflowActor.SYSTEM, expected_version=task.version
-    )
-    task_store.transition(
-        record.task_id,
-        WorkflowState.SPEC_DRAFTED,
-        actor=WorkflowActor.SYSTEM,
-        event_type="intake_specification_drafted",
-        payload={
-            "operation_id": operation_id,
-            "constraints": len(specification.hard_constraints),
-            "verbatim_constraints_validated": True,
-        },
-        expected_version=updated.version,
-    )
-    audit.write_json(
-        "approved-specification-candidate.json",
-        specification,
-        kind="specification_candidate",
-    )
-    return operation_store.mark_pending_approval(
-        operation_id,
-        result_summary="specification drafted; pending human approval",
-        audit_artifact_locations=[item.path for item in audit.artifacts()],
-    )
+    finally:
+        heartbeat.stop()
 
 
 def execute_intake_operation(

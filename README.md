@@ -344,16 +344,25 @@ local-only stop is enough to make the action available on the next
 Every operation is re-validated against fresh state (task version, worktree
 fingerprint, eligibility, budgets) immediately before it does anything,
 never only at submission time (ADR 0021) -- and only one operation may be
-active per task at once. If the process running a continuation is killed,
-`apoapsis review recover` (also run automatically whenever `apoapsis ui`
-starts) reclaims any operation that never actually started, marks a stale
-in-progress operation as ambiguous (never automatically repeated), and
-returns a stranded task to human review without claiming what the
-interrupted call did:
+active per task at once. A `RUNNING` operation is owned by a unique,
+renewed lease (ADR 0025): a long-but-healthy continuation survives no
+matter how long it actually runs, as long as its own process keeps
+renewing; only a lease that has genuinely stopped renewing is reclaimed.
+If the process running a continuation is killed, `apoapsis review recover`
+(also run automatically whenever `apoapsis ui` starts) reclaims any
+operation that never actually started, marks a stale in-progress operation
+as ambiguous (never automatically repeated), and returns a stranded task to
+human review without claiming what the interrupted call did:
 
 ```bash
 apoapsis review recover
+apoapsis review recover --resume-recorded  # also runs every reclaimed operation
 ```
+
+`recover` alone only reports what it found; `--resume-recorded` is the
+explicit, opt-in action that actually runs every reclaimed operation in the
+foreground CLI process -- recovering data and authorizing a model to run
+are never conflated.
 
 ## Durable new-task intake (ADR 0023)
 
@@ -368,6 +377,7 @@ apoapsis intake submit "Add resumable downloads without changing the public API"
   --operation-id INOP-1
 apoapsis intake inspect INOP-1
 apoapsis intake recover
+apoapsis intake recover --resume-recorded  # also runs every reclaimed operation
 ```
 
 `submit` allocates a task id, persists the operation and the task's
@@ -399,6 +409,7 @@ instead of only inside a blocking `apoapsis run` process:
 apoapsis execute start TASK-ABC123 --expected-version 3 --operation-id EXOP-1
 apoapsis execute inspect EXOP-1
 apoapsis execute recover
+apoapsis execute recover --resume-recorded  # also runs every reclaimed operation
 ```
 
 `execute start` runs the exact same routing, context compilation, worktree
@@ -407,12 +418,14 @@ reporting that `apoapsis run` always used -- nothing was reimplemented, only
 extracted into a shared, resumable continuation. The operation is recorded
 before anything happens, marked running before any provider call or worktree
 mutation, and rechecked against the task's current state, version, and the
-repository's current HEAD immediately before doing anything. If the process
-running it is killed, `apoapsis execute recover` (also run automatically
-whenever `apoapsis ui` starts) marks a stale in-progress operation ambiguous
--- never automatically repeated -- and returns a task stranded mid-execution
-to human review **with its worktree left exactly as it was**, inspectable
-and abandonable through the existing `apoapsis review` commands.
+repository's current HEAD immediately before doing anything. The running
+operation holds a unique, renewed lease (ADR 0025), so a genuinely long
+execution never gets mistaken for a crashed one. If the process running it
+is killed, `apoapsis execute recover` (also run automatically whenever
+`apoapsis ui` starts) marks a stale in-progress operation ambiguous -- never
+automatically repeated -- and returns a task stranded mid-execution to
+human review **with its worktree left exactly as it was**, inspectable and
+abandonable through the existing `apoapsis review` commands.
 
 The local UI (`apoapsis ui`) has the same flow as the task page's **Control
 room** tab: once a task reaches `SPEC_APPROVED`, a "Start coding" action shows

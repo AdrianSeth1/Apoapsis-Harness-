@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime
 
 from pydantic import Field
 
+from apoapsis.review.errors import ReviewError
 from apoapsis.review.schema import ReviewOperationStatus
 from apoapsis.review.store import ReviewOperationStore
 from apoapsis.specification.schema import StrictModel, utc_now
@@ -11,11 +12,14 @@ from apoapsis.workflow.engine import SQLiteTaskStore, TaskNotFoundError
 from apoapsis.workflow.events import WorkflowActor
 from apoapsis.workflow.states import WorkflowState, transition_is_allowed
 
-_TERMINAL_TASK_STATES = frozenset(
-    {WorkflowState.COMPLETE, WorkflowState.FAILED, WorkflowState.ROLLED_BACK}
+_NO_FURTHER_ACTION_STATES = frozenset(
+    {
+        WorkflowState.COMPLETE,
+        WorkflowState.FAILED,
+        WorkflowState.HUMAN_REVIEW_REQUIRED,
+        WorkflowState.ROLLED_BACK,
+    }
 )
-
-DEFAULT_RUNNING_EXPIRY = timedelta(minutes=15)
 
 
 class RecoveryReport(StrictModel):
@@ -31,9 +35,10 @@ def recover_stale_operations(
     task_store: SQLiteTaskStore,
     operation_store: ReviewOperationStore,
     *,
-    running_expiry: timedelta = DEFAULT_RUNNING_EXPIRY,
+    now: datetime | None = None,
 ) -> RecoveryReport:
-    """Explicit crash recovery for the review-operation ledger (ADR 0021).
+    """Explicit crash recovery for the review-operation ledger (ADR 0021,
+    lease discipline hardened by ADR 0025).
 
     ``RECORDED`` operations have never transmitted anything -- the very
     first thing ``run_review_operation`` does is mark an operation
@@ -41,16 +46,15 @@ def recover_stale_operations(
     failing setup. A ``RECORDED`` row found during a recovery scan is
     therefore always safe to reclaim: this function reports it, and the
     caller (``ReviewWorker`` at startup, or the CLI's ``review recover``
-    command) re-submits it for real execution. Nothing about *why* it is
-    still ``RECORDED`` needs to be known -- a lost in-memory queue after a
-    restart and a job that simply hasn't been dequeued yet look identical
-    and are equally safe to (re-)run.
+    command) re-submits it for real execution.
 
     ``RUNNING`` operations are different: a provider call may or may not
     have been transmitted before the owning process died, so this function
-    never touches a ``RUNNING`` row that is still within ``running_expiry``
-    of its last update -- it might still be legitimately in progress. Only
-    once a ``RUNNING`` row has gone stale beyond ``running_expiry`` is it
+    never touches a ``RUNNING`` row whose lease has not actually expired --
+    a healthy continuation still being renewed by its own heartbeat is
+    left alone regardless of how long it has been running, even across
+    many former 15-minute windows. Only once a lease has genuinely expired
+    (checked atomically, never by reading a timestamp and guessing) is it
     moved to the terminal, inspectable ``AMBIGUOUS`` status -- never
     automatically repeated, never silently resolved either way. If the
     operation's task is stuck outside ``HUMAN_REVIEW_REQUIRED`` and outside
@@ -61,34 +65,35 @@ def recover_stale_operations(
     """
 
     report = RecoveryReport()
-    now = utc_now()
+    moment = now if now is not None else utc_now()
     for record in operation_store.list_active():
         if record.status == ReviewOperationStatus.RECORDED:
             report.reclaimed_operation_ids.append(record.operation_id)
             continue
 
-        age = now - record.updated_at
-        if age < running_expiry:
-            continue
+        if record.lease_expires_at is not None and record.lease_expires_at >= moment:
+            continue  # a healthy operation, still renewing its own lease
 
-        operation_store.mark_ambiguous(
-            record.operation_id,
-            note=(
-                f"no update for {age}; the process running this operation "
-                "may have crashed. Whether a model call was transmitted "
-                "before that happened is unknown -- this operation is not "
-                "automatically repeated."
-            ),
-        )
+        try:
+            operation_store.mark_ambiguous(
+                record.operation_id,
+                note=(
+                    "this operation's lease expired without renewal; the "
+                    "process running it may have crashed. Whether a model "
+                    "call was transmitted before that happened is unknown "
+                    "-- this operation is not automatically repeated."
+                ),
+                now=moment,
+            )
+        except ReviewError:
+            continue  # lost the race; the owner renewed in the meantime
         report.ambiguous_operation_ids.append(record.operation_id)
 
         try:
             task = task_store.get_task(record.task_id)
         except TaskNotFoundError:
             continue
-        if task.state in _TERMINAL_TASK_STATES:
-            continue
-        if task.state == WorkflowState.HUMAN_REVIEW_REQUIRED:
+        if task.state in _NO_FURTHER_ACTION_STATES:
             continue
         if not transition_is_allowed(task.state, WorkflowState.HUMAN_REVIEW_REQUIRED):
             continue
@@ -112,4 +117,4 @@ def recover_stale_operations(
     return report
 
 
-__all__ = ["RecoveryReport", "recover_stale_operations", "DEFAULT_RUNNING_EXPIRY"]
+__all__ = ["RecoveryReport", "recover_stale_operations"]

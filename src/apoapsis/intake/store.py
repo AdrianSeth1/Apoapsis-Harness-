@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from contextlib import closing
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from apoapsis.intake.errors import (
@@ -13,28 +14,38 @@ from apoapsis.intake.errors import (
     IntakeOperationNotFoundError,
 )
 from apoapsis.intake.schema import IntakeOperationRecord, IntakeOperationStatus
+from apoapsis.operations.lease import (
+    DEFAULT_LEASE_DURATION,
+    LeaseLostError,
+    claim_lease,
+    ensure_lease_columns,
+    expire_lease_to_ambiguous,
+    release_lease,
+    renew_lease as _renew_lease,
+)
 from apoapsis.specification.schema import utc_now
 
 _ACTIVE_STATUSES = (
     IntakeOperationStatus.RECORDED.value,
     IntakeOperationStatus.RUNNING.value,
 )
+_TABLE = "intake_operations"
 
 
 class IntakeOperationStore:
     """Persistent, idempotent ledger of new-task intake operations (ADR
-    0023), structurally mirroring ``review.store.ReviewOperationStore``.
+    0023, lease discipline hardened by ADR 0025), structurally mirroring
+    ``review.store.ReviewOperationStore``.
 
     ``operation_id`` is a stable, caller-supplied idempotency key: creating
     the same ``operation_id`` twice is rejected outright
     (``DuplicateIntakeOperationError``), and only one RECORDED/RUNNING
     operation may exist per task at a time
-    (``ActiveIntakeOperationExistsError``). An operation left ``RUNNING``
-    can never be silently re-entered (``IntakeOperationAlreadyRunningError``);
-    explicit recovery (``intake.recovery.recover_stale_intake_operations``)
-    is the only path that ever moves a stuck ``RUNNING`` operation forward,
-    into the terminal, inspectable ``AMBIGUOUS`` status -- never back into
-    execution.
+    (``ActiveIntakeOperationExistsError``). A ``RUNNING`` operation is
+    owned by a unique lease (``operations.lease``): only the owning lease
+    may mark it succeeded or failed (``LeaseLostError`` otherwise), and
+    only an atomic expired-lease check may move it to the terminal,
+    inspectable ``AMBIGUOUS`` status -- never back into execution.
     """
 
     def __init__(self, database_path: str | Path, *, initialize: bool = True) -> None:
@@ -78,6 +89,7 @@ class IntakeOperationStore:
                 ON intake_operations(task_id, status);
                 """
             )
+            ensure_lease_columns(connection, _TABLE)
 
     def create(
         self,
@@ -170,114 +182,30 @@ class IntakeOperationStore:
             ).fetchall()
         return [self._row_to_record(row) for row in rows]
 
-    def mark_running(self, operation_id: str) -> IntakeOperationRecord:
-        return self._transition(
-            operation_id,
-            from_statuses={IntakeOperationStatus.RECORDED},
-            to_status=IntakeOperationStatus.RUNNING,
-        )
-
-    def mark_pending_approval(
+    def mark_running(
         self,
         operation_id: str,
         *,
-        result_summary: str,
-        audit_artifact_locations: list[str],
+        owner_id: str,
+        lease_duration: timedelta = DEFAULT_LEASE_DURATION,
+        now: datetime | None = None,
     ) -> IntakeOperationRecord:
-        return self._transition(
-            operation_id,
-            from_statuses={IntakeOperationStatus.RUNNING},
-            to_status=IntakeOperationStatus.PENDING_SPECIFICATION_APPROVAL,
-            result_summary=result_summary,
-            audit_artifact_locations=audit_artifact_locations,
-        )
-
-    def mark_failed(
-        self,
-        operation_id: str,
-        *,
-        error: str,
-        audit_artifact_locations: list[str] | None = None,
-    ) -> IntakeOperationRecord:
-        return self._transition(
-            operation_id,
-            from_statuses={IntakeOperationStatus.RUNNING},
-            to_status=IntakeOperationStatus.FAILED,
-            error=error,
-            audit_artifact_locations=audit_artifact_locations,
-        )
-
-    def mark_ambiguous(self, operation_id: str, *, note: str) -> IntakeOperationRecord:
-        """Explicit crash recovery only (``intake.recovery``): moves a
-        RUNNING operation whose owning process appears to have died into
-        the terminal, inspectable ``AMBIGUOUS`` status. Never called as
-        part of ordinary execution."""
-
-        return self._transition(
-            operation_id,
-            from_statuses={IntakeOperationStatus.RUNNING},
-            to_status=IntakeOperationStatus.AMBIGUOUS,
-            error=note,
-        )
-
-    def _transition(
-        self,
-        operation_id: str,
-        *,
-        from_statuses: set[IntakeOperationStatus],
-        to_status: IntakeOperationStatus,
-        result_summary: str | None = None,
-        error: str | None = None,
-        audit_artifact_locations: list[str] | None = None,
-    ) -> IntakeOperationRecord:
-        now = utc_now()
+        now = now if now is not None else utc_now()
         connection = self._connect()
         try:
             connection.execute("BEGIN IMMEDIATE")
-            row = connection.execute(
-                "SELECT status FROM intake_operations WHERE operation_id = ?",
-                (operation_id,),
-            ).fetchone()
-            if row is None:
-                raise IntakeOperationNotFoundError(operation_id)
-            current = IntakeOperationStatus(row["status"])
-            if current == IntakeOperationStatus.RUNNING and to_status == (
-                IntakeOperationStatus.RUNNING
-            ):
-                raise IntakeOperationAlreadyRunningError(
-                    f"operation {operation_id} is already RUNNING; refusing to "
-                    "start it again -- inspect it before creating a new operation"
-                )
-            if current not in from_statuses:
-                raise IntakeError(
-                    f"operation {operation_id} cannot move to {to_status.value} "
-                    f"from {current.value}"
-                )
-            artifacts_json = (
-                json.dumps(audit_artifact_locations)
-                if audit_artifact_locations is not None
-                else None
+            claimed = claim_lease(
+                connection,
+                _TABLE,
+                operation_id,
+                owner_id=owner_id,
+                lease_duration=lease_duration,
+                now=now,
+                from_status=IntakeOperationStatus.RECORDED.value,
+                to_status=IntakeOperationStatus.RUNNING.value,
             )
-            connection.execute(
-                """
-                UPDATE intake_operations
-                SET status = ?, updated_at = ?,
-                    result_summary = COALESCE(?, result_summary),
-                    error = COALESCE(?, error),
-                    audit_artifact_locations_json = COALESCE(
-                        ?, audit_artifact_locations_json
-                    )
-                WHERE operation_id = ?
-                """,
-                (
-                    to_status.value,
-                    now.isoformat(),
-                    result_summary,
-                    error,
-                    artifacts_json,
-                    operation_id,
-                ),
-            )
+            if not claimed:
+                self._raise_for_failed_claim(connection, operation_id)
             connection.commit()
         except Exception:
             connection.rollback()
@@ -285,6 +213,187 @@ class IntakeOperationStore:
         finally:
             connection.close()
         return self.get(operation_id)
+
+    def renew_lease(
+        self,
+        operation_id: str,
+        *,
+        owner_id: str,
+        lease_duration: timedelta = DEFAULT_LEASE_DURATION,
+        now: datetime | None = None,
+    ) -> bool:
+        now = now if now is not None else utc_now()
+        with closing(self._connect()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                renewed = _renew_lease(
+                    connection,
+                    _TABLE,
+                    operation_id,
+                    owner_id=owner_id,
+                    lease_duration=lease_duration,
+                    now=now,
+                    running_status=IntakeOperationStatus.RUNNING.value,
+                )
+                connection.commit()
+            except Exception:
+                connection.rollback()
+                raise
+        return renewed
+
+    def mark_pending_approval(
+        self,
+        operation_id: str,
+        *,
+        owner_id: str,
+        result_summary: str,
+        audit_artifact_locations: list[str],
+    ) -> IntakeOperationRecord:
+        return self._release(
+            operation_id,
+            owner_id=owner_id,
+            to_status=IntakeOperationStatus.PENDING_SPECIFICATION_APPROVAL,
+            extra_assignments={
+                "result_summary": result_summary,
+                "audit_artifact_locations_json": json.dumps(audit_artifact_locations),
+            },
+        )
+
+    def mark_failed(
+        self,
+        operation_id: str,
+        *,
+        owner_id: str,
+        error: str,
+        audit_artifact_locations: list[str] | None = None,
+    ) -> IntakeOperationRecord:
+        extra: dict[str, object] = {"error": error}
+        if audit_artifact_locations is not None:
+            extra["audit_artifact_locations_json"] = json.dumps(
+                audit_artifact_locations
+            )
+        return self._release(
+            operation_id,
+            owner_id=owner_id,
+            to_status=IntakeOperationStatus.FAILED,
+            extra_assignments=extra,
+        )
+
+    def mark_ambiguous(
+        self, operation_id: str, *, note: str, now=None
+    ) -> IntakeOperationRecord:
+        """Explicit crash recovery only (``intake.recovery``): atomically
+        moves a RUNNING operation whose lease has expired (or which never
+        had one -- a legacy row) into the terminal, inspectable
+        ``AMBIGUOUS`` status. Never called as part of ordinary execution."""
+
+        moment = now if now is not None else utc_now()
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            expired = expire_lease_to_ambiguous(
+                connection,
+                _TABLE,
+                operation_id,
+                running_status=IntakeOperationStatus.RUNNING.value,
+                ambiguous_status=IntakeOperationStatus.AMBIGUOUS.value,
+                now=moment,
+                note=note,
+            )
+            if not expired:
+                row = connection.execute(
+                    "SELECT status, lease_expires_at FROM intake_operations "
+                    "WHERE operation_id = ?",
+                    (operation_id,),
+                ).fetchone()
+                if row is None:
+                    raise IntakeOperationNotFoundError(operation_id)
+                raise IntakeError(
+                    f"operation {operation_id} cannot be marked ambiguous: "
+                    f"status={row['status']!r}, lease_expires_at="
+                    f"{row['lease_expires_at']!r} is not yet expired as of "
+                    f"{moment.isoformat()}"
+                )
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+        return self.get(operation_id)
+
+    def _release(
+        self,
+        operation_id: str,
+        *,
+        owner_id: str,
+        to_status: IntakeOperationStatus,
+        extra_assignments: dict[str, object],
+    ) -> IntakeOperationRecord:
+        now = utc_now()
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            released = release_lease(
+                connection,
+                _TABLE,
+                operation_id,
+                owner_id=owner_id,
+                running_status=IntakeOperationStatus.RUNNING.value,
+                to_status=to_status.value,
+                now=now,
+                extra_assignments=extra_assignments,
+            )
+            if not released:
+                row = connection.execute(
+                    "SELECT status, lease_owner_id FROM intake_operations "
+                    "WHERE operation_id = ?",
+                    (operation_id,),
+                ).fetchone()
+                connection.rollback()
+                if row is None:
+                    raise IntakeOperationNotFoundError(operation_id)
+                if row["status"] == IntakeOperationStatus.RECORDED.value:
+                    # Never claimed by any owner at all -- an invalid
+                    # lifecycle transition, not a lease race.
+                    raise IntakeError(
+                        f"operation {operation_id} cannot move to "
+                        f"{to_status.value} from {row['status']!r}"
+                    )
+                raise LeaseLostError(
+                    f"operation {operation_id} is no longer owned by {owner_id} "
+                    f"(status={row['status']!r}, current owner="
+                    f"{row['lease_owner_id']!r}); this worker's result cannot "
+                    "be recorded -- the operation is already AMBIGUOUS or was "
+                    "claimed by another owner"
+                )
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+        return self.get(operation_id)
+
+    def _raise_for_failed_claim(
+        self, connection: sqlite3.Connection, operation_id: str
+    ) -> None:
+        row = connection.execute(
+            "SELECT status FROM intake_operations WHERE operation_id = ?",
+            (operation_id,),
+        ).fetchone()
+        if row is None:
+            raise IntakeOperationNotFoundError(operation_id)
+        current = IntakeOperationStatus(row["status"])
+        if current == IntakeOperationStatus.RUNNING:
+            raise IntakeOperationAlreadyRunningError(
+                f"operation {operation_id} is already RUNNING; refusing to "
+                "start it again -- inspect it before creating a new operation"
+            )
+        raise IntakeError(
+            f"operation {operation_id} cannot move to running from "
+            f"{current.value}"
+        )
 
     @staticmethod
     def _row_to_record(row: sqlite3.Row) -> IntakeOperationRecord:
@@ -301,6 +410,8 @@ class IntakeOperationStore:
             result_summary=row["result_summary"],
             error=row["error"],
             audit_artifact_locations=json.loads(row["audit_artifact_locations_json"]),
+            lease_owner_id=row["lease_owner_id"],
+            lease_expires_at=row["lease_expires_at"],
         )
 
 

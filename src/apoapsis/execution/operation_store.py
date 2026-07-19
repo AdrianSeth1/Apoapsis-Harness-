@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 from contextlib import closing
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from apoapsis.execution.operation_errors import (
@@ -15,31 +16,39 @@ from apoapsis.execution.operation_schema import (
     ExecutionOperationRecord,
     ExecutionOperationStatus,
 )
+from apoapsis.operations.lease import (
+    DEFAULT_LEASE_DURATION,
+    LeaseLostError,
+    claim_lease,
+    ensure_lease_columns,
+    expire_lease_to_ambiguous,
+    release_lease,
+    renew_lease as _renew_lease,
+)
 from apoapsis.specification.schema import utc_now
 
 _ACTIVE_STATUSES = (
     ExecutionOperationStatus.RECORDED.value,
     ExecutionOperationStatus.RUNNING.value,
 )
+_TABLE = "execution_operations"
 
 
 class ExecutionOperationStore:
     """Persistent, idempotent ledger of post-approval task-execution
-    operations (ADR 0024), structurally mirroring
-    ``review.store.ReviewOperationStore`` and
+    operations (ADR 0024, lease discipline hardened by ADR 0025),
+    structurally mirroring ``review.store.ReviewOperationStore`` and
     ``intake.store.IntakeOperationStore``.
 
     ``operation_id`` is a stable, caller-supplied idempotency key: creating
     the same ``operation_id`` twice is rejected outright
     (``DuplicateExecutionOperationError``), and only one RECORDED/RUNNING
     operation may exist per task at a time
-    (``ActiveExecutionOperationExistsError``). An operation left ``RUNNING``
-    can never be silently re-entered
-    (``ExecutionOperationAlreadyRunningError``); explicit recovery
-    (``execution.operation_recovery.recover_stale_execution_operations``) is
-    the only path that ever moves a stuck ``RUNNING`` operation forward,
-    into the terminal, inspectable ``AMBIGUOUS`` status -- never back into
-    execution.
+    (``ActiveExecutionOperationExistsError``). A ``RUNNING`` operation is
+    owned by a unique lease (``operations.lease``): only the owning lease
+    may mark it succeeded or failed (``LeaseLostError`` otherwise), and
+    only an atomic expired-lease check may move it to the terminal,
+    inspectable ``AMBIGUOUS`` status -- never back into execution.
     """
 
     def __init__(self, database_path: str | Path, *, initialize: bool = True) -> None:
@@ -81,6 +90,7 @@ class ExecutionOperationStore:
                 ON execution_operations(task_id, status);
                 """
             )
+            ensure_lease_columns(connection, _TABLE)
 
     def create(
         self,
@@ -167,98 +177,30 @@ class ExecutionOperationStore:
             ).fetchall()
         return [self._row_to_record(row) for row in rows]
 
-    def mark_running(self, operation_id: str) -> ExecutionOperationRecord:
-        return self._transition(
-            operation_id,
-            from_statuses={ExecutionOperationStatus.RECORDED},
-            to_status=ExecutionOperationStatus.RUNNING,
-        )
-
-    def mark_succeeded(
-        self, operation_id: str, *, result_summary: str, report_path: str | None = None
-    ) -> ExecutionOperationRecord:
-        return self._transition(
-            operation_id,
-            from_statuses={ExecutionOperationStatus.RUNNING},
-            to_status=ExecutionOperationStatus.SUCCEEDED,
-            result_summary=result_summary,
-            report_path=report_path,
-        )
-
-    def mark_failed(self, operation_id: str, *, error: str) -> ExecutionOperationRecord:
-        return self._transition(
-            operation_id,
-            from_statuses={ExecutionOperationStatus.RUNNING},
-            to_status=ExecutionOperationStatus.FAILED,
-            error=error,
-        )
-
-    def mark_ambiguous(self, operation_id: str, *, note: str) -> ExecutionOperationRecord:
-        """Explicit crash recovery only
-        (``execution.operation_recovery``): moves a RUNNING operation
-        whose owning process appears to have died into the terminal,
-        inspectable ``AMBIGUOUS`` status. Never called as part of ordinary
-        execution."""
-
-        return self._transition(
-            operation_id,
-            from_statuses={ExecutionOperationStatus.RUNNING},
-            to_status=ExecutionOperationStatus.AMBIGUOUS,
-            error=note,
-        )
-
-    def _transition(
+    def mark_running(
         self,
         operation_id: str,
         *,
-        from_statuses: set[ExecutionOperationStatus],
-        to_status: ExecutionOperationStatus,
-        result_summary: str | None = None,
-        error: str | None = None,
-        report_path: str | None = None,
+        owner_id: str,
+        lease_duration: timedelta = DEFAULT_LEASE_DURATION,
+        now: datetime | None = None,
     ) -> ExecutionOperationRecord:
-        now = utc_now()
+        now = now if now is not None else utc_now()
         connection = self._connect()
         try:
             connection.execute("BEGIN IMMEDIATE")
-            row = connection.execute(
-                "SELECT status FROM execution_operations WHERE operation_id = ?",
-                (operation_id,),
-            ).fetchone()
-            if row is None:
-                raise ExecutionOperationNotFoundError(operation_id)
-            current = ExecutionOperationStatus(row["status"])
-            if current == ExecutionOperationStatus.RUNNING and to_status == (
-                ExecutionOperationStatus.RUNNING
-            ):
-                raise ExecutionOperationAlreadyRunningError(
-                    f"operation {operation_id} is already RUNNING; refusing "
-                    "to start it again -- inspect it before creating a new "
-                    "operation"
-                )
-            if current not in from_statuses:
-                raise ExecutionOperationError(
-                    f"operation {operation_id} cannot move to {to_status.value} "
-                    f"from {current.value}"
-                )
-            connection.execute(
-                """
-                UPDATE execution_operations
-                SET status = ?, updated_at = ?,
-                    result_summary = COALESCE(?, result_summary),
-                    error = COALESCE(?, error),
-                    report_path = COALESCE(?, report_path)
-                WHERE operation_id = ?
-                """,
-                (
-                    to_status.value,
-                    now.isoformat(),
-                    result_summary,
-                    error,
-                    report_path,
-                    operation_id,
-                ),
+            claimed = claim_lease(
+                connection,
+                _TABLE,
+                operation_id,
+                owner_id=owner_id,
+                lease_duration=lease_duration,
+                now=now,
+                from_status=ExecutionOperationStatus.RECORDED.value,
+                to_status=ExecutionOperationStatus.RUNNING.value,
             )
+            if not claimed:
+                self._raise_for_failed_claim(connection, operation_id)
             connection.commit()
         except Exception:
             connection.rollback()
@@ -266,6 +208,188 @@ class ExecutionOperationStore:
         finally:
             connection.close()
         return self.get(operation_id)
+
+    def renew_lease(
+        self,
+        operation_id: str,
+        *,
+        owner_id: str,
+        lease_duration: timedelta = DEFAULT_LEASE_DURATION,
+        now: datetime | None = None,
+    ) -> bool:
+        """Called by :class:`apoapsis.operations.lease.LeaseHeartbeat` on a
+        fixed wall-clock interval while the operation is running. Returns
+        ``False`` if the lease was lost (recovery already moved the row
+        away, or somehow another owner holds it) -- the caller must stop
+        treating its work as authoritative."""
+
+        now = now if now is not None else utc_now()
+        with closing(self._connect()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                renewed = _renew_lease(
+                    connection,
+                    _TABLE,
+                    operation_id,
+                    owner_id=owner_id,
+                    lease_duration=lease_duration,
+                    now=now,
+                    running_status=ExecutionOperationStatus.RUNNING.value,
+                )
+                connection.commit()
+            except Exception:
+                connection.rollback()
+                raise
+        return renewed
+
+    def mark_succeeded(
+        self,
+        operation_id: str,
+        *,
+        owner_id: str,
+        result_summary: str,
+        report_path: str | None = None,
+    ) -> ExecutionOperationRecord:
+        extra: dict[str, object] = {"result_summary": result_summary}
+        if report_path is not None:
+            extra["report_path"] = report_path
+        return self._release(
+            operation_id,
+            owner_id=owner_id,
+            to_status=ExecutionOperationStatus.SUCCEEDED,
+            extra_assignments=extra,
+        )
+
+    def mark_failed(
+        self, operation_id: str, *, owner_id: str, error: str
+    ) -> ExecutionOperationRecord:
+        return self._release(
+            operation_id,
+            owner_id=owner_id,
+            to_status=ExecutionOperationStatus.FAILED,
+            extra_assignments={"error": error},
+        )
+
+    def mark_ambiguous(
+        self, operation_id: str, *, note: str, now=None
+    ) -> ExecutionOperationRecord:
+        """Explicit crash recovery only
+        (``execution.operation_recovery``): atomically moves a RUNNING
+        operation whose lease has expired (or which never had one -- a
+        legacy row) into the terminal, inspectable ``AMBIGUOUS`` status.
+        Never called as part of ordinary execution. Raises
+        ``ExecutionOperationError`` if the lease has not actually expired
+        (a genuine race with a still-renewing owner) or the row is not
+        currently RUNNING."""
+
+        moment = now if now is not None else utc_now()
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            expired = expire_lease_to_ambiguous(
+                connection,
+                _TABLE,
+                operation_id,
+                running_status=ExecutionOperationStatus.RUNNING.value,
+                ambiguous_status=ExecutionOperationStatus.AMBIGUOUS.value,
+                now=moment,
+                note=note,
+            )
+            if not expired:
+                row = connection.execute(
+                    "SELECT status, lease_expires_at FROM execution_operations "
+                    "WHERE operation_id = ?",
+                    (operation_id,),
+                ).fetchone()
+                if row is None:
+                    raise ExecutionOperationNotFoundError(operation_id)
+                raise ExecutionOperationError(
+                    f"operation {operation_id} cannot be marked ambiguous: "
+                    f"status={row['status']!r}, lease_expires_at="
+                    f"{row['lease_expires_at']!r} is not yet expired as of "
+                    f"{moment.isoformat()}"
+                )
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+        return self.get(operation_id)
+
+    def _release(
+        self,
+        operation_id: str,
+        *,
+        owner_id: str,
+        to_status: ExecutionOperationStatus,
+        extra_assignments: dict[str, object],
+    ) -> ExecutionOperationRecord:
+        now = utc_now()
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            released = release_lease(
+                connection,
+                _TABLE,
+                operation_id,
+                owner_id=owner_id,
+                running_status=ExecutionOperationStatus.RUNNING.value,
+                to_status=to_status.value,
+                now=now,
+                extra_assignments=extra_assignments,
+            )
+            if not released:
+                row = connection.execute(
+                    "SELECT status, lease_owner_id FROM execution_operations "
+                    "WHERE operation_id = ?",
+                    (operation_id,),
+                ).fetchone()
+                connection.rollback()
+                if row is None:
+                    raise ExecutionOperationNotFoundError(operation_id)
+                if row["status"] == ExecutionOperationStatus.RECORDED.value:
+                    # Never claimed by any owner at all -- an invalid
+                    # lifecycle transition, not a lease race.
+                    raise ExecutionOperationError(
+                        f"operation {operation_id} cannot move to "
+                        f"{to_status.value} from {row['status']!r}"
+                    )
+                raise LeaseLostError(
+                    f"operation {operation_id} is no longer owned by {owner_id} "
+                    f"(status={row['status']!r}, current owner="
+                    f"{row['lease_owner_id']!r}); this worker's result cannot "
+                    "be recorded -- the operation is already AMBIGUOUS or was "
+                    "claimed by another owner"
+                )
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+        return self.get(operation_id)
+
+    def _raise_for_failed_claim(
+        self, connection: sqlite3.Connection, operation_id: str
+    ) -> None:
+        row = connection.execute(
+            "SELECT status FROM execution_operations WHERE operation_id = ?",
+            (operation_id,),
+        ).fetchone()
+        if row is None:
+            raise ExecutionOperationNotFoundError(operation_id)
+        current = ExecutionOperationStatus(row["status"])
+        if current == ExecutionOperationStatus.RUNNING:
+            raise ExecutionOperationAlreadyRunningError(
+                f"operation {operation_id} is already RUNNING; refusing "
+                "to start it again -- inspect it before creating a new "
+                "operation"
+            )
+        raise ExecutionOperationError(
+            f"operation {operation_id} cannot move to running from "
+            f"{current.value}"
+        )
 
     @staticmethod
     def _row_to_record(row: sqlite3.Row) -> ExecutionOperationRecord:
@@ -280,6 +404,8 @@ class ExecutionOperationStore:
             result_summary=row["result_summary"],
             error=row["error"],
             report_path=row["report_path"],
+            lease_owner_id=row["lease_owner_id"],
+            lease_expires_at=row["lease_expires_at"],
         )
 
 

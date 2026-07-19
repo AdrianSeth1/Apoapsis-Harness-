@@ -18,15 +18,18 @@ from apoapsis.architect.validation import validate_plan
 from apoapsis.architect.schema import PlanValidationResult, ValidationSeverity
 from apoapsis.execution.operation_errors import ExecutionOperationError
 from apoapsis.execution.operation_recovery import recover_stale_execution_operations
-from apoapsis.execution.operation_service import execute_execution_operation
+from apoapsis.execution.operation_service import (
+    execute_execution_operation,
+    run_execution_operation,
+)
 from apoapsis.execution.operation_store import ExecutionOperationStore
 from apoapsis.intake.errors import IntakeError
-from apoapsis.intake.execution import execute_intake_operation
+from apoapsis.intake.execution import execute_intake_operation, run_intake_operation
 from apoapsis.intake.recovery import recover_stale_intake_operations
 from apoapsis.intake.store import IntakeOperationStore
 from apoapsis.review.case import build_review_case
 from apoapsis.review.errors import ReviewError
-from apoapsis.review.execution import execute_review_action
+from apoapsis.review.execution import execute_review_action, run_review_operation
 from apoapsis.review.recovery import recover_stale_operations
 from apoapsis.review.schema import ReviewActionKind
 from apoapsis.review.store import ReviewOperationStore
@@ -470,12 +473,23 @@ def build_parser() -> argparse.ArgumentParser:
         "inspect", help="show one intake operation's durable record"
     )
     intake_inspect.add_argument("operation_id")
-    intake_subparsers.add_parser(
+    intake_recover = intake_subparsers.add_parser(
         "recover",
         help=(
             "explicit crash recovery: reclaim never-started intake "
             "operations, mark stale running ones ambiguous, and return "
             "stuck tasks to human review"
+        ),
+    )
+    intake_recover.add_argument(
+        "--resume-recorded",
+        action="store_true",
+        help=(
+            "also actually run every reclaimed RECORDED operation now, "
+            "synchronously, in this process -- without this flag, "
+            "recover only reports what it found reclaimable/ambiguous "
+            "and runs nothing. Running recovered model work is only ever "
+            "done when explicitly requested."
         ),
     )
 
@@ -504,12 +518,23 @@ def build_parser() -> argparse.ArgumentParser:
         "inspect", help="show one execution operation's durable record"
     )
     execute_inspect.add_argument("operation_id")
-    execute_subparsers.add_parser(
+    execute_recover = execute_subparsers.add_parser(
         "recover",
         help=(
             "explicit crash recovery: reclaim never-started execution "
             "operations, mark stale running ones ambiguous, and return "
             "stuck tasks to human review with their worktree preserved"
+        ),
+    )
+    execute_recover.add_argument(
+        "--resume-recorded",
+        action="store_true",
+        help=(
+            "also actually run every reclaimed RECORDED operation now, "
+            "synchronously, in this process -- without this flag, "
+            "recover only reports what it found reclaimable/ambiguous "
+            "and runs nothing. Running recovered model work is only ever "
+            "done when explicitly requested."
         ),
     )
 
@@ -573,12 +598,23 @@ def build_parser() -> argparse.ArgumentParser:
         "--expected-fingerprint", required=True
     )
     review_authorize_frontier.add_argument("--operation-id", required=True)
-    review_subparsers.add_parser(
+    review_recover = review_subparsers.add_parser(
         "recover",
         help=(
             "explicit crash recovery: reclaim never-started operations, "
             "mark stale running ones ambiguous, and return stuck tasks to "
             "human review"
+        ),
+    )
+    review_recover.add_argument(
+        "--resume-recorded",
+        action="store_true",
+        help=(
+            "also actually run every reclaimed RECORDED operation now, "
+            "synchronously, in this process -- without this flag, "
+            "recover only reports what it found reclaimable/ambiguous "
+            "and runs nothing. Running recovered model work is only ever "
+            "done when explicitly requested."
         ),
     )
 
@@ -842,7 +878,16 @@ def _intake_command(
         return operation_store.get(args.operation_id).model_dump(mode="json")
     if args.intake_command == "recover":
         report = recover_stale_intake_operations(store, operation_store)
-        return report.model_dump(mode="json")
+        result = report.model_dump(mode="json")
+        if args.resume_recorded and report.reclaimed_operation_ids:
+            config = ApoapsisConfig.from_toml(root / ".apoapsis" / "config.toml")
+            result["resumed"] = []
+            for reclaimed_id in report.reclaimed_operation_ids:
+                record = run_intake_operation(
+                    root, store, operation_store, config, operation_id=reclaimed_id
+                )
+                result["resumed"].append(record.model_dump(mode="json"))
+        return result
     if args.intake_command == "submit":
         config = ApoapsisConfig.from_toml(root / ".apoapsis" / "config.toml")
         record = execute_intake_operation(
@@ -872,7 +917,16 @@ def _execute_command(
         return operation_store.get(args.operation_id).model_dump(mode="json")
     if args.execute_command == "recover":
         report = recover_stale_execution_operations(store, operation_store)
-        return report.model_dump(mode="json")
+        result = report.model_dump(mode="json")
+        if args.resume_recorded and report.reclaimed_operation_ids:
+            config = ApoapsisConfig.from_toml(root / ".apoapsis" / "config.toml")
+            result["resumed"] = []
+            for reclaimed_id in report.reclaimed_operation_ids:
+                record = run_execution_operation(
+                    root, store, operation_store, config, operation_id=reclaimed_id
+                )
+                result["resumed"].append(record.model_dump(mode="json"))
+        return result
     if args.execute_command == "start":
         config = ApoapsisConfig.from_toml(root / ".apoapsis" / "config.toml")
         record = execute_execution_operation(
@@ -980,7 +1034,15 @@ def _review_command(
         return record.model_dump(mode="json")
     if args.review_command == "recover":
         report = recover_stale_operations(store, operation_store)
-        return report.model_dump(mode="json")
+        result = report.model_dump(mode="json")
+        if args.resume_recorded and report.reclaimed_operation_ids:
+            result["resumed"] = []
+            for reclaimed_id in report.reclaimed_operation_ids:
+                record = run_review_operation(
+                    root, store, operation_store, config, operation_id=reclaimed_id
+                )
+                result["resumed"].append(record.model_dump(mode="json"))
+        return result
     raise AssertionError(f"unhandled review command: {args.review_command}")
 
 

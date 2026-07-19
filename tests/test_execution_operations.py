@@ -38,6 +38,7 @@ from apoapsis.execution.operation_service import (
 )
 from apoapsis.execution.operation_store import ExecutionOperationStore
 from apoapsis.models.telemetry import InstrumentedModelProvider
+from apoapsis.operations.lease import new_owner_id
 from apoapsis.reporting.report import TaskOutcome
 from apoapsis.specification.schema import TaskSpecification
 from apoapsis.verification.runner import VerificationCommand, VerificationConfig
@@ -45,6 +46,7 @@ from apoapsis.workflow.engine import SQLiteTaskStore
 from apoapsis.workflow.events import WorkflowActor
 from apoapsis.workflow.states import WorkflowState
 from tests.fakes import FakeModelProvider
+from tests.helpers import force_operation_status
 from tests.test_agent_loop import action
 from tests.test_vertical_slice import (
     COMPLETE_PATCH,
@@ -529,12 +531,12 @@ class RecoveryTests(ExecutionOperationTestsBase):
             event_type="repository_analyzed",
             expected_version=version,
         )
-        self.operation_store.mark_running("EXOP-CRASH-1")
-        report = recover_stale_execution_operations(
-            self.store,
-            self.operation_store,
-            running_expiry=datetime.timedelta(seconds=-1),
+        self.operation_store.mark_running(
+            "EXOP-CRASH-1",
+            owner_id=new_owner_id(),
+            lease_duration=datetime.timedelta(seconds=-1),
         )
+        report = recover_stale_execution_operations(self.store, self.operation_store)
         self.assertEqual(report.ambiguous_operation_ids, ["EXOP-CRASH-1"])
         self.assertEqual(report.tasks_returned_to_review, [task_id])
         self.assertEqual(
@@ -573,16 +575,13 @@ class RecoveryTests(ExecutionOperationTestsBase):
         self.assertEqual(self.store.get_task(task_id).state, WorkflowState.COMPLETE)
         # Simulate the operation's own bookkeeping crashing right after the
         # real work (the task transition to COMPLETE) already landed.
-        self.operation_store._transition(
+        force_operation_status(
+            self.operation_store.database_path,
+            "execution_operations",
             "EXOP-CRASH-2",
-            from_statuses={ExecutionOperationStatus.SUCCEEDED},
-            to_status=ExecutionOperationStatus.RUNNING,
+            status=ExecutionOperationStatus.RUNNING.value,
         )
-        report = recover_stale_execution_operations(
-            self.store,
-            self.operation_store,
-            running_expiry=datetime.timedelta(seconds=-1),
-        )
+        report = recover_stale_execution_operations(self.store, self.operation_store)
         self.assertEqual(report.ambiguous_operation_ids, ["EXOP-CRASH-2"])
         self.assertEqual(report.tasks_returned_to_review, [])
         self.assertEqual(self.store.get_task(task_id).state, WorkflowState.COMPLETE)
@@ -597,7 +596,7 @@ class RecoveryTests(ExecutionOperationTestsBase):
             operation_id="EXOP-RECENT",
             expected_version=version,
         )
-        self.operation_store.mark_running("EXOP-RECENT")
+        self.operation_store.mark_running("EXOP-RECENT", owner_id=new_owner_id())
         report = recover_stale_execution_operations(self.store, self.operation_store)
         self.assertEqual(report.reclaimed_operation_ids, [])
         self.assertEqual(report.ambiguous_operation_ids, [])

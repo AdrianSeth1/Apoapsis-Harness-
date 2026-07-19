@@ -601,6 +601,58 @@ one existing `tests/test_ui.py` assertion updated to reflect
 `start_execution` correctly appearing at `SPEC_APPROVED`. Full suite:
 452/452 passing.
 
+### Done — Phase H3: operation lease and recovery integrity (ADR 0025)
+
+Auditing all three durable operation ledgers (review/ADR 0020-0021,
+intake/ADR 0023, execution/ADR 0024) against real crash scenarios found
+two shared weaknesses: a `RECORDED` operation that crashed before ever
+being enqueued sat forever until an unrelated new submission happened to
+lazily construct that operation type's worker (whose own first-construction
+recovery scan then raced the caller's own explicit enqueue, double-
+scheduling it); and `RUNNING` staleness was judged purely by a last-write
+timestamp plus a fixed window (e.g. 15 minutes), so a genuinely healthy,
+long-running agent session looked indistinguishable from a crashed one.
+
+New, deliberately shared module `src/apoapsis/operations/lease.py` (the
+one intentional exception to this codebase's usual review/intake/execution
+mirroring convention): atomic `claim_lease()`/`renew_lease()`/
+`release_lease()`/`expire_lease_to_ambiguous()`, each a single guarded
+`UPDATE ... WHERE` -- never read-then-write -- plus `LeaseHeartbeat`, a
+daemon-thread ticker renewing on a fixed wall-clock interval independent of
+how long the underlying model call actually takes. All three operation
+records gained `lease_owner_id`/`lease_expires_at` (additive migration).
+`mark_running()` now requires `owner_id` and claims the lease;
+`mark_succeeded`/`mark_failed`/`mark_pending_approval` require the same
+`owner_id` and raise `LeaseLostError` if a different owner or recovery
+already won the row. Recovery reads each `RUNNING` record's own
+`lease_expires_at` (injectable `now=` for deterministic tests) instead of
+a fixed `running_expiry` window -- a long-but-healthy operation, renewed by
+its own heartbeat, survives arbitrarily many former staleness windows; a
+lease that stops renewing is reclaimed and marked `AMBIGUOUS` exactly once,
+with the original owner permanently locked out afterward. A legacy
+`RUNNING` row with `NULL` lease columns is treated as unconditionally
+expired -- fail closed.
+
+`ApoapsisUIService.start_background_workers()` is new; `create_ui_server()`
+calls it immediately after construction, eagerly starting all three
+operation workers (each running its own startup recovery pass) before the
+HTTP server accepts a request -- closing both the "recovery never runs
+until an unrelated submission" gap and the duplicate-enqueue race
+structurally, since the worker now always already exists by the time any
+record is prepared. `apoapsis review/intake/execute recover` stays
+report-only by default; a new `--resume-recorded` flag makes running
+reclaimed work an explicit, opt-in, foreground CLI action.
+
+New `tests/test_operation_lease.py` (22 tests: the shared primitives
+directly, `LeaseHeartbeat` on injected millisecond intervals, and one
+shared parametrized base class proving review/intake/execution all use
+identical semantics). `tests/test_execution_ui.py` gained a test proving
+`start_background_workers()` alone reclaims and completes a stranded
+operation with no submission call. `tests/test_intake_cli.py` gained two
+tests for `--resume-recorded`. Full suite: 478/478 passing, 6 intentional
+skips. See ADR 0025 and `HANDOFF.md`'s "Operation lease and recovery
+integrity" section for full detail.
+
 ### Priority C — extend the accepted application shell (ADR 0014)
 
 The application now has local/offline assets, a capability-protected loopback

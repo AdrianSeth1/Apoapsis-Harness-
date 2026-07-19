@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import timedelta
 from pathlib import Path
 
 from apoapsis.config import ApoapsisConfig, FrontierProviderConfig
@@ -12,6 +13,12 @@ from apoapsis.execution.operation_store import ExecutionOperationStore
 from apoapsis.models.frontier import OpenAICompatibleFrontierProvider
 from apoapsis.models.local import OllamaProvider
 from apoapsis.models.telemetry import InstrumentedModelProvider
+from apoapsis.operations.lease import (
+    DEFAULT_HEARTBEAT_INTERVAL,
+    DEFAULT_LEASE_DURATION,
+    LeaseHeartbeat,
+    new_owner_id,
+)
 from apoapsis.repository.git import GitRepository
 from apoapsis.workflow.engine import SQLiteTaskStore
 from apoapsis.workflow.states import WorkflowState
@@ -99,6 +106,8 @@ def run_execution_operation(
     provider: InstrumentedModelProvider | None = None,
     local_coder_provider: InstrumentedModelProvider | None = None,
     frontier_coder_provider: InstrumentedModelProvider | None = None,
+    lease_duration: timedelta = DEFAULT_LEASE_DURATION,
+    heartbeat_interval: timedelta = DEFAULT_HEARTBEAT_INTERVAL,
 ) -> ExecutionOperationRecord:
     """The actual work -- routing, context compilation, worktree creation,
     the selected coding stage, verification, and reporting -- for an
@@ -116,12 +125,20 @@ def run_execution_operation(
     rechecks its identity (still ``SPEC_APPROVED``), version, and the
     repository HEAD before doing anything else.
 
+    Claims a fresh, unique lease (ADR 0025) and starts a wall-clock
+    :class:`~apoapsis.operations.lease.LeaseHeartbeat` that renews it on a
+    fixed interval, independent of how long the actual routing/agent/
+    verification work takes -- a healthy execution that runs longer than
+    any single lease duration is never misclassified as crashed by
+    recovery. The heartbeat always stops before this function returns,
+    success or failure.
+
     Marks the operation ``SUCCEEDED`` once ``VerticalSliceRunner
     .execute_approved_task()`` returns a report at all -- regardless of
     whether the task itself reached ``COMPLETE``, ``FAILED``, or
     ``HUMAN_REVIEW_REQUIRED``, all of which are legitimate, deterministic
     task-level outcomes; only an operation-level exception (a crash before
-    or during execution) marks the *operation* ``FAILED``.
+    or during execution, or a lost lease) marks the *operation* ``FAILED``.
 
     Intended to run on a background worker thread, never inside an HTTP
     request handler.
@@ -129,7 +146,17 @@ def run_execution_operation(
 
     root = Path(project_root).resolve()
     record = operation_store.get(operation_id)
-    operation_store.mark_running(operation_id)
+    owner_id = new_owner_id()
+    operation_store.mark_running(
+        operation_id, owner_id=owner_id, lease_duration=lease_duration
+    )
+    heartbeat = LeaseHeartbeat(
+        lambda: operation_store.renew_lease(
+            operation_id, owner_id=owner_id, lease_duration=lease_duration
+        ),
+        interval=heartbeat_interval,
+    )
+    heartbeat.start()
     try:
         task = task_store.get_task(record.task_id)
         if (
@@ -167,11 +194,16 @@ def run_execution_operation(
         )
         report = runner.execute_approved_task(record.task_id)
     except Exception as exc:
-        operation_store.mark_failed(operation_id, error=f"{type(exc).__name__}: {exc}")
+        operation_store.mark_failed(
+            operation_id, owner_id=owner_id, error=f"{type(exc).__name__}: {exc}"
+        )
         raise
+    finally:
+        heartbeat.stop()
     report_path = f".apoapsis/tasks/{record.task_id}/report.json"
     return operation_store.mark_succeeded(
         operation_id,
+        owner_id=owner_id,
         result_summary=f"execution finished with outcome {report.outcome.value}",
         report_path=report_path,
     )

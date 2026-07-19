@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime
 
 from pydantic import Field
 
+from apoapsis.intake.errors import IntakeError
 from apoapsis.intake.schema import IntakeOperationStatus
 from apoapsis.intake.store import IntakeOperationStore
 from apoapsis.specification.schema import StrictModel, utc_now
@@ -25,8 +26,6 @@ _NO_FURTHER_ACTION_STATES = frozenset(
     }
 )
 
-DEFAULT_RUNNING_EXPIRY = timedelta(minutes=15)
-
 
 class IntakeRecoveryReport(StrictModel):
     """What one recovery pass actually did -- never speculative, only
@@ -41,10 +40,11 @@ def recover_stale_intake_operations(
     task_store: SQLiteTaskStore,
     operation_store: IntakeOperationStore,
     *,
-    running_expiry: timedelta = DEFAULT_RUNNING_EXPIRY,
+    now: datetime | None = None,
 ) -> IntakeRecoveryReport:
-    """Explicit crash recovery for the intake-operation ledger (ADR 0023),
-    structurally mirroring ``review.recovery.recover_stale_operations``.
+    """Explicit crash recovery for the intake-operation ledger (ADR 0023,
+    lease discipline hardened by ADR 0025), structurally mirroring
+    ``review.recovery.recover_stale_operations``.
 
     ``RECORDED`` operations have never transmitted anything -- the very
     first thing ``run_intake_operation`` does is mark an operation
@@ -54,44 +54,49 @@ def recover_stale_intake_operations(
     caller (``IntakeWorker`` at startup, or the CLI's ``intake recover``
     command) re-submits it for real execution.
 
-    ``RUNNING`` operations are different: an extraction call may or may not
-    have been transmitted before the owning process died, so this function
-    never touches a ``RUNNING`` row that is still within ``running_expiry``
-    of its last update. Only once a ``RUNNING`` row has gone stale beyond
-    ``running_expiry`` is it moved to the terminal, inspectable
-    ``AMBIGUOUS`` status -- never automatically repeated, never silently
-    resolved either way. If the operation's task is still stuck at
-    ``INTAKE`` (the crash happened before the task ever moved anywhere),
-    it is returned to ``HUMAN_REVIEW_REQUIRED`` through the existing
-    permitted transition edge, with an event that makes no claim about
-    whether the interrupted extraction call succeeded or failed -- an
-    operator can then inspect and abandon it through the existing,
-    unmodified review machinery. A task that already reached
-    ``SPEC_DRAFTED``/``FAILED`` before the crash (only the operation's own
-    bookkeeping call never completed) is left exactly where it is; no
-    outcome is inferred or retroactively granted.
+    ``RUNNING`` operations are different: an extraction call may or may
+    not have been transmitted before the owning process died, so this
+    function never touches a ``RUNNING`` row whose lease has not actually
+    expired -- a healthy extraction still being renewed by its own
+    heartbeat is left alone regardless of how long it has been running.
+    Only once a lease has genuinely expired (checked atomically) is the
+    row moved to the terminal, inspectable ``AMBIGUOUS`` status -- never
+    automatically repeated, never silently resolved either way. If the
+    operation's task is still stuck at ``INTAKE`` (the crash happened
+    before the task ever moved anywhere), it is returned to
+    ``HUMAN_REVIEW_REQUIRED`` through the existing permitted transition
+    edge, with an event that makes no claim about whether the interrupted
+    extraction call succeeded or failed -- an operator can then inspect
+    and abandon it through the existing, unmodified review machinery. A
+    task that already reached ``SPEC_DRAFTED``/``FAILED`` before the
+    crash (only the operation's own bookkeeping call never completed) is
+    left exactly where it is; no outcome is inferred or retroactively
+    granted.
     """
 
     report = IntakeRecoveryReport()
-    now = utc_now()
+    moment = now if now is not None else utc_now()
     for record in operation_store.list_active():
         if record.status == IntakeOperationStatus.RECORDED:
             report.reclaimed_operation_ids.append(record.operation_id)
             continue
 
-        age = now - record.updated_at
-        if age < running_expiry:
-            continue
+        if record.lease_expires_at is not None and record.lease_expires_at >= moment:
+            continue  # a healthy operation, still renewing its own lease
 
-        operation_store.mark_ambiguous(
-            record.operation_id,
-            note=(
-                f"no update for {age}; the process running this operation "
-                "may have crashed. Whether a model call was transmitted "
-                "before that happened is unknown -- this operation is not "
-                "automatically repeated."
-            ),
-        )
+        try:
+            operation_store.mark_ambiguous(
+                record.operation_id,
+                note=(
+                    "this operation's lease expired without renewal; the "
+                    "process running it may have crashed. Whether a model "
+                    "call was transmitted before that happened is unknown "
+                    "-- this operation is not automatically repeated."
+                ),
+                now=moment,
+            )
+        except IntakeError:
+            continue  # lost the race; the owner renewed in the meantime
         report.ambiguous_operation_ids.append(record.operation_id)
 
         try:
@@ -122,8 +127,4 @@ def recover_stale_intake_operations(
     return report
 
 
-__all__ = [
-    "DEFAULT_RUNNING_EXPIRY",
-    "IntakeRecoveryReport",
-    "recover_stale_intake_operations",
-]
+__all__ = ["IntakeRecoveryReport", "recover_stale_intake_operations"]

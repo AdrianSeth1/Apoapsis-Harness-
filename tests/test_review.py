@@ -8,6 +8,7 @@ from pathlib import Path
 from pydantic import ValidationError
 
 from apoapsis.config import AgentLoopConfig
+from apoapsis.operations.lease import new_owner_id
 from apoapsis.review.classify import classify_stop_reason, eligible_actions_for
 from apoapsis.review.errors import (
     ActiveOperationExistsError,
@@ -206,8 +207,9 @@ class ReviewOperationStoreTests(unittest.TestCase):
         self.store.create(
             "RVOP-1", "TASK-1", ReviewActionKind.ABANDON, expected_task_version=1
         )
-        self.store.mark_running("RVOP-1")
-        self.store.mark_succeeded("RVOP-1", result_summary="done")
+        owner_id = new_owner_id()
+        self.store.mark_running("RVOP-1", owner_id=owner_id)
+        self.store.mark_succeeded("RVOP-1", owner_id=owner_id, result_summary="done")
         with self.assertRaises(DuplicateOperationError):
             self.store.create(
                 "RVOP-1", "TASK-1", ReviewActionKind.ABANDON, expected_task_version=1
@@ -243,8 +245,11 @@ class ReviewOperationStoreTests(unittest.TestCase):
             expected_task_version=1,
             authorized_budget=ContinuationBudget(additional_turns=5),
         )
-        self.store.mark_running("RVOP-1")
-        record = self.store.mark_succeeded("RVOP-1", result_summary="done")
+        owner_id = new_owner_id()
+        self.store.mark_running("RVOP-1", owner_id=owner_id)
+        record = self.store.mark_succeeded(
+            "RVOP-1", owner_id=owner_id, result_summary="done"
+        )
         self.assertEqual(record.status.value, "succeeded")
         self.assertEqual(record.result_summary, "done")
         assert record.authorized_budget is not None
@@ -254,23 +259,26 @@ class ReviewOperationStoreTests(unittest.TestCase):
         self.store.create(
             "RVOP-1", "TASK-1", ReviewActionKind.ABANDON, expected_task_version=1
         )
-        self.store.mark_running("RVOP-1")
+        self.store.mark_running("RVOP-1", owner_id=new_owner_id())
         with self.assertRaises(OperationAlreadyRunningError):
-            self.store.mark_running("RVOP-1")
+            self.store.mark_running("RVOP-1", owner_id=new_owner_id())
 
     def test_cannot_succeed_an_operation_that_never_started_running(self) -> None:
         self.store.create(
             "RVOP-1", "TASK-1", ReviewActionKind.ABANDON, expected_task_version=1
         )
         with self.assertRaises(ReviewError):
-            self.store.mark_succeeded("RVOP-1", result_summary="done")
+            self.store.mark_succeeded(
+                "RVOP-1", owner_id=new_owner_id(), result_summary="done"
+            )
 
     def test_failed_operation_records_error(self) -> None:
         self.store.create(
             "RVOP-1", "TASK-1", ReviewActionKind.ABANDON, expected_task_version=1
         )
-        self.store.mark_running("RVOP-1")
-        record = self.store.mark_failed("RVOP-1", error="boom")
+        owner_id = new_owner_id()
+        self.store.mark_running("RVOP-1", owner_id=owner_id)
+        record = self.store.mark_failed("RVOP-1", owner_id=owner_id, error="boom")
         self.assertEqual(record.status.value, "failed")
         self.assertEqual(record.error, "boom")
 

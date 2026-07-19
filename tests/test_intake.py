@@ -28,6 +28,7 @@ from apoapsis.intake.execution import (
     run_intake_operation,
 )
 from apoapsis.intake.recovery import recover_stale_intake_operations
+from apoapsis.operations.lease import new_owner_id
 from apoapsis.intake.schema import IntakeOperationStatus
 from apoapsis.intake.store import IntakeOperationStore
 from apoapsis.models.telemetry import InstrumentedModelProvider
@@ -36,6 +37,7 @@ from apoapsis.workflow.engine import SQLiteTaskStore
 from apoapsis.workflow.events import WorkflowActor
 from apoapsis.workflow.states import WorkflowState
 from tests.fakes import FakeModelProvider
+from tests.helpers import force_operation_status
 from tests.test_specification_correction import (
     _inject_task_id_into_every_json_response,
     _invalid_specification_null_hard_constraint_method,
@@ -438,12 +440,12 @@ class RecoveryTests(IntakeTestsBase):
             request_text=REQUEST,
             operation_id="INOP-CRASH-1",
         )
-        self.operation_store.mark_running("INOP-CRASH-1")
-        report = recover_stale_intake_operations(
-            self.store,
-            self.operation_store,
-            running_expiry=datetime.timedelta(seconds=-1),
+        self.operation_store.mark_running(
+            "INOP-CRASH-1",
+            owner_id=new_owner_id(),
+            lease_duration=datetime.timedelta(seconds=-1),
         )
+        report = recover_stale_intake_operations(self.store, self.operation_store)
         self.assertEqual(report.ambiguous_operation_ids, ["INOP-CRASH-1"])
         self.assertEqual(report.tasks_returned_to_review, [record.task_id])
         task = self.store.get_task(record.task_id)
@@ -480,16 +482,13 @@ class RecoveryTests(IntakeTestsBase):
         )
         # Simulate the bookkeeping call itself crashing right after the real
         # work (the task transition) already landed.
-        self.operation_store._transition(
+        force_operation_status(
+            self.operation_store.database_path,
+            "intake_operations",
             "INOP-CRASH-2",
-            from_statuses={IntakeOperationStatus.PENDING_SPECIFICATION_APPROVAL},
-            to_status=IntakeOperationStatus.RUNNING,
+            status=IntakeOperationStatus.RUNNING.value,
         )
-        report = recover_stale_intake_operations(
-            self.store,
-            self.operation_store,
-            running_expiry=datetime.timedelta(seconds=-1),
-        )
+        report = recover_stale_intake_operations(self.store, self.operation_store)
         self.assertEqual(report.ambiguous_operation_ids, ["INOP-CRASH-2"])
         self.assertEqual(report.tasks_returned_to_review, [])
         self.assertEqual(
@@ -504,7 +503,7 @@ class RecoveryTests(IntakeTestsBase):
             request_text=REQUEST,
             operation_id="INOP-RECENT",
         )
-        self.operation_store.mark_running("INOP-RECENT")
+        self.operation_store.mark_running("INOP-RECENT", owner_id=new_owner_id())
         report = recover_stale_intake_operations(self.store, self.operation_store)
         self.assertEqual(report.reclaimed_operation_ids, [])
         self.assertEqual(report.ambiguous_operation_ids, [])

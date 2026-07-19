@@ -46,6 +46,8 @@ class ExecutionOperationRecord(StrictModel):
     result_summary: str | None = None
     error: str | None = None
     report_path: str | None = None
+    lease_owner_id: str | None = None
+    lease_expires_at: datetime | None = None
 
 
 __all__ = ["ExecutionOperationRecord", "ExecutionOperationStatus"]

@@ -126,6 +126,8 @@ class ReviewOperationRecord(StrictModel):
     updated_at: datetime
     result_summary: str | None = None
     error: str | None = None
+    lease_owner_id: str | None = None
+    lease_expires_at: datetime | None = None
 
 
 class ReviewContinuationPackage(StrictModel):

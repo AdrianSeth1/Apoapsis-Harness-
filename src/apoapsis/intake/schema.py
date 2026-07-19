@@ -49,6 +49,8 @@ class IntakeOperationRecord(StrictModel):
     result_summary: str | None = None
     error: str | None = None
     audit_artifact_locations: list[str] = Field(default_factory=list)
+    lease_owner_id: str | None = None
+    lease_expires_at: datetime | None = None
 
 
 __all__ = ["IntakeOperationRecord", "IntakeOperationStatus"]

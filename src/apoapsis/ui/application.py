@@ -89,6 +89,28 @@ class ApoapsisUIService:
         self._intake_worker: IntakeWorker | None = None
         self._execution_worker: ExecutionWorker | None = None
 
+    def start_background_workers(self) -> None:
+        """Eagerly construct all three operation workers, running each
+        one's startup recovery pass immediately (ADR 0025) -- rather than
+        waiting for whatever operation type happens to be submitted
+        first. ``create_ui_server()`` calls this once, right after
+        construction, so a stranded ``RECORDED`` operation from a crashed
+        previous process is reclaimed and queued the moment ``apoapsis
+        ui`` starts, not only when an unrelated new submission happens to
+        lazily construct that operation type's worker for the first time
+        (which also closes a duplicate-enqueue window: recovery's
+        startup scan can no longer race a submission that is preparing
+        its own, not-yet-enqueued operation on the same worker's very
+        first construction).
+
+        Idempotent and safe to call more than once; only the first call
+        for each operation type actually constructs anything.
+        """
+
+        self._worker()
+        self._intake_worker_instance()
+        self._execution_worker_instance()
+
     def overview(self) -> dict[str, Any]:
         config = self._config()
         repository: dict[str, Any]

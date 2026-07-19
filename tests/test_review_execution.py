@@ -34,6 +34,7 @@ from apoapsis.review.errors import (
 )
 from apoapsis.review.execution import execute_review_action
 from apoapsis.review.schema import ReviewActionKind, StopReasonKind
+from apoapsis.operations.lease import new_owner_id
 from apoapsis.review.store import ReviewOperationStore
 from apoapsis.verification.runner import VerificationCommand, VerificationConfig
 from apoapsis.workflow.engine import SQLiteTaskStore
@@ -656,7 +657,7 @@ class LocalContinuationTests(ReviewExecutionTestsBase):
             ReviewActionKind.LOCAL_CONTINUATION,
             expected_task_version=case.task_version,
         )
-        self.operation_store.mark_running("RVOP-CRASH-1")
+        self.operation_store.mark_running("RVOP-CRASH-1", owner_id=new_owner_id())
 
         with self.assertRaises(ReviewError):
             execute_review_action(

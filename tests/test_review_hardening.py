@@ -17,6 +17,7 @@ from apoapsis.review.execution import (
     prepare_review_operation,
     run_review_operation,
 )
+from apoapsis.operations.lease import new_owner_id
 from apoapsis.review.recovery import recover_stale_operations
 from apoapsis.review.schema import (
     ReviewActionKind,
@@ -385,13 +386,13 @@ class RecoveryTests(ReviewExecutionTestsBase):
             expected_version=case.task_version,
             expected_worktree_fingerprint=case.worktree_fingerprint,
         )
-        self.operation_store.mark_running("RVOP-CRASH-BEFORE-1")
-
-        report = recover_stale_operations(
-            self.store,
-            self.operation_store,
-            running_expiry=datetime.timedelta(seconds=-1),
+        self.operation_store.mark_running(
+            "RVOP-CRASH-BEFORE-1",
+            owner_id=new_owner_id(),
+            lease_duration=datetime.timedelta(seconds=-1),
         )
+
+        report = recover_stale_operations(self.store, self.operation_store)
         self.assertIn("RVOP-CRASH-BEFORE-1", report.ambiguous_operation_ids)
         self.assertEqual(report.tasks_returned_to_review, [])
         self.assertEqual(
@@ -425,7 +426,11 @@ class RecoveryTests(ReviewExecutionTestsBase):
             expected_worktree_fingerprint=case.worktree_fingerprint,
             additional_turns=3,
         )
-        self.operation_store.mark_running("RVOP-CRASH-AFTER-1")
+        self.operation_store.mark_running(
+            "RVOP-CRASH-AFTER-1",
+            owner_id=new_owner_id(),
+            lease_duration=datetime.timedelta(seconds=-1),
+        )
         # Simulate the crash happening exactly after the workflow
         # transition to IMPLEMENTING but before the session finished.
         self.store.transition(
@@ -441,11 +446,7 @@ class RecoveryTests(ReviewExecutionTestsBase):
             expected_version=case.task_version,
         )
 
-        report = recover_stale_operations(
-            self.store,
-            self.operation_store,
-            running_expiry=datetime.timedelta(seconds=-1),
-        )
+        report = recover_stale_operations(self.store, self.operation_store)
         self.assertIn("RVOP-CRASH-AFTER-1", report.ambiguous_operation_ids)
         self.assertIn(task_id, report.tasks_returned_to_review)
         self.assertEqual(
@@ -480,13 +481,13 @@ class RecoveryTests(ReviewExecutionTestsBase):
             expected_version=case.task_version,
             expected_worktree_fingerprint=case.worktree_fingerprint,
         )
-        self.operation_store.mark_running("RVOP-STILL-FRESH-1")
-
-        report = recover_stale_operations(
-            self.store,
-            self.operation_store,
-            running_expiry=datetime.timedelta(hours=1),
+        self.operation_store.mark_running(
+            "RVOP-STILL-FRESH-1",
+            owner_id=new_owner_id(),
+            lease_duration=datetime.timedelta(hours=1),
         )
+
+        report = recover_stale_operations(self.store, self.operation_store)
         self.assertEqual(report.ambiguous_operation_ids, [])
         self.assertEqual(
             self.operation_store.get("RVOP-STILL-FRESH-1").status,

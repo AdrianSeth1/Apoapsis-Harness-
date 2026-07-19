@@ -7,8 +7,18 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from apoapsis.cli.app import main
+from apoapsis.intake.execution import prepare_intake_operation
+from apoapsis.intake.store import IntakeOperationStore
+from apoapsis.models.telemetry import InstrumentedModelProvider
+from apoapsis.workflow.engine import SQLiteTaskStore
+from tests.fakes import FakeModelProvider
+from tests.test_specification_correction import (
+    _inject_task_id_into_every_json_response,
+)
+from tests.test_vertical_slice import REQUEST, specification_response
 
 
 class IntakeCLITests(unittest.TestCase):
@@ -70,6 +80,58 @@ class IntakeCLITests(unittest.TestCase):
         self.assertEqual(parsed.intake_command, "submit")
         self.assertEqual(parsed.request_text, "add a feature")
         self.assertEqual(parsed.operation_id, "INOP-1")
+
+    def test_intake_recover_without_resume_flag_only_reports(self) -> None:
+        self.invoke("init")
+        store = SQLiteTaskStore(self.root / ".apoapsis" / "apoapsis.db")
+        operation_store = IntakeOperationStore(
+            self.root / ".apoapsis" / "intake-operations.db"
+        )
+        prepare_intake_operation(
+            self.root,
+            store,
+            operation_store,
+            request_text=REQUEST,
+            operation_id="INOP-STRANDED",
+        )
+        result = self.invoke("intake", "recover")
+        self.assertEqual(result["reclaimed_operation_ids"], ["INOP-STRANDED"])
+        self.assertNotIn("resumed", result)
+        # Report-only: the operation must still be sitting exactly where it
+        # was, untouched, since no model call was authorized.
+        self.assertEqual(
+            operation_store.get("INOP-STRANDED").status.value, "recorded"
+        )
+
+    def test_intake_recover_with_resume_flag_actually_runs_the_operation(self) -> None:
+        self.invoke("init")
+        store = SQLiteTaskStore(self.root / ".apoapsis" / "apoapsis.db")
+        operation_store = IntakeOperationStore(
+            self.root / ".apoapsis" / "intake-operations.db"
+        )
+        prepare_intake_operation(
+            self.root,
+            store,
+            operation_store,
+            request_text=REQUEST,
+            operation_id="INOP-STRANDED-2",
+        )
+        fake = FakeModelProvider([specification_response()])
+        _inject_task_id_into_every_json_response(fake)
+        fake_provider = InstrumentedModelProvider(fake)
+        with patch(
+            "apoapsis.intake.execution._build_provider", return_value=fake_provider
+        ):
+            result = self.invoke("intake", "recover", "--resume-recorded")
+        self.assertEqual(result["reclaimed_operation_ids"], ["INOP-STRANDED-2"])
+        self.assertEqual(len(result["resumed"]), 1)
+        self.assertEqual(
+            result["resumed"][0]["status"], "pending_specification_approval"
+        )
+        self.assertEqual(
+            operation_store.get("INOP-STRANDED-2").status.value,
+            "pending_specification_approval",
+        )
 
     def test_existing_run_and_task_commands_are_unaffected(self) -> None:
         self.invoke("init")

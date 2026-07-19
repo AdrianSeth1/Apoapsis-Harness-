@@ -28,6 +28,7 @@ from apoapsis.config import (
 )
 from apoapsis.execution.operation_recovery import recover_stale_execution_operations
 from apoapsis.execution.operation_store import ExecutionOperationStore
+from apoapsis.operations.lease import new_owner_id
 from apoapsis.models.telemetry import InstrumentedModelProvider
 from apoapsis.specification.schema import TaskSpecification
 from apoapsis.ui.application import ApoapsisUIService
@@ -263,12 +264,12 @@ timeout_seconds = 30
             operation_id="EXOP-UI-AMBIGUOUS",
             expected_version=self.task_version,
         )
-        operation_store.mark_running("EXOP-UI-AMBIGUOUS")
-        recover_stale_execution_operations(
-            self.store,
-            operation_store,
-            running_expiry=datetime.timedelta(seconds=-1),
+        operation_store.mark_running(
+            "EXOP-UI-AMBIGUOUS",
+            owner_id=new_owner_id(),
+            lease_duration=datetime.timedelta(seconds=-1),
         )
+        recover_stale_execution_operations(self.store, operation_store)
         status = self.service.execution_operation_status("EXOP-UI-AMBIGUOUS")
         self.assertEqual(status["status"], "ambiguous")
         self.assertEqual(
@@ -283,6 +284,42 @@ timeout_seconds = 30
             service.submit_execution_operation(
                 "TASK-DOES-NOT-EXIST", operation_id="EXOP-NONE", expected_version=1
             )
+
+    def test_start_background_workers_reclaims_stranded_recorded_operation(
+        self,
+    ) -> None:
+        """ADR 0025: a process can durably record an operation and then
+        crash before ever enqueueing it. A freshly constructed service
+        must reclaim and run it to completion the moment
+        ``start_background_workers`` is called -- exactly what
+        ``create_ui_server`` now does at startup -- without any browser
+        ever calling ``submit_execution_operation`` for it."""
+
+        from apoapsis.execution.operation_service import prepare_execution_operation
+
+        operation_store = self._execution_operation_store()
+        prepare_execution_operation(
+            self.root,
+            self.store,
+            operation_store,
+            task_id=self.task_id,
+            operation_id="EXOP-UI-STRANDED",
+            expected_version=self.task_version,
+        )
+        self.assertEqual(operation_store.get("EXOP-UI-STRANDED").status.value, "recorded")
+
+        fresh_service = ApoapsisUIService(self.root)
+        self.addCleanup(setattr, fresh_service, "_execution_worker", None)
+        fake = FakeModelProvider([action("search_repository", query="x")])
+        fake_provider = InstrumentedModelProvider(fake, ProviderPricing())
+        with patch(
+            "apoapsis.execution.operation_service._build_providers",
+            return_value=(fake_provider, fake_provider, None),
+        ):
+            fresh_service.start_background_workers()
+            final = _poll_until_terminal(fresh_service, "EXOP-UI-STRANDED")
+        self.assertIn(final["status"], {"succeeded", "failed"})
+        self.assertGreaterEqual(len(fake.invocations), 1)
 
 
 class ExecutionUIServerTests(ExecutionUIServiceTests):

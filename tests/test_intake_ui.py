@@ -24,6 +24,7 @@ from apoapsis.config import (
 )
 from apoapsis.intake.recovery import recover_stale_intake_operations
 from apoapsis.intake.store import IntakeOperationStore
+from apoapsis.operations.lease import new_owner_id
 from apoapsis.models.telemetry import InstrumentedModelProvider
 from apoapsis.ui.application import ApoapsisUIService
 from apoapsis.ui.server import create_ui_server
@@ -159,12 +160,12 @@ timeout_seconds = 30
             request_text=REQUEST,
             operation_id="INOP-UI-AMBIGUOUS",
         )
-        operation_store.mark_running("INOP-UI-AMBIGUOUS")
-        recover_stale_intake_operations(
-            self.store,
-            operation_store,
-            running_expiry=datetime.timedelta(seconds=-1),
+        operation_store.mark_running(
+            "INOP-UI-AMBIGUOUS",
+            owner_id=new_owner_id(),
+            lease_duration=datetime.timedelta(seconds=-1),
         )
+        recover_stale_intake_operations(self.store, operation_store)
         status = self.service.intake_operation_status("INOP-UI-AMBIGUOUS")
         self.assertEqual(status["status"], "ambiguous")
         self.assertEqual(

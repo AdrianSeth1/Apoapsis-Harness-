@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import timedelta
 from pathlib import Path
 
 from apoapsis.agent.session import (
@@ -23,6 +24,12 @@ from apoapsis.models.frontier import OpenAICompatibleFrontierProvider
 from apoapsis.models.local import OllamaProvider
 from apoapsis.models.provider import ModelRole, ProviderInvocation
 from apoapsis.models.telemetry import InstrumentedModelProvider, InstrumentedProviderError
+from apoapsis.operations.lease import (
+    DEFAULT_HEARTBEAT_INTERVAL,
+    DEFAULT_LEASE_DURATION,
+    LeaseHeartbeat,
+    new_owner_id,
+)
 from apoapsis.patches.apply import GitPatchApplier
 from apoapsis.patches.parser import UnifiedDiffParser
 from apoapsis.patches.validator import PatchPolicyValidator
@@ -362,6 +369,8 @@ def run_review_operation(
     operation_id: str,
     local_coder_provider: InstrumentedModelProvider | None = None,
     frontier_coder_provider: InstrumentedModelProvider | None = None,
+    lease_duration: timedelta = DEFAULT_LEASE_DURATION,
+    heartbeat_interval: timedelta = DEFAULT_HEARTBEAT_INTERVAL,
 ) -> ReviewOperationRecord:
     """The actual work -- a resumed model call, a verification run, or a
     worktree cleanup -- for an operation ``prepare_review_operation`` has
@@ -381,13 +390,28 @@ def run_review_operation(
     operation's own recorded expectations before dispatching to the action
     handler -- never trusting anything computed earlier.
 
+    Claims a fresh, unique lease (ADR 0025) and starts a wall-clock
+    heartbeat that renews it independent of model latency, so a long but
+    healthy continuation is never misclassified as crashed by recovery;
+    the heartbeat always stops before this function returns.
+
     Intended to run on a background worker thread (ADR 0020 Commit C2),
     never inside an HTTP request handler.
     """
 
     root = Path(project_root).resolve()
     record = operation_store.get(operation_id)
-    operation_store.mark_running(operation_id)
+    owner_id = new_owner_id()
+    operation_store.mark_running(
+        operation_id, owner_id=owner_id, lease_duration=lease_duration
+    )
+    heartbeat = LeaseHeartbeat(
+        lambda: operation_store.renew_lease(
+            operation_id, owner_id=owner_id, lease_duration=lease_duration
+        ),
+        interval=heartbeat_interval,
+    )
+    heartbeat.start()
     try:
         review_case = build_review_case(root, task_store, config, record.task_id)
         _validate_operation_preconditions(
@@ -466,9 +490,15 @@ def run_review_operation(
         else:
             raise AssertionError(f"unhandled review action: {record.action}")
     except Exception as exc:
-        operation_store.mark_failed(operation_id, error=f"{type(exc).__name__}: {exc}")
+        operation_store.mark_failed(
+            operation_id, owner_id=owner_id, error=f"{type(exc).__name__}: {exc}"
+        )
         raise
-    return operation_store.mark_succeeded(operation_id, result_summary=summary)
+    finally:
+        heartbeat.stop()
+    return operation_store.mark_succeeded(
+        operation_id, owner_id=owner_id, result_summary=summary
+    )
 
 
 def execute_review_action(
