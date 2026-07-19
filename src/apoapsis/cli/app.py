@@ -16,6 +16,10 @@ from apoapsis.architect.audit import PlanAuditStore, write_package_artifact
 from apoapsis.architect.store import SQLitePlanStore
 from apoapsis.architect.validation import validate_plan
 from apoapsis.architect.schema import PlanValidationResult, ValidationSeverity
+from apoapsis.execution.operation_errors import ExecutionOperationError
+from apoapsis.execution.operation_recovery import recover_stale_execution_operations
+from apoapsis.execution.operation_service import execute_execution_operation
+from apoapsis.execution.operation_store import ExecutionOperationStore
 from apoapsis.intake.errors import IntakeError
 from apoapsis.intake.execution import execute_intake_operation
 from apoapsis.intake.recovery import recover_stale_intake_operations
@@ -475,6 +479,40 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    execute = subparsers.add_parser(
+        "execute",
+        help=(
+            "durable post-approval task execution (ADR 0024): a CLI/"
+            "service seam for starting, inspecting, and recovering "
+            "execution operations without requiring `apoapsis ui`"
+        ),
+    )
+    execute_subparsers = execute.add_subparsers(
+        dest="execute_command", required=True
+    )
+    execute_start = execute_subparsers.add_parser(
+        "start",
+        help=(
+            "start the normal routing/context/agent/verification pipeline "
+            "for an already-approved task"
+        ),
+    )
+    execute_start.add_argument("task_id")
+    execute_start.add_argument("--expected-version", type=int, required=True)
+    execute_start.add_argument("--operation-id", required=True)
+    execute_inspect = execute_subparsers.add_parser(
+        "inspect", help="show one execution operation's durable record"
+    )
+    execute_inspect.add_argument("operation_id")
+    execute_subparsers.add_parser(
+        "recover",
+        help=(
+            "explicit crash recovery: reclaim never-started execution "
+            "operations, mark stale running ones ambiguous, and return "
+            "stuck tasks to human review with their worktree preserved"
+        ),
+    )
+
     review = subparsers.add_parser(
         "review", help="deterministic human-review and resume (ADR 0020)"
     )
@@ -579,6 +617,7 @@ def main(argv: list[str] | None = None) -> None:
         ArchitectError,
         ReviewError,
         IntakeError,
+        ExecutionOperationError,
     ) as exc:
         parser.exit(2, f"error: {exc}\n")
     if result is not None:
@@ -632,6 +671,8 @@ def _dispatch(args: argparse.Namespace) -> dict[str, object] | None:
         return _review_command(root, store, args)
     if args.command == "intake":
         return _intake_command(root, store, args)
+    if args.command == "execute":
+        return _execute_command(root, store, args)
     if args.command == "inspect":
         record = store.get_task(args.task_id)
         result: dict[str, object] = {
@@ -814,6 +855,37 @@ def _intake_command(
         )
         return record.model_dump(mode="json")
     raise AssertionError(f"unhandled intake command: {args.intake_command}")
+
+
+def _execution_operation_store(root: Path) -> ExecutionOperationStore:
+    metadata = root / ".apoapsis"
+    if not (metadata / "config.toml").is_file():
+        raise TaskStoreError("Apoapsis is not initialized; run 'apoapsis init' first")
+    return ExecutionOperationStore(metadata / "execution-operations.db")
+
+
+def _execute_command(
+    root: Path, store: SQLiteTaskStore, args: argparse.Namespace
+) -> dict[str, object]:
+    operation_store = _execution_operation_store(root)
+    if args.execute_command == "inspect":
+        return operation_store.get(args.operation_id).model_dump(mode="json")
+    if args.execute_command == "recover":
+        report = recover_stale_execution_operations(store, operation_store)
+        return report.model_dump(mode="json")
+    if args.execute_command == "start":
+        config = ApoapsisConfig.from_toml(root / ".apoapsis" / "config.toml")
+        record = execute_execution_operation(
+            root,
+            store,
+            operation_store,
+            config,
+            task_id=args.task_id,
+            operation_id=args.operation_id,
+            expected_version=args.expected_version,
+        )
+        return record.model_dump(mode="json")
+    raise AssertionError(f"unhandled execute command: {args.execute_command}")
 
 
 def _review_operation_store(root: Path) -> ReviewOperationStore:

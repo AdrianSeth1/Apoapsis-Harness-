@@ -532,17 +532,48 @@ real bug (`INTAKE_OPERATION_STAGE` referenced before being defined) that
 the deterministic suite had not, since it never executes `app.js`; fixed
 before commit.
 
+### Done — Phase D2a: durable post-approval task execution (ADR 0024)
+
+Inventoried `VerticalSliceRunner.run()`'s phases directly from the code,
+then split it at the `SPEC_APPROVED` boundary into a shared
+`_run_from_approved()` continuation (research, context compilation,
+routing, worktree creation, the selected coding stage with escalation,
+verification, reporting -- moved verbatim, not reimplemented) plus a new
+public `execute_approved_task(task_id)` entry point. The full existing
+test suite (418 tests) passed unchanged against the refactor before any
+new code was added, confirming `apoapsis run` and one-shot mode are
+byte-for-byte preserved. Added `src/apoapsis/execution/operation_*`
+(`schema`/`store`/`service`/`recovery`/`worker`), structurally mirroring
+the review/intake operation ledgers exactly: `ExecutionOperationRecord`
+carries the task id, the task version and repository HEAD observed at
+preparation time, and status; `prepare_execution_operation()` requires
+`SPEC_APPROVED` at an exact version and captures HEAD; `run_execution_
+operation()` marks `RUNNING` before provider construction, rechecks
+task state/version *and* repository HEAD (catching a parent-repository
+commit landing in the gap between approval and a queued operation's
+actual start), then calls `execute_approved_task()`. The operation is
+marked `SUCCEEDED` for *any* deterministic task outcome (`COMPLETE`,
+`FAILED`, or `HUMAN_REVIEW_REQUIRED` are all legitimate) -- only a crash
+marks the operation itself `FAILED`. Crash recovery mirrors review/intake
+exactly and, critically, never touches the task's worktree: a stale
+`RUNNING` operation becomes `AMBIGUOUS`, and a task stuck anywhere between
+`SPEC_APPROVED` and a terminal state is returned to `HUMAN_REVIEW_REQUIRED`
+(every intermediate state already has that edge) for inspection/abandon
+through the existing, unmodified review machinery. CLI: `apoapsis execute
+start/inspect/recover`. New ADR 0024. 15 new tests in `tests/
+test_execution_operations.py`; full suite 433/433 passing.
+
 ### Priority C — extend the accepted application shell (ADR 0014)
 
 The application now has local/offline assets, a capability-protected loopback
 API, real task/report/environment/evaluation/plan/review views, optimistic
 specification and plan approval, durable Human Review operations with
 bounded continuation, crash recovery, explicit fresh-frontier-stage
-authorization, and durable new-task intake (CLI, service, and UI). It can
-control existing work safely and durably draft and approve a new task's
-specification, start to finish, from the browser. The highest-value
-remaining product gap is that it still cannot *execute* a new task after
-approval.
+authorization, durable new-task intake (CLI, service, and UI), and durable
+post-approval execution (CLI and service so far). It can control existing
+work safely and durably draft, approve, and (via CLI) execute a new task
+from a natural-language request. The highest-value remaining product gap
+is that execution has no UI screen yet.
 
 Continue in this order:
 
@@ -550,10 +581,13 @@ Continue in this order:
    at `SPEC_DRAFTED`, with both a CLI/service seam (Commit D1a) and a New
    Task UI screen (Commit D1b) reusing the existing, unmodified
    specification-approval action.
-2. After optimistic specification approval, launch the already-approved task
-   through a durable worker. Project progress from workflow events/operation
-   records; browser code must not infer state, run a CLI subprocess, or own a
-   provider. A disconnect must not grant, cancel, duplicate, or repeat work.
+2. Done (ADR 0024, Commit D2a): durable post-approval execution service,
+   reusing `VerticalSliceRunner`'s existing implementation exactly. Add the
+   corresponding UI screen (Commit D2b): a "Start coding" action, two-step
+   confirmation, and a live control-room view projected from persisted
+   workflow events/operation records -- browser code must not infer state,
+   run a CLI subprocess, or own a provider. A disconnect must not grant,
+   cancel, duplicate, or repeat work.
 3. Then add an approved-plan-to-single-slice bridge under its own ADR. Compile
    one explicitly selected ready slice into an immutable execution package,
    recheck the plan/repository/dependency fingerprints, obtain explicit user

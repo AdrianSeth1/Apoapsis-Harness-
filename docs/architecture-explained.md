@@ -5,7 +5,7 @@ ideas and safety boundaries without assuming you already know the codebase.
 `HANDOFF.md` remains the canonical technical record for coding agents; the ADRs
 under `docs/adr/` preserve why individual decisions were made.
 
-Current as of 2026-07-19, after ADR 0023 (Commits D1a and D1b).
+Current as of 2026-07-19, after ADR 0024 (Commit D2a).
 
 ## The short version
 
@@ -378,7 +378,11 @@ result, and how much did it cost?"
 - The black/orange/purple offline loopback UI for real project, task,
   specification, plan, review, verification, evaluation, report, and model
   facts.
-- 418 deterministic tests in the current repository snapshot, with six
+- Durable, crash-safe post-approval task execution as a CLI/service seam
+  (`apoapsis execute start/inspect/recover`), reusing the exact same
+  routing/context/agent/patch/verification/reporting implementation
+  `apoapsis run` always used -- a UI control-room screen is the next step.
+- 433 deterministic tests in the current repository snapshot, with six
   intentional environment-gated skips.
 
 ### Proven with real local inference
@@ -418,28 +422,34 @@ tab and reconnect), and once drafted links to the existing task page for the
 full candidate review and the same, unmodified two-step approval action. This
 was live-verified in a real browser against a real local Ollama model.
 
-### Next milestone: launch execution after approval
+### Done: durable post-approval execution service (ADR 0024)
 
-Nothing yet turns an approved specification into a running task from the app.
-The next service should:
+`VerticalSliceRunner`'s post-approval phases (routing, context, worktree,
+agent, patch, verification, escalation, reporting) are now a shared
+continuation (`_run_from_approved`/`execute_approved_task()`), reused --
+not duplicated -- by both `apoapsis run` and a new durable execution
+service (`src/apoapsis/execution/operation_*`). An operation is persisted
+before starting, requiring the task id, expected version, and repository
+HEAD; marked running before any provider call or worktree mutation;
+executed outside any HTTP request; and drives the existing
+`REPOSITORY_ANALYZED -> ... -> COMPLETE`/`HUMAN_REVIEW_REQUIRED` edges
+unchanged. Crash recovery never touches an in-progress worktree -- it
+returns a stranded task to human review, worktree intact, for inspection
+through the existing review machinery. Available today only as a
+CLI/service seam (`apoapsis execute start/inspect/recover`).
 
-1. Extract `VerticalSliceRunner`'s post-approval phases (routing, context,
-   worktree, agent, patch, verification, escalation, reporting) into a shared
-   service, reused rather than duplicated by both `apoapsis run` and the app.
-2. Persist an execution operation before starting, requiring the task id,
-   expected version, and repository fingerprint -- the same idempotency/
-   crash-safety ledger shape as Human Review and intake.
-3. Mark the operation running before any provider call or worktree mutation,
-   execute outside any HTTP request, and drive the existing
-   `REPOSITORY_ANALYZED -> ... -> COMPLETE`/`HUMAN_REVIEW_REQUIRED` edges
-   unchanged.
-4. Project a live control-room view (state, stage, budgets, diff, verification,
-   escalation) from persisted events and operation records only -- never
-   invented by browser code.
+### Next milestone: the control-room UI
 
-This closes the biggest remaining product gap: typing an idea into the
-designed app and watching a real, auditable task run to completion or a
-Human Review stop, without ever leaving the browser.
+The one remaining piece of "type an idea into the app and watch it run" is
+the browser side: a "Start coding" action after specification approval,
+two-step confirmation showing the route/models/budgets/verification
+commands, background submission, reconnect-safe polling, and a live
+control-room view (state, stage, turns/budgets, tool actions, diff summary,
+verification/acceptance status, escalation/Human-Review status) projected
+entirely from persisted events and operation records -- never invented by
+browser code. This closes the biggest remaining product gap: typing an idea
+into the designed app and watching a real, auditable task run to completion
+or a Human Review stop, without ever leaving the browser.
 
 ### Following milestone: approved-plan to single-slice execution
 

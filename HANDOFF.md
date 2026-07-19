@@ -19,11 +19,11 @@ without replacing this canonical coding-agent handoff.
 | Item | Current value |
 | --- | --- |
 | Last verified | 2026-07-19 |
-| Working-tree version | `1.0` plus ADR 0013 Windows local-model lifecycle, ADR 0014 first local operator-interface slice, ADR 0015 verification layers and acceptance coverage, ADR 0016's corrective follow-up, ADR 0017's worktree-fingerprint/explicit-acceptance-designation hardening, the opt-in `local-strict` evaluation lane with its first live result, ADR 0018's acceptance-failure-evidence/bounded-specification-correction fixes, ADR 0019's Architect Mode planning foundation plus its Plans UI surface, ADR 0020's deterministic human-review-and-resume CLI and UI, ADR 0021's review/resume integrity hardening, ADR 0022's explicit human-authorized fresh frontier stage, and ADR 0023's durable new-task intake (CLI/service seam and New Task UI screen) |
+| Working-tree version | `1.0` plus ADR 0013 Windows local-model lifecycle, ADR 0014 first local operator-interface slice, ADR 0015 verification layers and acceptance coverage, ADR 0016's corrective follow-up, ADR 0017's worktree-fingerprint/explicit-acceptance-designation hardening, the opt-in `local-strict` evaluation lane with its first live result, ADR 0018's acceptance-failure-evidence/bounded-specification-correction fixes, ADR 0019's Architect Mode planning foundation plus its Plans UI surface, ADR 0020's deterministic human-review-and-resume CLI and UI, ADR 0021's review/resume integrity hardening, ADR 0022's explicit human-authorized fresh frontier stage, ADR 0023's durable new-task intake (CLI/service seam and New Task UI screen), and ADR 0024's durable post-approval task execution (CLI/service seam) |
 | Checked-out branch | `main` |
 | Repository state | The 1.0/lifecycle baseline, the ADR 0014 UI slice, the ADR 0015 acceptance-coverage milestone, the ADR 0016 correction, the ADR 0017 hardening, the `local-strict` lane, the ADR 0018 fixes, ADR 0019's Architect Mode foundation (CLI + Plans UI), ADR 0020's review/resume CLI and UI, ADR 0021's hardening, ADR 0022's `authorize_frontier_stage` action, and ADR 0023's `apoapsis intake` seam are all committed on `main`; live evaluation evidence is committed separately. `DESIGN.md` is preserved as a separate, committed user-supplied design reference. Run `git status` and `git log -1 --oneline` for the exact current state. |
 | Preserved substrate tag | `substrate-v0.1` at `4c2e735` |
-| Full deterministic suite | 418 tests, 0 failures, 0 errors, 6 intentional skips (2 live-network, 1 live-Docker, 3 machine currently lacks the Windows privilege to create symlinks) |
+| Full deterministic suite | 433 tests, 0 failures, 0 errors, 6 intentional skips (2 live-network, 1 live-Docker, 3 machine currently lacks the Windows privilege to create symlinks) |
 | Syntax check | `python -m compileall -q src tests` passed |
 | Diff check | `git diff --check` passed; Git reported only expected LF-to-CRLF working-copy warnings |
 | Live local coding result | Qwen3-Coder-Next Q4 completed the controlled download-service task in 10 turns and 3 verification runs |
@@ -481,6 +481,74 @@ architecture.
   verified end to end against a real local Ollama model: a typed request
   reached `SPEC_DRAFTED` and was approved to `SPEC_APPROVED` through the
   browser, confirmed via `apoapsis inspect`'s event log.
+
+### Durable post-approval task execution (ADR 0024)
+
+- `src/apoapsis/workflow/vertical_slice.py`'s `VerticalSliceRunner.run()`
+  is split at the `SPEC_APPROVED` boundary into a shared private
+  continuation, `_run_from_approved(task_id, specification, *,
+  approved_version)`, containing the entire post-approval spine (optional
+  Research Mode, context compilation, deterministic routing, worktree
+  creation, the selected coding stage with escalation, verification, and
+  reporting) verbatim -- moved, not rewritten. `run()` now ends by calling
+  it after drafting/approval; a new public method,
+  `execute_approved_task(task_id: str) -> FinalTaskReport`, is the entry
+  point the durable execution service uses: it loads an already-approved
+  task from the store and calls the exact same continuation. No routing,
+  context, worktree, agent, patch, verification, escalation, or reporting
+  logic exists in two places, and the full existing test suite passes
+  unchanged against the refactor, confirming `apoapsis run` and one-shot
+  mode are byte-for-byte behavior-preserved.
+- `src/apoapsis/execution/operation_schema.py`/`operation_store.py`
+  define `ExecutionOperationRecord`/`ExecutionOperationStatus`
+  (`recorded`/`running`/`succeeded`/`failed`/`ambiguous`) and
+  `ExecutionOperationStore` (`.apoapsis/execution-operations.db`),
+  structurally mirroring `ReviewOperationStore`/`IntakeOperationStore`
+  exactly: a caller-supplied `operation_id` can never be resubmitted for
+  an active or terminal operation, and only one `RECORDED`/`RUNNING`
+  operation may exist per task at a time. `SUCCEEDED` means the operation
+  itself reached *any* deterministic conclusion -- the task may have
+  reached `COMPLETE`, `FAILED`, or `HUMAN_REVIEW_REQUIRED`, all legitimate
+  outcomes read from the task record/`report.json`, not the operation
+  status; only an operation-level exception (a crash, not a normal
+  task-level stop) marks the operation `FAILED`, mirroring
+  `review.execution`'s own `_execute_authorize_frontier_stage` convention.
+- `src/apoapsis/execution/operation_service.py`'s
+  `prepare_execution_operation()` requires the task to be at
+  `SPEC_APPROVED` at exactly the caller-supplied `expected_version`,
+  captures the current repository HEAD, and durably records the
+  operation -- fast, synchronous, model-call-free, HTTP-handler-safe.
+  `run_execution_operation()` takes only `operation_id`, marks it
+  `RUNNING` before provider construction, then rechecks the task's
+  state/version *and* the repository HEAD (catching a parent-repository
+  commit landing between approval and a queued operation's actual start,
+  before any worktree is created) before constructing a
+  `VerticalSliceRunner` and calling `execute_approved_task()`.
+  `execute_execution_operation()` composes both for synchronous callers
+  (the CLI). Research Mode is explicitly not wired in yet (disclosed
+  scope limit; `apoapsis run` remains the only Research Mode path).
+- `src/apoapsis/execution/operation_recovery.py`'s
+  `recover_stale_execution_operations()` mirrors review/intake recovery
+  exactly. Critically, **it never touches the task's worktree** -- a
+  stale `RUNNING` operation becomes `AMBIGUOUS` and, if the task is stuck
+  anywhere between `SPEC_APPROVED` and a terminal state, is returned to
+  `HUMAN_REVIEW_REQUIRED` (every intermediate state already has that
+  edge) via a new `execution_operation_recovery_requires_human` event
+  that `review.classify` doesn't recognize (correctly `UNKNOWN`,
+  `inspect_only`/`abandon` only) -- an operator inspects and abandons a
+  crashed execution through the existing, completely unmodified review
+  machinery, with the worktree exactly as the crash left it.
+- `src/apoapsis/execution/operation_worker.py`'s `ExecutionWorker`
+  mirrors `ReviewWorker`/`IntakeWorker`: a background thread whose queue
+  carries only an `operation_id`, running one recovery pass at startup.
+- CLI: `apoapsis execute start <task-id> --expected-version N
+  --operation-id ID` (synchronous; runs `execute_execution_operation()`
+  in the foreground, exactly like `apoapsis run` already does),
+  `apoapsis execute inspect <operation-id>`, `apoapsis execute recover` --
+  a full CLI/service seam usable without `apoapsis ui`.
+- **Does not automatically commit, merge, or clean up a successful
+  worktree** -- unchanged from today's behavior. Does not add plan-slice
+  execution (Phase D3, separately reviewed).
 
 ### Verification layers and acceptance coverage (ADR 0015, corrected by ADR 0016, hardened by ADR 0017/0018)
 
@@ -1286,6 +1354,7 @@ direct-frontier comparison claims remain unmeasured.
 | Durable new-task intake: successful extraction, bounded correction, double failure, verbatim/catalog rejection surviving correction, duplicate/simultaneous operations, provider-construction failure, queue-delay state changes, and crash recovery (reclaim/ambiguous/return-to-review) | `tests/test_intake.py` |
 | Intake CLI seam (`submit`/`inspect`/`recover`) and unaffected `run`/`task` commands | `tests/test_intake_cli.py` |
 | Intake UI: service/API/security, background-worker execution, duplicate/reconnect, ambiguous-operation visibility, and the New Task screen's bundled JS | `tests/test_intake_ui.py` |
+| Durable post-approval execution: local/frontier/one-shot completion, escalation, critical-risk-before-worktree, budget-exhausted human review, duplicate/simultaneous operations, stale version/repository-HEAD rejection, provider-construction failure, and crash recovery (reclaim/ambiguous-with-worktree-preserved/return-to-review) | `tests/test_execution_operations.py` |
 
 Fake providers are the mandatory regression mechanism. Live model or network
 tests supplement them; they must not replace deterministic coverage.
@@ -1319,19 +1388,21 @@ tests supplement them; they must not replace deterministic coverage.
 4. **Historical configuration naming remains.** `models.frontier` still serves
    specification and one-shot roles even when backed by local Ollama.
 5. **No automatic merge/commit.** A successful worktree remains for inspection.
-6. **Human Review is implemented; durable new-task intake now exists (CLI
-   and UI), but new-task execution orchestration does not.** ADR 0020–0022
-   provide CLI and UI review, deterministic bounded continuation, crash
-   recovery, and explicit fresh-frontier-stage authorization. ADR 0023
-   provides a durable CLI/service seam (`apoapsis intake submit/inspect/
-   recover`) and a New Task UI screen (`#/new`) that run model-assisted
-   specification extraction (with its existing one bounded correction
-   attempt) as a crash-safe operation, stopping at `SPEC_DRAFTED`.
-   Approval still uses the existing, unmodified `apoapsis approve`
-   transition, reached via a link from the New Task screen to the
-   existing task detail page. Nothing yet turns an approved specification
-   into a running task -- that is deliberately the next, separately
-   reviewed milestone.
+6. **Human Review, new-task intake, and new-task execution all now have
+   durable CLI/service seams; only execution's UI screen is still
+   missing.** ADR 0020–0022 provide CLI and UI review, deterministic
+   bounded continuation, crash recovery, and explicit fresh-frontier-stage
+   authorization. ADR 0023 provides a durable CLI/service seam
+   (`apoapsis intake submit/inspect/recover`) and a New Task UI screen
+   (`#/new`) that run model-assisted specification extraction as a
+   crash-safe operation, stopping at `SPEC_DRAFTED`. ADR 0024 (Commit
+   D2a) provides a durable CLI/service seam (`apoapsis execute
+   start/inspect/recover`) that runs the full post-approval pipeline
+   (routing, context, worktree, agent, patch, verification, escalation,
+   reporting -- reusing `VerticalSliceRunner`'s existing implementation
+   exactly) as a crash-safe operation. Commit D2b (tracked separately) is
+   expected to add the corresponding "Start coding" / control-room UI
+   screen.
 7. **Cost is configured, not discovered.** Zero pricing yields a valid but
    economically uninformative report.
 8. **Live network tests are intentionally skipped by default.** Run them only
@@ -1405,11 +1476,12 @@ tests supplement them; they must not replace deterministic coverage.
     Human Review views, deterministic specification/plan approval, resumable
     review operations, and explicit frontier authorization. ADR 0023 adds a
     durable new-task intake CLI/service seam (Commit D1a) and its New Task
-    UI screen (Commit D1b), reusing the existing, unmodified specification-
-    approval action. Durable new-task execution progress, approved-plan
-    slice execution, and a packaged native wrapper are still missing. Do
-    not implement them as browser provider calls, CLI subprocess
-    construction, or inferred audit-file state.
+    UI screen (Commit D1b). ADR 0024 adds a durable post-approval execution
+    CLI/service seam (Commit D2a); its control-room UI screen (Commit D2b)
+    is tracked separately. Approved-plan slice execution and a packaged
+    native wrapper are still missing. Do not implement them as browser
+    provider calls, CLI subprocess construction, or inferred audit-file
+    state.
 14. **Architect Mode (ADR 0019) produces plans but never executes them.**
     `apoapsis plan export/import/validate/inspect/approve` is fully
     implemented and covered by `tests/test_architect_validation.py`,
@@ -1492,6 +1564,7 @@ automation as a substitute for those proofs.
 | `0021` | Review/resume integrity hardening: execution-time precondition recheck, one active operation per task, explicit crash recovery (`recover_stale_operations`), abandon-before-cleanup ordering, newest-event-only stop classification, shared bounded diff/inspection, and fresh post-retry/continuation evidence |
 | `0022` | Explicit, human-authorized fresh frontier stage (`AUTHORIZE_FRONTIER_STAGE`), distinct from `FRONTIER_CONTINUATION`, sharing an extracted `build_local_to_frontier_escalation()` with automatic in-process escalation |
 | `0023` | Durable model-assisted new-task intake: `IntakeOperationRecord`/`IntakeOperationStore`/`IntakeWorker` mirroring the review-operation crash-safety ledger, reusing `SpecificationExtractor`'s exact bounded-correction contract, stopping at `SPEC_DRAFTED` without executing the task (Commit D1a: CLI/service seam; Commit D1b: New Task UI screen, reusing the existing, unmodified specification-approval action) |
+| `0024` | Durable post-approval task execution: `VerticalSliceRunner.run()` split into a shared `_run_from_approved`/`execute_approved_task()` continuation (zero duplicated routing/context/agent/patch/verification/escalation/reporting logic), plus `ExecutionOperationRecord`/`ExecutionOperationStore`/`ExecutionWorker` mirroring the review/intake crash-safety ledgers exactly (Commit D2a: CLI/service seam) |
 
 Add a new ADR for a new architectural decision. Do not rewrite history to make
 old decisions appear current; mark an ADR superseded and link its replacement

@@ -254,6 +254,54 @@ class VerticalSliceRunner:
                 event_type="specification_approved",
                 expected_version=drafted.version,
             )
+        except Exception as exc:
+            return self._handle_failure(exc)
+        return self._run_from_approved(
+            task_id, specification, approved_version=approved.version
+        )
+
+    def execute_approved_task(self, task_id: str) -> FinalTaskReport:
+        """Resume an already-approved task from persisted state alone (ADR
+        0024) -- the entry point the durable execution service uses. Unlike
+        ``run()``, this never drafts a specification or asks for approval;
+        it requires the task to already be at ``SPEC_APPROVED`` and drives
+        exactly the same post-approval spine ``run()`` does, through the
+        shared ``_run_from_approved`` continuation -- no routing, context,
+        worktree, agent, patch, verification, escalation, or reporting
+        logic is duplicated between the two entry points."""
+
+        record = self.store.get_task(task_id)
+        if record.state != WorkflowState.SPEC_APPROVED:
+            raise ValueError(
+                f"task {task_id} is not eligible for execution: expected "
+                f"SPEC_APPROVED, found {record.state.value}"
+            )
+        return self._run_from_approved(
+            task_id, record.specification, approved_version=record.version
+        )
+
+    def _run_from_approved(
+        self,
+        task_id: str,
+        specification: TaskSpecification,
+        *,
+        approved_version: int,
+    ) -> FinalTaskReport:
+        """The shared post-SPEC_APPROVED execution spine: research, context
+        compilation, routing, worktree creation, the selected coding stage
+        (one-shot or bounded agent, with escalation), verification, and
+        final reporting -- unchanged from ``run()``'s original body, now
+        reused by both ``run()`` (fresh drafting) and
+        ``execute_approved_task()`` (an already-approved task resumed by
+        the durable execution service)."""
+
+        self.specification = specification
+        if self.audit is None:
+            self.audit = TaskAuditStore(self.project_root, task_id)
+        try:
+            head = GitRepository(self.project_root).run(
+                ["rev-parse", "HEAD"]
+            ).stdout.strip()
             self.audit.write_json(
                 "approved-specification.json",
                 specification,
@@ -291,7 +339,7 @@ class VerticalSliceRunner:
                     "research_triggered": bool(self.research_outcome),
                     "research_evidence": research_ids,
                 },
-                expected_version=approved.version,
+                expected_version=approved_version,
             )
             implementation_context = self.context_compiler.compile(
                 specification,

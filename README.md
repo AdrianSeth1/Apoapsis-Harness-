@@ -387,6 +387,32 @@ describe the request, watch persisted progress (safe to close the tab and
 reconnect), then review and approve the drafted specification on the task
 page -- the exact same two-step approval `apoapsis approve` already uses.
 
+## Durable post-approval task execution (ADR 0024)
+
+Once a task reaches `SPEC_APPROVED` -- through `apoapsis run`, `apoapsis
+task` + `apoapsis approve`, or `apoapsis intake submit` + `apoapsis
+approve` -- it can be executed as its own durable, crash-safe operation
+instead of only inside a blocking `apoapsis run` process:
+
+```bash
+apoapsis execute start TASK-ABC123 --expected-version 3 --operation-id EXOP-1
+apoapsis execute inspect EXOP-1
+apoapsis execute recover
+```
+
+`execute start` runs the exact same routing, context compilation, worktree
+creation, local/frontier coding stage (with escalation), verification, and
+reporting that `apoapsis run` always used -- nothing was reimplemented, only
+extracted into a shared, resumable continuation. The operation is recorded
+before anything happens, marked running before any provider call or worktree
+mutation, and rechecked against the task's current state, version, and the
+repository's current HEAD immediately before doing anything. If the process
+running it is killed, `apoapsis execute recover` (also run automatically
+whenever `apoapsis ui` starts) marks a stale in-progress operation ambiguous
+-- never automatically repeated -- and returns a task stranded mid-execution
+to human review **with its worktree left exactly as it was**, inspectable
+and abandonable through the existing `apoapsis review` commands.
+
 ## Diagnostics and evaluation
 
 Check the local toolchain, configured models, context limits, credential
