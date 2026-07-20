@@ -8,6 +8,7 @@ from typing import Callable
 from apoapsis.agent.session import (
     AgentSessionOutcome,
     AgentSessionResult,
+    AgentStepPromptBuilder,
     BoundedAgentSession,
 )
 from apoapsis.audit.store import TaskAuditStore
@@ -98,6 +99,7 @@ class VerticalSliceRunner:
         context_compiler: ContextCompiler | None = None,
         research_engine: ResearchEngine | None = None,
         research_mode: ResearchMode = ResearchMode.OFF,
+        agent_step_prompt_fn: AgentStepPromptBuilder | None = None,
     ) -> None:
         self.project_root = Path(project_root).resolve()
         self.store = store
@@ -137,6 +139,12 @@ class VerticalSliceRunner:
         self.escalation_reason: str | None = None
         self.patch_audit_attempts = 0
         self.acceptance_coverage: list[AcceptanceCoverage] = []
+        # `None` by default -- `BoundedAgentSession` then uses its own
+        # production `agent_step_prompt` default, byte-for-byte identical to
+        # before this parameter existed. Only evaluation-only diagnostic
+        # infrastructure (ADR 0029) ever passes an override; no product CLI/
+        # UI/service call site does.
+        self.agent_step_prompt_fn = agent_step_prompt_fn
 
     def run(
         self, request: str, *, approve: ApprovalCallback
@@ -824,7 +832,7 @@ class VerticalSliceRunner:
                 patch, attempt=self.patch_audit_attempts
             )
 
-        session = BoundedAgentSession(
+        session_kwargs: dict[str, object] = dict(
             specification=self.specification,
             worktree=self.worktree_path,
             initial_context=context,
@@ -838,6 +846,9 @@ class VerticalSliceRunner:
             audit_prefix=audit_prefix,
             completion_policy=self.config.execution.completion_policy,
         )
+        if self.agent_step_prompt_fn is not None:
+            session_kwargs["agent_step_prompt_fn"] = self.agent_step_prompt_fn
+        session = BoundedAgentSession(**session_kwargs)
         try:
             return session.run()
         except InstrumentedProviderError as exc:

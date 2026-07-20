@@ -18,12 +18,12 @@ without replacing this canonical coding-agent handoff.
 
 | Item | Current value |
 | --- | --- |
-| Last verified | 2026-07-19 |
-| Working-tree version | `1.0` plus ADR 0013 Windows local-model lifecycle, ADR 0014 first local operator-interface slice, ADR 0015 verification layers and acceptance coverage, ADR 0016's corrective follow-up, ADR 0017's worktree-fingerprint/explicit-acceptance-designation hardening, the opt-in `local-strict` evaluation lane with its first live result, ADR 0018's acceptance-failure-evidence/bounded-specification-correction fixes, ADR 0019's Architect Mode planning foundation plus its Plans UI surface, ADR 0020's deterministic human-review-and-resume CLI and UI, ADR 0021's review/resume integrity hardening, ADR 0022's explicit human-authorized fresh frontier stage, ADR 0023's durable new-task intake (CLI/service seam and New Task UI screen), ADR 0024's durable post-approval task execution (CLI/service seam and control-room UI), ADR 0025's shared operation-lease and recovery-integrity hardening across all three operation ledgers, ADR 0026's immutable execution authorization and truthful live UI, ADR 0027's approved-plan to single-slice execution (CLI/service seam plus the Plans UI slice experience, Commit D3b), and ADR 0028's planning comparison framework (Commit D4a) plus its Commit D4b live evaluation (0/6 completions, a consistent model-logic failure -- see Snapshot) |
+| Last verified | 2026-07-20 |
+| Working-tree version | `1.0` plus ADR 0013 Windows local-model lifecycle, ADR 0014 first local operator-interface slice, ADR 0015 verification layers and acceptance coverage, ADR 0016's corrective follow-up, ADR 0017's worktree-fingerprint/explicit-acceptance-designation hardening, the opt-in `local-strict` evaluation lane with its first live result, ADR 0018's acceptance-failure-evidence/bounded-specification-correction fixes, ADR 0019's Architect Mode planning foundation plus its Plans UI surface, ADR 0020's deterministic human-review-and-resume CLI and UI, ADR 0021's review/resume integrity hardening, ADR 0022's explicit human-authorized fresh frontier stage, ADR 0023's durable new-task intake (CLI/service seam and New Task UI screen), ADR 0024's durable post-approval task execution (CLI/service seam and control-room UI), ADR 0025's shared operation-lease and recovery-integrity hardening across all three operation ledgers, ADR 0026's immutable execution authorization and truthful live UI, ADR 0027's approved-plan to single-slice execution (CLI/service seam plus the Plans UI slice experience, Commit D3b), ADR 0028's planning comparison framework (Commit D4a) plus its Commit D4b live evaluation (0/6 completions, a consistent model-logic failure -- see Snapshot), and ADR 0029's D4c diagnostic-probe infrastructure (a forensic diagnosis of the D4b read-loop plus evaluation-only single-slice prompt-condition/alternate-model probe infrastructure) plus its two completed live observations (a `progress_advisory` probe and an unmodified-production control, both `COMPLETE` on `SLICE-JOBS-001` -- see Snapshot) |
 | Checked-out branch | `main` |
-| Repository state | The 1.0/lifecycle baseline, the ADR 0014 UI slice, the ADR 0015 acceptance-coverage milestone, the ADR 0016 correction, the ADR 0017 hardening, the `local-strict` lane, the ADR 0018 fixes, ADR 0019's Architect Mode foundation (CLI + Plans UI), ADR 0020's review/resume CLI and UI, ADR 0021's hardening, ADR 0022's `authorize_frontier_stage` action, ADR 0023's `apoapsis intake` seam, ADR 0024's `apoapsis execute` seam and control-room UI, ADR 0025's lease/recovery hardening, ADR 0026's execution-authorization hardening, ADR 0027's `apoapsis plan slice` seam plus its Plans UI slice experience (Commit D3b), and ADR 0028's `apoapsis eval-planning` seam and `download-service-v2` fixture (Commit D4a) are all committed on `main`; live evaluation evidence is committed separately. `DESIGN.md` is preserved as a separate, committed user-supplied design reference. Run `git status` and `git log -1 --oneline` for the exact current state. |
+| Repository state | The 1.0/lifecycle baseline, the ADR 0014 UI slice, the ADR 0015 acceptance-coverage milestone, the ADR 0016 correction, the ADR 0017 hardening, the `local-strict` lane, the ADR 0018 fixes, ADR 0019's Architect Mode foundation (CLI + Plans UI), ADR 0020's review/resume CLI and UI, ADR 0021's hardening, ADR 0022's `authorize_frontier_stage` action, ADR 0023's `apoapsis intake` seam, ADR 0024's `apoapsis execute` seam and control-room UI, ADR 0025's lease/recovery hardening, ADR 0026's execution-authorization hardening, ADR 0027's `apoapsis plan slice` seam plus its Plans UI slice experience (Commit D3b), ADR 0028's `apoapsis eval-planning` seam and `download-service-v2` fixture (Commit D4a), and ADR 0029's `apoapsis eval-planning-probe` seam (D4c) are all committed on `main`; live evaluation evidence is committed separately. `DESIGN.md` is preserved as a separate, committed user-supplied design reference. Run `git status` and `git log -1 --oneline` for the exact current state. |
 | Preserved substrate tag | `substrate-v0.1` at `4c2e735` |
-| Full deterministic suite | 536 tests, 0 failures, 0 errors, 6 intentional skips (2 live-network, 1 live-Docker, 3 machine currently lacks the Windows privilege to create symlinks) |
+| Full deterministic suite | 564 tests, 0 failures, 0 errors, 6 intentional skips (2 live-network, 1 live-Docker, 3 machine currently lacks the Windows privilege to create symlinks) -- includes 28 tests for ADR 0029's D4c diagnostic-probe infrastructure, all deterministic fake-provider/pure-function coverage, distinct from the two live local observations below |
 | Syntax check | `python -m compileall -q src tests` passed |
 | Diff check | `git diff --check` passed; Git reported only expected LF-to-CRLF working-copy warnings |
 | Live local coding result | Qwen3-Coder-Next Q4 completed the controlled download-service task in 10 turns and 3 verification runs |
@@ -36,6 +36,8 @@ without replacing this canonical coding-agent handoff.
 | Live hosted escalation result | Not yet run. A repeatable harness (`apoapsis eval download-service --lane forced-escalation` / `--lane hybrid`) now exists to run it once real `[models.frontier_coder]` credentials are configured; the complete two-provider path is otherwise still only covered with fake providers |
 | Live Plans UI slice-experience result | Exercised end to end against a disposable initialized repository with a real approved plan (one CLI-created and CLI-approved plan, no model call needed for the plan itself): Plans list -> plan detail (live slice status rendered) -> Implementation Slices tab -> Inspect -> "Package this slice" (immutable preview rendered, real inherited constraint shown) -> two-step Approve (intent, then confirm) -> derived-task links rendered -> the existing, unmodified control room correctly showed the slice-derived task at `SPEC_APPROVED` with its real approval history and its normal "Start coding" action present and untouched. No JavaScript errors observed. |
 | Live planning-comparison result (D4b, 2026-07-20) | Three monolithic and three planned live attempts against `qwen3-coder-next:q4_K_M`, using a plan produced in a genuinely separate session (Gemini 3.1 Pro) and independently corrected once before approval (a missing hard-constraint representation and missing acceptance-criterion links, caught by deterministic validation and this milestone's own STRICT-policy design, respectively). **0/6 completions.** All six attempts stopped at `HUMAN_REVIEW_REQUIRED` after exhausting a 12-turn budget having called a verification command zero times -- a repeatable model-logic failure (one edit, then a `read_file` loop), not a harness, specification, or oracle defect; every mechanical part of the framework (budget accounting, escalation classification, dependency gating, oracle withholding) behaved correctly. No completion-rate or Architect Mode advantage claim is supported by this round; see `docs/evaluation/apoapsis-planning-comparison-2026-07-20.md` for full detail and next steps. |
+| D4c forensic diagnosis and diagnostic-probe infrastructure (ADR 0029, 2026-07-19) | A read-only forensic pass over all six preserved D4b turn/call artifacts found the read loop is a byte-for-byte identical repeated `read_file` action after the one accepted edit, present in 6/6 attempts, but **absent from every other preserved live Qwen3-Coder-Next Q4 session** (ten sessions across `local-strict-*`, `smoke-local`, `priority-a-64k*`/`128k*`) -- the model reliably calls verification elsewhere, so this is fixture/prompt-specific, not a general capability gap. Two independent, non-causal issues were found and deliberately deferred (not fixed in this change): `search_repository` fails with a raw `[WinError 2]` (missing fallback when `rg` cannot be resolved by `CreateProcess`, unlike the context compiler's own lexical fallback) and a turn's evidence can show an unlabeled stale pre-edit copy of a file alongside the fresh post-edit one (confirmed present in a prior successful session too, so not the loop's cause) -- **both remain unresolved**, not addressed by this change or by the live probes below. Built evaluation-only infrastructure to isolate the cause with a single independent variable at a time: an advisory (never action-forcing) prompt variant, and a fail-closed (explicitly authorized, actually installed, *and* genuinely different from the project's own configured model) alternate-model substitution -- both scoped to `apoapsis eval-planning-probe` (no `--context-profile`, so it cannot introduce a second unrecorded variable), with a dedicated, pure `validate_single_independent_variable()` check (enforced both by the orchestration function itself and independently by the CLI) rejecting any request that would vary both the prompt and the model at once, and touching product code only via two additive, default-`None`/default-production-function constructor parameters proven inert by regression test when omitted. See ADR 0029 and `docs/evaluation/apoapsis-d4c-forensic-diagnosis-2026-07-19.md`. |
+| D4c live evidence (2026-07-20, `SLICE-JOBS-001`, `qwen3-coder-next:q4_K_M`) | Two of the D4c probes above were run once each against the exact same slice D4b exercised. **Progress-advisory probe** (`progress_advisory`): 8 turns, one `v2-jobs-tests` run (passed), `AC-JOBS-STATE` proven, `COMPLETE`; 53,039 input / 876 output / 0 cached tokens, 151.4s. **Unmodified-production control** (`production`, same configured model and slice, run through this same probe infrastructure): 5 turns, one `v2-jobs-tests` run (passed), `COMPLETE`; 31,965 input / 803 output / 0 cached tokens, 109.4s. Both escaped D4b's read loop, edited, invoked verification, passed, and reached real `COMPLETE`. **The production control succeeded without the advisory prompt and in fewer turns** -- these two observations give no basis for changing the production prompt (`_AGENT_STEP_STATIC_PREFIX` untouched) or for attributing either success to the advisory note. They do show this model can solve and verify this slice: D4b's read loop is not a hard capability limitation. The contrast with D4b's 0/6 remains unexplained -- run-to-run or setup sensitivity is itself unmeasured. Covers only `SLICE-JOBS-001`, not the full three-slice plan or the held-out cross-slice oracle; no completion rate, reliability rate, or planning advantage is claimed. Probe 3 (alternate model) was not run. See ADR 0029's and `docs/evaluation/apoapsis-d4c-forensic-diagnosis-2026-07-19.md`'s live-evidence addenda. |
 
 Update this table whenever its claims change. Never describe an uncommitted
 version as a committed release. Never claim that a provider path was proven
@@ -986,6 +988,152 @@ which measures a model-behavior question, not a planning-vs-monolithic
 one. Next step (not taken here): investigate the model's read-loop behavior
 directly before re-running this comparison.
 
+### D4c: forensic diagnosis and diagnostic-probe infrastructure (ADR 0029, 2026-07-19)
+
+A read-only forensic pass over all six preserved D4b turn/call artifacts
+(`docs/evaluation/apoapsis-d4c-forensic-diagnosis-2026-07-19.md`) found
+the read loop's exact shape: after the one accepted edit, every session's
+raw model output is **byte-for-byte identical** across every remaining
+turn (`{"action": "read_file", "path": "...jobs.py", "start_line": 1,
+"end_line": 30}`, repeated verbatim). Every mechanical harness part
+(budgets, evidence dedup, diff/verification-command visibility) behaved
+correctly -- the model's own repeated output, not missing information, is
+the loop.
+
+**The decisive new finding**: this loop is absent from every one of ten
+other preserved live Qwen3-Coder-Next Q4 sessions (`local-strict-*`,
+`smoke-local`, `priority-a-64k*`/`128k*`) -- the same model, same
+decoding settings, reliably transitions from an edit to `run_check`/
+`inspect_diff` within one or two turns elsewhere, so this is fixture/
+prompt-specific behavior, not a general capability gap. Two independent,
+non-causal issues were found and *deliberately not fixed* in this change
+(recorded as follow-ups, see ADR 0029): `search_repository` fails with a
+raw `[WinError 2]` on this machine (no lexical fallback, unlike the
+context compiler's own), confirmed unrelated to the loop by a clean
+natural control (the three planned attempts never called it and looped
+identically); and a turn's evidence can show an unlabeled stale pre-edit
+file copy alongside the fresh one, confirmed present in a prior
+*successful* session too, so not fixture-specific either.
+
+Built evaluation-only D4c diagnostic-probe infrastructure to isolate the
+cause one variable at a time, gated on your separate authorization before
+any live run:
+
+- `src/apoapsis/agent/session.py`'s `BoundedAgentSession.__init__`/
+  `.resume()` gained `agent_step_prompt_fn: AgentStepPromptBuilder =
+  agent_step_prompt` -- defaults to the exact, unmodified production
+  function; no product call site passes anything else.
+  `src/apoapsis/workflow/vertical_slice.py`'s `VerticalSliceRunner
+  .__init__` gained `agent_step_prompt_fn: AgentStepPromptBuilder | None
+  = None`, only added to its `BoundedAgentSession(...)` construction when
+  not `None`. Both defaults were chosen so "parameter omitted" and
+  "today's behavior" are the same code path, proven by regression test,
+  not merely equivalent output.
+- New `src/apoapsis/evaluation/diagnostic_probe.py`: `PromptCondition`
+  (`production`/`progress_advisory`); `progress_advisory_agent_step_
+  prompt()`, which calls the unmodified production prompt builder first
+  and only ever appends one short, explicitly advisory, never
+  action-forcing note (repeating a no-evidence read doesn't help; inspect
+  the diff and run the right check after an edit; escalate rather than
+  repeat); `AlternateModelSpec`/`alternate_model_provider_config()`
+  (clones the project's own coding-model config with only `.model`
+  changed, so decoding settings stay identical); `verify_alternate_model_
+  authorized()`, which fails closed on two independent conditions (an
+  explicitly caller-supplied authorized-name match, *and* a live,
+  read-only, injectable "is this actually installed" check) before any
+  provider is built, plus a separate check (in the CLI, right after
+  configuration loads) rejecting an alternate model identical to the
+  project's already-configured one; `validate_single_independent_
+  variable()`, the single authoritative, pure check that a probe never
+  pairs `PROGRESS_ADVISORY` with an alternate model (called both by the
+  orchestration function itself, first, and independently by the CLI on
+  the raw arguments before any filesystem access); `ProbeBehaviorSummary`/
+  `summarize_diagnostic_probe()` (pure, no I/O: `invoked_run_check`/
+  `invoked_submit_for_verification`, `first_no_progress_turn` -- the
+  first turn that is accepted, a repeated inspection action, exactly
+  repeats an earlier turn's `(action, summary)`, *and* adds zero new
+  evidence; a legitimate post-edit reread that adds real new evidence is
+  never flagged even though its `(action, summary)` text matches an
+  earlier turn, since `summary` encodes only the path/line-range, not
+  file content -- and `max_identical_action_streak`); and
+  `run_single_slice_diagnostic_probe()`, which reuses the exact,
+  unmodified `package_slice`/`approve_slice` (ADR 0027) for one
+  already-approved slice, then calls `VerticalSliceRunner
+  .execute_approved_task()` directly -- deliberately bypassing
+  `start_slice`'s durable execution-operation ledger, which is orthogonal
+  crash/drift bookkeeping that never alters the specification, context,
+  configuration, or agent session a live run experiences (the same
+  equivalence `run_monolithic_condition`, ADR 0028, already relies on).
+- New `src/apoapsis/evaluation/diagnostic_probe_report.py` mirrors
+  `planning_report.py`'s JSON/Markdown convention; every persisted
+  `DiagnosticProbeResult` always records `prompt_condition` and
+  `model.{model,source}` as explicit top-level fields.
+- New CLI: `apoapsis eval-planning-probe download-service-v2 --plan-id
+  ... --expected-plan-version N --planned-project-root ... --slice-id
+  ... --prompt-condition production|progress_advisory
+  [--alternate-model NAME --authorize-alternate-model NAME]` -- requires
+  an already-approved disposable project exactly like `apoapsis
+  eval-planning`; never generates or approves a plan itself; never writes
+  back to the harness checkout's own `.apoapsis/config.toml` (the one
+  config change, an alternate model, is an in-memory `model_copy`).
+  **Deliberately has no `--context-profile` flag** (an experiment-
+  integrity correction from review) -- this narrowly scoped command
+  always inherits the project's baseline configuration, including context
+  window, completely unchanged, so it can never introduce a second,
+  unrecorded independent variable alongside the one it claims to isolate.
+- `tests/test_diagnostic_probe.py` (28 tests, all deterministic): the
+  advisory prompt is exactly the production prompt plus one appended
+  non-forcing note; the behavior summary correctly detects both the
+  D4b-shaped read loop and a normal verify-and-complete session,
+  including the corrected fresh-reread-vs-genuine-repeat distinction
+  above (a dedicated regression test encodes the exact four-turn
+  sequence: initial read, edit, fresh reread with new evidence, identical
+  reread with none -- the fourth turn, not the third, is the first
+  no-progress turn); the alternate-model authorization fails closed on
+  either missing condition and only passes when both hold;
+  `validate_single_independent_variable()` is exercised directly for all
+  four combinations; the CLI rejects an unrecognized `--context-profile`,
+  an alternate model paired with `progress_advisory`, and an alternate
+  model identical to the real, `apoapsis init`-created project's
+  configured model; **regression coverage proving the injection point is
+  inert by default** -- a `BoundedAgentSession` with no override produces
+  a prompt byte-for-byte identical to calling `agent_step_prompt`
+  directly, and an ordinary, no-new-argument `VerticalSliceRunner(...)`
+  construction never emits the advisory note; both probe conditions run
+  end-to-end against a real one-slice plan with fake providers; and the
+  persisted artifacts explicitly record the prompt condition and model
+  identity for both valid combinations, plus a test that the one invalid
+  combination is rejected end to end. See ADR 0029 for full detail.
+
+**Live evidence addendum (2026-07-20).** Two of the two probes above have
+now been run once each against `qwen3-coder-next:q4_K_M` on
+`SLICE-JOBS-001`: the `progress_advisory` probe (8 turns, one
+`v2-jobs-tests` run, `AC-JOBS-STATE` proven, `COMPLETE`; 53,039 input /
+876 output / 0 cached tokens, 151.4s) and an unmodified-production
+control run through this same infrastructure (5 turns, one
+`v2-jobs-tests` run, `COMPLETE`; 31,965 input / 803 output / 0 cached
+tokens, 109.4s). Both escaped the read loop this section diagnosed --
+edited, inspected the diff, invoked real verification, passed, and
+reached genuine slice-level `COMPLETE`. The production control succeeded
+**without** the advisory prompt and in **fewer** turns than the advisory
+condition, so neither observation supports changing the production
+prompt or attributing either success to the advisory note. What they do
+show is that this model can solve and verify `SLICE-JOBS-001` -- D4b's
+read loop is not a hard, unconditional capability limitation. The
+contrast between D4b's 0/6 and these two successful observations remains
+unexplained; possible run-to-run or setup sensitivity is itself
+unmeasured. Both observations cover only the first slice, not the full
+three-slice plan or the held-out cross-slice oracle -- no completion
+rate, reliability rate, or planning advantage is claimed. Probe 3 (the
+alternate-model probe) has not been run and remains gated on separate,
+explicit authorization, as does re-running the full D4b comparison or
+beginning D5 -- see `NEXT_STEPS.md` for the exact proposed commands. The
+two deferred defects above (`search_repository`'s `[WinError 2]`,
+unlabeled stale/fresh evidence duplication) remain unresolved and were
+not touched by these runs. Full detail:
+`docs/evaluation/apoapsis-d4c-forensic-diagnosis-2026-07-19.md`'s own
+live-evidence addendum.
+
 ### Verification layers and acceptance coverage (ADR 0015, corrected by ADR 0016, hardened by ADR 0017/0018)
 
 - `VerificationCommandResult.acceptance: bool` (ADR 0018) carries whether a
@@ -1799,6 +1947,7 @@ direct-frontier comparison claims remain unmeasured.
 | Approved-plan to single-slice execution (ADR 0027): package determinism, revalidation/repository-identity/stale-version rejection, the full dependency-evidence matrix (git-ancestry proof, not status alone), exact constraint/criterion propagation, advisory-path freedom, duplicate-approval/start rejection, and status projection from real task state | `tests/test_architect_slice.py` |
 | Plans UI slice experience (ADR 0027, Commit D3b): live status projection through `plan_detail`/`plan_slice_detail`, package-then-approve creating a real derived task, package-hash-mismatch rejection, dependency reasons surfaced pre-packaging, full HTTP lifecycle (401/package/approve/409/400), and bundled-asset slice-action guard | `tests/test_architect_slice_ui.py` |
 | Planning comparison framework (ADR 0028, Commit D4a): monolithic completion with all acceptance criteria proven and held-out oracle passing, oracle absence from every agent-visible copy, multi-slice dependency-ordered completion with real git merges, dependent-slice packaging still blocked before dependencies merge, Human-Review stop halting the whole plan with no auto-repair, cross-slice integration-failure detection, and aggregate true-completion/false-success/scenario-mixing-refusal formulas | `tests/test_planning_evaluation.py` |
+| D4c diagnostic-probe infrastructure (ADR 0029): advisory-prompt-variant correctness (byte-identical production prefix plus one non-forcing appended note), behavior-summary detection of both the D4b-shaped read loop and a normal verify-and-complete session (including the corrected fresh-reread-with-new-evidence-is-never-no-progress case), the one-independent-variable invariant validated directly for all four combinations, alternate-model fail-closed authorization (unauthorized name, authorized-but-uninstalled name, and the bare-tag/`:latest` match), the alternate-model config clone changing only `.model`, both valid prompt-condition/model combinations run end-to-end against a real one-slice plan with the persisted artifacts recording each explicitly, the one invalid combination rejected end to end, and CLI coverage (rejected `--context-profile`, alternate-model/`progress_advisory` fail-closed, same-configured-model rejection against a real `apoapsis init` project) -- **plus regression proof that the injection point is inert by default**: an unmodified `BoundedAgentSession`/`VerticalSliceRunner` construction (no new argument) is byte-for-byte identical to before this ADR | `tests/test_diagnostic_probe.py` |
 
 Fake providers are the mandatory regression mechanism. Live model or network
 tests supplement them; they must not replace deterministic coverage.
@@ -2024,7 +2173,8 @@ automation as a substitute for those proofs.
 | `0025` | Shared, owner-scoped operation-lease discipline (`operations/lease.py`) across review/intake/execution: atomic claim/renew/release/expire, a heartbeat that renews independent of model behavior, injectable-clock recovery, eager background-worker startup closing the duplicate-enqueue race, and an explicit opt-in `--resume-recorded` CLI flag |
 | `0026` | Immutable, hashed `ExecutionAuthorizationPackage` computed by one function reused at preview/prepare/run time; a confirmation authorizes exactly what its preview showed, rejected before any provider construction on task/spec/repository-fingerprint/config drift; a dirty-parent-repository fail-closed check; genuinely live control-room progress in real execution order; and deterministic + optional Node-based `app.js` regression coverage |
 | `0027` | Approved-plan to single-slice execution: an immutable `PlanSliceExecutionPackage` (exact inherited constraints/criteria, git-ancestry-proven dependency evidence, deterministic derived-task id) bridges ADR 0019 plans into ADR 0024's durable execution service with zero duplicated execution logic; slice status is always a live projection of the derived task's real state, never a second, independently-stored copy. Commit D3b adds the Plans UI slice experience on top with zero new execution logic: live status, immutable package preview, two-step approve, and links into the derived task's existing, unmodified control room |
-| `0028` | Planning comparison framework (Commit D4a, no live evidence yet): a new, physically separate `download-service-v2` fixture (an extension of the ADR 0012 fixture family) with a real 3-slice dependency DAG and a held-out cross-slice oracle; `STRICT` completion policy for both conditions (a documented deviation from every other lane's forced `BASELINE`); `run_monolithic_condition()`/`run_planned_condition()` compare a single-shot attempt against the exact, unmodified D3a slice-execution functions advanced automatically only inside this evaluation-only module; found and fixed a real, previously-latent bug in ADR 0027's "one active slice per plan" check, which incorrectly blocked forever rather than only while genuinely still running |
+| `0028` | Planning comparison framework (Commit D4a, live evidence at D4b -- see Snapshot): a new, physically separate `download-service-v2` fixture (an extension of the ADR 0012 fixture family) with a real 3-slice dependency DAG and a held-out cross-slice oracle; `STRICT` completion policy for both conditions (a documented deviation from every other lane's forced `BASELINE`); `run_monolithic_condition()`/`run_planned_condition()` compare a single-shot attempt against the exact, unmodified D3a slice-execution functions advanced automatically only inside this evaluation-only module; found and fixed a real, previously-latent bug in ADR 0027's "one active slice per plan" check, which incorrectly blocked forever rather than only while genuinely still running |
+| `0029` | D4c diagnostic-probe infrastructure: a forensic diagnosis of D4b's read loop (fixture/prompt-specific, not a general model-capability gap) plus evaluation-only `apoapsis eval-planning-probe` infrastructure isolating one independent variable at a time (an advisory prompt variant, or a fail-closed alternate-model substitution), touching product code only via two additive default-safe constructor parameters. Two live observations (2026-07-20, `SLICE-JOBS-001`) -- see Snapshot -- both escaped the read loop and reached `COMPLETE`; the alternate-model probe has not been run |
 
 Add a new ADR for a new architectural decision. Do not rewrite history to make
 old decisions appear current; mark an ADR superseded and link its replacement

@@ -604,6 +604,53 @@ command never calls a planner, and a manually-pasted subscription
 session's planner tokens/cost are always recorded as unmeasured, never a
 fabricated zero.
 
+### Single-slice diagnostic probe (ADR 0029)
+
+A minimal, evaluation-only companion to `eval-planning`: runs exactly one
+already-approved plan slice once, varying only the agent-step prompt
+condition or the coding model -- never both, and never the full
+monolithic-versus-planned comparison. Built to isolate a repeatable D4b
+finding (a live model making one edit and then looping on an identical,
+uninformative `read_file` request instead of ever verifying) into a
+single controlled variable at a time; see ADR 0029 and
+`docs/evaluation/apoapsis-d4c-forensic-diagnosis-2026-07-19.md`.
+
+```bash
+# Probe 2: the unchanged production prompt plus one short, explicitly
+# advisory (never action-forcing) note appended -- never a replacement.
+apoapsis eval-planning-probe download-service-v2 \
+  --plan-id PLAN-ABC123 --expected-plan-version 1 \
+  --planned-project-root /path/to/an/already-approved/project \
+  --slice-id SLICE-JOBS-001 \
+  --prompt-condition progress_advisory
+
+# Probe 3: the unchanged production prompt against a different,
+# already-installed local coding model. Fails closed on three checks
+# before any provider is built: the model must genuinely differ from the
+# project's already-configured one, --authorize-alternate-model must
+# exactly match --alternate-model, and the model must actually be
+# installed at the configured Ollama endpoint. Never downloads a model.
+apoapsis eval-planning-probe download-service-v2 \
+  --plan-id PLAN-ABC123 --expected-plan-version 1 \
+  --planned-project-root /path/to/an/already-approved/project \
+  --slice-id SLICE-JOBS-001 \
+  --prompt-condition production \
+  --alternate-model qwen3-coder:30b --authorize-alternate-model qwen3-coder:30b
+```
+
+This writes `diagnostic-probe.json`/`.md` recording the exact prompt
+condition and model identity used, plus a deterministic behavior summary
+(whether `run_check`/`submit_for_verification` was ever invoked, the
+first no-progress turn, and the longest identical-action streak) computed
+only from the session's own persisted turn records. Like `eval-planning`,
+it never generates or approves a plan itself, and never writes back to
+your project's `.apoapsis/config.toml` -- the one setting change (an
+alternate model) is applied in memory only for that one run. Unlike
+`eval-planning`, there is no `--context-profile` flag here at all -- this
+narrowly scoped command always inherits your project's baseline context
+window unchanged, so it can never introduce a second, unrecorded variable
+alongside the one it's isolating.
+
 ## Complete all-local agent flow
 
 `apoapsis init` creates a 64K agent configuration for the installed Coder-Next Q4

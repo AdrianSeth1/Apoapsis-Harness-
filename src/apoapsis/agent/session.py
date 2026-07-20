@@ -92,6 +92,7 @@ class AgentSessionResult(StrictModel):
 
 AgentModelCall = Callable[..., ModelResponse]
 PatchApply = Callable[[str, int], None]
+AgentStepPromptBuilder = Callable[..., str]
 
 
 def _observation_slot(item: ContextEvidence) -> tuple[object, ...]:
@@ -169,6 +170,7 @@ class BoundedAgentSession:
         model_role: ModelRole = ModelRole.CODING_AGENT,
         audit_prefix: str = "",
         completion_policy: CompletionPolicy = CompletionPolicy.BASELINE,
+        agent_step_prompt_fn: AgentStepPromptBuilder = agent_step_prompt,
     ) -> None:
         self.specification = specification
         self.worktree = Path(worktree).resolve()
@@ -182,6 +184,11 @@ class BoundedAgentSession:
         self.model_role = model_role
         self.audit_prefix = audit_prefix
         self.completion_policy = completion_policy
+        # Defaults to the production prompt builder byte-for-byte; only an
+        # explicit override (evaluation-only diagnostic infrastructure, see
+        # ADR 0029) ever substitutes a different one. Ordinary product
+        # callers never pass this, so `run()` is unchanged.
+        self.agent_step_prompt_fn = agent_step_prompt_fn
         self.last_acceptance_coverage: list[AcceptanceCoverage] = []
         self.inspector = RepositoryInspector(
             self.worktree,
@@ -267,7 +274,7 @@ class BoundedAgentSession:
     def run(self, *, start_turn: int = 1) -> AgentSessionResult:
         for turn in range(start_turn, self.config.max_turns + 1):
             context = self._context_for_turn(turn)
-            prompt = agent_step_prompt(
+            prompt = self.agent_step_prompt_fn(
                 context,
                 turn=turn,
                 remaining_budgets=self._remaining_budgets(turn),

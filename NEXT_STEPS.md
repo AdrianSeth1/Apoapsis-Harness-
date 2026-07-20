@@ -837,6 +837,132 @@ read-loop behavior directly before re-running this comparison -- six
 attempts against a model that never calls a verification tool cannot
 distinguish "planning helps" from "planning doesn't help."
 
+### Done — D4c: forensic diagnosis, diagnostic-probe infrastructure, and live evidence (ADR 0029, 2026-07-19/20)
+
+A read-only forensic pass over all six preserved D4b turn/call artifacts
+found the loop's exact shape (a byte-for-byte identical repeated
+`read_file` action after the one accepted edit) and, critically, that it
+is **absent from every other preserved live Qwen3-Coder-Next Q4 session**
+(ten sessions across `local-strict-*`/`smoke-local`/`priority-a-64k*`/
+`128k*`) -- the model reliably calls verification elsewhere, so this is
+fixture/prompt-specific, not a general capability gap. Two independent,
+non-causal issues were found and *deliberately not fixed* here (see ADR
+0029's "Deferred follow-ups"): `search_repository`'s raw `[WinError 2]`
+(no lexical fallback, unlike the context compiler's own; confirmed
+unrelated to the loop by a clean natural control), and an unlabeled
+stale/fresh evidence duplication after an edit (confirmed present in a
+prior *successful* session too). Full detail:
+`docs/evaluation/apoapsis-d4c-forensic-diagnosis-2026-07-19.md`.
+
+Built evaluation-only infrastructure (`src/apoapsis/evaluation/
+diagnostic_probe.py`/`diagnostic_probe_report.py`, new `apoapsis
+eval-planning-probe` CLI command) to run a single already-approved,
+dependency-free plan slice once, varying only one independent variable at
+a time:
+
+- **Probe 2** (`--prompt-condition progress_advisory`): the exact,
+  unmodified production prompt plus one short, explicitly advisory (never
+  action-forcing) note. Must run against the project's own configured
+  coding model -- an alternate model is rejected.
+- **Probe 3** (`--alternate-model NAME --authorize-alternate-model NAME`):
+  a different, already-installed local coding model under the unchanged
+  production prompt, with every other decoding/config setting inherited
+  unchanged. Fails closed on three independent conditions before any
+  provider is built: the alternate model must genuinely differ from the
+  project's already-configured one, must be explicitly authorized by the
+  caller, and must actually be installed right now.
+
+A review pass after the first implementation found and fixed two real
+gaps, both now covered by dedicated regression tests: (1) the one-
+independent-variable invariant wasn't actually enforced anywhere --
+`validate_single_independent_variable()` now rejects `progress_advisory`
+paired with an alternate model, checked both by the orchestration
+function itself (first statement, before any I/O) and independently by
+the CLI on the raw arguments (before any filesystem access); and (2)
+`first_no_progress_turn` could misfire on a legitimate post-edit reread
+that added real new evidence, because its `(action, summary)` text is
+identical to the pre-edit read (`summary` only encodes the path/line-
+range, not file content) -- it now also requires `evidence_ids` to be
+empty, with a regression test encoding the exact sequence (initial read
+-> edit -> fresh reread with new evidence -> identical reread with none;
+the fourth turn, not the third, is now correctly the first no-progress
+turn). `--context-profile` was also removed from this command entirely
+(it was a candidate for a second, unrecorded independent variable) --
+this narrowly scoped probe always inherits the project's baseline
+configuration, including context window, unchanged.
+
+Touches product code only via two additive, default-safe constructor
+parameters (`BoundedAgentSession`/`VerticalSliceRunner` both gained an
+optional `agent_step_prompt_fn`, defaulting to exactly today's behavior)
+-- proven inert when omitted by dedicated regression tests, not merely
+asserted. `_AGENT_STEP_STATIC_PREFIX`, the action schema, retry budgets,
+workflow transitions, and completion authority are all untouched; models
+remain untrusted proposers and Apoapsis alone still validates/executes/
+rejects every requested action.
+
+28 tests in `tests/test_diagnostic_probe.py` (all deterministic fake
+providers or pure functions). Full suite: 564/564 passing, 6 intentional
+skips. See ADR 0029.
+
+**Live evidence (2026-07-20).** Probe 2 and a production-condition
+control have each been run once against `qwen3-coder-next:q4_K_M` on
+`SLICE-JOBS-001`:
+
+```powershell
+# Probe 2 -- run 2026-07-20. 8 turns, one v2-jobs-tests run (passed),
+# AC-JOBS-STATE proven, COMPLETE. 53,039 input / 876 output / 0 cached
+# tokens, 151.4s. Artifact: .apoapsis-eval\d4c-probe2-output\diagnostic-probe.json
+apoapsis eval-planning-probe download-service-v2 `
+  --plan-id PLAN-51DCC9E12110 --expected-plan-version 3 `
+  --planned-project-root .apoapsis-eval\d4c-probe2-project `
+  --slice-id SLICE-JOBS-001 `
+  --prompt-condition progress_advisory `
+  --output-dir .apoapsis-eval\d4c-probe2-output
+
+# Production-condition control -- run 2026-07-20, same model/slice, run
+# through this same probe infrastructure. 5 turns, one v2-jobs-tests run
+# (passed), COMPLETE. 31,965 input / 803 output / 0 cached tokens, 109.4s.
+# Artifact: .apoapsis-eval\d4c-probe-control-output\diagnostic-probe.json
+apoapsis eval-planning-probe download-service-v2 `
+  --plan-id PLAN-BB5F0E22CF0F --expected-plan-version 3 `
+  --planned-project-root .apoapsis-eval\d4c-probe-control-project `
+  --slice-id SLICE-JOBS-001 `
+  --prompt-condition production `
+  --output-dir .apoapsis-eval\d4c-probe-control-output
+```
+
+Both escaped D4b's read loop and reached real `COMPLETE`. The production
+control succeeded **without** the advisory prompt and in fewer turns, so
+these two observations give no basis for changing the production prompt
+or for attributing either success to the advisory note -- they do show
+this model can solve and verify this slice, so D4b's read loop is not a
+hard capability limitation. The contrast with D4b's 0/6 remains
+unexplained. Covers only `SLICE-JOBS-001`; no completion rate,
+reliability rate, or planning advantage is claimed. Full detail:
+`docs/evaluation/apoapsis-d4c-forensic-diagnosis-2026-07-19.md`'s
+live-evidence addendum.
+
+**Probe 3 has not been run.** The exact proposed command, still gated on
+your separate explicit authorization:
+
+```powershell
+# Probe 3 -- unchanged production prompt, a different already-installed
+# local model (e.g. qwen3-coder:30b, already pulled on this machine),
+# same slice. Requires --authorize-alternate-model to exactly match.
+apoapsis eval-planning-probe download-service-v2 `
+  --plan-id PLAN-... --expected-plan-version N `
+  --planned-project-root .apoapsis-eval\d4c-probe3-project `
+  --slice-id SLICE-JOBS-001 `
+  --prompt-condition production `
+  --alternate-model qwen3-coder:30b --authorize-alternate-model qwen3-coder:30b `
+  --output-dir .apoapsis-eval\d4c-probe3
+```
+
+Do not run this command, re-run the full D4b comparison, or begin D5
+without separate, explicit authorization. The two deferred defects
+(`search_repository`'s `[WinError 2]`, unlabeled stale/fresh evidence
+duplication) remain unresolved and were not touched by these runs.
+
 ### Priority C — extend the accepted application shell (ADR 0014)
 
 The application now has local/offline assets, a capability-protected loopback
@@ -874,8 +1000,21 @@ Continue in this order:
    repeatable model-logic failure, not a harness defect; see
    `docs/evaluation/apoapsis-planning-comparison-2026-07-20.md`). Still no
    basis for a completion-rate or Architect-Mode-advantage claim: both
-   conditions failed identically for the identical reason. Investigate the
-   model's read-loop behavior before re-running this comparison.
+   conditions failed identically for the identical reason. Done (ADR
+   0029, D4c): a forensic diagnosis of that failure (fixture/prompt-
+   specific, not a general model-capability gap -- see
+   `docs/evaluation/apoapsis-d4c-forensic-diagnosis-2026-07-19.md`),
+   evaluation-only single-slice diagnostic-probe infrastructure
+   (`apoapsis eval-planning-probe`), and two completed live observations
+   (2026-07-20, `SLICE-JOBS-001`): a `progress_advisory` probe and an
+   unmodified-production control, both `COMPLETE`, both escaping the read
+   loop. The production control succeeded without the advisory prompt, so
+   neither observation supports a prompt change or a causal claim; they
+   do show the model can solve and verify this slice. The contrast with
+   D4b's 0/6 remains unexplained. **Not yet done**: Probe 3 (alternate
+   model, gated on explicit authorization) and re-running the full
+   comparison, which stays blocked pending further investigation of that
+   unexplained contrast.
 5. Only then choose a packaged native wrapper for the proven loopback surface.
 
 Keep `src/apoapsis/ui/application.py` as the authority boundary. Browser code

@@ -49,6 +49,17 @@ from apoapsis.config import (
 )
 from apoapsis.doctor import run_doctor
 from apoapsis.evaluation.aggregate import aggregate_evaluations
+from apoapsis.evaluation.diagnostic_probe import (
+    AlternateModelSpec,
+    DiagnosticProbeError,
+    ModelSelection,
+    PromptCondition,
+    alternate_model_provider_config,
+    run_single_slice_diagnostic_probe,
+    validate_single_independent_variable,
+    verify_alternate_model_authorized,
+)
+from apoapsis.evaluation.diagnostic_probe_report import write_diagnostic_probe_report
 from apoapsis.evaluation.fixture import prepare_fixture_repository
 from apoapsis.evaluation.harness import run_eval_lane
 from apoapsis.evaluation.lanes import requires_frontier_coder
@@ -475,6 +486,83 @@ def build_parser() -> argparse.ArgumentParser:
         help="directory for the fresh monolithic fixture copy and the comparison report",
     )
 
+    evaluate_planning_probe = subparsers.add_parser(
+        "eval-planning-probe",
+        help=(
+            "D4c (ADR 0029): a minimal, evaluation-only single-slice "
+            "diagnostic probe -- packages and approves exactly one "
+            "already-approved slice and runs it once, varying only the "
+            "prompt condition or the coding model, never both, and never "
+            "runs the full monolithic-vs-planned comparison. Always "
+            "inherits the project's baseline configuration (including "
+            "context window) unchanged -- there is no --context-profile "
+            "override here, so this narrowly scoped command cannot "
+            "introduce a second, unrecorded independent variable"
+        ),
+    )
+    evaluate_planning_probe.add_argument("scenario", choices=["download-service-v2"])
+    evaluate_planning_probe.add_argument("--plan-id", required=True)
+    evaluate_planning_probe.add_argument(
+        "--expected-plan-version", type=int, required=True
+    )
+    evaluate_planning_probe.add_argument(
+        "--planned-project-root",
+        type=Path,
+        required=True,
+        help=(
+            "a disposable, already-initialized project directory where the "
+            "fixed plan was already exported, imported, validated, and "
+            "approved -- must still be at its untouched scenario baseline "
+            "(no slice packaged or started yet); use a fresh copy per "
+            "probe attempt so every attempt starts from identical fixture "
+            "state"
+        ),
+    )
+    evaluate_planning_probe.add_argument(
+        "--slice-id",
+        required=True,
+        help="the plan's slice id to probe, ordinarily the first dependency-free slice",
+    )
+    evaluate_planning_probe.add_argument(
+        "--prompt-condition",
+        choices=["production", "progress_advisory"],
+        required=True,
+        help=(
+            "'production' uses the unmodified, byte-for-byte production "
+            "agent-step prompt; 'progress_advisory' appends the evaluation-"
+            "only advisory note (ADR 0029) and nothing else, and requires "
+            "the project's own configured coding model (no --alternate-"
+            "model) -- a probe varies exactly one independent variable"
+        ),
+    )
+    evaluate_planning_probe.add_argument(
+        "--alternate-model",
+        help=(
+            "run this slice against a different installed local coding "
+            "model instead of the project's configured local_coder, with "
+            "every other decoding/config setting unchanged; requires "
+            "--prompt-condition production (a probe varies exactly one "
+            "independent variable) and --authorize-alternate-model to "
+            "match exactly, and fails closed if the model is not actually "
+            "installed at the configured Ollama endpoint or is identical "
+            "to the project's already-configured coding model"
+        ),
+    )
+    evaluate_planning_probe.add_argument(
+        "--authorize-alternate-model",
+        help=(
+            "must exactly match --alternate-model -- an explicit, separate "
+            "confirmation that this specific model is authorized to run; "
+            "omitting it (or a mismatch) refuses the probe before any "
+            "provider is constructed"
+        ),
+    )
+    evaluate_planning_probe.add_argument(
+        "--output-dir",
+        type=Path,
+        help="directory for the probe's JSON/Markdown report",
+    )
+
     evaluate = subparsers.add_parser(
         "eval", help="run controlled evaluation lanes against a fixture"
     )
@@ -812,6 +900,18 @@ def _dispatch(args: argparse.Namespace) -> dict[str, object] | None:
             args.planned_project_root.resolve(),
             args.planner_model,
             args.context_profile,
+            args.output_dir,
+        )
+    if args.command == "eval-planning-probe":
+        return _eval_planning_probe(
+            root,
+            args.plan_id,
+            args.expected_plan_version,
+            args.planned_project_root.resolve(),
+            args.slice_id,
+            args.prompt_condition,
+            args.alternate_model,
+            args.authorize_alternate_model,
             args.output_dir,
         )
     if args.command == "eval-aggregate":
@@ -1799,6 +1899,135 @@ def _eval_planning(
     )
     write_planning_comparison(resolved_output_dir, comparison)
     return comparison.model_dump(mode="json")
+
+
+def _eval_planning_probe(
+    root: Path,
+    plan_id: str,
+    expected_plan_version: int,
+    planned_project_root: Path,
+    slice_id: str,
+    prompt_condition: str,
+    alternate_model: str | None,
+    authorize_alternate_model: str | None,
+    output_dir: Path | None,
+) -> dict[str, object]:
+    """D4c (ADR 0029): run exactly one already-approved plan slice once,
+    varying only `--prompt-condition` or `--alternate-model` -- never
+    both, and never the full monolithic-vs-planned comparison. See
+    `apoapsis.evaluation.diagnostic_probe` for the full design rationale.
+
+    Always inherits the harness checkout's baseline `.apoapsis/config.toml`
+    unchanged (no context-profile override here): this narrowly scoped
+    command must never introduce a second, unrecorded independent
+    variable beyond the one `--prompt-condition`/`--alternate-model`
+    already isolates.
+    """
+
+    # Pure argument-shape checks first, before any filesystem access,
+    # installed-model lookup, or provider construction: an explicit
+    # alternate model requires the unmodified production prompt (a probe
+    # varies exactly one independent variable), and its authorization
+    # flag must exactly match.
+    if alternate_model is not None and prompt_condition != "production":
+        raise DiagnosticProbeError(
+            "--alternate-model requires --prompt-condition production -- "
+            "a probe varies exactly one independent variable; got "
+            f"--prompt-condition={prompt_condition!r} with "
+            f"--alternate-model={alternate_model!r}"
+        )
+    if alternate_model is not None and authorize_alternate_model != alternate_model:
+        raise DiagnosticProbeError(
+            "--alternate-model requires --authorize-alternate-model to "
+            "exactly match it; refusing to run an unauthorized model "
+            f"(--alternate-model={alternate_model!r}, "
+            f"--authorize-alternate-model={authorize_alternate_model!r})"
+        )
+    if not planned_project_root.is_dir():
+        raise TaskStoreError(
+            f"--planned-project-root not found: {planned_project_root}"
+        )
+    config_path = root / ".apoapsis" / "config.toml"
+    if not config_path.is_file():
+        raise TaskStoreError("Apoapsis is not initialized; run 'apoapsis init' first")
+    base_config = ApoapsisConfig.from_toml(config_path)
+    config = _download_service_v2_config(base_config)
+
+    coding_config = config.models.local_coder or config.models.frontier
+    if alternate_model is None:
+        model_selection = ModelSelection(
+            model=coding_config.model, source="project_local_coder"
+        )
+    else:
+        if alternate_model == coding_config.model:
+            raise DiagnosticProbeError(
+                f"--alternate-model {alternate_model!r} is identical to "
+                "the project's already-configured coding model "
+                f"({coding_config.model!r}); this would not vary any "
+                "independent variable. Use --prompt-condition production "
+                "without --alternate-model instead, or choose a "
+                "genuinely different model."
+            )
+        alternate = AlternateModelSpec(model=alternate_model)
+        verify_alternate_model_authorized(
+            alternate,
+            base_url=coding_config.base_url,
+            authorized_model_names=frozenset({authorize_alternate_model}),
+        )
+        local_coder_config = alternate_model_provider_config(coding_config, alternate)
+        config = config.model_copy(
+            update={
+                "models": config.models.model_copy(
+                    update={"local_coder": local_coder_config}
+                )
+            }
+        )
+        model_selection = ModelSelection(
+            model=alternate_model, source="explicit_alternate"
+        )
+    # Defense in depth: the same invariant `run_single_slice_diagnostic_
+    # probe` itself enforces first, called here too so a CLI-level
+    # rejection never depends on the orchestration function alone.
+    validate_single_independent_variable(PromptCondition(prompt_condition), model_selection)
+
+    provider, local_coder_provider, _frontier_coder_provider = _build_agent_providers(
+        config
+    )
+
+    plan_store = SQLitePlanStore(planned_project_root / ".apoapsis" / "architect-plans.db")
+    slice_store = PlanSliceExecutionStore(
+        planned_project_root / ".apoapsis" / "plan-slice-executions.db"
+    )
+    task_store = SQLiteTaskStore(planned_project_root / ".apoapsis" / "apoapsis.db")
+    operation_store = ExecutionOperationStore(
+        planned_project_root / ".apoapsis" / "execution-operations.db"
+    )
+
+    run_id = f"PROBE-{uuid.uuid4().hex[:12].upper()}"
+    resolved_output_dir = (
+        output_dir if output_dir is not None else root / ".apoapsis-eval" / run_id
+    )
+
+    result = run_single_slice_diagnostic_probe(
+        planned_project_root,
+        plan_store,
+        slice_store,
+        task_store,
+        operation_store,
+        plan_id,
+        slice_id,
+        expected_plan_version=expected_plan_version,
+        config=config,
+        provider=provider,
+        local_coder_provider=local_coder_provider,
+        prompt_condition=PromptCondition(prompt_condition),
+        model_selection=model_selection,
+        scenario_id="download-service-v2",
+        scenario_version=_DOWNLOAD_SERVICE_V2_SCENARIO_VERSION,
+        evidence_kind=_lane_evidence_kind(config, EvalLane.LOCAL),
+    )
+    write_diagnostic_probe_report(resolved_output_dir, result)
+    return result.model_dump(mode="json")
 
 
 def _aggregate_eval_reports(
