@@ -67,6 +67,15 @@ local-first and direct-frontier lanes. Preserve the complete comparison and
 aggregate artifacts. Until then, hosted rescue and savings must remain
 `unmeasured`; subscription access must not be represented as API access.
 
+D5b (2026-07-20, ADR 0030) added a required, hard-enforced aggregate spend
+ceiling for any such run: `apoapsis eval --lane frontier --max-hosted-spend-
+usd <AMOUNT>` refuses outright without the flag, refuses before any lane
+starts if the configured worst-case allowance exceeds it, and stops the
+whole invocation if real spend ever breaches it mid-run. `apoapsis doctor`
+now also warns when a configured hosted model's pricing is left at $0. No
+live hosted call has been made -- this is readiness/infrastructure only,
+built and tested exclusively against fake providers. See ADR 0030.
+
 ### 5. Use and review the first local application slice
 
 Run `apoapsis ui` from an initialized project. The offline black/orange/purple

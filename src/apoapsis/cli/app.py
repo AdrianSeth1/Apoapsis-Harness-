@@ -75,6 +75,12 @@ from apoapsis.evaluation.planning_schemas import (
     PlanningComparisonReport,
 )
 from apoapsis.evaluation.report import write_aggregate, write_comparison
+from apoapsis.evaluation.spend_ceiling import (
+    HostedSpendCeilingExceededError,
+    SpendCeilingModelProvider,
+    SpendLedger,
+    estimate_worst_case_run_cost_usd,
+)
 from apoapsis.evaluation.schemas import (
     DEFAULT_LANE_ORDER,
     EvalComparisonReport,
@@ -583,6 +589,18 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         help="directory for fixture copies and the comparison report",
     )
+    evaluate.add_argument(
+        "--max-hosted-spend-usd",
+        type=float,
+        help=(
+            "hard aggregate spend ceiling in USD for every hosted "
+            "(models.frontier_coder) call this invocation makes; required "
+            "whenever a requested lane needs the frontier coder (hybrid, "
+            "forced-escalation, frontier), refused before any lane runs if "
+            "the configured worst-case allowance for this run already "
+            "exceeds it (D5b, ADR 0030)"
+        ),
+    )
     plan = subparsers.add_parser(
         "plan", help="Architect Mode: deterministic planning workflow"
     )
@@ -871,6 +889,7 @@ def main(argv: list[str] | None = None) -> None:
         ReviewError,
         IntakeError,
         ExecutionOperationError,
+        HostedSpendCeilingExceededError,
     ) as exc:
         parser.exit(2, f"error: {exc}\n")
     if result is not None:
@@ -890,7 +909,11 @@ def _dispatch(args: argparse.Namespace) -> dict[str, object] | None:
         return None
     if args.command == "eval":
         return _eval_download_service(
-            root, args.lane, args.context_profile, args.output_dir
+            root,
+            args.lane,
+            args.context_profile,
+            args.output_dir,
+            max_hosted_spend_usd=args.max_hosted_spend_usd,
         )
     if args.command == "eval-planning":
         return _eval_planning(
@@ -1609,6 +1632,8 @@ def _eval_download_service(
     requested_lanes: list[str] | None,
     context_profile: str | None,
     output_dir: Path | None,
+    *,
+    max_hosted_spend_usd: float | None = None,
 ) -> dict[str, object]:
     fixture_source = root / "examples" / "download-service"
     if not fixture_source.is_dir():
@@ -1637,6 +1662,63 @@ def _eval_download_service(
     resolved_output_dir = (
         output_dir if output_dir is not None else root / ".apoapsis-eval" / run_id
     )
+
+    hosted_lane_count = sum(1 for lane in lanes if requires_frontier_coder(lane))
+    spend_ledger: SpendLedger | None = None
+    if hosted_lane_count > 0 and frontier_coder_provider is not None:
+        if max_hosted_spend_usd is None:
+            raise TaskStoreError(
+                "--max-hosted-spend-usd is required: this run requests "
+                f"{hosted_lane_count} lane(s) that call the configured "
+                "models.frontier_coder (D5b, ADR 0030) -- refusing to make any "
+                "hosted call without an explicit aggregate spend ceiling"
+            )
+        if max_hosted_spend_usd < 0:
+            raise TaskStoreError("--max-hosted-spend-usd must not be negative")
+        worst_case_usd = estimate_worst_case_run_cost_usd(config, lanes)
+        if worst_case_usd > max_hosted_spend_usd:
+            raise TaskStoreError(
+                f"refusing to start: this run's configured worst-case hosted "
+                f"spend allowance is ${worst_case_usd:.4f} "
+                f"({hosted_lane_count} lane(s) x up to "
+                f"{config.execution.frontier_agent.max_turns} call(s) each at "
+                f"up to {config.models.frontier_coder.max_output_tokens} output "
+                f"tokens), which exceeds the configured "
+                f"${max_hosted_spend_usd:.4f} ceiling -- raise "
+                "--max-hosted-spend-usd, lower frontier_agent.max_turns/"
+                "max_output_tokens, or request fewer hosted lanes"
+            )
+        spend_ledger = SpendLedger(ceiling_usd=max_hosted_spend_usd)
+        frontier_coder_provider = SpendCeilingModelProvider(
+            frontier_coder_provider,
+            spend_ledger,
+            default_max_output_tokens=config.models.frontier_coder.max_output_tokens,
+        )
+        hosted_spend_plan = {
+            "hosted_lanes": [
+                lane.value for lane in lanes if requires_frontier_coder(lane)
+            ],
+            "model": config.models.frontier_coder.model,
+            "max_calls_per_lane": config.execution.frontier_agent.max_turns,
+            "max_output_tokens_per_call": (
+                config.models.frontier_coder.max_output_tokens
+            ),
+            "worst_case_total_usd": round(worst_case_usd, 4),
+            "ceiling_usd": max_hosted_spend_usd,
+        }
+        resolved_output_dir.mkdir(parents=True, exist_ok=True)
+        (resolved_output_dir / "hosted-spend-plan.json").write_text(
+            json.dumps(hosted_spend_plan, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        # stderr, never stdout: `apoapsis eval`'s stdout is exactly one JSON
+        # object (the final comparison report) by convention -- printing a
+        # second one here would break every caller that parses it that way.
+        print(
+            "hosted spend plan (before any call): "
+            f"{json.dumps(hosted_spend_plan, sort_keys=True)}",
+            file=sys.stderr,
+        )
 
     results: list[EvalLaneResult] = []
     oracle = HeldOutOracleDefinition(
@@ -1677,6 +1759,18 @@ def _eval_download_service(
                 held_out_oracle=oracle,
             )
         )
+        if spend_ledger is not None and spend_ledger.exceeded:
+            # A ceiling breach inside VerticalSliceRunner is caught and
+            # reported as an ordinary per-task failure, not re-raised --
+            # correct for one lane's report, wrong for the whole invocation.
+            # Stop starting further lanes immediately rather than trusting
+            # that every remaining lane would also happen to fail cheaply.
+            raise HostedSpendCeilingExceededError(
+                f"stopping this run: the hosted spend ceiling was exceeded "
+                f"during lane {lane.value!r} (${spend_ledger.spent_usd:.4f} "
+                f"spent of ${spend_ledger.ceiling_usd:.4f}); no further lanes "
+                "were started"
+            )
 
     comparison = EvalComparisonReport(
         run_id=run_id,
@@ -1686,6 +1780,23 @@ def _eval_download_service(
         lanes=results,
     )
     write_comparison(resolved_output_dir, comparison)
+    if spend_ledger is not None:
+        resolved_output_dir.mkdir(parents=True, exist_ok=True)
+        (resolved_output_dir / "hosted-spend.json").write_text(
+            json.dumps(
+                {
+                    "ceiling_usd": spend_ledger.ceiling_usd,
+                    "spent_usd": round(spend_ledger.spent_usd, 6),
+                    "calls_recorded": spend_ledger.calls_recorded,
+                    "calls_refused": spend_ledger.calls_refused,
+                    "exceeded": spend_ledger.exceeded,
+                },
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
     return comparison.model_dump(mode="json")
 
 

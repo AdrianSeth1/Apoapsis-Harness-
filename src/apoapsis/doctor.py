@@ -96,6 +96,7 @@ def run_doctor(
         checks.extend(_model_checks(config))
         checks.append(_context_check(config))
         checks.extend(_credential_checks(config))
+        checks.extend(_hosted_pricing_checks(config))
         checks.extend(_ollama_reachability_checks(config))
         checks.extend(_context_window_support_checks(config))
         checks.extend(_verification_checks(config))
@@ -335,6 +336,44 @@ def _credential_checks(config: ApoapsisConfig) -> list[DoctorCheck]:
                 ),
             )
         )
+    return checks
+
+
+def _hosted_pricing_checks(config: ApoapsisConfig) -> list[DoctorCheck]:
+    """Warn when a configured hosted (`openai_compatible`) model has every
+    pricing field left at its zero default -- every recorded call's
+    `estimated_cost_usd` will then be exactly $0 regardless of real usage,
+    which silently defeats any hosted-spend ceiling checked against it
+    (D5b) and any cost reported in evaluation evidence."""
+
+    checks: list[DoctorCheck] = []
+    for role in _MODEL_ROLES:
+        model_config = getattr(config.models, role)
+        if model_config is None or model_config.provider != "openai_compatible":
+            continue
+        pricing = model_config.pricing
+        if (
+            pricing.input_per_million_usd == 0
+            and pricing.output_per_million_usd == 0
+            and pricing.cached_input_per_million_usd == 0
+        ):
+            checks.append(
+                DoctorCheck(
+                    name=f"hosted_pricing:{role}",
+                    category="credentials",
+                    status=DoctorCheckStatus.WARNING,
+                    detail=(
+                        f"models.{role} is a hosted provider with all pricing "
+                        "fields at 0 -- recorded cost will always read $0 "
+                        "regardless of real usage"
+                    ),
+                    remediation=(
+                        f"set models.{role}.pricing.input_per_million_usd/"
+                        "output_per_million_usd (and cached_input_per_million_usd "
+                        "if applicable) to this provider's real published rates"
+                    ),
+                )
+            )
     return checks
 
 

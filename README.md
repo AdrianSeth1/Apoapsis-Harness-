@@ -523,6 +523,27 @@ one-turn budget, never by altering the task or the patch. Output is written to
 `--output-dir` (default `.apoapsis-eval/<run-id>/`, already gitignored) as
 `comparison.json` and `comparison.md`.
 
+**If `[models.frontier_coder]` is configured**, requesting `hybrid`,
+`forced-escalation`, or `frontier` also requires `--max-hosted-spend-usd
+<AMOUNT>` (ADR 0030) -- an explicit hard aggregate spend ceiling in USD for
+every hosted call this invocation makes:
+
+```bash
+apoapsis eval download-service --lane frontier --max-hosted-spend-usd 2.00 --output-dir .apoapsis-eval/run-2
+```
+
+Refused before any lane starts, before any fixture is even copied, if the
+run's own configured worst-case allowance (every hosted lane at
+`frontier_agent.max_turns` calls each, at the configured context budget and
+`frontier_coder.max_output_tokens` ceiling) already exceeds the amount you
+give. Checked again after every real call using its actual recorded cost; a
+breach stops the whole invocation immediately, not just the lane it happened
+in. The plan is printed to stderr and written to `hosted-spend-plan.json`
+before anything starts; actual totals are written to `hosted-spend.json`
+alongside the comparison report. Run `apoapsis doctor` first -- it warns if a
+configured hosted model's pricing is left at $0, which would otherwise make
+every recorded cost (and the ceiling itself) meaningless.
+
 For `download-service`, the resumable acceptance oracle is removed before each
 lane repository is initialized and is injected only after normal verification
 has already declared completion. A normal pass followed by an oracle failure is

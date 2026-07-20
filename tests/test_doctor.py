@@ -658,6 +658,115 @@ required = true
         self.assertIn("cost", hosted_check.detail)
 
 
+class DoctorHostedPricingTests(unittest.TestCase):
+    """Deterministic coverage for the D5b readiness check (ADR 0030):
+    a hosted (`openai_compatible`) model left at its all-zero pricing
+    default silently makes every recorded cost -- and therefore any hosted
+    spend ceiling checked against it -- read $0 regardless of real usage."""
+
+    def setUp(self) -> None:
+        self.temporary_directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary_directory.cleanup)
+        self.root = Path(self.temporary_directory.name)
+        subprocess.run(
+            ["git", "init", "-b", "main"],
+            cwd=self.root,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        (self.root / ".apoapsis").mkdir()
+
+    def _write_toml(self, body: str) -> None:
+        (self.root / ".apoapsis" / "config.toml").write_text(body, encoding="utf-8")
+
+    def test_zero_pricing_on_a_hosted_model_is_a_warning(self) -> None:
+        self._write_toml(
+            """
+[models.frontier]
+provider = "ollama"
+base_url = "http://127.0.0.1:11434"
+model = "qwen-test"
+
+[models.frontier_coder]
+provider = "openai_compatible"
+base_url = "https://frontier.invalid/v1"
+model = "big-coder"
+api_key_env = "APOAPSIS_DOCTOR_PRICING_TEST_KEY"
+
+[execution]
+mode = "agent"
+route = "frontier_only"
+
+[verification]
+[[verification.commands]]
+name = "tests"
+category = "tests"
+argv = ["git", "--version"]
+required = true
+"""
+        )
+        report = run_doctor(self.root)
+        check = _check(report, "hosted_pricing:frontier_coder")
+        self.assertEqual(check.status, DoctorCheckStatus.WARNING)
+        self.assertIn("all pricing fields at 0", check.detail)
+
+    def test_nonzero_pricing_on_a_hosted_model_has_no_warning(self) -> None:
+        self._write_toml(
+            """
+[models.frontier]
+provider = "ollama"
+base_url = "http://127.0.0.1:11434"
+model = "qwen-test"
+
+[models.frontier_coder]
+provider = "openai_compatible"
+base_url = "https://frontier.invalid/v1"
+model = "big-coder"
+api_key_env = "APOAPSIS_DOCTOR_PRICING_TEST_KEY"
+
+[models.frontier_coder.pricing]
+input_per_million_usd = 3.0
+output_per_million_usd = 15.0
+
+[execution]
+mode = "agent"
+route = "frontier_only"
+
+[verification]
+[[verification.commands]]
+name = "tests"
+category = "tests"
+argv = ["git", "--version"]
+required = true
+"""
+        )
+        report = run_doctor(self.root)
+        self.assertEqual(_find(report, "hosted_pricing:"), [])
+
+    def test_a_local_only_ollama_model_never_gets_a_pricing_warning(self) -> None:
+        self._write_toml(
+            """
+[models.frontier]
+provider = "ollama"
+base_url = "http://127.0.0.1:11434"
+model = "qwen-test"
+
+[execution]
+mode = "one_shot"
+
+[verification]
+[[verification.commands]]
+name = "tests"
+category = "tests"
+argv = ["git", "--version"]
+required = true
+"""
+        )
+        report = run_doctor(self.root)
+        self.assertEqual(_find(report, "hosted_pricing:"), [])
+
+
 class DoctorVerificationBackendTests(unittest.TestCase):
     """Deterministic coverage for `apoapsis doctor`'s sandbox diagnostics
     (ADR 0009), injected the same way `tests.test_docker_backend` injects
