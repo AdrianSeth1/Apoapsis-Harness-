@@ -9,6 +9,7 @@ from pydantic import ConfigDict, Field, model_validator
 from apoapsis.architect.schema import ArchitecturePlan, VerificationCatalogEntry
 from apoapsis.context.compiler import ContextPackage
 from apoapsis.repository.git import RepositorySnapshot
+from apoapsis.research.schemas import ResearchMode, ResearchTelemetry
 from apoapsis.specification.schema import HardConstraint, StrictModel, utc_now
 
 
@@ -60,6 +61,7 @@ class DiscoveryStatus(StrEnum):
     LOCAL_ANSWERS_RECORDED = "local_answers_recorded"
     BRIEF_PROPOSED = "brief_proposed"
     BRIEF_APPROVED = "brief_approved"
+    RESEARCH_COMPLETED = "research_completed"
     FRONTIER_PACKAGE_EXPORTED = "frontier_package_exported"
     FRONTIER_CLARIFICATION_PROPOSED = "frontier_clarification_proposed"
     FRONTIER_ANSWERS_RECORDED = "frontier_answers_recorded"
@@ -80,6 +82,12 @@ class DiscoverySessionRecord(StrictModel):
     local_answers: list[ClarificationAnswer] = Field(default_factory=list)
     idea_brief: IdeaBrief | None = None
     brief_approved: bool = False
+    research_mode: ResearchMode = ResearchMode.OFF
+    research_triggered: bool = False
+    research_brief: str | None = None
+    research_evidence_ids: list[str] = Field(default_factory=list)
+    research_audit_directory: str | None = None
+    research_telemetry: ResearchTelemetry | None = None
     frontier_transport: Literal["api", "manual"] | None = None
     frontier_round: int = Field(default=0, ge=0)
     frontier_package_id: str | None = None
@@ -137,6 +145,11 @@ class FrontierPlanningRequestPackage(StrictModel):
     idea_brief: IdeaBrief
     local_questions: list[ClarificationQuestion] = Field(default_factory=list)
     local_answers: list[ClarificationAnswer] = Field(default_factory=list)
+    research_mode: ResearchMode = ResearchMode.OFF
+    research_triggered: bool = False
+    research_brief: str | None = None
+    research_evidence_ids: list[str] = Field(default_factory=list)
+    research_audit_directory: str | None = None
     frontier_prior_questions: list[ClarificationQuestion] = Field(default_factory=list)
     frontier_prior_answers: list[ClarificationAnswer] = Field(default_factory=list)
     repository: RepositorySnapshot

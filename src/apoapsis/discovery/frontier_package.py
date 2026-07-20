@@ -18,6 +18,7 @@ from apoapsis.discovery.schema import (
     IdeaBrief,
 )
 from apoapsis.repository.git import GitRepository
+from apoapsis.research.schemas import ResearchMode
 from apoapsis.specification.schema import SourceKind, TaskSpecification, TraceableStatement
 
 
@@ -50,6 +51,11 @@ def build_frontier_planning_request_package(
     frontier_prior_questions: list[ClarificationQuestion],
     frontier_prior_answers: list[ClarificationAnswer],
     frontier_round: int,
+    research_mode: ResearchMode = ResearchMode.OFF,
+    research_triggered: bool = False,
+    research_brief: str | None = None,
+    research_evidence_ids: list[str] | None = None,
+    research_audit_directory: str | None = None,
     package_id: str | None = None,
 ) -> FrontierPlanningRequestPackage:
     """Deterministically build the package a frontier model needs to
@@ -87,6 +93,11 @@ def build_frontier_planning_request_package(
         idea_brief=idea_brief,
         local_questions=local_questions,
         local_answers=local_answers,
+        research_mode=research_mode,
+        research_triggered=research_triggered,
+        research_brief=research_brief,
+        research_evidence_ids=list(research_evidence_ids or []),
+        research_audit_directory=research_audit_directory,
         frontier_prior_questions=frontier_prior_questions,
         frontier_prior_answers=frontier_prior_answers,
         repository=snapshot,

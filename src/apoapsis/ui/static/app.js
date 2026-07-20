@@ -40,6 +40,7 @@ const store = {
   discoverAnswerDrafts: {},
   discoverFrontierAnswerDrafts: {},
   discoverTransportChoice: "manual",
+  discoverResearchChoice: "auto",
   discoverApiSpendUsd: "1.00",
   discoverManualImportForm: { packageId: "", responseText: "", declaredModelName: "" },
   discoverFrontierExportPaths: null,
@@ -53,10 +54,10 @@ const store = {
 
 const ROUTE_TITLES = {
   home: "Home",
-  new: "New Task",
+  new: "Quick change",
   plans: "Plans",
-  reviews: "Human Review",
-  discover: "Discovery & Planning",
+  reviews: "Needs attention",
+  discover: "Plan a larger change",
   evaluations: "Evaluations",
   models: "Models & Environment",
 };
@@ -294,10 +295,10 @@ function sidebar() {
       <p class="nav-label">Workspace</p>
       <nav class="nav-list" aria-label="Workspace">
         <a class="nav-link${active("home")}" href="#/home"><span class="nav-dot"></span><span>Home</span></a>
-        <a class="nav-link${active("new")}" href="#/new"><span class="nav-dot"></span><span>New task</span></a>
+        <a class="nav-link${active("new")}" href="#/new"><span class="nav-dot"></span><span>Quick change</span></a>
+        <a class="nav-link${active("discover") || active("discoverSession")}" href="#/discover"><span class="nav-dot"></span><span>Plan a larger change</span></a>
         <a class="nav-link${active("plans")}" href="#/plans"><span class="nav-dot"></span><span>Plans</span></a>
-        <a class="nav-link${active("reviews")}" href="#/reviews"><span class="nav-dot"></span><span>Human review queue</span></a>
-        <a class="nav-link${active("discover") || active("discoverSession")}" href="#/discover"><span class="nav-dot"></span><span>Discovery & planning</span></a>
+        <a class="nav-link${active("reviews")}" href="#/reviews"><span class="nav-dot"></span><span>Needs attention</span></a>
         <a class="nav-link${active("evaluations")}" href="#/evaluations"><span class="nav-dot"></span><span>Evaluations</span></a>
         <a class="nav-link${active("models")}" href="#/models"><span class="nav-dot"></span><span>Models & environment</span></a>
       </nav>
@@ -338,8 +339,8 @@ function topbar() {
 
 function routeTitle() {
   if (store.route.name === "task") return titleCase(store.route.view);
-  if (store.route.name === "discoverSession") return "Discovery";
-  return titleCase(store.route.name);
+  if (store.route.name === "discoverSession") return "Plan a larger change";
+  return ROUTE_TITLES[store.route.name] || titleCase(store.route.name);
 }
 
 function taskBanner(detail) {
@@ -371,15 +372,19 @@ function homeView() {
   return `
     <main class="content">
       <div class="page-heading">
-        <div><p class="eyebrow">LOCAL-FIRST / VERIFIED BY CONSTRUCTION</p><h1>Project status.</h1><p>Apoapsis turns model proposals into inspectable tasks, bounded changes, deterministic checks, and durable evidence.</p></div>
-        <a class="button primary" href="#/new">New task →</a>
+        <div><p class="eyebrow">CURRENT PROJECT</p><h1>What would you like to do?</h1><p>This window manages one Git project. Every task, plan, slice, check, and review below belongs to <strong>${e(overview.project.name)}</strong>.</p></div>
+      </div>
+      <div class="grid three workflow-choices">
+        ${journeyChoice("Quick change", "Describe one focused change, approve its specification, then start coding.", "#/new", "Start a quick change →")}
+        ${journeyChoice("Larger project", "Clarify an idea, optionally research it, ask a frontier model for a plan, then work through its slices.", "#/discover", "Start planning →")}
+        ${journeyChoice("Needs attention", "Continue a task that stopped, including a manual ChatGPT or Claude handoff.", "#/reviews", casesLabel(overview))}
       </div>
       <section class="card hero-card">
         <div>
           <span class="pill ${overview.project.initialized ? "good" : "warn"}">${overview.project.initialized ? "Project ready" : "Initialization required"}</span>
           <h2>${e(overview.project.name)}</h2>
           <p class="mono">${e(overview.project.root)}</p>
-          <p>${overview.repository.is_clean === true ? "The Git worktree is clean." : `${overview.repository.changed_files?.length || 0} local path(s) currently differ from HEAD.`} Model services are shown from the last explicit lifecycle action; no model was contacted to render this page.</p>
+          <p>${overview.repository.is_clean === true ? "The Git worktree is clean." : `${overview.repository.changed_files?.length || 0} local path(s) currently differ from HEAD.`} To use another repository, close this window and launch <span class="mono">OPEN_APOAPSIS.cmd "C:\\path\\to\\project"</span>. Run <span class="mono">apoapsis init</span> in that repository once if it has not been initialized.</p>
         </div>
         <div class="stat-stack">
           <div class="stat"><span>Active tasks</span><strong>${activeTasks}</strong></div>
@@ -391,7 +396,7 @@ function homeView() {
       <div class="grid two mt-18">
         <section class="card">
           <div class="card-header"><div><h2>Recent tasks</h2><p>Persisted workflow records, newest first.</p></div><span class="pill purple">${tasks.length} total</span></div>
-          ${tasks.length ? `<div class="task-list">${tasks.slice(0, 8).map(taskRow).join("")}</div>` : emptyState("No tasks yet", "Describe a request on the New task page, or use `apoapsis run`/`apoapsis intake submit` from the CLI.")}
+          ${tasks.length ? `<div class="task-list">${tasks.slice(0, 8).map(taskRow).join("")}</div>` : emptyState("No tasks yet", "Choose Quick change for one focused request, or Larger project when the work should be planned as slices first.")}
         </section>
         <section class="card">
           <div class="card-header"><div><h2>Models & execution</h2><p>Configuration, not a synthetic readiness claim.</p></div><a class="button ghost" href="#/models">Inspect →</a></div>
@@ -406,6 +411,19 @@ function homeView() {
         </section>
       </div>
     </main>`;
+}
+
+function journeyChoice(title, description, href, action) {
+  return `<a class="card card-pad journey-choice" href="${href}"><h2>${e(title)}</h2><p>${e(description)}</p><strong class="orange">${e(action)}</strong></a>`;
+}
+
+function casesLabel(overview) {
+  const waiting = (overview.tasks || []).filter((task) => task.state === "HUMAN_REVIEW_REQUIRED").length;
+  return waiting ? `${waiting} waiting →` : "Open review queue →";
+}
+
+function workflowSteps(items, currentIndex) {
+  return `<ol class="workflow-steps" aria-label="Workflow progress">${items.map((item, index) => `<li class="${index < currentIndex ? "done" : index === currentIndex ? "current" : "upcoming"}"><span>${index + 1}</span><strong>${e(item)}</strong></li>`).join("")}</ol>`;
 }
 
 function taskRow(task) {
@@ -426,7 +444,8 @@ function newTaskView() {
 
 function newTaskFormView() {
   return `<main class="content narrow">
-    <div class="page-heading"><div><p class="eyebrow">NEW TASK / MODEL-ASSISTED INTAKE</p><h1>Describe the outcome.</h1><p>Extraction proposes a candidate specification. It never edits the repository, and approving it does not yet start coding -- both remain explicit, separate steps.</p></div></div>
+    <div class="page-heading"><div><p class="eyebrow">QUICK CHANGE</p><h1>Describe the outcome.</h1><p>This path is for one focused change. You will review the proposed specification before anything edits the project.</p></div></div>
+    ${workflowSteps(["Describe", "Approve specification", "Start coding", "Verify or review"], 0)}
     <section class="card">
       <div class="card-body">
         <label class="section-title" for="intake-request">Natural-language request</label>
@@ -441,7 +460,8 @@ function newTaskFormView() {
 function newTaskRunningView(op) {
   const stage = INTAKE_OPERATION_STAGE[op.status] || { label: op.status, pill: "warn" };
   return `<main class="content narrow">
-    <div class="page-heading"><div><p class="eyebrow">NEW TASK / ${e(op.task_id)}</p><h1>Extracting a specification.</h1><p>A background worker is drafting this specification now. It is safe to close this tab -- progress is persisted and will still be here on reconnect.</p></div><span class="pill ${stage.pill}">${e(stage.label)}</span></div>
+    <div class="page-heading"><div><p class="eyebrow">QUICK CHANGE / ${e(op.task_id)}</p><h1>Drafting the specification.</h1><p>A background worker is drafting the scope now. It is safe to close this tab; progress is persisted.</p></div><span class="pill ${stage.pill}">${e(stage.label)}</span></div>
+    ${workflowSteps(["Describe", "Approve specification", "Start coding", "Verify or review"], 0)}
     <section class="card card-pad">
       <div class="constraint-head"><span class="constraint-id">OPERATION ${e(op.operation_id)}</span><span class="pill ${stage.pill}">${e(stage.label)}</span></div>
       <p class="muted mt-14">${e(op.result_summary || "Waiting for the background worker to run this operation.")}</p>
@@ -471,7 +491,8 @@ function newTaskDraftedView(op) {
     (path) => path.includes("specification-extraction-failure-")
   );
   return `<main class="content narrow">
-    <div class="page-heading"><div><p class="eyebrow">NEW TASK / ${e(op.task_id)}</p><h1>Specification drafted.</h1><p>Extraction proposed a candidate specification -- it did not edit the repository. Review it on the task page and approve it there; approving does not yet start coding.</p></div><span class="pill good">Pending approval</span></div>
+    <div class="page-heading"><div><p class="eyebrow">QUICK CHANGE / ${e(op.task_id)}</p><h1>Review the scope.</h1><p>The model proposed a specification but has not edited the project. Approve it, then start coding as a separate step.</p></div><span class="pill good">Pending approval</span></div>
+    ${workflowSteps(["Describe", "Approve specification", "Start coding", "Verify or review"], 1)}
     <section class="card card-pad">
       ${spec ? `<p class="section-title mt-0">Objective</p><p class="objective">${e(spec.objective.text)}</p>` : ""}
       <div class="grid two mt-14">
@@ -544,16 +565,16 @@ function evalRow(run) {
 function plansView() {
   const plans = store.plans?.plans || [];
   return `<main class="content">
-    <div class="page-heading"><div><p class="eyebrow">ARCHITECT MODE / PLANS</p><h1>Ideas, decomposed<br>into small, verifiable slices.</h1><p>Plans are proposed by a strong model you run manually (<span class="mono orange">apoapsis plan export</span>), then reviewed and approved here. Approving a plan never executes anything.</p></div><span class="pill ${plans.length ? "good" : "warn"}">${plans.length ? `${plans.length} recorded` : "No plans yet"}</span></div>
+    <div class="page-heading"><div><p class="eyebrow">LARGER PROJECTS / PLANS</p><h1>Approved work,<br>split into slices.</h1><p>Start in <a href="#/discover">Plan a larger change</a>. A local model clarifies the idea, optional Research can inform it, and either an API or a manual ChatGPT or Claude handoff proposes the plan. You still review and approve every plan and slice.</p></div><span class="pill ${plans.length ? "good" : "warn"}">${plans.length ? `${plans.length} recorded` : "No plans yet"}</span></div>
     <section class="card">
-      ${plans.length ? `<div class="task-list">${plans.map(planRow).join("")}</div>` : emptyState("No plans yet", 'Run apoapsis plan export "<idea>" to create a reproducible planning package, then apoapsis plan import <response.json> once a model responds.')}
+      ${plans.length ? `<div class="task-list">${plans.map(planRow).join("")}</div>` : `<div class="empty"><h2>No plans yet</h2><p>Begin with the guided planning flow. It supports both API access and a normal ChatGPT or Claude subscription.</p><a class="button primary" href="#/discover">Plan a larger change →</a></div>`}
     </section>
   </main>`;
 }
 
 function planRow(plan) {
   return `<a class="task-row" href="#/plan/${encodeURIComponent(plan.plan_id)}/overview">
-    <div class="task-main"><strong>${e(plan.architecture_summary)}</strong><span>${e(plan.plan_id)} · v${e(plan.version)} · ${e(plan.slice_count)} slice(s)</span></div>
+    <div class="task-main"><strong>${e(plan.idea_text)}</strong><span>${e(plan.plan_id)} · v${e(plan.version)} · ${e(plan.slice_count)} slice(s)</span></div>
     <span class="pill ${planStatusClass(plan.status)}">${e(titleCase(plan.status))}</span>
     <span class="meta">${e(formatDate(plan.updated_at))}</span><span class="arrow">→</span>
   </a>`;
@@ -579,8 +600,8 @@ function planBanner(detail) {
       <div class="task-banner-main">
         <div class="task-title">
           <p>${e(record.plan_id)} · VERSION ${e(record.version)}</p>
-          <h1>${e(record.plan.architecture_summary)}</h1>
-          <p>${e(titleCase(record.status))} · UPDATED ${e(formatDate(record.updated_at))}</p>
+          <h1>${e(record.idea_text)}</h1>
+          <p>${e(titleCase(record.status))} · ${e(record.plan.slices.length)} SLICES · UPDATED ${e(formatDate(record.updated_at))}</p>
         </div>
         <nav class="phase-nav" aria-label="Plan views">
           ${views.map((view) => `<a class="${store.route.view === view ? "current" : ""}" href="#/plan/${encodeURIComponent(record.plan_id)}/${view}">${e(labels[view])}</a>`).join("")}
@@ -639,7 +660,7 @@ function planSlicesView(detail) {
   const orderedSlices = order.map((id) => byId.get(id)).filter(Boolean);
   const statusById = new Map((detail.slices || []).map((item) => [item.slice_id, item]));
   return `<main class="content">
-    <div class="page-heading"><div><p class="eyebrow">IMPLEMENTATION SLICES / DEPENDENCY ORDER</p><h1>Small, independently<br>verifiable work packets.</h1><p>Rendered in dependency order. Suggested paths and symbols are advisory hints for the local coding model, not a grant to write outside the repository. Status is read live from each slice's derived task -- there is no "run all" button and no automatic scheduler.</p></div><span class="pill purple">${orderedSlices.length} slice(s)</span></div>
+    <div class="page-heading"><div><p class="eyebrow">IMPLEMENTATION SLICES / ONE AT A TIME</p><h1>Work through the plan.</h1><p>Open a Ready slice, package and approve it, then start coding. If it finishes, commit and merge that slice's work into this project before starting a dependent slice. Apoapsis checks that dependency from Git; it never merges automatically.</p></div><span class="pill purple">${orderedSlices.length} slice(s)</span></div>
     ${orderedSlices.length ? orderedSlices.map((slice) => sliceCard(slice, record.plan_id, statusById.get(slice.slice_id))).join("") : emptyState("No slices in this plan", "The imported plan did not include any implementation slices.")}
   </main>`;
 }
@@ -653,7 +674,7 @@ function sliceRiskClass(risk) {
 }
 
 const SLICE_STATUS_LABELS = {
-  ready_or_blocked: "Ready or blocked",
+  ready_or_blocked: "Not started",
   packaged: "Packaged",
   approved: "Approved",
   running: "Running",
@@ -674,43 +695,29 @@ function sliceStatusClass(status) {
 
 function sliceStatusLabel(statusEntry) {
   const status = statusEntry?.status || "ready_or_blocked";
+  if (status === "ready_or_blocked" && statusEntry?.readiness) {
+    return statusEntry.readiness.ready ? "Ready" : "Waiting for dependencies";
+  }
   return SLICE_STATUS_LABELS[status] || titleCase(status);
 }
 
 function sliceCard(slice, planId, statusEntry) {
-  const references = [...(slice.inherited_constraint_ids || []), ...(slice.acceptance_criterion_ids || [])];
   const status = statusEntry?.status || "ready_or_blocked";
+  const actionLabel = status === "human_review" ? "Resolve stopped slice →" : status === "approved" ? "Start coding →" : status === "complete" ? "View completed slice →" : "Open slice →";
   return `<article class="card card-pad mt-16">
     <div class="constraint-head">
       <span class="constraint-id">${e(slice.slice_id)}</span>
       <span class="pill ${sliceRiskClass(slice.risk_level)}">${e(titleCase(slice.risk_level || "unclassified"))} risk</span>
       <span class="pill ${sliceStatusClass(status)}">${e(sliceStatusLabel(statusEntry))}</span>
-      <a class="button ghost" href="#/plan/${encodeURIComponent(planId)}/slice/${encodeURIComponent(slice.slice_id)}">Inspect →</a>
+      <a class="button ${status === "human_review" || status === "approved" ? "primary" : "ghost"}" href="#/plan/${encodeURIComponent(planId)}/slice/${encodeURIComponent(slice.slice_id)}">${e(actionLabel)}</a>
     </div>
     <h3>${e(slice.title)}</h3>
     <p class="objective">${e(slice.objective)}</p>
-    <div class="grid two mt-14">
-      <div>
-        <p class="section-title mt-0">Exclusions</p>
-        ${(slice.exclusions || []).length ? `<ul>${slice.exclusions.map((item) => `<li>${e(item)}</li>`).join("")}</ul>` : `<p class="muted">None recorded.</p>`}
-        <p class="section-title">Dependencies</p>
-        <p class="mono">${(slice.dependencies || []).map((item) => e(item)).join(", ") || "None -- no prerequisite slices."}</p>
-        <p class="section-title">Inherited constraints / criteria</p>
-        <p class="mono">${references.map((item) => e(item)).join(", ") || "None recorded."}</p>
-      </div>
-      <div>
-        <p class="section-title mt-0">Verification commands</p>
-        <p class="mono">${(slice.verification_commands || []).map((item) => e(item)).join(", ") || "None named -- validation will flag this."}</p>
-        <p class="section-title">Suggested paths (advisory)</p>
-        <p class="mono">${(slice.suggested_paths || []).map((item) => e(item)).join(", ") || "None suggested."}</p>
-        <p class="section-title">Stop / escalation conditions</p>
-        ${(slice.stop_conditions || []).length ? `<ul>${slice.stop_conditions.map((item) => `<li>${e(item)}</li>`).join("")}</ul>` : `<p class="muted">None recorded.</p>`}
-      </div>
-    </div>
-    <p class="section-title">Local-model-fit rationale</p>
-    <blockquote>${e(slice.local_model_fit_rationale)}</blockquote>
-    <p class="section-title">Work brief</p>
-    <blockquote>${e(slice.work_brief)}</blockquote>
+    <p class="meta">${(slice.dependencies || []).length ? `WAITING ON: ${(slice.dependencies || []).map((item) => e(item)).join(", ")}` : "NO PREREQUISITE SLICES"} · CHECK: ${(slice.verification_commands || []).map((item) => e(item)).join(", ") || "not named"}</p>
+    <details class="mt-14"><summary>Show scope, constraints, and technical details</summary>
+      <div class="grid two mt-14"><div><p class="section-title mt-0">Exclusions</p>${(slice.exclusions || []).length ? `<ul>${slice.exclusions.map((item) => `<li>${e(item)}</li>`).join("")}</ul>` : `<p class="muted">None recorded.</p>`}<p class="section-title">Constraints / criteria</p><p class="mono">${[...(slice.inherited_constraint_ids || []), ...(slice.acceptance_criterion_ids || [])].map((item) => e(item)).join(", ") || "None recorded."}</p></div><div><p class="section-title mt-0">Suggested paths</p><p class="mono">${(slice.suggested_paths || []).map((item) => e(item)).join(", ") || "None suggested."}</p><p class="section-title">Stop conditions</p>${(slice.stop_conditions || []).length ? `<ul>${slice.stop_conditions.map((item) => `<li>${e(item)}</li>`).join("")}</ul>` : `<p class="muted">None recorded.</p>`}</div></div>
+      <p class="section-title">Why it should fit the local model</p><blockquote>${e(slice.local_model_fit_rationale)}</blockquote><p class="section-title">Full work brief</p><blockquote>${e(slice.work_brief)}</blockquote>
+    </details>
   </article>`;
 }
 
@@ -811,13 +818,22 @@ function sliceTaskLinksSection(detail) {
   const taskId = taskRecord.task_id;
   const preview = task.execution_preview;
   const humanReview = taskRecord.state === "HUMAN_REVIEW_REQUIRED";
+  const stopped = taskRecord.state === "HUMAN_REVIEW_REQUIRED";
+  const complete = taskRecord.state === "COMPLETE";
+  const primaryHref = stopped ? `#/review/${encodeURIComponent(taskId)}` : `#/task/${encodeURIComponent(taskId)}/control`;
+  const primaryLabel = stopped ? "Open recovery options →" : complete ? "View completed task →" : "Open control room →";
+  const stateExplanation = stopped
+    ? "Coding stopped and needs your decision. Open recovery options to continue locally, retry verification, or create a manual ChatGPT or Claude handoff."
+    : complete
+      ? "This slice passed its configured completion checks. Commit its worktree changes and merge that branch into the project before starting any dependent slice."
+      : "This approved slice is ready to use the normal coding control room.";
   return `<section class="card card-pad mt-16">
     <p class="section-title mt-0">Derived task · ${e(taskId)}</p>
-    <p class="muted">This slice's approved package became this task (currently ${e(titleCase(taskRecord.state))}). Starting it runs through the exact same durable execution service every other task uses -- open the control room to start coding.</p>
+    <p class="muted">${e(stateExplanation)}</p>
     ${preview ? `<div class="mt-14 mono">PREDICTED ROUTE: ${e(preview.predicted_route || "n/a")} · LOCAL MODEL: ${e(preview.local_model || "unknown")}${preview.frontier_available ? ` · FRONTIER MODEL: ${e(preview.frontier_model || "unknown")}` : " · FRONTIER: not configured"}</div>
     <div class="mono">COMPLETION POLICY: ${e(preview.completion_policy)} · SANDBOX: ${e(preview.verification_backend)}</div>` : ""}
     <div class="approval-actions mt-14">
-      <a class="button primary" href="#/task/${encodeURIComponent(taskId)}/control">Open control room →</a>
+      <a class="button primary" href="${primaryHref}">${e(primaryLabel)}</a>
       <a class="button ghost" href="#/task/${encodeURIComponent(taskId)}/changes">Changes & verification</a>
       <a class="button ghost" href="#/task/${encodeURIComponent(taskId)}/report">Report & audit</a>
       ${humanReview ? `<a class="button ghost" href="#/review/${encodeURIComponent(taskId)}">Open Human Review case →</a>` : ""}
@@ -888,6 +904,11 @@ function reviewDetailView(detail) {
 
     ${reviewOperationPanel()}
 
+    <p class="section-title">What can I do next?</p>
+    <section class="card card-pad">${reviewActionPanel(detail, eligible)}</section>
+
+    ${manualFrontierSection(detail, eligible)}
+
     <p class="section-title">Active hard constraints · ${(detail.active_hard_constraints || []).length}</p>
     ${(detail.active_hard_constraints || []).length ? detail.active_hard_constraints.map(constraintCard).join("") : `<div class="notice">No active hard constraints are recorded.</div>`}
 
@@ -912,13 +933,7 @@ function reviewDetailView(detail) {
     <p class="section-title">Models used</p>
     <section class="card card-pad">${(detail.models_used || []).length ? detail.models_used.map((model) => `<div class="file-item"><code>${e(model)}</code></div>`).join("") : `<p class="muted">No model calls were recorded.</p>`}</section>
 
-    <p class="section-title">Audit artifacts · ${(detail.audit_artifact_locations || []).length}</p>
-    <section class="card card-pad">${(detail.audit_artifact_locations || []).length ? `<div class="artifact-list">${detail.audit_artifact_locations.map((artifact) => `<div class="artifact-item"><code>${e(artifact)}</code></div>`).join("")}</div>` : `<p class="muted">No artifacts were discovered.</p>`}</section>
-
-    <p class="section-title">Eligible actions</p>
-    <section class="card card-pad">${reviewActionPanel(detail, eligible)}</section>
-
-    ${manualFrontierSection(detail, eligible)}
+    <details class="card card-pad mt-16"><summary>Audit artifacts · ${(detail.audit_artifact_locations || []).length}</summary>${(detail.audit_artifact_locations || []).length ? `<div class="artifact-list mt-14">${detail.audit_artifact_locations.map((artifact) => `<div class="artifact-item"><code>${e(artifact)}</code></div>`).join("")}</div>` : `<p class="muted">No artifacts were discovered.</p>`}</details>
   </main>`;
 }
 
@@ -929,9 +944,10 @@ function manualFrontierSection(detail, eligible) {
   const eligibleForHandoff = eligible.includes("manual_frontier_handoff");
   if (!eligibleForHandoff && !previews.length) return "";
   return `
-    <p class="section-title">Manual subscription-based frontier handoff</p>
+    <p class="section-title">Continue with ChatGPT or Claude</p>
     <section class="card card-pad">
-      <p class="muted">Use this when you have a ChatGPT or Claude <em>subscription</em> but no configured API credential. Apoapsis never automates either website and never stores or reuses your subscription session -- you upload one file by hand and paste back one response.</p>
+      <p class="muted">Use a normal ChatGPT or Claude subscription without API credentials. Apoapsis never signs in for you: download one exact file, upload it yourself, then paste the model's response back here.</p>
+      ${workflowSteps(["Export file", "Upload to ChatGPT or Claude", "Paste response", "Review, apply, and verify"], store.manualFrontierExport ? 2 : 0)}
       ${eligibleForHandoff ? manualFrontierExportPanel(detail) : `<div class="notice mt-14">Manual handoff is not currently eligible for this task${previews.length ? " -- showing prior previews below." : "."}</div>`}
       ${manualFrontierImportPanel(detail)}
       ${previews.length ? manualFrontierPreviewList(detail, previews) : ""}
@@ -1519,6 +1535,7 @@ const DISCOVERY_STATUS_LABELS = {
   local_answers_recorded: "Local answers recorded",
   brief_proposed: "Idea brief proposed",
   brief_approved: "Idea brief approved",
+  research_completed: "Research completed",
   frontier_package_exported: "Frontier package exported",
   frontier_clarification_proposed: "Frontier clarification proposed",
   frontier_answers_recorded: "Frontier answers recorded",
@@ -1537,7 +1554,8 @@ const DISCOVERY_OPERATION_STAGE = {
 function discoverListView() {
   const sessions = store.discoverSessions?.sessions || [];
   return `<main class="content narrow">
-    <div class="page-heading"><div><p class="eyebrow">DISCOVERY / BOUNDED, LOCAL-FIRST</p><h1>Firm up an idea<br>before designing it.</h1><p>A configured local model may propose a small, capped set of clarification questions and one idea brief -- never a general chat. Only you can approve the brief; only you can choose whether a frontier model is reached over an API or a manual subscription upload.</p></div></div>
+    <div class="page-heading"><div><p class="eyebrow">PLAN A LARGER CHANGE</p><h1>Turn an idea into<br>workable slices.</h1><p>Your local model asks a few basic questions and drafts a brief. You approve it, optionally run Research, then give one planning file to ChatGPT or Claude, or use a configured API. The resulting plan is reviewed before any slice can run.</p></div></div>
+    ${workflowSteps(["Clarify", "Approve brief", "Optional research", "Frontier plan", "Approve and run slices"], 0)}
     <section class="card card-pad">
       <label class="section-title mt-0" for="discover-idea">Describe the idea</label>
       <textarea id="discover-idea" class="mono" rows="4" placeholder="Add resumable downloads with a pluggable storage backend.">${e(store.discoverIdeaText)}</textarea>
@@ -1576,7 +1594,8 @@ function discoverSessionView() {
   const operationActive = store.discoverOperation && ["recorded", "running"].includes(store.discoverOperation.status);
   return `<main class="content">
     <p><a href="#/discover">← Back to discovery sessions</a></p>
-    <div class="page-heading"><div><p class="eyebrow">DISCOVERY / ${e(session.session_id)}</p><h1>${e(session.idea_text)}</h1><p>Version ${e(session.version)} · updated ${e(formatDate(session.updated_at))}</p></div><span class="pill ${session.status === "failed" ? "bad" : session.status === "plan_imported" ? "good" : "purple"}">${e(DISCOVERY_STATUS_LABELS[session.status] || session.status)}</span></div>
+    <div class="page-heading"><div><p class="eyebrow">PLANNING / ${e(session.session_id)}</p><h1>${e(session.idea_text)}</h1><p>Version ${e(session.version)} · updated ${e(formatDate(session.updated_at))}</p></div><span class="pill ${session.status === "failed" ? "bad" : session.status === "plan_imported" ? "good" : "purple"}">${e(DISCOVERY_STATUS_LABELS[session.status] || session.status)}</span></div>
+    ${workflowSteps(["Clarify", "Approve brief", "Optional research", "Frontier plan", "Approve and run slices"], discoveryStepIndex(session.status))}
     ${discoveryOperationPanel()}
     ${!operationActive ? discoverySessionBody(detail) : ""}
   </main>`;
@@ -1604,7 +1623,8 @@ function discoverySessionBody(detail) {
     case "local_questions_proposed": return discoveryAnswerQuestionsView(detail, session.local_questions, "local");
     case "local_answers_recorded": return discoveryProposeBriefView(detail);
     case "brief_proposed": return discoveryBriefApprovalView(detail);
-    case "brief_approved": return discoveryTransportChoiceView(detail);
+    case "brief_approved": return discoveryResearchChoiceView(detail);
+    case "research_completed": return `${discoveryResearchResultView(detail)}${discoveryTransportChoiceView(detail)}`;
     case "frontier_package_exported": return discoveryFrontierPackageView(detail);
     case "frontier_clarification_proposed": return discoveryAnswerQuestionsView(detail, session.frontier_questions, "frontier");
     case "frontier_answers_recorded": return discoveryTransportChoiceView(detail);
@@ -1612,6 +1632,14 @@ function discoverySessionBody(detail) {
     case "failed": return discoveryFailedView(detail);
     default: return "";
   }
+}
+
+function discoveryStepIndex(status) {
+  if (["idea_entered", "local_questions_proposed", "local_answers_recorded", "brief_proposed"].includes(status)) return status === "brief_proposed" ? 1 : 0;
+  if (status === "brief_approved" || status === "research_completed") return 2;
+  if (["frontier_package_exported", "frontier_clarification_proposed", "frontier_answers_recorded"].includes(status)) return 3;
+  if (status === "plan_imported") return 4;
+  return 0;
 }
 
 function discoveryIdeaEnteredView(detail) {
@@ -1657,17 +1685,45 @@ function discoveryBriefApprovalView(detail) {
   </section>`;
 }
 
-function discoveryTransportChoiceView(detail) {
-  const choice = store.discoverTransportChoice;
+const RESEARCH_CHOICES = {
+  auto: { action: "research_auto", label: "Auto", description: "Run only when the approved brief triggers the deterministic research rules." },
+  github: { action: "research_github", label: "GitHub", description: "Look for implementation precedent in configured GitHub sources." },
+  community: { action: "research_community", label: "Community", description: "Use configured community sources for user pain and practical experience." },
+  full: { action: "research_full", label: "Full", description: "Use every configured research source within the fixed research budget." },
+};
+
+function discoveryResearchChoiceView(detail) {
+  const selected = RESEARCH_CHOICES[store.discoverResearchChoice] || RESEARCH_CHOICES.auto;
+  const available = detail.planning_research_available;
   return `<section class="card card-pad mt-16">
+    <p class="section-title mt-0">Optional planning research</p>
+    <p class="muted">Research happens before the frontier planning handoff. Network access belongs only to restricted source adapters; the local research model receives sanitized evidence and has no tools. Only its compact brief and evidence IDs enter the planning package.</p>
+    ${available ? `<div class="grid two mt-14">${Object.entries(RESEARCH_CHOICES).map(([value, choice]) => `<label class="constraint research-choice"><input type="radio" name="discover-research" value="${e(value)}" ${store.discoverResearchChoice === value ? "checked" : ""}> <strong>${e(choice.label)}</strong><span>${e(choice.description)}</span></label>`).join("")}</div><div class="mt-14 mono">LOCAL RESEARCH MODEL: ${e(detail.planning_research_model)}</div><div class="flex-end mt-16"><button class="button primary" data-action="discover-op-submit" data-op-action="${e(selected.action)}" data-session-id="${e(detail.session.session_id)}" data-version="${e(detail.session.version)}" ${store.busy ? "disabled" : ""}>Run ${e(selected.label)} research →</button></div>` : `<div class="notice mt-14">Planning research is unavailable because this project has no <span class="mono">models.local_research</span> role configured. You can continue to planning without it.</div>`}
+    <details class="mt-16"><summary>Skip research and continue</summary>${discoveryTransportChoiceView(detail, true)}</details>
+  </section>`;
+}
+
+function discoveryResearchResultView(detail) {
+  const session = detail.session;
+  const produced = session.research_triggered && session.research_brief;
+  return `<section class="card card-pad mt-16">
+    <div class="constraint-head"><span class="constraint-id">PLANNING RESEARCH</span><span class="pill ${produced ? "good" : "purple"}">${produced ? "Brief ready" : "Not triggered"}</span></div>
+    <p class="muted">Mode: ${e(titleCase(session.research_mode))}. ${produced ? `${session.research_evidence_ids.length} provenance-bound evidence item(s) will be included by ID in the frontier planning package.` : "The deterministic trigger did not produce a research brief; planning can continue normally."}</p>
+    ${produced ? `<details class="mt-14"><summary>Read the research brief</summary><div class="mono mt-14" style="white-space: pre-wrap; overflow-wrap: anywhere;">${e(session.research_brief)}</div></details>` : ""}
+  </section>`;
+}
+
+function discoveryTransportChoiceView(detail, embedded = false) {
+  const choice = store.discoverTransportChoice;
+  const content = `
     <p class="section-title mt-0">Choose a frontier planning transport</p>
-    <p class="muted">Neither transport can approve a plan, invent a verification-command name, bypass a ceiling, or execute a slice.</p>
+    <p class="muted">Manual subscription means one file uploaded to ChatGPT or Claude and one response pasted back. API uses separately configured credentials and an explicit spend ceiling. Neither path can approve or execute the plan.</p>
     <div class="grid two mt-14">
       <label class="constraint" style="cursor:pointer"><input type="radio" name="discover-transport" value="api" ${choice === "api" ? "checked" : ""} ${detail.frontier_api_configured ? "" : "disabled"}> <strong>API</strong> -- explicitly configured, spend-ceilinged.${detail.frontier_api_configured ? "" : " (not configured)"}</label>
       <label class="constraint" style="cursor:pointer"><input type="radio" name="discover-transport" value="manual" ${choice === "manual" ? "checked" : ""}> <strong>Manual subscription</strong> -- upload one file, paste one response.</label>
     </div>
-    <div class="flex-end mt-16"><button class="button primary" data-action="discover-export-package" data-session-id="${e(detail.session.session_id)}" data-version="${e(detail.session.version)}" ${store.busy ? "disabled" : ""}>Export frontier package →</button></div>
-  </section>`;
+    <div class="flex-end mt-16"><button class="button primary" data-action="discover-export-package" data-session-id="${e(detail.session.session_id)}" data-version="${e(detail.session.version)}" ${store.busy ? "disabled" : ""}>Prepare planning handoff →</button></div>`;
+  return embedded ? `<div class="mt-14">${content}</div>` : `<section class="card card-pad mt-16">${content}</section>`;
 }
 
 function discoveryFrontierPackageView(detail) {
@@ -1684,6 +1740,7 @@ function discoveryManualTransportPanel(detail) {
   const exported = store.discoverFrontierExportPaths;
   const form = store.discoverManualImportForm;
   return `
+    ${workflowSteps(["Download planning file", "Upload to ChatGPT or Claude", "Paste response", "Review the plan"], exported ? 2 : 0)}
     ${exported ? `<div class="notice mt-14"><strong>Upload this file to ChatGPT or Claude:</strong><div class="mt-14 file-item"><span>File to upload</span><code>${e(exported.markdown_artifact_absolute_path)}</code><button class="button ghost" data-action="copy-path" data-copy-path="${e(exported.markdown_artifact_absolute_path)}">Copy path</button></div></div>` : `<p class="muted mt-14">The self-contained handoff Markdown file was written to this task's audit directory; re-export to see its path again if you navigated away.</p>`}
     <p class="section-title">Paste the response, or upload it as a file</p>
     <div class="grid two">
@@ -2338,6 +2395,10 @@ root.addEventListener("input", (event) => {
 root.addEventListener("change", (event) => {
   if (event.target && event.target.name === "discover-transport") {
     store.discoverTransportChoice = event.target.value;
+  }
+  if (event.target && event.target.name === "discover-research") {
+    store.discoverResearchChoice = event.target.value;
+    render();
   }
 });
 

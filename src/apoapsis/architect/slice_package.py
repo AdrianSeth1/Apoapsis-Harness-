@@ -13,6 +13,8 @@ from apoapsis.architect.schema import (
     ImplementationSlice,
     PlannerRequestPackage,
 )
+from apoapsis.discovery.errors import PackageIntegrityError, PackageNotFoundError
+from apoapsis.discovery.frontier_package import load_package as load_frontier_package
 from apoapsis.architect.slice_schema import (
     DependencyEvidence,
     PlanSliceExecutionPackage,
@@ -240,9 +242,73 @@ def _dependency_evidence(
     return evidence
 
 
+def dependency_evidence(
+    project_root: str | Path,
+    task_store: SQLiteTaskStore,
+    slice_store: PlanSliceExecutionStore,
+    operation_store: ExecutionOperationStore,
+    plan_id: str,
+    slice_obj: ImplementationSlice,
+) -> list[DependencyEvidence]:
+    """Public read-only projection of the exact dependency proof packaging
+    already uses.  UI status rendering may call this, but it cannot satisfy,
+    override, or mutate a dependency itself."""
+
+    return _dependency_evidence(
+        Path(project_root).resolve(),
+        task_store,
+        slice_store,
+        operation_store,
+        plan_id,
+        slice_obj,
+    )
+
+
 def _sha256_canonical(payload: Any) -> str:
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _load_originating_package_repository_root(root: Path, package_id: str) -> str:
+    """Loads and integrity-checks the plan's originating request package,
+    regardless of which of the two planning entry points produced it, and
+    returns the repository root it was built against.
+
+    A plan reaching Architect Mode's ``ArchitecturePlan`` shape can come
+    from either ``apoapsis plan export``/``plan import`` (an on-disk
+    ``PlannerRequestPackage`` under ``.apoapsis/plan-packages/<package_id>``)
+    or the discovery-to-frontier-planning handoff (ADR 0032, an on-disk
+    ``FrontierPlanningRequestPackage`` under
+    ``.apoapsis/discovery-planning-packages/<package_id>``, with its own
+    ``package_sha256`` self-consistency check). The plan record itself only
+    stores ``package_id``, not which of the two produced it, so the two
+    package id formats (``PKG-`` vs ``FPKG-``) are what disambiguate which
+    directory and schema to load against -- both are validated exactly as
+    strictly as before, just via whichever loader actually matches how the
+    package was written."""
+
+    if package_id.startswith("FPKG-"):
+        try:
+            frontier_package = load_frontier_package(root, package_id)
+        except PackageNotFoundError as exc:
+            raise SlicePackagingError(
+                f"no exported request package found for {package_id}; "
+                "this plan's provenance cannot be verified"
+            ) from exc
+        except PackageIntegrityError as exc:
+            raise SlicePackagingError(str(exc)) from exc
+        return frontier_package.repository.root
+
+    package_path = root / ".apoapsis" / "plan-packages" / package_id / "request-package.json"
+    if not package_path.is_file():
+        raise SlicePackagingError(
+            f"no exported request package found for {package_id}; "
+            "this plan's provenance cannot be verified"
+        )
+    plan_package = PlannerRequestPackage.model_validate_json(
+        package_path.read_text(encoding="utf-8")
+    )
+    return plan_package.repository.root
 
 
 def build_plan_slice_execution_package(
@@ -262,8 +328,9 @@ def build_plan_slice_execution_package(
     Requires the plan to be ``APPROVED`` at exactly ``expected_plan_
     version``, revalidates it against the *current* configured
     constraints/criteria/verification-command catalog (never trusting a
-    stale validation result), verifies the plan's originating
-    ``PlannerRequestPackage`` still exists and was built against this same
+    stale validation result), verifies the plan's originating request
+    package (Architect Mode's own export, or the discovery-flow's frontier
+    planning package) still exists and was built against this same
     repository, and proves every dependency slice via git ancestry before
     ever copying the slice's exact inherited hard constraints and
     acceptance criteria into a derived ``TaskSpecification``."""
@@ -281,19 +348,11 @@ def build_plan_slice_execution_package(
             f"{record.status.value}"
         )
 
-    package_path = (
-        root / ".apoapsis" / "plan-packages" / record.package_id / "request-package.json"
-    )
-    if not package_path.is_file():
-        raise SlicePackagingError(
-            f"no exported request package found for {record.package_id}; "
-            "this plan's provenance cannot be verified"
-        )
-    plan_package = PlannerRequestPackage.model_validate_json(
-        package_path.read_text(encoding="utf-8")
+    originating_repository_root = _load_originating_package_repository_root(
+        root, record.package_id
     )
     current_snapshot = GitRepository(root).snapshot()
-    if plan_package.repository.root != current_snapshot.root:
+    if originating_repository_root != current_snapshot.root:
         raise SlicePackagingError(
             "this plan's originating request package was built against a "
             "different repository root; re-plan or re-validate before "
@@ -404,6 +463,7 @@ def write_plan_slice_execution_package(
 
 
 __all__ = [
+    "dependency_evidence",
     "build_plan_slice_execution_package",
     "write_plan_slice_execution_package",
 ]

@@ -2621,45 +2621,16 @@ def _aggregate_eval_reports(
 def _build_research_engine(
     root: Path, config: ApoapsisConfig
 ) -> tuple[ResearchEngine, ResearchFetchProcess]:
-    local_config = config.models.local_research
-    if local_config is None:
-        raise TaskStoreError(
-            "Research Mode requires [models.local_research] configuration"
+    from apoapsis.research.factory import (
+        ResearchConfigurationError,
+        build_research_engine,
     )
-    if local_config.provider == "ollama":
-        local_adapter = OllamaProvider(local_config)
-    else:
-        local_adapter = OpenAICompatibleFrontierProvider(
-            FrontierProviderConfig(
-                provider="openai_compatible",
-                base_url=local_config.base_url,
-                model=local_config.model,
-                api_key_env=local_config.api_key_env,
-                timeout_seconds=min(local_config.timeout_seconds, 600),
-            )
-        )
-    local_model = LocalResearchModelClient(
-        InstrumentedModelProvider(local_adapter), local_config
-    )
-    fetch_process = ResearchFetchProcess(config.research.security)
-    sources = {}
-    if config.research.sources.official_docs.enabled:
-        sources[ResearchSourceName.OFFICIAL_DOCS] = OfficialDocumentationSource(
-            fetch_process,
-            config.research.sources.official_docs.allowed_domains,
-        )
-    if config.research.sources.github.enabled:
-        sources[ResearchSourceName.GITHUB] = GitHubSource(
-            fetch_process, config.research.sources.github
-        )
-    if config.research.sources.reddit.enabled:
-        sources[ResearchSourceName.REDDIT] = RedditSource(
-            fetch_process, config.research.sources.reddit
-        )
-    return (
-        ResearchEngine(root, config.research, local_model, sources),
-        fetch_process,
-    )
+
+    try:
+        return build_research_engine(root, config)
+    except ResearchConfigurationError as exc:
+        # Preserve the CLI's established public error type.
+        raise TaskStoreError(str(exc)) from exc
 
 
 def _research_command(

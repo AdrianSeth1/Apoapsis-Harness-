@@ -11,9 +11,12 @@ from apoapsis.discovery.frontier_package import load_package
 from apoapsis.discovery.operation_schema import (
     DiscoveryOperationAction,
     DiscoveryOperationRecord,
+    research_mode_for_action,
 )
 from apoapsis.discovery.operation_store import DiscoveryOperationStore
 from apoapsis.discovery.schema import DiscoverySessionRecord
+from apoapsis.discovery.schema import DiscoveryStatus
+from apoapsis.discovery.research import run_discovery_research_step
 from apoapsis.discovery.service import (
     propose_idea_brief_step,
     propose_local_clarification_questions,
@@ -32,6 +35,7 @@ def prepare_discovery_operation(
     root: str | Path,
     discovery_store: SQLiteDiscoveryStore,
     operation_store: DiscoveryOperationStore,
+    config: ApoapsisConfig,
     *,
     session_id: str,
     action: DiscoveryOperationAction,
@@ -51,6 +55,17 @@ def prepare_discovery_operation(
             f"expected session version {expected_version}, found {session.version}"
         )
     package_id: str | None = None
+    research_mode = research_mode_for_action(action)
+    if research_mode is not None:
+        if session.status != DiscoveryStatus.BRIEF_APPROVED:
+            raise DiscoveryError(
+                "planning research requires an approved idea brief before "
+                f"it can run (found {session.status.value})"
+            )
+        if config.models.local_research is None:
+            raise DiscoveryError(
+                "planning research requires [models.local_research] configuration"
+            )
     if action == DiscoveryOperationAction.FRONTIER_API_CALL:
         if authorized_max_spend_usd is None:
             raise DiscoveryError(
@@ -82,6 +97,7 @@ def run_discovery_operation(
     operation_id: str,
     local_provider: InstrumentedModelProvider | None = None,
     frontier_coder_provider: InstrumentedModelProvider | None = None,
+    research_engine=None,
     lease_duration: timedelta = DEFAULT_LEASE_DURATION,
     heartbeat_interval: timedelta = DEFAULT_HEARTBEAT_INTERVAL,
 ) -> DiscoveryOperationRecord:
@@ -134,6 +150,20 @@ def run_discovery_operation(
                 local_provider=local_provider,
             )
             summary = "proposed an idea brief"
+        elif (research_mode := research_mode_for_action(record.action)) is not None:
+            updated = run_discovery_research_step(
+                root_path,
+                discovery_store,
+                config,
+                record.session_id,
+                expected_version=record.expected_session_version,
+                requested_mode=research_mode,
+                research_engine=research_engine,
+            )
+            summary = (
+                f"planning research completed ({research_mode.value}; "
+                f"{len(updated.research_evidence_ids)} evidence item(s))"
+            )
         elif record.action == DiscoveryOperationAction.FRONTIER_API_CALL:
             assert record.package_id is not None
             assert record.authorized_max_spend_usd is not None
@@ -177,6 +207,7 @@ def execute_discovery_operation(
     authorized_max_spend_usd: float | None = None,
     local_provider: InstrumentedModelProvider | None = None,
     frontier_coder_provider: InstrumentedModelProvider | None = None,
+    research_engine=None,
 ) -> DiscoveryOperationRecord:
     """Convenience wrapper for synchronous callers (the CLI): prepare and
     run in one call. The UI calls ``prepare_discovery_operation`` from its
@@ -187,6 +218,7 @@ def execute_discovery_operation(
         root,
         discovery_store,
         operation_store,
+        config,
         session_id=session_id,
         action=action,
         operation_id=operation_id,
@@ -202,6 +234,7 @@ def execute_discovery_operation(
         operation_id=operation_id,
         local_provider=local_provider,
         frontier_coder_provider=frontier_coder_provider,
+        research_engine=research_engine,
     )
 
 

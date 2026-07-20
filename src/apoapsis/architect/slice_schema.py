@@ -69,7 +69,12 @@ class PlanSliceExecutionPackage(StrictModel):
     package_id: str = Field(pattern=r"^SXP-[A-Za-z0-9._-]+$")
     plan_id: str = Field(pattern=r"^PLAN-[A-Za-z0-9._-]+$")
     plan_version: int = Field(ge=1)
-    plan_package_id: str = Field(pattern=r"^PKG-[A-Za-z0-9._-]+$")
+    # Accepts both planning origins' package id shapes: Architect Mode's
+    # own ``apoapsis plan export`` (``PKG-...``) and the discovery-to-
+    # frontier-planning handoff's package (``FPKG-...``, ADR 0032) -- a
+    # plan's ``ArchitecturePlan`` shape is identical either way, only the
+    # originating request package's id prefix differs.
+    plan_package_id: str = Field(pattern=r"^(PKG|FPKG)-[A-Za-z0-9._-]+$")
     slice_id: str = Field(pattern=r"^SLICE-[A-Za-z0-9._-]+$")
     idea_text: str = Field(min_length=1)
     architecture_summary: str = Field(min_length=1)

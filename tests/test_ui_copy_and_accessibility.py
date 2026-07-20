@@ -76,6 +76,23 @@ class UiCopyStyleTests(unittest.TestCase):
             "not a marketing tagline",
         )
 
+    def test_home_explains_the_two_supported_starting_paths(self) -> None:
+        source = APP_JS.read_text(encoding="utf-8")
+        self.assertIn("What would you like to do?", source)
+        self.assertIn("Quick change", source)
+        self.assertIn("Plan a larger change", source)
+        self.assertIn("one Git project", source)
+        self.assertIn("OPEN_APOAPSIS.cmd", source)
+        self.assertIn(r'C:\\path\\to\\project', source)
+
+    def test_guided_workflows_explain_recovery_and_planning_research(self) -> None:
+        source = APP_JS.read_text(encoding="utf-8")
+        self.assertIn("Continue with ChatGPT or Claude", source)
+        self.assertIn("Optional planning research", source)
+        self.assertIn("Skip research and continue", source)
+        self.assertIn("Waiting for dependencies", source)
+        self.assertIn("Commit its worktree changes and merge that branch", source)
+
     def test_changes_view_never_asserts_a_completion_policy_before_a_report_exists(
         self,
     ) -> None:
@@ -144,6 +161,10 @@ class UiDocumentTitleTests(unittest.TestCase):
                 route_titles.group(1),
                 f"route {name!r} has no entry in ROUTE_TITLES",
             )
+        self.assertIn('new: "Quick change"', self.source)
+        self.assertIn('reviews: "Needs attention"', self.source)
+        self.assertIn('discover: "Plan a larger change"', self.source)
+        self.assertIn('return ROUTE_TITLES[store.route.name] || titleCase(store.route.name);', self.source)
 
 
 class UiAccessibilityInvariantTests(unittest.TestCase):

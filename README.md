@@ -115,7 +115,10 @@ model Start/Stop behavior, and
 application/API and browser-session security boundary, and
 [ADR 0034](docs/adr/0034-browser-launcher-and-native-wrapper-deferral.md)
 records the D5c decision to add a minimal Windows browser launcher while
-deferring any native desktop wrapper. The
+deferring any native desktop wrapper, and
+[ADR 0035](docs/adr/0035-guided-workflows-and-planning-research.md) records
+the guided project/task/plan/slice/recovery journeys and optional planning-
+research stage. The
 [Research Mode guide](docs/research-mode.md)
 covers setup and operation.
 
@@ -172,8 +175,18 @@ Launch the offline interface from an initialized project:
 apoapsis ui
 ```
 
-On Windows, double-click `OPEN_APOAPSIS.cmd` instead of using a terminal.
-It checks for the Python launcher, Git, and an initialized project
+On Windows, pass the Git project you want Apoapsis to manage to the launcher:
+
+```powershell
+.\OPEN_APOAPSIS.cmd "C:\path\to\your-project"
+```
+
+The browser manages **one Git project per window**. To add another project,
+run `apoapsis init` once inside that repository, close the current launcher,
+and open the launcher with the other folder. The browser is deliberately not
+allowed to browse arbitrary folders or initialize repositories.
+
+`OPEN_APOAPSIS.cmd` checks for the Python launcher, Git, and an initialized project
 (reporting any of those missing in plain language before doing anything
 else), then runs `apoapsis ui` from the checkout and opens your system
 browser. It never installs, downloads, or reconfigures anything, and never
@@ -214,17 +227,20 @@ The first slice provides:
 - an explicit **Run doctor** action. Merely opening the UI does not probe or
   load a model.
 
-Natural-language task extraction (New Task screen, ADR 0023),
+The Home screen now starts with the three user journeys instead of internal
+subsystem names: **Quick change**, **Plan a larger change**, and **Needs
+attention**. Natural-language task extraction (Quick change, ADR 0023),
 post-approval task execution (Control room, ADR 0024, hardened by ADR 0026),
 the manual subscription-based frontier coding handoff (a Human Review
 case-detail section, ADR 0031/0033), and local-first discovery plus
 frontier planning (`#/discover`, ADR 0032/0033) are all live from the
 browser -- a user can go from a typed request to a completed or
-Human-Review-stopped task, or from a one-line idea to an approved plan,
-without touching the CLI. Only plan-slice execution remains visibly
-unavailable in this slice; continue using the CLI for that until its
-resumable application service and deterministic transition contract are
-implemented. The supplied Claude Design export is a visual reference only;
+Human-Review-stopped task, or from a one-line idea to an approved plan and
+then through one explicitly selected slice at a time, without touching the
+CLI. Ready/waiting dependency state is computed from the same Git evidence as
+slice packaging. A completed slice still has to be committed and merged by
+the user before a dependent slice becomes ready; Apoapsis never does that
+automatically. The supplied Claude Design export is a visual reference only;
 its external prototype runtime is not shipped.
 
 ## Current CLI workflow
@@ -292,7 +308,14 @@ apoapsis discover approve-brief DISC-ABC123 --expected-version 4
 ```
 
 Only after you explicitly approve the proposed `IdeaBrief` can a frontier
-planning package be exported. Choose either transport:
+planning package be exported. In the browser, this is also where optional
+planning research appears. Choose Auto, GitHub, Community, or Full, or skip it.
+Research uses the existing restricted source adapters and tool-less local
+research model; only a compact brief plus provenance-bound evidence IDs enter
+the frontier planning package. If `[models.local_research]` is not configured,
+the interface says so and planning can continue without research.
+
+Then choose either frontier transport:
 
 ```bash
 # Manual subscription transport -- upload FRONTIER-PLANNING-HANDOFF-*.md
@@ -1050,10 +1073,12 @@ completion independently confirmed by the held-out oracle) is in
 
 ## Research Mode
 
-Research runs only after specification approval. In `auto` mode, deterministic
-rules activate it for research, precedent, product/UX, public API, CLI, report,
-dashboard, and similar judgment-heavy work, while localized mechanical work is
-skipped. Explicit modes are also available:
+Research has two bounded entry points. For a coding task it runs only after
+specification approval. For larger-change planning it runs only after the user
+approves the discovery `IdeaBrief` and before the frontier planning handoff.
+In `auto` mode, deterministic rules activate it for research, precedent,
+product/UX, public API, CLI, report, dashboard, and similar judgment-heavy work,
+while localized mechanical work is skipped. Explicit modes are also available:
 
 ```bash
 apoapsis run "Improve the task report UX" --research auto
@@ -1086,10 +1111,11 @@ never full threads or fetched pages. External sources remain advisory: only the
 approved task, repository policy, patch validation, and verification authorize
 a change.
 
-Research artifacts are written below
-`.apoapsis/tasks/<task-id>/research/`; the final `report.json` includes the selected
-mode, patterns, evidence IDs, local-model calls, tokens, latency, and whether the
-brief influenced the proposed plan.
+Research artifacts are written below `.apoapsis/tasks/<task-id>/research/`;
+planning research uses a deterministic discovery-scoped task id and stores the
+exact audit path on the discovery session. The final `report.json` includes the
+selected mode, patterns, evidence IDs, local-model calls, tokens, latency, and
+whether the brief influenced the proposed plan.
 
 ## Verification configuration
 

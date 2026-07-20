@@ -166,6 +166,8 @@ timeout_seconds = 30
         detail = self.service.discovery_session_detail(session["session_id"])
         self.assertEqual(detail["session"]["idea_text"], IDEA_TEXT)
         self.assertEqual(detail["max_clarification_questions"], 5)
+        self.assertFalse(detail["planning_research_available"])
+        self.assertIsNone(detail["planning_research_model"])
 
     def test_local_questions_operation_completes_via_worker(self) -> None:
         session = self._start_session()
@@ -394,6 +396,8 @@ class DiscoveryUIServerTests(DiscoveryUIServiceTests):
         self.assertIn("discover-brief-approve-confirm", content)
         self.assertIn("discover-export-package", content)
         self.assertIn("discover-call-api", content)
+        self.assertIn("research_full", content)
+        self.assertIn("Optional planning research", content)
         self.assertIn("/api/discovery/sessions", content)
 
 

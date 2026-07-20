@@ -11,6 +11,7 @@ from apoapsis.architect.errors import (
 )
 from apoapsis.architect.slice_package import (
     build_plan_slice_execution_package,
+    dependency_evidence,
     write_plan_slice_execution_package,
 )
 from apoapsis.architect.slice_schema import (
@@ -214,6 +215,8 @@ def project_slice_status(
     task_store: SQLiteTaskStore,
     plan_id: str,
     slice_id: str,
+    *,
+    operation_store: ExecutionOperationStore | None = None,
 ) -> dict[str, Any]:
     """Read-only status projection for one slice, computed entirely from
     persisted facts: the plan's own current version, this slice's own
@@ -226,11 +229,32 @@ def project_slice_status(
     try:
         record = slice_store.get(plan_id, slice_id)
     except SliceExecutionNotFoundError:
+        readiness = None
+        slice_obj = next(
+            (item for item in plan_record.plan.slices if item.slice_id == slice_id),
+            None,
+        )
+        if slice_obj is not None and operation_store is not None:
+            evidence = dependency_evidence(
+                project_root,
+                task_store,
+                slice_store,
+                operation_store,
+                plan_id,
+                slice_obj,
+            )
+            readiness = {
+                "ready": all(item.satisfied for item in evidence),
+                "dependency_evidence": [
+                    item.model_dump(mode="json") for item in evidence
+                ],
+            }
         return {
             "plan_id": plan_id,
             "slice_id": slice_id,
             "status": "ready_or_blocked",
             "record": None,
+            "readiness": readiness,
         }
 
     if record.status == SliceExecutionStatus.PACKAGED:

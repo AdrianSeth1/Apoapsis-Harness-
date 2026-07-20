@@ -16,7 +16,8 @@ On Windows, double-click:
   model for 30 minutes at its configured context size.
 - `STOP_APOAPSIS.cmd` when finished. It explicitly unloads every configured
   local Ollama model, including the research model, and releases model RAM/VRAM.
-- `OPEN_APOAPSIS.cmd` to open the local operator interface (`apoapsis ui`)
+- `OPEN_APOAPSIS.cmd "C:\path\to\project"` to open one initialized Git
+  project in the local operator interface (`apoapsis ui`)
   in your system browser without a terminal. It manages only the UI
   process it starts -- it does not load or unload any model; use
   `STOP_APOAPSIS.cmd` separately when you want model memory released.
@@ -86,7 +87,7 @@ now also warns when a configured hosted model's pricing is left at $0. No
 live hosted call has been made -- this is readiness/infrastructure only,
 built and tested exclusively against fake providers. See ADR 0030.
 
-### 5. Use and review the first local application slice
+### 5. Use the guided local application
 
 Run `apoapsis ui` from an initialized project. The offline black/orange/purple
 interface now shows real project, task, specification, event, report,
@@ -94,13 +95,26 @@ evaluation, and model-configuration data. Specification approval is live and
 uses the same optimistic transition/event record as the CLI. Opening the UI does
 not load or prompt a model; Doctor runs only when explicitly selected.
 
-Natural-language model-assisted intake (New Task), post-approval execution
-orchestration (Control room), and review/resume choices (Human Review queue)
-are all live from the browser now, each behind the same durable, crash-safe
-operation ledgers and two-step confirmations the CLI uses. Only plan-slice
-execution and native desktop packaging remain intentionally unavailable; use
-the CLI for those until their own deterministic application services are
-built.
+Home now offers **Quick change**, **Plan a larger change**, and **Needs
+attention**. Natural-language intake, post-approval execution, review/resume,
+manual ChatGPT/Claude repair, discovery/frontier planning, optional planning
+research, and explicit one-slice-at-a-time execution are live in the browser,
+each behind the same deterministic services and durable workers as the CLI.
+Apoapsis never commits or merges a completed slice; do that in the ordinary Git
+workflow before starting a dependent slice. Native desktop packaging remains
+deliberately deferred by ADR 0034.
+
+### Done -- guided workflows and optional planning research (ADR 0035)
+
+The launcher now accepts an exact project folder without granting the browser
+filesystem or initialization authority. Home and navigation are organized by
+the user journeys above; tasks, plans, slices, and recovery screens explain the
+next action and collapse forensic detail. Slice readiness is projected from the
+same Git dependency evidence packaging uses. After an `IdeaBrief` is approved,
+the user may run Auto/GitHub/Community/Full research through the existing
+quarantined Research Engine or skip it; only the compact brief and provenance-
+bound evidence IDs enter the frontier planning package. Coding-task Research
+Mode remains separate and is still invoked through `apoapsis run --research`.
 
 ### Done -- manual subscription-based frontier coding handoff (ADR 0031)
 
@@ -1180,7 +1194,8 @@ Continue in this order:
    model, gated on explicit authorization) and re-running the full
    comparison, which stays blocked pending further investigation of that
    unexplained contrast.
-5. Only then choose a packaged native wrapper for the proven loopback surface.
+5. Done (ADR 0034): keep the proven loopback browser surface and minimal
+   launcher; revisit a native wrapper only if distribution needs justify it.
 
 Keep `src/apoapsis/ui/application.py` as the authority boundary. Browser code
 must not call providers, construct CLI commands, parse files into invented

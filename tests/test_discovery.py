@@ -5,6 +5,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 from apoapsis.architect.errors import PlanActionError
 from apoapsis.architect.schema import PlanStatus, ValidationSeverity
@@ -15,6 +16,7 @@ from apoapsis.config import (
     ContextCompilerConfig,
     DiscoveryConfig,
     FrontierProviderConfig,
+    LocalResearchProviderConfig,
     ModelsConfig,
     ProviderPricing,
 )
@@ -49,6 +51,9 @@ from apoapsis.discovery.manual import (
     import_manual_frontier_planning_response,
     write_frontier_planning_artifacts,
 )
+from apoapsis.discovery.operation_schema import DiscoveryOperationAction
+from apoapsis.discovery.operation_service import execute_discovery_operation
+from apoapsis.discovery.operation_store import DiscoveryOperationStore
 from apoapsis.discovery.schema import (
     ClarificationAnswer,
     ClarificationQuestion,
@@ -67,6 +72,7 @@ from apoapsis.discovery.service import (
 from apoapsis.discovery.store import SQLiteDiscoveryStore
 from apoapsis.evaluation.spend_ceiling import HostedSpendCeilingExceededError
 from apoapsis.models.telemetry import InstrumentedModelProvider
+from apoapsis.research.schemas import ResearchMode, ResearchTelemetry
 from apoapsis.verification.runner import VerificationCommand, VerificationConfig
 from tests.architect_helpers import make_plan
 from tests.fakes import FakeModelProvider
@@ -134,7 +140,10 @@ class DiscoveryTestsBase(unittest.TestCase):
         )
 
     def _config(
-        self, *, frontier_coder: FrontierProviderConfig | None = None
+        self,
+        *,
+        frontier_coder: FrontierProviderConfig | None = None,
+        local_research: LocalResearchProviderConfig | None = None,
     ) -> ApoapsisConfig:
         return ApoapsisConfig(
             models=ModelsConfig(
@@ -142,6 +151,7 @@ class DiscoveryTestsBase(unittest.TestCase):
                     base_url="https://provider.invalid/v1", model="fake-local-v1"
                 ),
                 frontier_coder=frontier_coder,
+                local_research=local_research,
             ),
             context=ContextCompilerConfig(
                 max_files=10, max_excerpt_lines=200, max_total_chars=50_000
@@ -254,6 +264,120 @@ class StoreTransitionTests(DiscoveryTestsBase):
         with self.assertRaises(InvalidTransitionError):
             # Cannot approve a brief before one has ever been proposed.
             self.discovery_store.approve_idea_brief("DISC-3", expected_version=session.version)
+
+
+class PlanningResearchTests(DiscoveryTestsBase):
+    class _FakeResearchEngine:
+        async def execute(self, specification, requested_mode):
+            telemetry = ResearchTelemetry(
+                triggered=True,
+                trigger_reasons=["explicit test research"],
+                effective_mode=requested_mode,
+                queries_generated=1,
+                sources_searched=[],
+                candidates_found=1,
+                candidates_after_deduplication=1,
+                sources_fetched=1,
+                sources_accepted=1,
+                sources_rejected=0,
+                duplicate_rate=0,
+                model_calls=1,
+                structured_output_failures=0,
+                local_input_tokens=10,
+                local_output_tokens=5,
+                peak_context_characters=100,
+                prompt_injection_flags=0,
+                evidence_included=["RSEV-PLAN-1"],
+                research_latency_seconds=0.1,
+            )
+            return SimpleNamespace(
+                audit_directory=(
+                    f".apoapsis/tasks/{specification.task_id}/research"
+                ),
+                outcome=SimpleNamespace(
+                    brief="Use a durable queue boundary.\n",
+                    evidence=[SimpleNamespace(evidence_id="RSEV-PLAN-1")],
+                    telemetry=telemetry,
+                ),
+            )
+
+    def _approved_session(self):
+        from apoapsis.discovery.schema import IdeaBrief
+
+        session = self.discovery_store.create_session("DISC-RESEARCH", IDEA_TEXT)
+        session = self.discovery_store.record_idea_brief(
+            session.session_id,
+            IdeaBrief(summary="Design a durable resumable download service."),
+            expected_version=session.version,
+        )
+        return self.discovery_store.approve_idea_brief(
+            session.session_id, expected_version=session.version
+        )
+
+    def test_research_is_a_durable_pre_planning_operation_and_enters_handoff(self) -> None:
+        session = self._approved_session()
+        config = self._config(
+            local_research=LocalResearchProviderConfig(
+                provider="ollama",
+                base_url="http://127.0.0.1:11434",
+                model="fake-research",
+            )
+        )
+        operation_store = DiscoveryOperationStore(
+            self.root / ".apoapsis" / "discovery-operations.db"
+        )
+        record = execute_discovery_operation(
+            self.root,
+            self.discovery_store,
+            self.plan_store,
+            config,
+            operation_store,
+            session_id=session.session_id,
+            action=DiscoveryOperationAction.RESEARCH_FULL,
+            operation_id="DISCOP-RESEARCH-1",
+            expected_version=session.version,
+            research_engine=self._FakeResearchEngine(),
+        )
+        self.assertEqual(record.status.value, "succeeded")
+        researched = self.discovery_store.get_session(session.session_id)
+        self.assertEqual(researched.status, DiscoveryStatus.RESEARCH_COMPLETED)
+        self.assertEqual(researched.research_mode, ResearchMode.FULL)
+        self.assertEqual(researched.research_evidence_ids, ["RSEV-PLAN-1"])
+
+        researched, package, _, markdown_path = export_frontier_planning_package(
+            self.root,
+            self.discovery_store,
+            config,
+            researched.session_id,
+            transport="manual",
+            expected_version=researched.version,
+        )
+        self.assertTrue(package.research_triggered)
+        self.assertEqual(package.research_brief, "Use a durable queue boundary.")
+        markdown = (self.root / markdown_path).read_text(encoding="utf-8")
+        self.assertIn("## Planning research", markdown)
+        self.assertIn("RSEV-PLAN-1", markdown)
+
+    def test_research_operation_refuses_without_configured_research_model(self) -> None:
+        session = self._approved_session()
+        operation_store = DiscoveryOperationStore(
+            self.root / ".apoapsis" / "discovery-operations.db"
+        )
+        with self.assertRaisesRegex(Exception, "models.local_research"):
+            execute_discovery_operation(
+                self.root,
+                self.discovery_store,
+                self.plan_store,
+                self._config(),
+                operation_store,
+                session_id=session.session_id,
+                action=DiscoveryOperationAction.RESEARCH_AUTO,
+                operation_id="DISCOP-RESEARCH-NO-MODEL",
+                expected_version=session.version,
+                research_engine=self._FakeResearchEngine(),
+            )
+        with self.assertRaises(Exception):
+            operation_store.get("DISCOP-RESEARCH-NO-MODEL")
 
 
 class FrontierPackageTests(DiscoveryTestsBase):

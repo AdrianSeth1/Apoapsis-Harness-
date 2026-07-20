@@ -54,11 +54,13 @@ class PlanSliceUIServiceTests(PlanSliceUITestsBase):
         self.assertEqual(detail["slices"][0]["slice_id"], "SLICE-1")
         self.assertEqual(detail["slices"][0]["status"], "ready_or_blocked")
         self.assertIsNone(detail["slices"][0]["record"])
+        self.assertTrue(detail["slices"][0]["readiness"]["ready"])
 
     def test_plan_slice_detail_before_packaging(self) -> None:
         record, _config = self._approved_plan()
         detail = self.service.plan_slice_detail(record.plan_id, "SLICE-1")
         self.assertEqual(detail["status"]["status"], "ready_or_blocked")
+        self.assertTrue(detail["status"]["readiness"]["ready"])
         self.assertIsNone(detail["package"])
         self.assertIsNone(detail["task"])
         self.assertEqual(detail["slice"]["slice_id"], "SLICE-1")
@@ -118,6 +120,11 @@ class PlanSliceUIServiceTests(PlanSliceUITestsBase):
         detail = self.service.plan_slice_detail(record.plan_id, "SLICE-2")
         self.assertEqual(detail["slice"]["dependencies"], ["SLICE-1"])
         self.assertIsNone(detail["package"])
+        self.assertFalse(detail["status"]["readiness"]["ready"])
+        self.assertEqual(
+            detail["status"]["readiness"]["dependency_evidence"][0]["slice_id"],
+            "SLICE-1",
+        )
 
 
 class PlanSliceUIServerTests(PlanSliceUITestsBase):

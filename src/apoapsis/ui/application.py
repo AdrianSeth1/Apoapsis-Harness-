@@ -481,6 +481,7 @@ class ApoapsisUIService:
             task_store,
             plan_id,
             slice_id,
+            operation_store=self._execution_operation_store(),
         )
         package = read_latest_slice_package(self.project_root, plan_id, slice_id)
         task = None
@@ -564,6 +565,7 @@ class ApoapsisUIService:
                 task_store,
                 record.plan_id,
                 item.slice_id,
+                operation_store=self._execution_operation_store(),
             )
             status["title"] = item.title
             status["dependencies"] = list(item.dependencies)
@@ -914,6 +916,14 @@ class ApoapsisUIService:
             "frontier_api_configured": (
                 config is not None and config.models.frontier_coder is not None
             ),
+            "planning_research_available": (
+                config is not None and config.models.local_research is not None
+            ),
+            "planning_research_model": (
+                config.models.local_research.model
+                if config is not None and config.models.local_research is not None
+                else None
+            ),
         }
 
     def submit_discovery_operation(
@@ -939,6 +949,7 @@ class ApoapsisUIService:
             self.project_root,
             self._discovery_store(),
             operation_store,
+            config,
             session_id=session_id,
             action=DiscoveryOperationAction(action),
             operation_id=operation_id,

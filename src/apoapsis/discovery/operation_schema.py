@@ -6,6 +6,7 @@ from enum import StrEnum
 from pydantic import Field
 
 from apoapsis.specification.schema import StrictModel
+from apoapsis.research.schemas import ResearchMode
 
 
 class DiscoveryOperationAction(StrEnum):
@@ -15,7 +16,25 @@ class DiscoveryOperationAction(StrEnum):
 
     LOCAL_QUESTIONS = "local_questions"
     IDEA_BRIEF = "idea_brief"
+    RESEARCH_AUTO = "research_auto"
+    RESEARCH_GITHUB = "research_github"
+    RESEARCH_COMMUNITY = "research_community"
+    RESEARCH_FULL = "research_full"
     FRONTIER_API_CALL = "frontier_api_call"
+
+
+_RESEARCH_ACTION_MODES = {
+    DiscoveryOperationAction.RESEARCH_AUTO: ResearchMode.AUTO,
+    DiscoveryOperationAction.RESEARCH_GITHUB: ResearchMode.GITHUB_ONLY,
+    DiscoveryOperationAction.RESEARCH_COMMUNITY: ResearchMode.COMMUNITY,
+    DiscoveryOperationAction.RESEARCH_FULL: ResearchMode.FULL,
+}
+
+
+def research_mode_for_action(
+    action: DiscoveryOperationAction,
+) -> ResearchMode | None:
+    return _RESEARCH_ACTION_MODES.get(action)
 
 
 class DiscoveryOperationStatus(StrEnum):
@@ -59,4 +78,5 @@ __all__ = [
     "DiscoveryOperationAction",
     "DiscoveryOperationRecord",
     "DiscoveryOperationStatus",
+    "research_mode_for_action",
 ]

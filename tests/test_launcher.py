@@ -75,6 +75,14 @@ class LauncherStaticContentTests(unittest.TestCase):
         self.assertIn("apoapsis.cli.app", self.source)
         self.assertIn(" ui", self.source)
 
+    def test_accepts_an_explicit_project_folder_without_installing_or_initializing_it(self) -> None:
+        self.assertIn('set "APOAPSIS_PROJECT=%~1"', self.source)
+        self.assertIn('--project-root "%APOAPSIS_PROJECT%"', self.source)
+        self.assertNotIn(
+            '-m apoapsis.cli.app --project-root "%APOAPSIS_PROJECT%" init',
+            self.source,
+        )
+
     def test_points_to_stop_apoapsis_for_model_memory_release(self) -> None:
         self.assertIn("STOP_APOAPSIS.cmd", self.source)
 
@@ -107,6 +115,13 @@ class LauncherLiveGuardTests(unittest.TestCase):
         target = Path(self.tempdir.name) / "OPEN_APOAPSIS.cmd"
         shutil.copy(LAUNCHER, target)
         self.target = target
+        subprocess.run(
+            ["git", "init", "-b", "main"],
+            cwd=self.tempdir.name,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
 
     def test_reports_uninitialized_project_and_exits_nonzero(self) -> None:
         result = subprocess.run(

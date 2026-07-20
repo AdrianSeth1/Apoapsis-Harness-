@@ -20,6 +20,7 @@ from apoapsis.discovery.schema import (
     IdeaBrief,
 )
 from apoapsis.specification.schema import utc_now
+from apoapsis.research.schemas import ResearchMode, ResearchTelemetry
 
 
 class SQLiteDiscoveryStore:
@@ -60,6 +61,12 @@ class SQLiteDiscoveryStore:
                     local_answers_json TEXT NOT NULL,
                     idea_brief_json TEXT,
                     brief_approved INTEGER NOT NULL DEFAULT 0,
+                    research_mode TEXT NOT NULL DEFAULT 'OFF',
+                    research_triggered INTEGER NOT NULL DEFAULT 0,
+                    research_brief TEXT,
+                    research_evidence_ids_json TEXT NOT NULL DEFAULT '[]',
+                    research_audit_directory TEXT,
+                    research_telemetry_json TEXT,
                     frontier_transport TEXT,
                     frontier_round INTEGER NOT NULL DEFAULT 0,
                     frontier_package_id TEXT,
@@ -74,6 +81,25 @@ class SQLiteDiscoveryStore:
                 );
                 """
             )
+            columns = {
+                row["name"]
+                for row in connection.execute(
+                    "PRAGMA table_info(discovery_sessions)"
+                ).fetchall()
+            }
+            additions = {
+                "research_mode": "TEXT NOT NULL DEFAULT 'OFF'",
+                "research_triggered": "INTEGER NOT NULL DEFAULT 0",
+                "research_brief": "TEXT",
+                "research_evidence_ids_json": "TEXT NOT NULL DEFAULT '[]'",
+                "research_audit_directory": "TEXT",
+                "research_telemetry_json": "TEXT",
+            }
+            for name, declaration in additions.items():
+                if name not in columns:
+                    connection.execute(
+                        f"ALTER TABLE discovery_sessions ADD COLUMN {name} {declaration}"
+                    )
 
     def create_session(
         self, session_id: str, idea_text: str
@@ -274,6 +300,7 @@ class SQLiteDiscoveryStore:
             allowed_sources=frozenset(
                 {
                     DiscoveryStatus.BRIEF_APPROVED,
+                    DiscoveryStatus.RESEARCH_COMPLETED,
                     DiscoveryStatus.FRONTIER_ANSWERS_RECORDED,
                 }
             ),
@@ -282,6 +309,35 @@ class SQLiteDiscoveryStore:
                 "frontier_transport": transport,
                 "frontier_package_id": package_id,
                 "frontier_round": next_round,
+            },
+        )
+
+    def record_research_result(
+        self,
+        session_id: str,
+        *,
+        requested_mode: ResearchMode,
+        triggered: bool,
+        brief: str | None,
+        evidence_ids: list[str],
+        audit_directory: str | None,
+        telemetry: ResearchTelemetry | None,
+        expected_version: int,
+    ) -> DiscoverySessionRecord:
+        return self._transition(
+            session_id,
+            expected_version=expected_version,
+            allowed_sources=frozenset({DiscoveryStatus.BRIEF_APPROVED}),
+            target=DiscoveryStatus.RESEARCH_COMPLETED,
+            assignments={
+                "research_mode": requested_mode.value,
+                "research_triggered": int(triggered),
+                "research_brief": brief,
+                "research_evidence_ids_json": json.dumps(evidence_ids),
+                "research_audit_directory": audit_directory,
+                "research_telemetry_json": (
+                    telemetry.model_dump_json() if telemetry is not None else None
+                ),
             },
         )
 
@@ -375,6 +431,16 @@ class SQLiteDiscoveryStore:
                 else None
             ),
             brief_approved=bool(row["brief_approved"]),
+            research_mode=ResearchMode(row["research_mode"]),
+            research_triggered=bool(row["research_triggered"]),
+            research_brief=row["research_brief"],
+            research_evidence_ids=json.loads(row["research_evidence_ids_json"]),
+            research_audit_directory=row["research_audit_directory"],
+            research_telemetry=(
+                ResearchTelemetry.model_validate_json(row["research_telemetry_json"])
+                if row["research_telemetry_json"]
+                else None
+            ),
             frontier_transport=row["frontier_transport"],
             frontier_round=row["frontier_round"],
             frontier_package_id=row["frontier_package_id"],

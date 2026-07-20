@@ -305,6 +305,94 @@ class SlicePackagingTests(PlanSliceExecutionTestsBase):
         with self.assertRaises(_Error):
             _exact_constraints(plan, bad_slice)
 
+    def test_discovery_originated_plan_can_be_packaged(self) -> None:
+        """A plan approved through the discovery-to-frontier-planning
+        handoff (ADR 0032) carries an ``FPKG-`` package id, backed by a
+        ``FrontierPlanningRequestPackage`` under
+        ``.apoapsis/discovery-planning-packages/``, not the ``PKG-``/
+        ``PlannerRequestPackage`` shape Architect Mode's own ``plan
+        export`` produces. Packaging must recognize and verify this
+        origin too, not just Architect Mode's own export path."""
+
+        from apoapsis.discovery.audit import write_frontier_package_artifact
+        from apoapsis.discovery.frontier_package import (
+            build_frontier_planning_request_package,
+        )
+        from apoapsis.discovery.schema import IdeaBrief
+
+        config = self._config()
+        brief = IdeaBrief(summary="Add resumable downloads.", goals=["resume"])
+        package = build_frontier_planning_request_package(
+            self.root,
+            config,
+            session_id="DISC-000000000001",
+            idea_text="Add resumable downloads.",
+            idea_brief=brief,
+            local_questions=[],
+            local_answers=[],
+            frontier_prior_questions=[],
+            frontier_prior_answers=[],
+            frontier_round=1,
+        )
+        write_frontier_package_artifact(self.root, package)
+
+        plan = make_plan()
+        record = self.plan_store.create_plan(
+            "PLAN-000000000042", package.package_id, plan.idea_text, plan
+        )
+        findings = validate_plan(
+            plan,
+            configured_verification_commands={"unit-tests"},
+            ceilings=config.architect.ceilings,
+        )
+        result = PlanValidationResult(
+            plan_id=record.plan_id,
+            plan_version=record.version,
+            valid=not any(f.severity == ValidationSeverity.ERROR for f in findings),
+            findings=findings,
+        )
+        record = self.plan_store.record_validation(
+            record.plan_id, result, expected_version=record.version
+        )
+        record = self.plan_store.approve_plan(
+            record.plan_id, expected_version=record.version
+        )
+
+        package_result = package_slice(
+            self.root,
+            self.plan_store,
+            self.slice_store,
+            self.task_store,
+            self.operation_store,
+            record.plan_id,
+            "SLICE-1",
+            expected_plan_version=record.version,
+            config=config,
+        )
+        self.assertEqual(package_result.plan_package_id, package.package_id)
+        self.assertEqual(len(package_result.inherited_hard_constraints), 1)
+
+        # Fails closed exactly as before once the originating package is
+        # genuinely gone, regardless of which flow produced it.
+        shutil.rmtree(
+            self.root
+            / ".apoapsis"
+            / "discovery-planning-packages"
+            / package.package_id
+        )
+        with self.assertRaises(SlicePackagingError):
+            package_slice(
+                self.root,
+                self.plan_store,
+                self.slice_store,
+                self.task_store,
+                self.operation_store,
+                record.plan_id,
+                "SLICE-1",
+                expected_plan_version=record.version,
+                config=config,
+            )
+
     def test_advisory_paths_do_not_restrict_the_derived_specification(self) -> None:
         """Suggested paths/symbols are hints, never a filesystem allowlist:
         the derived ``TaskSpecification`` carries no field that could
