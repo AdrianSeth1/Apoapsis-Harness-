@@ -1436,7 +1436,12 @@ plan, compatibility tests, and an ADR.
   `docker image inspect <image>` fallback query made only on the failure
   path, never a pull or retag), and a genuinely successful hardened
   self-test (`tests/test_doctor.py::DoctorVerificationBackendTests`; see
-  ADR 0009's D5a amendment).
+  ADR 0009's D5a amendment). **Live-proven (2026-07-20):** against a real
+  Docker Desktop engine (`29.5.2`, Linux/WSL2), pinned to
+  `python:3.12-slim@sha256:57cd7c3a7a273101a6485ba99423ee568157882804b1124b4dd04266317710de`
+  -- both `docker_sandbox` and `docker_self_test` reported `ok` for real.
+  See ADR 0009's live-evidence addendum and
+  `docs/evaluation/apoapsis-d5a-live-docker-evidence-2026-07-20.md`.
 - **Threat model (ADR 0009):** the sandbox denies network access, forwards
   no host environment variables by default, enforces CPU/memory/process
   limits, and confines writes to a throwaway worktree copy. It does **not**
@@ -2215,7 +2220,7 @@ automation as a substitute for those proofs.
 | `0006` | Deterministic local/frontier roles, routing, and escalation |
 | `0007` | Apoapsis product, package, CLI, state, environment, and branch namespace |
 | `0008` | Evaluation harness (`apoapsis eval`) and diagnostic tooling (`apoapsis doctor`) |
-| `0009` | Execution sandbox: `ExecutionBackend` seam, host compatibility backend, Docker sandbox backend |
+| `0009` | Execution sandbox: `ExecutionBackend` seam, host compatibility backend, Docker sandbox backend. D5a amendment (2026-07-20): hardened diagnostic readiness plus live evidence -- both the fail-closed path and the success path (network denial, read-only isolation, worktree-copy integrity, verified timeout removal) are now proven against a real Docker Desktop engine, pinned to `python:3.12-slim@sha256:57cd...710de` -- see the ADR's live-evidence addendum |
 | `0010` | Context measurement and wider (128k/256k) context profiles (Apoapsis 1.0a) |
 | `0011` | Deterministic change/reference/failure context, observation compaction, stable prompt prefixes, and patch attribution (Apoapsis 1.0b) |
 | `0012` | Held-out correctness oracle, evidence provenance, and cross-run evaluation aggregation (Apoapsis 1.0c) |

@@ -48,17 +48,23 @@ assume 256k is better merely because the model reports support for it.
 
 ### 3. Prove the sandbox success path
 
-Docker's fail-closed path is live-proven; the success path still needs a pinned
-local image and one explicitly authorized run. Follow ADR 0009 and the Docker
-instructions in `HANDOFF.md`. Do not enable a silent host fallback.
+**Done, 2026-07-20.** Both the fail-closed path and the success path are now
+live-proven. Docker's fail-closed path was already live-proven; the success
+path was proven under explicit `LIVE DOCKER AUTHORIZED` authorization (image
+`python:3.12-slim`): pulled once, pinned to its exact digest
+(`sha256:57cd7c3a7a273101a6485ba99423ee568157882804b1124b4dd04266317710de`),
+`apoapsis doctor` and the five gated live-Docker tests all passed for real
+against a genuine Docker Desktop engine (network denial, read-only isolation,
+worktree-copy mutation detection, verified timeout removal, trivial pass), no
+container left running afterward. Follow ADR 0009 and the Docker instructions
+in `HANDOFF.md` to reproduce. Full evidence:
+`docs/evaluation/apoapsis-d5a-live-docker-evidence-2026-07-20.md`.
 
-D5a (2026-07-20, read-only inventory) confirmed on this machine: Docker CLI is
-installed (29.5.2) but Docker Desktop's engine is not currently responding
-(`docker info` fails), so the success path remains unproven here too.
-`apoapsis doctor`'s sandbox diagnostics were hardened and given their first
-deterministic test coverage in the same pass -- see ADR 0009's D5a amendment
-and `tests/test_doctor.py::DoctorVerificationBackendTests`. No live Docker run
-was performed.
+Earlier the same day, a read-only D5a inventory found Docker CLI installed
+(29.5.2) but Docker Desktop's engine not responding, and hardened
+`apoapsis doctor`'s sandbox diagnostics with their first deterministic test
+coverage -- see ADR 0009's D5a amendment and
+`tests/test_doctor.py::DoctorVerificationBackendTests`.
 
 ### 4. Add hosted-frontier evidence only when desired
 
@@ -1046,10 +1052,21 @@ state, or decide verification/completion.
   deterministic test coverage, and restructured the gated live-Docker test
   into five focused assertions (network denial, read-only isolation,
   worktree-copy mutation detection, verified timeout removal, trivial
-  pass) ready for the next authorized live run. See ADR 0009's D5a
-  amendment. Docker Desktop's engine was not running on this machine
-  during this pass; no live Docker run was performed.
-- Run the live-gated Docker success-path test with a pinned local image.
+  pass). See ADR 0009's D5a amendment.
+- Done (D5a live evidence, 2026-07-20, `LIVE DOCKER AUTHORIZED`): pulled
+  the one authorized image (`python:3.12-slim`), resolved and pinned its
+  exact digest
+  (`sha256:57cd7c3a7a273101a6485ba99423ee568157882804b1124b4dd04266317710de`),
+  configured a disposable project with `--pull=never` and that pinned
+  digest, and ran `apoapsis doctor` plus the five gated live-Docker tests
+  for real -- all passed against a genuine Docker Desktop engine (`29.5.2`,
+  Linux/WSL2): real network-connect denial, a real blocked write outside
+  `/workspace`, a real in-container mutation correctly caught by
+  `finalize()`, and real timeout-triggered removal independently confirmed
+  via `docker ps`. No container left running afterward; no other image
+  pulled; no Docker Desktop setting changed. See ADR 0009's live-evidence
+  addendum and
+  `docs/evaluation/apoapsis-d5a-live-docker-evidence-2026-07-20.md`.
 - Exercise `START_APOAPSIS.cmd` and `STOP_APOAPSIS.cmd` on the supported Windows
   setup; keep model endpoints loopback-only.
 - Decide how a future native wrapper locates Python, Git, ripgrep, Ollama, and

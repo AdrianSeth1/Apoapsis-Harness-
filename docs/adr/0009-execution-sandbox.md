@@ -191,6 +191,30 @@ self-report. No live Docker run has been performed to exercise any of
 these five assertions for real; that remains gated on separate,
 explicit authorization exactly as the base ADR already required.
 
+### Live evidence addendum (2026-07-20)
+
+Per the user's explicit `LIVE DOCKER AUTHORIZED` authorization (image
+`python:3.12-slim`, no Docker Desktop setting changes, no other image),
+all five live assertions above were run for real against a genuine Docker
+Desktop engine (`29.5.2`, Linux containers, WSL2 backend) and all passed:
+passing status under real hardening, real network-connect denial, a real
+blocked write outside `/workspace`, real in-container mutation correctly
+caught by `finalize()`, and real timeout-triggered removal independently
+confirmed via `docker ps` returning no matching container afterward.
+`apoapsis doctor`'s `docker_sandbox`/`docker_self_test` checks also both
+reported `ok` for real against the same pinned image and digest
+(`sha256:57cd7c3a7a273101a6485ba99423ee568157882804b1124b4dd04266317710de`).
+No image other than the one named was pulled; `--pull=never` remained in
+effect throughout (it is an unconditional part of the fixed `docker run`
+argv, not a configurable toggle this run touched); no container was left
+running afterward. Full commands, exact output, and Docker metadata:
+`docs/evaluation/apoapsis-d5a-live-docker-evidence-2026-07-20.md`. This
+live result covers exactly the five assertions and the doctor preflight
+above -- it does not exercise a real project's own configured
+verification commands inside the sandbox, and makes no claim about
+container-runtime or kernel-level isolation beyond what this ADR's threat
+model already scopes.
+
 ## Threat model
 
 **What this defends against:** a verification command reading host
