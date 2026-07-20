@@ -19,7 +19,7 @@ without replacing this canonical coding-agent handoff.
 | Item | Current value |
 | --- | --- |
 | Last verified | 2026-07-19 |
-| Working-tree version | `1.0` plus ADR 0013 Windows local-model lifecycle, ADR 0014 first local operator-interface slice, ADR 0015 verification layers and acceptance coverage, ADR 0016's corrective follow-up, ADR 0017's worktree-fingerprint/explicit-acceptance-designation hardening, the opt-in `local-strict` evaluation lane with its first live result, ADR 0018's acceptance-failure-evidence/bounded-specification-correction fixes, ADR 0019's Architect Mode planning foundation plus its Plans UI surface, ADR 0020's deterministic human-review-and-resume CLI and UI, ADR 0021's review/resume integrity hardening, ADR 0022's explicit human-authorized fresh frontier stage, ADR 0023's durable new-task intake (CLI/service seam and New Task UI screen), ADR 0024's durable post-approval task execution (CLI/service seam and control-room UI), ADR 0025's shared operation-lease and recovery-integrity hardening across all three operation ledgers, ADR 0026's immutable execution authorization and truthful live UI, ADR 0027's approved-plan to single-slice execution (CLI/service seam plus the Plans UI slice experience, Commit D3b), and ADR 0028's planning comparison framework (Commit D4a; deterministic only -- no live model evidence yet) |
+| Working-tree version | `1.0` plus ADR 0013 Windows local-model lifecycle, ADR 0014 first local operator-interface slice, ADR 0015 verification layers and acceptance coverage, ADR 0016's corrective follow-up, ADR 0017's worktree-fingerprint/explicit-acceptance-designation hardening, the opt-in `local-strict` evaluation lane with its first live result, ADR 0018's acceptance-failure-evidence/bounded-specification-correction fixes, ADR 0019's Architect Mode planning foundation plus its Plans UI surface, ADR 0020's deterministic human-review-and-resume CLI and UI, ADR 0021's review/resume integrity hardening, ADR 0022's explicit human-authorized fresh frontier stage, ADR 0023's durable new-task intake (CLI/service seam and New Task UI screen), ADR 0024's durable post-approval task execution (CLI/service seam and control-room UI), ADR 0025's shared operation-lease and recovery-integrity hardening across all three operation ledgers, ADR 0026's immutable execution authorization and truthful live UI, ADR 0027's approved-plan to single-slice execution (CLI/service seam plus the Plans UI slice experience, Commit D3b), and ADR 0028's planning comparison framework (Commit D4a) plus its Commit D4b live evaluation (0/6 completions, a consistent model-logic failure -- see Snapshot) |
 | Checked-out branch | `main` |
 | Repository state | The 1.0/lifecycle baseline, the ADR 0014 UI slice, the ADR 0015 acceptance-coverage milestone, the ADR 0016 correction, the ADR 0017 hardening, the `local-strict` lane, the ADR 0018 fixes, ADR 0019's Architect Mode foundation (CLI + Plans UI), ADR 0020's review/resume CLI and UI, ADR 0021's hardening, ADR 0022's `authorize_frontier_stage` action, ADR 0023's `apoapsis intake` seam, ADR 0024's `apoapsis execute` seam and control-room UI, ADR 0025's lease/recovery hardening, ADR 0026's execution-authorization hardening, ADR 0027's `apoapsis plan slice` seam plus its Plans UI slice experience (Commit D3b), and ADR 0028's `apoapsis eval-planning` seam and `download-service-v2` fixture (Commit D4a) are all committed on `main`; live evaluation evidence is committed separately. `DESIGN.md` is preserved as a separate, committed user-supplied design reference. Run `git status` and `git log -1 --oneline` for the exact current state. |
 | Preserved substrate tag | `substrate-v0.1` at `4c2e735` |
@@ -35,6 +35,7 @@ without replacing this canonical coding-agent handoff.
 | Live control-room execution result | The control room (`#/task/<id>/control`) was exercised end to end against a disposable initialized repository and a real local Ollama model: "Start coding" showed a real, accurate preview (predicted route, real configured local model, real budgets/policy/sandbox/verification commands), submitted a real execution operation, and the task genuinely ran through routing/worktree/bounded-agent stages to a real `HUMAN_REVIEW_REQUIRED` stop with an accurate error message. The new "Open the Human Review case" link was clicked and correctly opened the full, real review case detail view. This live check found and fixed a second real, pre-existing bug: two unrelated `app.js` functions were both named `reviewView` (JavaScript's last-declaration-wins semantics meant the top-level `#/review/<task-id>` route always executed the wrong one and crashed on `detail.task`), invisible to every existing test because none execute `app.js`. Fixed by renaming the task-page sub-tab placeholder to `taskReviewTabView(detail)`. |
 | Live hosted escalation result | Not yet run. A repeatable harness (`apoapsis eval download-service --lane forced-escalation` / `--lane hybrid`) now exists to run it once real `[models.frontier_coder]` credentials are configured; the complete two-provider path is otherwise still only covered with fake providers |
 | Live Plans UI slice-experience result | Exercised end to end against a disposable initialized repository with a real approved plan (one CLI-created and CLI-approved plan, no model call needed for the plan itself): Plans list -> plan detail (live slice status rendered) -> Implementation Slices tab -> Inspect -> "Package this slice" (immutable preview rendered, real inherited constraint shown) -> two-step Approve (intent, then confirm) -> derived-task links rendered -> the existing, unmodified control room correctly showed the slice-derived task at `SPEC_APPROVED` with its real approval history and its normal "Start coding" action present and untouched. No JavaScript errors observed. |
+| Live planning-comparison result (D4b, 2026-07-20) | Three monolithic and three planned live attempts against `qwen3-coder-next:q4_K_M`, using a plan produced in a genuinely separate session (Gemini 3.1 Pro) and independently corrected once before approval (a missing hard-constraint representation and missing acceptance-criterion links, caught by deterministic validation and this milestone's own STRICT-policy design, respectively). **0/6 completions.** All six attempts stopped at `HUMAN_REVIEW_REQUIRED` after exhausting a 12-turn budget having called a verification command zero times -- a repeatable model-logic failure (one edit, then a `read_file` loop), not a harness, specification, or oracle defect; every mechanical part of the framework (budget accounting, escalation classification, dependency gating, oracle withholding) behaved correctly. No completion-rate or Architect Mode advantage claim is supported by this round; see `docs/evaluation/apoapsis-planning-comparison-2026-07-20.md` for full detail and next steps. |
 
 Update this table whenever its claims change. Never describe an uncommitted
 version as a committed release. Never claim that a provider path was proven
@@ -954,6 +955,36 @@ architecture.
   deterministic fake provider. Commit D4b (live local evidence against a
   genuinely externally-produced plan) is deliberately deferred to its own
   review.
+
+### Live planning comparison, D4b (2026-07-20)
+
+Three monolithic and three planned live attempts against
+`qwen3-coder-next:q4_K_M`, using a plan produced in a genuinely separate
+session (Gemini 3.1 Pro) via the manual export/import/validate/approve
+workflow -- this harness never generated or authored the plan. The first
+plan response had a real defect (an unrepresented hard constraint and
+missing per-slice acceptance-criterion links); it was sent back to the same
+external session for correction and re-validated cleanly (zero findings)
+before any live attempt ran.
+
+**Result: 0/6 completions, a single consistent model-logic failure.** Every
+attempt -- both conditions, all three runs -- stopped at
+`HUMAN_REVIEW_REQUIRED` after exhausting its 12-turn budget having called a
+verification command zero times: the model made exactly one edit, then
+spent every remaining turn re-issuing `read_file` against files it had
+already read. The planned condition never advanced past the first,
+dependency-free slice in any attempt. Every harness mechanism (turn/patch/
+verification accounting, escalation classification, dependency-evidence
+gating, oracle withholding) behaved correctly throughout; this is not a
+framework, specification, or oracle defect. See
+`docs/evaluation/apoapsis-planning-comparison-2026-07-20.md` for the full
+per-attempt table, aggregate metrics, and failure-mode classification.
+
+**No completion-rate or Architect-Mode-advantage claim is supported by this
+round** -- both conditions failed identically for the identical reason,
+which measures a model-behavior question, not a planning-vs-monolithic
+one. Next step (not taken here): investigate the model's read-loop behavior
+directly before re-running this comparison.
 
 ### Verification layers and acceptance coverage (ADR 0015, corrected by ADR 0016, hardened by ADR 0017/0018)
 

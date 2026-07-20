@@ -819,6 +819,24 @@ exported planner package into a separate chat session) is deliberately
 deferred to its own review. See ADR 0028 and `HANDOFF.md`'s "Planning
 comparison framework" section for full detail.
 
+### Done — Phase D4b: live evaluation evidence (2026-07-20)
+
+Three monolithic and three planned live attempts against
+`qwen3-coder-next:q4_K_M`, using a plan from a genuinely separate model
+session (Gemini 3.1 Pro), corrected once (a real, blocking plan-quality
+defect) before approval. **0/6 completions** -- every attempt, both
+conditions, stopped at `HUMAN_REVIEW_REQUIRED` after exhausting its turn
+budget having never once called a verification command (one edit, then a
+`read_file` loop). A repeatable model-logic failure, not a harness,
+specification, or oracle defect -- every mechanical part of the framework
+behaved correctly. No completion-rate or Architect-Mode-advantage claim is
+supported by this round; both conditions failed identically for the
+identical reason. See `docs/evaluation/apoapsis-planning-comparison-
+2026-07-20.md` for the full breakdown. Next: investigate the model's
+read-loop behavior directly before re-running this comparison -- six
+attempts against a model that never calls a verification tool cannot
+distinguish "planning helps" from "planning doesn't help."
+
 ### Priority C — extend the accepted application shell (ADR 0014)
 
 The application now has local/offline assets, a capability-protected loopback
@@ -850,14 +868,14 @@ Continue in this order:
    approval, and hands off to the exact same durable execution service every
    other task uses. Suggested paths and symbols remain advisory; nothing
    auto-starts the next slice or adds an autonomous scheduler.
-4. Done (ADR 0028, Commit D4a): the deterministic monolithic-versus-planned
-   comparison framework and its `download-service-v2` fixture -- true
-   success, false success, per-slice outcomes, turns, patch/verification
-   attempts, transmitted context, latency, cost, and cross-slice
-   integration failure, all from persisted reports, zero live evidence yet.
-   Commit D4b (live local evidence against a genuinely externally-produced
-   plan) is next, gated on this commit's review; do not claim Architect
-   Mode improves outcomes until D4b's live evidence exists.
+4. Done (ADR 0028, Commits D4a/D4b): the deterministic monolithic-versus-
+   planned comparison framework, its `download-service-v2` fixture, and a
+   first live evaluation round (2026-07-20, 0/6 completions -- a
+   repeatable model-logic failure, not a harness defect; see
+   `docs/evaluation/apoapsis-planning-comparison-2026-07-20.md`). Still no
+   basis for a completion-rate or Architect-Mode-advantage claim: both
+   conditions failed identically for the identical reason. Investigate the
+   model's read-loop behavior before re-running this comparison.
 5. Only then choose a packaged native wrapper for the proven loopback surface.
 
 Keep `src/apoapsis/ui/application.py` as the authority boundary. Browser code

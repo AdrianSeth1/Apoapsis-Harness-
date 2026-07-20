@@ -569,11 +569,19 @@ this end to end surfaced a real bug in the single-slice execution bridge
 itself (approving a second slice of the same plan was incorrectly blocked
 forever, not just while the first was still running) and fixed it.
 
-What does not exist yet is a real result: every test run so far uses a
-scripted stand-in for a model, never a live one, and the plan being executed
-must still come from a genuinely separate model session, not this tool.
-Producing that live evidence, honestly, is the next and last step before
-anyone can say whether Architect Mode is actually worth using.
+### Done: a first live result (2026-07-20) — and it isn't a verdict yet
+
+Three attempts each way, against the real local model, using a plan from a
+genuinely separate model session (independently corrected once, for a real
+defect, before it was ever run). The result: every single attempt, both
+ways, got stuck after one edit and never even tried to check its own
+work -- not a difference between planning and not planning, but the same
+model behavior showing up identically in both. That means this round
+cannot yet say whether planning helps, only that something about how this
+particular model behaves under this task needs to be understood first.
+Nothing here was fudged to look more conclusive than it is; see
+`docs/evaluation/apoapsis-planning-comparison-2026-07-20.md` for the exact
+numbers and what happens next.
 
 ### Later operational work
 
