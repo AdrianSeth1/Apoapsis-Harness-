@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import tempfile
@@ -32,6 +33,7 @@ class _FakeDockerProcess:
         engine_ok: bool = True,
         os_type: str = "linux",
         image_present: bool = True,
+        locally_present_digests: list[str] | None = None,
         run_returncode: int = 0,
         run_stdout: str = "",
         run_stderr: str = "",
@@ -41,6 +43,7 @@ class _FakeDockerProcess:
         self.engine_ok = engine_ok
         self.os_type = os_type
         self.image_present = image_present
+        self.locally_present_digests = locally_present_digests
         self.run_returncode = run_returncode
         self.run_stdout = run_stdout
         self.run_stderr = run_stderr
@@ -62,6 +65,13 @@ class _FakeDockerProcess:
                 return subprocess.CompletedProcess(argv, 0, f"{self.os_type}\n", "")
             raise AssertionError(f"unexpected info format: {fmt}")
         if sub == "image":
+            if "--format" in argv:
+                # the fallback bare-name/tag digest-listing query used only
+                # after the exact digest-pinned inspect above has failed.
+                if self.locally_present_digests is None:
+                    return subprocess.CompletedProcess(argv, 1, "", "no such image")
+                payload = json.dumps(self.locally_present_digests)
+                return subprocess.CompletedProcess(argv, 0, f"{payload}\n", "")
             return subprocess.CompletedProcess(
                 argv,
                 0 if self.image_present else 1,
@@ -264,6 +274,44 @@ class DockerFailClosedTests(unittest.TestCase):
         self._assert_never_ran_docker_run(fake)
         # never pulls automatically
         self.assertFalse(any(call[1] == "pull" for call in fake.calls))
+
+    def test_missing_image_with_no_local_tag_reports_absent_not_mismatched(
+        self,
+    ) -> None:
+        """When the repository/tag has never been pulled at all (the
+        fallback bare-name lookup also finds nothing), the diagnostic must
+        say "not present locally", not claim a digest mismatch."""
+
+        fake = _FakeDockerProcess(image_present=False, locally_present_digests=None)
+        backend = DockerExecutionBackend(_config())
+        with _patch_subprocess_run(fake):
+            with self.assertRaisesRegex(SandboxUnavailableError, "is not present locally"):
+                backend.prepare(self.project_root, "TASK-FAIL0006", 1)
+        self._assert_never_ran_docker_run(fake)
+        self.assertFalse(any(call[1] == "pull" for call in fake.calls))
+
+    def test_digest_mismatch_is_distinguished_from_absent_image(self) -> None:
+        """When the configured repository/tag *is* present locally but at a
+        different digest than pinned, the diagnostic must name the mismatch
+        and list the digests actually present -- never claim the image is
+        simply absent, and never suggest a re-tag or implicit pull."""
+
+        other_digest = "sha256:" + "b" * 64
+        fake = _FakeDockerProcess(
+            image_present=False,
+            locally_present_digests=[f"python@{other_digest}"],
+        )
+        backend = DockerExecutionBackend(_config())
+        with _patch_subprocess_run(fake):
+            with self.assertRaisesRegex(
+                SandboxUnavailableError,
+                "does not match any locally present digest",
+            ) as caught:
+                backend.prepare(self.project_root, "TASK-FAIL0007", 1)
+        self.assertIn(other_digest, str(caught.exception))
+        self._assert_never_ran_docker_run(fake)
+        self.assertFalse(any(call[1] == "pull" for call in fake.calls))
+        self.assertFalse(any(call[1] == "tag" for call in fake.calls))
 
     def test_preflight_failure_never_yields_a_result_shaped_like_success(self) -> None:
         fake = _FakeDockerProcess(engine_ok=False)
@@ -486,12 +534,26 @@ class DockerWorkspaceSafetyTests(unittest.TestCase):
         self.assertEqual(changed, ["source.py"])
 
 
+@unittest.skipUnless(
+    os.environ.get("APOAPSIS_RUN_LIVE_DOCKER_TESTS") == "1",
+    "set APOAPSIS_RUN_LIVE_DOCKER_TESTS=1 to run the real Docker sandbox tests",
+)
 class DockerLiveIntegrationTest(unittest.TestCase):
-    @unittest.skipUnless(
-        os.environ.get("APOAPSIS_RUN_LIVE_DOCKER_TESTS") == "1",
-        "set APOAPSIS_RUN_LIVE_DOCKER_TESTS=1 to run the real Docker sandbox smoke test",
-    )
-    def test_real_docker_engine_runs_a_trivial_command(self) -> None:
+    """Live proof against a real Docker engine, gated behind
+    `APOAPSIS_RUN_LIVE_DOCKER_TESTS=1` plus a locally-present, digest-pinned
+    `APOAPSIS_SANDBOX_TEST_IMAGE`/`APOAPSIS_SANDBOX_TEST_DIGEST`. Never runs
+    in the default suite and never pulls an image itself. Each test proves
+    exactly one property this milestone claims live, rather than one
+    generic smoke test: passing status, network denial, read-only host
+    isolation, worktree-copy mutation detection, and timeout-triggered
+    container removal (verified independently via `docker ps`, not merely
+    by trusting the backend's own report). The network/read-only probes
+    use `python3`, matching the `python:3.12-slim` image this project
+    documents as the example configuration (HANDOFF.md); if the configured
+    test image has no `python3`, those two probes skip themselves rather
+    than failing for an unrelated reason."""
+
+    def setUp(self) -> None:
         image = os.environ.get("APOAPSIS_SANDBOX_TEST_IMAGE")
         digest = os.environ.get("APOAPSIS_SANDBOX_TEST_DIGEST")
         if not image or not digest:
@@ -499,28 +561,144 @@ class DockerLiveIntegrationTest(unittest.TestCase):
                 "set APOAPSIS_SANDBOX_TEST_IMAGE and APOAPSIS_SANDBOX_TEST_DIGEST "
                 "to a locally-present, digest-pinned image to run this test"
             )
-        backend = DockerExecutionBackend(_config(image=image, image_digest=digest))
+        self.backend = DockerExecutionBackend(
+            _config(
+                image=image,
+                image_digest=digest,
+                wall_clock_timeout_seconds=30,
+            )
+        )
         try:
-            backend.preflight()
+            self.backend.preflight()
         except SandboxUnavailableError as exc:
             self.skipTest(f"Docker sandbox unavailable: {exc}")
+        self.temporary_directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary_directory.cleanup)
+        self.project_root = Path(self.temporary_directory.name) / "project"
+        self.project_root.mkdir()
+        (self.project_root / "marker.txt").write_text("hi\n", encoding="utf-8")
 
-        with tempfile.TemporaryDirectory() as tmp:
-            project_root = Path(tmp) / "project"
-            project_root.mkdir()
-            (project_root / "marker.txt").write_text("hi\n", encoding="utf-8")
-            command = VerificationCommand(
-                name="live-probe", category="sandbox", argv=["true"]
+    def _run(
+        self, name: str, argv: list[str], *, task_id: str, timeout_seconds: int = 30
+    ):
+        command = VerificationCommand(
+            name=name, category="sandbox", argv=argv, timeout_seconds=timeout_seconds
+        )
+        context = self.backend.prepare(self.project_root, task_id, 1)
+        try:
+            outcome = self.backend.run_command(context, command, environment={})
+        finally:
+            changed = self.backend.finalize(context)
+        return outcome, changed
+
+    def _skip_if_python_missing(self, outcome) -> None:
+        # exit 126/127 conventionally mean "found but not executable" /
+        # "command not found" -- the configured test image simply has no
+        # python3, not a sandbox-behavior finding either way.
+        if outcome.exit_code in (126, 127):
+            self.skipTest(
+                f"configured test image has no python3 (exit_code={outcome.exit_code})"
             )
-            context = backend.prepare(project_root, "TASK-LIVE0001", 1)
-            try:
-                outcome = backend.run_command(context, command, environment={})
-            finally:
-                changed = backend.finalize(context)
 
+    def test_trivial_command_passes_and_reports_sandboxed(self) -> None:
+        outcome, changed = self._run(
+            "live-probe-trivial", ["true"], task_id="TASK-LIVE0001"
+        )
         self.assertEqual(outcome.status, VerificationStatus.PASSED)
         self.assertTrue(outcome.backend_metadata.get("sandboxed"))
         self.assertEqual(changed, [])
+
+    def test_network_access_is_denied(self) -> None:
+        probe = (
+            "import socket,sys\n"
+            "s = socket.socket()\n"
+            "s.settimeout(3)\n"
+            "try:\n"
+            "    s.connect(('1.1.1.1', 80))\n"
+            "except OSError:\n"
+            "    sys.exit(1)\n"
+            "else:\n"
+            "    sys.exit(0)\n"
+        )
+        outcome, _changed = self._run(
+            "live-probe-network", ["python3", "-c", probe], task_id="TASK-LIVE0002"
+        )
+        self._skip_if_python_missing(outcome)
+        self.assertNotEqual(
+            outcome.exit_code,
+            0,
+            "network connect() succeeded inside the sandbox -- --network none "
+            "is not actually denying network access on this engine",
+        )
+
+    def test_root_filesystem_outside_workspace_is_read_only(self) -> None:
+        probe = "open('/apoapsis-readonly-probe', 'w').write('x')\n"
+        outcome, _changed = self._run(
+            "live-probe-readonly", ["python3", "-c", probe], task_id="TASK-LIVE0003"
+        )
+        self._skip_if_python_missing(outcome)
+        self.assertNotEqual(
+            outcome.exit_code,
+            0,
+            "write outside /workspace succeeded -- --read-only is not actually "
+            "isolating host state on this engine",
+        )
+
+    def test_worktree_copy_mutation_is_detected_by_finalize(self) -> None:
+        probe = "open('/workspace/marker.txt', 'w').write('mutated-from-container')\n"
+        outcome, changed = self._run(
+            "live-probe-mutation", ["python3", "-c", probe], task_id="TASK-LIVE0004"
+        )
+        self._skip_if_python_missing(outcome)
+        self.assertEqual(outcome.exit_code, 0)
+        self.assertEqual(
+            changed,
+            ["marker.txt"],
+            "a real in-container mutation of a pre-existing file was not "
+            "detected by finalize()'s integrity check",
+        )
+
+    def test_timeout_triggers_verified_removal_confirmed_via_docker_ps(self) -> None:
+        command = VerificationCommand(
+            name="live-probe-timeout",
+            category="sandbox",
+            argv=["python3", "-c", "import time; time.sleep(999)"],
+            timeout_seconds=2,
+        )
+        context = self.backend.prepare(self.project_root, "TASK-LIVE0005", 1)
+        try:
+            outcome = self.backend.run_command(context, command, environment={})
+        finally:
+            self.backend.finalize(context)
+
+        self._skip_if_python_missing(outcome)
+        self.assertEqual(outcome.status, VerificationStatus.TIMED_OUT)
+        self.assertEqual(outcome.backend_metadata.get("timeout_cleanup"), "removed")
+        container_name = outcome.backend_metadata["container_name"]
+        # Independent proof, not just trusting the backend's own report:
+        # ask the real Docker engine directly whether the container still
+        # exists at all (running or stopped).
+        listed = subprocess.run(
+            [
+                self.backend.config.docker_executable,
+                "ps",
+                "-a",
+                "--filter",
+                f"name={container_name}",
+                "--format",
+                "{{.Names}}",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        self.assertEqual(
+            listed.stdout.strip(),
+            "",
+            f"container {container_name!r} still exists on the host after "
+            "timeout cleanup claimed removal",
+        )
 
 
 if __name__ == "__main__":

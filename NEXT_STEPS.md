@@ -52,6 +52,14 @@ Docker's fail-closed path is live-proven; the success path still needs a pinned
 local image and one explicitly authorized run. Follow ADR 0009 and the Docker
 instructions in `HANDOFF.md`. Do not enable a silent host fallback.
 
+D5a (2026-07-20, read-only inventory) confirmed on this machine: Docker CLI is
+installed (29.5.2) but Docker Desktop's engine is not currently responding
+(`docker info` fails), so the success path remains unproven here too.
+`apoapsis doctor`'s sandbox diagnostics were hardened and given their first
+deterministic test coverage in the same pass -- see ADR 0009's D5a amendment
+and `tests/test_doctor.py::DoctorVerificationBackendTests`. No live Docker run
+was performed.
+
 ### 4. Add hosted-frontier evidence only when desired
 
 When real API credentials and pricing are configured, run paired identical
@@ -1023,6 +1031,15 @@ state, or decide verification/completion.
 
 ### Priority D — operational proof and packaging
 
+- Done (D5a, 2026-07-20): hardened `apoapsis doctor`'s Docker sandbox
+  diagnostics to distinguish CLI-missing/engine-unreachable/image-absent/
+  digest-mismatch/successful-self-test, gave that check its first
+  deterministic test coverage, and restructured the gated live-Docker test
+  into five focused assertions (network denial, read-only isolation,
+  worktree-copy mutation detection, verified timeout removal, trivial
+  pass) ready for the next authorized live run. See ADR 0009's D5a
+  amendment. Docker Desktop's engine was not running on this machine
+  during this pass; no live Docker run was performed.
 - Run the live-gated Docker success-path test with a pinned local image.
 - Exercise `START_APOAPSIS.cmd` and `STOP_APOAPSIS.cmd` on the supported Windows
   setup; keep model endpoints loopback-only.

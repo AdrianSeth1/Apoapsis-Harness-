@@ -131,6 +131,66 @@ corrected, shipped behavior.
    shape "structured command results and failure normalization" is
    preserved exactly, regardless of which backend produced them.
 
+### Amendment: D5a diagnostic-readiness hardening (2026-07-20)
+
+A read-only D5a operational-readiness inventory (no code change, no live
+Docker run -- Docker Desktop's engine was not running when this pass was
+done) found one real diagnostic gap in decision 3's preflight, closed
+here, and confirmed the rest of the fail-closed design still holds
+exactly as specified above; nothing in this amendment changes what a
+model may request, weakens a limit, or adds a fallback path.
+
+**Closed: "image absent" and "image present at the wrong digest" were
+indistinguishable.** `docker image inspect <image>@<digest>` fails
+identically whether the repository/tag was never pulled at all, or was
+pulled but currently resolves to a different digest (a stale pin, or an
+upstream retag) -- both previously produced the same "is not present
+locally... run docker pull" message, which is actively misleading in the
+second case (running the suggested `docker pull` would silently fetch and
+use a *different* image than the one actually configured, defeating the
+point of pinning by digest). `DockerExecutionBackend.preflight()` now
+makes one additional, read-only fallback query on failure --
+`docker image inspect <image> --format '{{json .RepoDigests}}'` (bare
+repository/tag, no digest) -- solely to build a more precise diagnostic:
+if that repository/tag *is* present locally under one or more other
+digests, the error now names the mismatch explicitly and lists the
+digests actually present, and instructs re-pinning
+`[verification.backend.docker].image_digest` as the primary remedy
+(`docker pull` remains offered only as a way to fetch the exact configured
+digest, never as a way to silently accept whatever is already there).
+This query is never made on the success path, never triggers a pull or
+retag, and cannot itself change which image a run ultimately uses --
+`--pull=never` and the exact `image@digest` reference in `docker run`
+(decision 4) are completely unchanged. Covered by
+`tests/test_docker_backend.py::DockerFailClosedTests` (both the
+now-distinguished absent-vs-mismatched cases) and new
+`tests/test_doctor.py::DoctorVerificationBackendTests`, which for the
+first time gives `apoapsis doctor`'s sandbox check deterministic,
+fake-process-injected coverage of every state it can report: Docker CLI
+missing, engine/Desktop unreachable, image absent, image present at the
+wrong digest, and a genuinely successful hardened self-test -- each
+proven distinct from every other, and proven to carry the same hardening
+flags (`--network none`, `--read-only`, `--pull=never`, ...) a real
+verification run would use.
+
+**Confirmed, not changed:** the existing gated live-Docker test
+(`tests/test_docker_backend.py::DockerLiveIntegrationTest`, behind
+`APOAPSIS_RUN_LIVE_DOCKER_TESTS=1`) previously proved only pass/fail
+status and an empty post-run diff. It is restructured (still fully
+gated, still never run without that opt-in, still never pulls an image)
+into five focused live assertions so that the *next* authorized live run
+proves, not merely exercises: passing status under real hardening,
+genuine network denial (a real socket `connect()` from inside the
+container, expected to fail), genuine read-only host isolation (a real
+write attempt outside `/workspace`, expected to fail), genuine
+worktree-copy integrity detection (a real in-container mutation of a
+pre-existing file, expected to be caught by `finalize()`), and genuine
+timeout-triggered removal confirmed independently via `docker ps`
+against the real engine, not merely by trusting the backend's own
+self-report. No live Docker run has been performed to exercise any of
+these five assertions for real; that remains gated on separate,
+explicit authorization exactly as the base ADR already required.
+
 ## Threat model
 
 **What this defends against:** a verification command reading host

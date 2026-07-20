@@ -941,7 +941,11 @@ wall_clock_timeout_seconds = 300
 
 Apoapsis never pulls an image automatically. Pull and pin one yourself, then
 run `apoapsis doctor` to validate the whole preflight (CLI, engine, Linux
-containers, image presence, a real minimal self-test) before relying on it:
+containers, image presence, a real minimal self-test) before relying on it.
+Doctor's message names exactly what's wrong -- Docker CLI missing, engine/
+Desktop unreachable, the image never pulled at all, or the image present
+locally but at a different digest than pinned (re-pin `image_digest`, don't
+just re-pull) -- and never pulls or retags anything itself:
 
 ```bash
 docker pull python:3.12-slim

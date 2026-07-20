@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import shutil
 import stat as stat_module
@@ -188,12 +189,44 @@ class DockerExecutionBackend:
         reference = f"{self.config.image}@{self.config.image_digest}"
         inspected = self._run_docker(["image", "inspect", reference])
         if inspected.returncode != 0:
+            present_digests = self._locally_present_digests(self.config.image)
+            if present_digests:
+                raise SandboxUnavailableError(
+                    f"pinned image {reference} does not match any locally present "
+                    f"digest for {self.config.image!r} (found: "
+                    f"{', '.join(present_digests)}); Apoapsis never pulls or retags "
+                    "automatically. Either re-pin "
+                    "[verification.backend.docker].image_digest to one of the "
+                    f"digests above, or run:\n    docker pull {reference}\n"
+                    "(this requires network access) to fetch the exact configured "
+                    "digest, then retry."
+                )
             raise SandboxUnavailableError(
                 f"pinned image {reference} is not present locally; Apoapsis "
                 "never pulls automatically. Run:\n"
                 f"    docker pull {reference}\n"
                 "(this requires network access), then retry."
             )
+
+    def _locally_present_digests(self, image: str) -> list[str]:
+        """Read-only lookup of the digests actually present locally for
+        `image` (name/tag only, no digest pinned) -- lets preflight
+        distinguish "this image was never pulled at all" from "this image
+        is present, but not at the configured digest" without ever pulling,
+        retagging, or otherwise mutating anything."""
+
+        inspected = self._run_docker(
+            ["image", "inspect", image, "--format", "{{json .RepoDigests}}"]
+        )
+        if inspected.returncode != 0:
+            return []
+        try:
+            digests = json.loads(inspected.stdout.strip() or "[]")
+        except json.JSONDecodeError:
+            return []
+        if not isinstance(digests, list):
+            return []
+        return [value for value in digests if isinstance(value, str)]
 
     def _run_docker(self, args: list[str]) -> subprocess.CompletedProcess:
         try:

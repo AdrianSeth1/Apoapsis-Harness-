@@ -23,7 +23,7 @@ without replacing this canonical coding-agent handoff.
 | Checked-out branch | `main` |
 | Repository state | The 1.0/lifecycle baseline, the ADR 0014 UI slice, the ADR 0015 acceptance-coverage milestone, the ADR 0016 correction, the ADR 0017 hardening, the `local-strict` lane, the ADR 0018 fixes, ADR 0019's Architect Mode foundation (CLI + Plans UI), ADR 0020's review/resume CLI and UI, ADR 0021's hardening, ADR 0022's `authorize_frontier_stage` action, ADR 0023's `apoapsis intake` seam, ADR 0024's `apoapsis execute` seam and control-room UI, ADR 0025's lease/recovery hardening, ADR 0026's execution-authorization hardening, ADR 0027's `apoapsis plan slice` seam plus its Plans UI slice experience (Commit D3b), ADR 0028's `apoapsis eval-planning` seam and `download-service-v2` fixture (Commit D4a), and ADR 0029's `apoapsis eval-planning-probe` seam (D4c) are all committed on `main`; live evaluation evidence is committed separately. `DESIGN.md` is preserved as a separate, committed user-supplied design reference. Run `git status` and `git log -1 --oneline` for the exact current state. |
 | Preserved substrate tag | `substrate-v0.1` at `4c2e735` |
-| Full deterministic suite | 564 tests, 0 failures, 0 errors, 6 intentional skips (2 live-network, 1 live-Docker, 3 machine currently lacks the Windows privilege to create symlinks) -- includes 28 tests for ADR 0029's D4c diagnostic-probe infrastructure, all deterministic fake-provider/pure-function coverage, distinct from the two live local observations below |
+| Full deterministic suite | 576 tests, 0 failures, 0 errors, 10 intentional skips (2 live-network, 5 live-Docker gated on `APOAPSIS_RUN_LIVE_DOCKER_TESTS=1`, 3 machine currently lacks the Windows privilege to create symlinks) -- includes 28 tests for ADR 0029's D4c diagnostic-probe infrastructure and 12 new tests from the D5a Docker-sandbox diagnostic-readiness pass (ADR 0009 amendment), all deterministic fake-provider/fake-process/pure-function coverage, distinct from the two live local observations below and from the still-unrun live-Docker gate |
 | Syntax check | `python -m compileall -q src tests` passed |
 | Diff check | `git diff --check` passed; Git reported only expected LF-to-CRLF working-copy warnings |
 | Live local coding result | Qwen3-Coder-Next Q4 completed the controlled download-service task in 10 turns and 3 verification runs |
@@ -1427,7 +1427,16 @@ plan, compatibility tests, and an ADR.
 - `apoapsis doctor` validates a configured Docker backend (CLI, engine,
   Linux containers, pinned image present, a real minimal self-test) before
   anything relies on it, and never pulls an image or starts Docker Desktop
-  itself.
+  itself. Every distinct failure mode is now deterministically,
+  fake-process-tested and reports a distinct message: CLI missing, engine/
+  Desktop unreachable, image never pulled at all, image present locally
+  but at a different digest than pinned (a stale pin or upstream retag --
+  previously indistinguishable from "never pulled," now named explicitly
+  with the digests actually present, via one additional read-only
+  `docker image inspect <image>` fallback query made only on the failure
+  path, never a pull or retag), and a genuinely successful hardened
+  self-test (`tests/test_doctor.py::DoctorVerificationBackendTests`; see
+  ADR 0009's D5a amendment).
 - **Threat model (ADR 0009):** the sandbox denies network access, forwards
   no host environment variables by default, enforces CPU/memory/process
   limits, and confines writes to a throwaway worktree copy. It does **not**

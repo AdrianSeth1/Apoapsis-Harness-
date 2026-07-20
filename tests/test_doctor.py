@@ -9,10 +9,13 @@ import threading
 import unittest
 from pathlib import Path
 
+from unittest import mock
+
 from apoapsis.doctor import DoctorCheckStatus, run_doctor
 from apoapsis.models.provider import ProviderError
 from apoapsis.models.telemetry import InstrumentedModelProvider
 from tests.fakes import FakeModelProvider
+from tests.test_docker_backend import _DIGEST, _FakeDockerProcess
 
 
 def _make_ollama_handler(models: list[dict]) -> type:
@@ -653,6 +656,173 @@ required = true
         hosted_check = _check(report, "probe:frontier_coder")
         self.assertEqual(hosted_check.status, DoctorCheckStatus.OK)
         self.assertIn("cost", hosted_check.detail)
+
+
+class DoctorVerificationBackendTests(unittest.TestCase):
+    """Deterministic coverage for `apoapsis doctor`'s sandbox diagnostics
+    (ADR 0009), injected the same way `tests.test_docker_backend` injects
+    Docker CLI/engine behavior: by patching `subprocess.run` at the
+    `apoapsis.execution.docker_backend` module boundary, never a real
+    Docker installation. Confirms doctor distinguishes every fail-closed
+    state (CLI missing, engine/Desktop unreachable, image absent, image
+    present at the wrong digest) from each other and from a genuine
+    successful hardened self-test, matching exactly what a real `docker
+    run` preflight would report."""
+
+    def setUp(self) -> None:
+        self.temporary_directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary_directory.cleanup)
+        self.root = Path(self.temporary_directory.name)
+        subprocess.run(
+            ["git", "init", "-b", "main"],
+            cwd=self.root,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        (self.root / ".apoapsis").mkdir()
+
+    def _write_toml(self, *, docker_executable: str = "docker") -> None:
+        (self.root / ".apoapsis" / "config.toml").write_text(
+            f"""
+[models.frontier]
+provider = "ollama"
+base_url = "http://127.0.0.1:11434"
+model = "qwen-test"
+
+[execution]
+mode = "one_shot"
+
+[verification]
+[[verification.commands]]
+name = "tests"
+category = "tests"
+argv = ["git", "--version"]
+required = true
+
+[verification.backend]
+backend = "docker"
+
+[verification.backend.docker]
+image = "python"
+image_digest = "{_DIGEST}"
+docker_executable = "{docker_executable}"
+""",
+            encoding="utf-8",
+        )
+
+    def _patch(self, fake: _FakeDockerProcess):
+        """Route only `docker ...` invocations to `fake`; every other
+        `subprocess.run` call (git, ripgrep, the configured `git
+        --version` verification command) still runs for real. Necessary
+        because `apoapsis.execution.docker_backend.subprocess` is the same
+        module object as `subprocess` everywhere else in the process --
+        patching its `run` attribute is process-global, not scoped to the
+        Docker backend alone."""
+
+        real_run = subprocess.run
+
+        def side_effect(argv, **kwargs):
+            if argv and argv[0] == "docker":
+                return fake(argv, **kwargs)
+            return real_run(argv, **kwargs)
+
+        return mock.patch(
+            "apoapsis.execution.docker_backend.subprocess.run", side_effect=side_effect
+        )
+
+    def test_host_backend_default_is_a_single_warning(self) -> None:
+        (self.root / ".apoapsis" / "config.toml").write_text(
+            """
+[models.frontier]
+provider = "ollama"
+base_url = "http://127.0.0.1:11434"
+model = "qwen-test"
+
+[execution]
+mode = "one_shot"
+
+[verification]
+[[verification.commands]]
+name = "tests"
+category = "tests"
+argv = ["git", "--version"]
+required = true
+""",
+            encoding="utf-8",
+        )
+        report = run_doctor(self.root)
+        check = _check(report, "verification_backend")
+        self.assertEqual(check.status, DoctorCheckStatus.WARNING)
+        self.assertIn("unsandboxed", check.detail)
+        self.assertEqual(_find(report, "docker_"), [])
+
+    def test_docker_cli_not_on_path_is_a_distinct_error(self) -> None:
+        self._write_toml(docker_executable="apoapsis-doctor-no-such-docker")
+        report = run_doctor(self.root)
+        check = _check(report, "docker_sandbox")
+        self.assertEqual(check.status, DoctorCheckStatus.ERROR)
+        self.assertIn("was not found on PATH", check.detail)
+        self.assertEqual(_find(report, "docker_self_test"), [])
+
+    def test_engine_unreachable_is_distinct_from_cli_missing(self) -> None:
+        self._write_toml()
+        fake = _FakeDockerProcess(engine_ok=False)
+        with self._patch(fake):
+            report = run_doctor(self.root)
+        check = _check(report, "docker_sandbox")
+        self.assertEqual(check.status, DoctorCheckStatus.ERROR)
+        self.assertIn("did not respond", check.detail)
+        self.assertIn("Desktop running", check.detail)
+        self.assertEqual(_find(report, "docker_self_test"), [])
+
+    def test_image_absent_is_distinct_from_engine_unreachable(self) -> None:
+        self._write_toml()
+        fake = _FakeDockerProcess(image_present=False)
+        with self._patch(fake):
+            report = run_doctor(self.root)
+        check = _check(report, "docker_sandbox")
+        self.assertEqual(check.status, DoctorCheckStatus.ERROR)
+        self.assertIn("is not present locally", check.detail)
+        self.assertIn("docker pull", check.detail)
+        # doctor's preflight never pulls an image itself.
+        self.assertFalse(any(call[1] == "pull" for call in fake.calls))
+        self.assertEqual(_find(report, "docker_self_test"), [])
+
+    def test_digest_mismatch_is_distinct_from_image_absent(self) -> None:
+        self._write_toml()
+        other_digest = "sha256:" + "c" * 64
+        fake = _FakeDockerProcess(
+            image_present=False,
+            locally_present_digests=[f"python@{other_digest}"],
+        )
+        with self._patch(fake):
+            report = run_doctor(self.root)
+        check = _check(report, "docker_sandbox")
+        self.assertEqual(check.status, DoctorCheckStatus.ERROR)
+        self.assertIn("does not match any locally present digest", check.detail)
+        self.assertIn(other_digest, check.detail)
+        self.assertNotIn("is not present locally", check.detail)
+        self.assertEqual(_find(report, "docker_self_test"), [])
+
+    def test_successful_hardened_execution_reports_ok_and_sandboxed(self) -> None:
+        self._write_toml()
+        fake = _FakeDockerProcess()
+        with self._patch(fake):
+            report = run_doctor(self.root)
+        sandbox_check = _check(report, "docker_sandbox")
+        self.assertEqual(sandbox_check.status, DoctorCheckStatus.OK)
+        self.assertIn("python@" + _DIGEST, sandbox_check.detail)
+        self_test_check = _check(report, "docker_self_test")
+        self.assertEqual(self_test_check.status, DoctorCheckStatus.OK)
+        run_calls = [call for call in fake.calls if call[1] == "run"]
+        self.assertEqual(len(run_calls), 1)
+        # the self-test container must carry the same hardening flags as a
+        # real verification run -- never a relaxed "just check it works" path.
+        self.assertIn("--network", run_calls[0])
+        self.assertIn("none", run_calls[0])
+        self.assertIn("--read-only", run_calls[0])
+        self.assertIn("--pull=never", run_calls[0])
 
 
 if __name__ == "__main__":
