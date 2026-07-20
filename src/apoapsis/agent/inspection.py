@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import fnmatch
 import json
 import os
 import re
@@ -65,6 +66,8 @@ class RepositoryInspector:
         if path_glob:
             args.extend(["--glob", path_glob])
         args.extend([query, "."])
+        allowed = self._repository_files()
+        search_tool = "ripgrep"
         try:
             completed = subprocess.run(
                 args,
@@ -77,28 +80,35 @@ class RepositoryInspector:
                 timeout=15,
                 shell=False,
             )
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            raise AgentInspectionError(f"repository search failed: {exc}") from exc
-        if completed.returncode not in {0, 1}:
-            raise AgentInspectionError(
-                f"repository search failed: {completed.stderr.strip()}"
-            )
+        except (OSError, subprocess.TimeoutExpired):
+            # Mirrors the context compiler's own lexical fallback: a missing
+            # or unresponsive ripgrep must degrade to a bounded pure-Python
+            # scan, never surface a raw `[WinError 2]`-style OSError to the
+            # model as an opaque failed action (D4c deferred defect).
+            completed = None
+            search_tool = "lexical_fallback"
         matches: dict[tuple[str, int], str] = {}
-        allowed = self._repository_files()
-        for line in completed.stdout.splitlines():
-            try:
-                event = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if event.get("type") != "match":
-                continue
-            data = event.get("data") or {}
-            raw_path = ((data.get("path") or {}).get("text") or "")
-            relative = self._normalize_path(raw_path)
-            line_number = int(data.get("line_number") or 0)
-            content = ((data.get("lines") or {}).get("text") or "")
-            if relative in allowed and line_number > 0:
-                matches[(relative, line_number)] = content.rstrip("\r\n")
+        if completed is not None:
+            if completed.returncode not in {0, 1}:
+                raise AgentInspectionError(
+                    f"repository search failed: {completed.stderr.strip()}"
+                )
+            for line in completed.stdout.splitlines():
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if event.get("type") != "match":
+                    continue
+                data = event.get("data") or {}
+                raw_path = ((data.get("path") or {}).get("text") or "")
+                relative = self._normalize_path(raw_path)
+                line_number = int(data.get("line_number") or 0)
+                content = ((data.get("lines") or {}).get("text") or "")
+                if relative in allowed and line_number > 0:
+                    matches[(relative, line_number)] = content.rstrip("\r\n")
+        else:
+            matches = self._lexical_search_matches(query, path_glob, allowed)
         changed = self._changed_paths()
         head = self._head()
         evidence: list[ContextEvidence] = []
@@ -120,7 +130,14 @@ class RepositoryInspector:
                     commit=(
                         f"{head}+working-tree" if path in changed else head
                     ),
-                    reason_included=f"agent literal search for {query!r}",
+                    reason_included=(
+                        f"agent literal search for {query!r}"
+                        + (
+                            " (lexical fallback: ripgrep unavailable)"
+                            if search_tool == "lexical_fallback"
+                            else ""
+                        )
+                    ),
                     content=content,
                     transmission_policy=TransmissionPolicy.CLOUD_ALLOWED,
                 )
@@ -282,6 +299,37 @@ class RepositoryInspector:
 
     def changed_paths(self) -> list[str]:
         return sorted(self._changed_paths())
+
+    def _lexical_search_matches(
+        self, query: str, path_glob: str | None, allowed: set[str]
+    ) -> dict[tuple[str, int], str]:
+        """Deterministic pure-Python substitute for the ripgrep invocation:
+        case-sensitive fixed-string matching over the same permitted file
+        set, scanned in sorted path order and stopped once
+        ``max_search_results`` matches exist, so results are the sorted
+        prefix the caller's evidence loop would keep anyway. Binary and
+        unreadable files are skipped exactly as ripgrep would skip them."""
+
+        matches: dict[tuple[str, int], str] = {}
+        for path in sorted(allowed):
+            if len(matches) >= self.max_search_results:
+                break
+            if path_glob is not None and not fnmatch.fnmatch(path, path_glob):
+                continue
+            destination = self.root / Path(*PurePosixPath(path).parts)
+            try:
+                raw = destination.read_bytes()
+            except OSError:
+                continue
+            if b"\0" in raw:
+                continue
+            text = raw.decode("utf-8", errors="replace")
+            for line_number, line in enumerate(text.splitlines(), start=1):
+                if query in line:
+                    matches[(path, line_number)] = line.rstrip("\r\n")
+                    if len(matches) >= self.max_search_results:
+                        break
+        return matches
 
     def _repository_files(self) -> set[str]:
         raw = self.repository.run(

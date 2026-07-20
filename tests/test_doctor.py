@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import http.server
 import json
 import os
@@ -15,7 +16,7 @@ from apoapsis.doctor import DoctorCheckStatus, run_doctor
 from apoapsis.models.provider import ProviderError
 from apoapsis.models.telemetry import InstrumentedModelProvider
 from tests.fakes import FakeModelProvider
-from tests.test_docker_backend import _DIGEST, _FakeDockerProcess
+from tests.test_docker_backend import _DIGEST, _FakeDockerProcess, _fake_docker_on_path
 
 
 def _make_ollama_handler(models: list[dict]) -> type:
@@ -836,9 +837,17 @@ docker_executable = "{docker_executable}"
                 return fake(argv, **kwargs)
             return real_run(argv, **kwargs)
 
-        return mock.patch(
-            "apoapsis.execution.docker_backend.subprocess.run", side_effect=side_effect
+        stack = contextlib.ExitStack()
+        stack.enter_context(
+            mock.patch(
+                "apoapsis.execution.docker_backend.subprocess.run",
+                side_effect=side_effect,
+            )
         )
+        # Only the "docker" name is faked onto PATH; git/ripgrep lookups stay
+        # real. Keeps these tests deterministic on hosts without a Docker CLI.
+        stack.enter_context(_fake_docker_on_path())
+        return stack
 
     def test_host_backend_default_is_a_single_warning(self) -> None:
         (self.root / ".apoapsis" / "config.toml").write_text(

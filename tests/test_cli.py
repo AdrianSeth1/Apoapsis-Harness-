@@ -35,7 +35,7 @@ class CLITests(unittest.TestCase):
 
     def test_init_task_inspect_and_approve(self) -> None:
         self.assertEqual(build_parser().prog, "apoapsis")
-        self.assertEqual(__version__, "0.7.0")
+        self.assertEqual(__version__, "1.0.0")
         initialized = self.invoke("init")
         self.assertTrue(initialized["initialized"])
         self.assertTrue((self.root / ".apoapsis" / "apoapsis.db").is_file())

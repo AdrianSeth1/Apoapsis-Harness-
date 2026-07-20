@@ -1140,7 +1140,9 @@ apoapsis eval-planning-probe download-service-v2 `
 Do not run this command, re-run the full D4b comparison, or begin D5
 without separate, explicit authorization. The two deferred defects
 (`search_repository`'s `[WinError 2]`, unlabeled stale/fresh evidence
-duplication) remain unresolved and were not touched by these runs.
+duplication) were not touched by these runs; both were fixed by the
+2026-07-20 external-review maintenance pass (see `HANDOFF.md`'s
+Snapshot row of that date).
 
 ### Priority C — extend the accepted application shell (ADR 0014)
 

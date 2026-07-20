@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import contextlib
 import json
 import os
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -122,8 +124,33 @@ def _config(**overrides: object) -> DockerBackendConfig:
     return DockerBackendConfig(**values)
 
 
+def _fake_docker_on_path(executable: str = "docker"):
+    """Pretend only `executable` resolves on PATH; every other lookup still
+    uses the real `shutil.which`. Without this, `DockerBackend.preflight()`'s
+    unmocked `shutil.which` check made every test below silently depend on a
+    real Docker CLI being installed on the host -- contradicting
+    `_FakeDockerProcess`'s own 'without a real Docker installation' contract
+    and failing on any machine without Docker. `shutil` is one process-global
+    module, so the side effect must delegate rather than replace."""
+
+    real_which = shutil.which
+
+    def side_effect(cmd, *args, **kwargs):
+        if cmd == executable:
+            return f"/deterministic-fake-path/{executable}"
+        return real_which(cmd, *args, **kwargs)
+
+    return mock.patch(
+        "apoapsis.execution.docker_backend.shutil.which", side_effect=side_effect
+    )
+
+
+@contextlib.contextmanager
 def _patch_subprocess_run(fake: _FakeDockerProcess):
-    return mock.patch("apoapsis.execution.docker_backend.subprocess.run", side_effect=fake)
+    with mock.patch(
+        "apoapsis.execution.docker_backend.subprocess.run", side_effect=fake
+    ), _fake_docker_on_path():
+        yield fake
 
 
 def _label_values(argv: list[str], key: str) -> list[str]:

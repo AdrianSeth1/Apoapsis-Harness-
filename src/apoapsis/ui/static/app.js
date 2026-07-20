@@ -1693,12 +1693,13 @@ const RESEARCH_CHOICES = {
 };
 
 function discoveryResearchChoiceView(detail) {
-  const selected = RESEARCH_CHOICES[store.discoverResearchChoice] || RESEARCH_CHOICES.auto;
+  const selectedValue = RESEARCH_CHOICES[store.discoverResearchChoice] ? store.discoverResearchChoice : "auto";
+  const selected = RESEARCH_CHOICES[selectedValue];
   const available = detail.planning_research_available;
   return `<section class="card card-pad mt-16">
     <p class="section-title mt-0">Optional planning research</p>
     <p class="muted">Research happens before the frontier planning handoff. Network access belongs only to restricted source adapters; the local research model receives sanitized evidence and has no tools. Only its compact brief and evidence IDs enter the planning package.</p>
-    ${available ? `<div class="grid two mt-14">${Object.entries(RESEARCH_CHOICES).map(([value, choice]) => `<label class="constraint research-choice"><input type="radio" name="discover-research" value="${e(value)}" ${store.discoverResearchChoice === value ? "checked" : ""}> <strong>${e(choice.label)}</strong><span>${e(choice.description)}</span></label>`).join("")}</div><div class="mt-14 mono">LOCAL RESEARCH MODEL: ${e(detail.planning_research_model)}</div><div class="flex-end mt-16"><button class="button primary" data-action="discover-op-submit" data-op-action="${e(selected.action)}" data-session-id="${e(detail.session.session_id)}" data-version="${e(detail.session.version)}" ${store.busy ? "disabled" : ""}>Run ${e(selected.label)} research →</button></div>` : `<div class="notice mt-14">Planning research is unavailable because this project has no <span class="mono">models.local_research</span> role configured. You can continue to planning without it.</div>`}
+    ${available ? `<div class="grid two mt-14">${Object.entries(RESEARCH_CHOICES).map(([value, choice]) => `<label class="constraint research-choice"><input type="radio" name="discover-research" value="${e(value)}" ${selectedValue === value ? "checked" : ""}> <strong>${e(choice.label)}</strong><span>${e(choice.description)}</span></label>`).join("")}</div><div class="mt-14 mono">LOCAL RESEARCH MODEL: ${e(detail.planning_research_model)}</div><div class="flex-end mt-16"><button class="button primary" data-action="discover-op-submit" data-op-action="${e(selected.action)}" data-session-id="${e(detail.session.session_id)}" data-version="${e(detail.session.version)}" ${store.busy ? "disabled" : ""}>Run ${e(selected.label)} research →</button></div>` : `<div class="notice mt-14">Planning research is unavailable because this project has no <span class="mono">models.local_research</span> role configured. You can continue to planning without it.</div>`}
     <details class="mt-16"><summary>Skip research and continue</summary>${discoveryTransportChoiceView(detail, true)}</details>
   </section>`;
 }

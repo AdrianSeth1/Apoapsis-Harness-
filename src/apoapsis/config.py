@@ -223,7 +223,7 @@ class GitHubResearchSourceConfig(ResearchSourceConfig):
 class RedditResearchSourceConfig(ResearchSourceConfig):
     client_id_env: str = "REDDIT_CLIENT_ID"
     client_secret_env: str = "REDDIT_CLIENT_SECRET"
-    user_agent: str = "apoapsis-harness-research/0.7"
+    user_agent: str = "apoapsis-harness-research/1.0"
     purposes: list[str] = Field(
         default_factory=lambda: [
             "user_pain_points",

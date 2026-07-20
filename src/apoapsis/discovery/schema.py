@@ -65,7 +65,10 @@ class DiscoveryStatus(StrEnum):
     FRONTIER_PACKAGE_EXPORTED = "frontier_package_exported"
     FRONTIER_CLARIFICATION_PROPOSED = "frontier_clarification_proposed"
     FRONTIER_ANSWERS_RECORDED = "frontier_answers_recorded"
-    FRONTIER_PLAN_PROPOSED = "frontier_plan_proposed"
+    # A returned frontier plan is imported directly through the ordinary
+    # Architect Mode plan store, so the session moves straight to
+    # PLAN_IMPORTED -- there is deliberately no intermediate
+    # "frontier_plan_proposed" state (a dead value the UI never rendered).
     PLAN_IMPORTED = "plan_imported"
     FAILED = "failed"
 

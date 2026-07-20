@@ -414,6 +414,18 @@ class BoundedAgentIntegrationTests(unittest.TestCase):
             self.assertIn(
                 constraint.verbatim_source, turn_after_failure["prompt"]
             )
+        # After the session patched downloader.py, its compile-time excerpt
+        # must be transmitted labeled as a pre-edit copy, never as an
+        # unlabeled stale duplicate of the fresh post-edit content (the
+        # D4c-deferred stale-evidence defect).
+        self.assertIn(
+            "[STALE: compiled before this session patched",
+            turn_after_failure["prompt"],
+        )
+        first_request = json.loads(
+            (audit / "call-002-request.json").read_text(encoding="utf-8")
+        )
+        self.assertNotIn("[STALE:", first_request["prompt"])
 
     def test_explicit_escalation_stops_without_frontier_fallback(self) -> None:
         fake = FakeModelProvider(
@@ -680,6 +692,32 @@ class BoundedAgentIntegrationTests(unittest.TestCase):
             inspector.read(".apoapsis/config.toml")
         with self.assertRaises(AgentInspectionError):
             inspector.read(".sol/config.toml")
+
+    def test_search_falls_back_to_lexical_scan_when_ripgrep_is_missing(self) -> None:
+        """A missing ripgrep binary (the D4c `[WinError 2]` defect) must
+        degrade to the deterministic pure-Python scan, not surface a raw
+        OSError to the model as an opaque failed action."""
+
+        inspector = RepositoryInspector(
+            self.root,
+            max_search_results=5,
+            max_read_lines=50,
+            max_chars=5_000,
+            ripgrep_executable="apoapsis-no-such-ripgrep",
+        )
+        results = inspector.search("downloaded")
+        self.assertTrue(results)
+        self.assertTrue(
+            all("lexical fallback" in item.reason_included for item in results)
+        )
+        self.assertTrue(
+            any("downloader.py" in item.path for item in results)
+        )
+        self.assertLessEqual(len(results), 5)
+        # The glob filter must still apply in the fallback path.
+        globbed = inspector.search("downloaded", path_glob="src/*/*.py")
+        self.assertTrue(globbed)
+        self.assertTrue(all(item.path.startswith("src/") for item in globbed))
 
     def test_replace_text_requires_one_exact_match_and_generates_diff(self) -> None:
         inspector = RepositoryInspector(

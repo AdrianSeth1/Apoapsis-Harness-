@@ -283,7 +283,7 @@ enabled = false
 priority = 4
 client_id_env = "REDDIT_CLIENT_ID"
 client_secret_env = "REDDIT_CLIENT_SECRET"
-user_agent = "apoapsis-harness-research/0.7"
+user_agent = "apoapsis-harness-research/1.0"
 purposes = ["user_pain_points", "product_expectations", "failure_discovery"]
 
 [research.security]

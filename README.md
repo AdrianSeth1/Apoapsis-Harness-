@@ -13,7 +13,9 @@ architecture, current implementation status, known limitations, and required
 maintenance contract. The ADRs remain the decision history; this README is the
 user-facing guide.
 
-Version 0.7 adopts the complete Apoapsis namespace: the distribution is
+Version 1.0 (the 0.7 release adopted the namespace; package metadata and the
+research user agent now match HANDOFF's committed 1.0) uses the complete
+Apoapsis namespace: the distribution is
 `apoapsis-harness`, the Python package and CLI are `apoapsis`, new project state
 lives in `.apoapsis/`, product environment variables begin with `APOAPSIS_`, and
 managed branches begin with `apoapsis/`. There is no pre-release compatibility

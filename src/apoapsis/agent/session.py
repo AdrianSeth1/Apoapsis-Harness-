@@ -32,7 +32,7 @@ from apoapsis.models.base import ModelOperation, ModelResponse
 from apoapsis.models.prompts import agent_step_prompt
 from apoapsis.models.provider import ModelRole
 from apoapsis.patches.apply import PatchApplicationError
-from apoapsis.patches.parser import UnifiedDiffError
+from apoapsis.patches.parser import UnifiedDiffError, UnifiedDiffParser
 from apoapsis.patches.validator import PatchPolicyError
 from apoapsis.repository.fingerprint import compute_worktree_fingerprint
 from apoapsis.specification.schema import StrictModel, TaskSpecification
@@ -199,6 +199,11 @@ class BoundedAgentSession:
         self.failure_normalizer = FailureNormalizer()
         self.observations: list[ContextEvidence] = []
         self.observation_chars = 0
+        # Paths modified by a patch this session accepted. Compile-time
+        # excerpts of these files are pre-edit copies; `_context_for_turn`
+        # labels them stale so the model is never shown an unlabeled stale
+        # copy alongside a fresh post-edit read (D4c deferred defect).
+        self.patched_paths: set[str] = set()
         self.records: list[AgentTurnRecord] = []
         self.verification_results: list[VerificationResult] = []
         self.patch_attempts = 0
@@ -482,6 +487,13 @@ class BoundedAgentSession:
                 )
             )
             return False
+        try:
+            self.patched_paths.update(UnifiedDiffParser().parse(patch).paths)
+        except UnifiedDiffError:
+            # The applier already accepted this patch, so a parse failure
+            # here is unreachable in practice; never let stale-labeling
+            # bookkeeping fail an applied edit.
+            pass
         current_diff = self.inspector.diff()
         added = self._add_evidence([current_diff] if current_diff else [])
         self._record(
@@ -729,13 +741,32 @@ class BoundedAgentSession:
         )
         unique: list[ContextEvidence] = []
         seen: set[tuple[str, int | None, int | None, str | None]] = set()
-        for item in [*self.base_context.evidence, *transmitted_observations]:
+        base_count = len(self.base_context.evidence)
+        for position, item in enumerate(
+            [*self.base_context.evidence, *transmitted_observations]
+        ):
             key = (item.path, item.start_line, item.end_line, item.content_sha256)
             if key in seen:
                 continue
             seen.add(key)
             payload = item.model_dump(mode="python")
             payload["evidence_id"] = f"EV-{len(unique) + 1:03d}"
+            # A compile-time excerpt of a file this session has since
+            # patched is a pre-edit copy. Label it explicitly rather than
+            # transmitting it indistinguishable from current content -- the
+            # D4c forensic pass found exactly such an unlabeled stale copy
+            # alongside a fresh post-edit read. Ledger/audit copies are
+            # untouched; only the transmitted view is annotated.
+            if (
+                position < base_count
+                and item.path in self.patched_paths
+                and item.kind != EvidenceKind.DIFF
+            ):
+                payload["reason_included"] = (
+                    f"{item.reason_included} [STALE: compiled before this "
+                    "session patched this file; use read_file for current "
+                    "content]"
+                )
             unique.append(ContextEvidence.model_validate(payload))
         parameters = dict(self.base_context.compiler_parameters)
         parameters["agent_turn"] = turn
