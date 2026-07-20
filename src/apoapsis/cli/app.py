@@ -34,6 +34,26 @@ from apoapsis.execution.operation_store import ExecutionOperationStore
 from apoapsis.intake.errors import IntakeError
 from apoapsis.intake.execution import execute_intake_operation, run_intake_operation
 from apoapsis.intake.recovery import recover_stale_intake_operations
+from apoapsis.discovery.api import (
+    preview_frontier_planning_api_call as discovery_preview_api_call,
+    run_frontier_planning_api_call as discovery_call_api,
+)
+from apoapsis.discovery.errors import DiscoveryError
+from apoapsis.discovery.frontier_package import load_package as discovery_load_package
+from apoapsis.discovery.manual import (
+    import_manual_frontier_planning_response as discovery_import_manual_response,
+)
+from apoapsis.discovery.schema import ClarificationAnswer
+from apoapsis.discovery.service import (
+    approve_idea_brief_step as discovery_approve_idea_brief,
+    export_frontier_planning_package as discovery_export_frontier_package,
+    propose_idea_brief_step as discovery_propose_idea_brief,
+    propose_local_clarification_questions as discovery_propose_local_questions,
+    record_frontier_answers as discovery_record_frontier_answers,
+    record_local_answers as discovery_record_local_answers,
+    start_session as discovery_start_session,
+)
+from apoapsis.discovery.store import SQLiteDiscoveryStore
 from apoapsis.intake.store import IntakeOperationStore
 from apoapsis.manual_frontier.approve import approve_manual_frontier_preview
 from apoapsis.manual_frontier.errors import ManualFrontierError
@@ -695,6 +715,113 @@ def build_parser() -> argparse.ArgumentParser:
     plan_slice_start.add_argument("slice_id")
     plan_slice_start.add_argument("--operation-id")
 
+    discover = subparsers.add_parser(
+        "discover",
+        help=(
+            "local-first Architect Mode discovery followed by an optional "
+            "frontier planning stage (ADR 0032): a bounded, deterministic "
+            "workflow, never a general chat"
+        ),
+    )
+    discover_subparsers = discover.add_subparsers(
+        dest="discover_command", required=True
+    )
+    discover_start = discover_subparsers.add_parser(
+        "start", help="enter an idea and create a new discovery session"
+    )
+    discover_start.add_argument("idea_text")
+    discover_inspect = discover_subparsers.add_parser(
+        "inspect", help="show one discovery session's current state"
+    )
+    discover_inspect.add_argument("session_id")
+    discover_propose_questions = discover_subparsers.add_parser(
+        "propose-questions",
+        help="the configured local model proposes up to the configured maximum of clarification questions",
+    )
+    discover_propose_questions.add_argument("session_id")
+    discover_propose_questions.add_argument("--expected-version", type=int, required=True)
+    discover_answer_questions = discover_subparsers.add_parser(
+        "answer-questions",
+        help="record the user's own verbatim answers to the local model's questions",
+    )
+    discover_answer_questions.add_argument("session_id")
+    discover_answer_questions.add_argument("--expected-version", type=int, required=True)
+    discover_answer_questions.add_argument(
+        "--answer",
+        action="append",
+        default=[],
+        metavar="QUESTION_ID=TEXT",
+        help="repeatable; one per question",
+    )
+    discover_propose_brief = discover_subparsers.add_parser(
+        "propose-brief", help="the configured local model proposes an IdeaBrief"
+    )
+    discover_propose_brief.add_argument("session_id")
+    discover_propose_brief.add_argument("--expected-version", type=int, required=True)
+    discover_approve_brief = discover_subparsers.add_parser(
+        "approve-brief", help="explicit user approval of the proposed idea brief"
+    )
+    discover_approve_brief.add_argument("session_id")
+    discover_approve_brief.add_argument("--expected-version", type=int, required=True)
+    discover_export = discover_subparsers.add_parser(
+        "export-frontier-package",
+        help=(
+            "export an immutable FrontierPlanningRequestPackage plus a "
+            "self-contained FRONTIER-PLANNING-HANDOFF.md; requires an "
+            "approved idea brief"
+        ),
+    )
+    discover_export.add_argument("session_id")
+    discover_export.add_argument("--transport", choices=["api", "manual"], required=True)
+    discover_export.add_argument("--expected-version", type=int, required=True)
+    discover_preview_api = discover_subparsers.add_parser(
+        "preview-api-call",
+        help=(
+            "show the configured frontier provider/model and a pessimistic "
+            "worst-case cost for one API planning call, before any "
+            "separate spend-ceiling authorization or call is made"
+        ),
+    )
+    discover_preview_api.add_argument("session_id")
+    discover_call_api = discover_subparsers.add_parser(
+        "call-api",
+        help=(
+            "make exactly one real, explicitly authorized, spend-ceilinged "
+            "API planning call for the session's current outstanding "
+            "package"
+        ),
+    )
+    discover_call_api.add_argument("session_id")
+    discover_call_api.add_argument(
+        "--authorize-planning-spend-usd",
+        type=float,
+        required=True,
+        help="hard ceiling in USD for this one call, checked before and after it",
+    )
+    discover_import_manual = discover_subparsers.add_parser(
+        "import-manual-response",
+        help="validate and apply a pasted manual-subscription response",
+    )
+    discover_import_manual.add_argument("session_id")
+    discover_import_manual.add_argument("--package-id", required=True)
+    discover_import_manual.add_argument(
+        "--response", required=True, type=Path, help="path to the pasted JSON response"
+    )
+    discover_import_manual.add_argument(
+        "--declared-model-name",
+        required=True,
+        help="operator-declared provenance for which subscription model produced this response",
+    )
+    discover_answer_frontier = discover_subparsers.add_parser(
+        "answer-frontier-questions",
+        help="record the user's own verbatim answers to the frontier model's clarification questions",
+    )
+    discover_answer_frontier.add_argument("session_id")
+    discover_answer_frontier.add_argument("--expected-version", type=int, required=True)
+    discover_answer_frontier.add_argument(
+        "--answer", action="append", default=[], metavar="QUESTION_ID=TEXT"
+    )
+
     intake = subparsers.add_parser(
         "intake",
         help=(
@@ -972,6 +1099,7 @@ def main(argv: list[str] | None = None) -> None:
         ExecutionOperationError,
         HostedSpendCeilingExceededError,
         ManualFrontierError,
+        DiscoveryError,
     ) as exc:
         parser.exit(2, f"error: {exc}\n")
     if result is not None:
@@ -1023,6 +1151,8 @@ def _dispatch(args: argparse.Namespace) -> dict[str, object] | None:
         return _aggregate_eval_reports(root, args.comparisons, args.output_dir)
     if args.command == "plan":
         return _plan_command(root, args)
+    if args.command == "discover":
+        return _discover_command(root, args)
     store = _store(root)
     if args.command == "task":
         return _task(
@@ -1282,6 +1412,133 @@ def _plan_slice_command(root: Path, args: argparse.Namespace) -> dict[str, objec
         )
         return result.model_dump(mode="json")
     raise AssertionError(f"unhandled plan slice command: {args.plan_slice_command}")
+
+
+def _discovery_store(root: Path) -> SQLiteDiscoveryStore:
+    metadata = root / ".apoapsis"
+    if not (metadata / "config.toml").is_file():
+        raise TaskStoreError("Apoapsis is not initialized; run 'apoapsis init' first")
+    return SQLiteDiscoveryStore(metadata / "discovery-sessions.db")
+
+
+def _parse_answers(raw_answers: list[str]) -> list[ClarificationAnswer]:
+    answers: list[ClarificationAnswer] = []
+    for item in raw_answers:
+        if "=" not in item:
+            raise DiscoveryError(
+                f"--answer must be QUESTION_ID=TEXT, got: {item!r}"
+            )
+        question_id, text = item.split("=", 1)
+        answers.append(ClarificationAnswer(question_id=question_id, text=text))
+    return answers
+
+
+def _discover_command(root: Path, args: argparse.Namespace) -> dict[str, object]:
+    discovery_store = _discovery_store(root)
+    config = ApoapsisConfig.from_toml(root / ".apoapsis" / "config.toml")
+    if args.discover_command == "start":
+        record = discovery_start_session(discovery_store, args.idea_text)
+        return record.model_dump(mode="json")
+    if args.discover_command == "inspect":
+        return discovery_store.get_session(args.session_id).model_dump(mode="json")
+    if args.discover_command == "propose-questions":
+        record = discovery_propose_local_questions(
+            root,
+            discovery_store,
+            config,
+            args.session_id,
+            expected_version=args.expected_version,
+        )
+        return record.model_dump(mode="json")
+    if args.discover_command == "answer-questions":
+        record = discovery_record_local_answers(
+            discovery_store,
+            args.session_id,
+            _parse_answers(args.answer),
+            expected_version=args.expected_version,
+        )
+        return record.model_dump(mode="json")
+    if args.discover_command == "propose-brief":
+        record = discovery_propose_idea_brief(
+            root,
+            discovery_store,
+            config,
+            args.session_id,
+            expected_version=args.expected_version,
+        )
+        return record.model_dump(mode="json")
+    if args.discover_command == "approve-brief":
+        record = discovery_approve_idea_brief(
+            discovery_store, args.session_id, expected_version=args.expected_version
+        )
+        return record.model_dump(mode="json")
+    if args.discover_command == "export-frontier-package":
+        record, package, json_path, markdown_path = discovery_export_frontier_package(
+            root,
+            discovery_store,
+            config,
+            args.session_id,
+            transport=args.transport,
+            expected_version=args.expected_version,
+        )
+        return {
+            "session": record.model_dump(mode="json"),
+            "package": package.model_dump(mode="json"),
+            "package_artifact_path": json_path,
+            "markdown_artifact_path": markdown_path,
+        }
+    if args.discover_command == "preview-api-call":
+        session = discovery_store.get_session(args.session_id)
+        if session.frontier_package_id is None:
+            raise DiscoveryError(
+                f"session {args.session_id} has no outstanding frontier package "
+                "yet; run export-frontier-package --transport api first"
+            )
+        package = discovery_load_package(root, session.frontier_package_id)
+        preview = discovery_preview_api_call(config, package)
+        return preview.model_dump(mode="json")
+    if args.discover_command == "call-api":
+        session = discovery_store.get_session(args.session_id)
+        if session.frontier_package_id is None:
+            raise DiscoveryError(
+                f"session {args.session_id} has no outstanding frontier package "
+                "yet; run export-frontier-package --transport api first"
+            )
+        package = discovery_load_package(root, session.frontier_package_id)
+        plan_store = _plan_store(root)
+        record, cost_usd = discovery_call_api(
+            root,
+            discovery_store,
+            plan_store,
+            config,
+            session_id=args.session_id,
+            package=package,
+            authorized_max_spend_usd=args.authorize_planning_spend_usd,
+        )
+        return {"session": record.model_dump(mode="json"), "measured_cost_usd": cost_usd}
+    if args.discover_command == "import-manual-response":
+        plan_store = _plan_store(root)
+        response_bytes = args.response.resolve().read_bytes()
+        record = discovery_import_manual_response(
+            root,
+            discovery_store,
+            plan_store,
+            config,
+            session_id=args.session_id,
+            package_id=args.package_id,
+            response_bytes=response_bytes,
+            declared_model_name=args.declared_model_name,
+        )
+        return record.model_dump(mode="json")
+    if args.discover_command == "answer-frontier-questions":
+        record = discovery_record_frontier_answers(
+            discovery_store,
+            args.session_id,
+            _parse_answers(args.answer),
+            expected_version=args.expected_version,
+        )
+        return record.model_dump(mode="json")
+    raise AssertionError(f"unhandled discover command: {args.discover_command}")
 
 
 def _intake_operation_store(root: Path) -> IntakeOperationStore:

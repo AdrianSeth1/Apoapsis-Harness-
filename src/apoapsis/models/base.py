@@ -34,6 +34,9 @@ class ModelOperation(StrEnum):
     IDENTIFY_DISAGREEMENTS = "identify_disagreements"
     SYNTHESIZE_RESEARCH_BRIEF = "synthesize_research_brief"
     DETECT_PROMPT_INJECTION = "detect_possible_prompt_injection"
+    PROPOSE_DISCOVERY_QUESTIONS = "propose_discovery_questions"
+    DRAFT_IDEA_BRIEF = "draft_idea_brief"
+    PROPOSE_ARCHITECTURE_PLAN = "propose_architecture_plan"
 
 
 class ConstraintDisposition(StrEnum):

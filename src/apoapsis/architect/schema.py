@@ -216,7 +216,12 @@ class PlanRecord(StrictModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=False)
 
     plan_id: str = Field(pattern=r"^PLAN-[A-Za-z0-9._-]+$")
-    package_id: str = Field(pattern=r"^PKG-[A-Za-z0-9._-]+$")
+    # Accepts both a manually-exported PlannerRequestPackage id (PKG-...,
+    # ADR 0019) and a discovery-flow FrontierPlanningRequestPackage id
+    # (FPKG-..., ADR 0032) -- widened additively so
+    # SQLitePlanStore.create_plan() is genuinely reused by both origins
+    # rather than duplicated.
+    package_id: str = Field(pattern=r"^(PKG|FPKG)-[A-Za-z0-9._-]+$")
     idea_text: str = Field(min_length=1)
     plan: ArchitecturePlan
     validation: PlanValidationResult | None = None

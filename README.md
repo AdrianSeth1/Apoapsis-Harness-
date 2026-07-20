@@ -64,6 +64,14 @@ content hashes and worktree pointers are not corrupted; see
 - Windows `START_APOAPSIS.cmd`/`STOP_APOAPSIS.cmd` controls that derive local
   Ollama models from configuration, warm the coding model, and explicitly
   release every configured local model's memory without touching hosted providers.
+- A bounded, local-first Architect Mode discovery workflow followed by an
+  optional frontier planning stage (`apoapsis discover`, ADR 0032): a
+  configured local model may propose a small, harness-capped set of
+  clarification questions and one `IdeaBrief` the user must explicitly
+  approve, before an immutable planning package is sent to a frontier
+  model over either an explicitly configured, spend-ceilinged API or a
+  manual subscription transport -- a returned plan flows into the
+  existing, unmodified Architect Mode import/validate/approve machinery.
 - A manual subscription-based frontier coding handoff (`apoapsis
   frontier-manual`, ADR 0031): export an immutable, hashed package and a
   self-contained Markdown file to upload by hand to a ChatGPT/Claude
@@ -89,7 +97,9 @@ the product/runtime namespace migration, and
 [ADR 0008](docs/adr/0008-evaluation-and-diagnostic-tooling.md) records the
 evaluation harness and diagnostic tooling contract,
 [ADR 0031](docs/adr/0031-manual-subscription-frontier-handoff.md) records the
-manual subscription-based frontier coding handoff, and
+manual subscription-based frontier coding handoff,
+[ADR 0032](docs/adr/0032-discovery-and-frontier-planning-handoff.md) records
+local-first Architect Mode discovery and the frontier planning handoff, and
 [ADR 0009](docs/adr/0009-execution-sandbox.md) records the execution
 sandbox, [ADR 0010](docs/adr/0010-context-measurement-and-wider-profiles.md)
 records the 128k/256k context profiles and the deterministic context-
@@ -237,6 +247,69 @@ apoapsis rollback TASK-ABC123 --delete-branch
 `verify` deliberately refuses to run until the persisted task state is
 `PATCH_READY`. `rollback` is explicit and may discard uncommitted task-worktree
 changes. Normal cleanup APIs refuse dirty worktrees unless force is requested.
+
+## Discovery and frontier planning handoff (ADR 0032)
+
+Before designing an architecture plan by hand, `apoapsis discover` gives
+you a bounded, local-first way to firm up an idea first -- never a general
+chat:
+
+```bash
+apoapsis discover start "Add resumable downloads with a pluggable storage backend"
+apoapsis discover propose-questions DISC-ABC123 --expected-version 1
+```
+
+Your configured `[models.frontier]` local model may propose up to
+`[discovery] max_clarification_questions` (default 5) clarification
+questions -- fewer is fine, and the harness caps the count regardless of
+how many the model returns. Answer in your own words; they are preserved
+verbatim, never rewritten:
+
+```bash
+apoapsis discover answer-questions DISC-ABC123 --expected-version 2 \
+  --answer "Q-1=Store offsets in a local SQLite file." \
+  --answer "Q-2=Keep the existing public API unchanged."
+apoapsis discover propose-brief DISC-ABC123 --expected-version 3
+apoapsis discover approve-brief DISC-ABC123 --expected-version 4
+```
+
+Only after you explicitly approve the proposed `IdeaBrief` can a frontier
+planning package be exported. Choose either transport:
+
+```bash
+# Manual subscription transport -- upload FRONTIER-PLANNING-HANDOFF-*.md
+# to your ChatGPT/Claude session by hand, paste the response back:
+apoapsis discover export-frontier-package DISC-ABC123 --transport manual --expected-version 5
+apoapsis discover import-manual-response DISC-ABC123 \
+  --package-id FPKG-... --response response.json \
+  --declared-model-name "claude-opus-4.6-web"
+
+# API transport -- requires [models.frontier_coder]:
+apoapsis discover export-frontier-package DISC-ABC123 --transport api --expected-version 5
+apoapsis discover preview-api-call DISC-ABC123
+apoapsis discover call-api DISC-ABC123 --authorize-planning-spend-usd 1.00
+```
+
+The frontier model may return a small, capped number of further
+clarification questions (`[discovery] max_frontier_clarification_rounds`,
+default 2 -- answer them with `apoapsis discover answer-frontier-questions`
+and export again) or a complete plan. A returned plan becomes an entirely
+ordinary Architect Mode plan -- inspect, validate, and approve it exactly
+as described below, through the same unmodified commands:
+
+```bash
+apoapsis discover inspect DISC-ABC123
+apoapsis plan validate PLAN-...
+apoapsis plan approve PLAN-... --expected-version 2
+```
+
+Neither model can approve a plan, invent a verification-command name,
+bypass a ceiling, execute a slice, or choose a workflow transition. The
+manual transport never automates a subscription website and never records
+a token count or cost (there is nothing to measure on a manual paste); the
+API transport shows the configured provider/model and a pessimistic
+worst-case cost before any call, requires an explicit spend ceiling, and
+persists real measured cost.
 
 ## Architect Mode: deterministic planning foundation (ADR 0019)
 

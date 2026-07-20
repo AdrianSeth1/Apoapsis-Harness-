@@ -130,6 +130,36 @@ action alongside `authorize_frontier_stage`, following the identical
 two-step-confirmation/background-worker/polling pattern ADR 0020 Commit C2
 already established.
 
+### Done -- local-first Architect Mode discovery and frontier planning handoff (ADR 0032)
+
+Added a bounded workflow in front of Architect Mode planning: the user
+enters an idea, a configured local model may propose up to a small,
+harness-enforced number of clarification questions, the user answers
+verbatim, and the local model may propose an `IdeaBrief` (`extra="forbid"`,
+no status field) that only the user can approve. Only after that approval
+does Apoapsis build an immutable `FrontierPlanningRequestPackage` (approved
+brief, verbatim Q&A, active hard constraints, verification catalog,
+Architect Mode ceilings, the complete plan/response schemas) and send it to
+a frontier model over either an explicitly configured, spend-ceilinged API
+transport (`apoapsis discover call-api`, reusing ADR 0030's
+`SpendCeilingModelProvider` unmodified) or a manual subscription transport
+(`apoapsis discover import-manual-response`, one self-contained
+`FRONTIER-PLANNING-HANDOFF.md`, never automating a website, tokens/cost
+always `unmeasured`). The frontier stage may return a bounded set of
+clarification questions (capped at `[discovery] max_frontier_clarification_
+rounds`, default 2) or a complete plan; a returned plan calls
+`SQLitePlanStore.create_plan()` directly -- the exact function
+`architect.importer.import_planner_response()` already calls -- so it
+becomes an entirely ordinary plan the existing, completely unmodified
+`apoapsis plan validate`/`apoapsis plan approve` commands work on
+unchanged. 20 new deterministic tests (`tests/test_discovery.py`); full
+suite 643/643 passing. See ADR 0032 and `HANDOFF.md`'s "Local-first
+discovery and frontier planning handoff" section for full detail.
+
+**Not done in this milestone**: a local UI surface for this path (CLI/
+service only so far, mirroring ADR 0031's own current scope). The exact
+next UI seam is described in ADR 0032's Non-goals.
+
 ## For future coding agents
 
 Read `AGENTS.md`, then all of `HANDOFF.md`, before making changes. Check the Git

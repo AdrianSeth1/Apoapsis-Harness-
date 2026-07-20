@@ -326,6 +326,23 @@ class ReviewConfig(StrictModel):
     max_additional_turns_per_continuation: int = Field(default=12, ge=1, le=50)
 
 
+class DiscoveryConfig(StrictModel):
+    """Ceilings for local-first Architect Mode discovery followed by an
+    optional frontier planning stage (ADR 0032). ``max_clarification_
+    questions`` is a harness-enforced cap on the local model's proposed
+    question count -- never trusted from the model's own output count.
+    ``max_frontier_clarification_rounds`` bounds the frontier stage to a
+    small, deterministic number of clarification exchanges before it must
+    return a complete plan; this is never a general chat. Response/patch
+    size ceilings mirror `ManualFrontierConfig`'s own, applied to the
+    frontier planning manual-subscription transport.
+    """
+
+    max_clarification_questions: int = Field(default=5, ge=1, le=20)
+    max_frontier_clarification_rounds: int = Field(default=2, ge=0, le=10)
+    max_response_bytes: int = Field(default=2_000_000, ge=1_000, le=20_000_000)
+
+
 class ManualFrontierConfig(StrictModel):
     """Ceilings for the manual subscription-based frontier handoff (ADR
     0031). This path never authenticates to a hosted API and never
@@ -354,6 +371,7 @@ class ApoapsisConfig(StrictModel):
     architect: ArchitectConfig = Field(default_factory=ArchitectConfig)
     review: ReviewConfig = Field(default_factory=ReviewConfig)
     manual_frontier: ManualFrontierConfig = Field(default_factory=ManualFrontierConfig)
+    discovery: DiscoveryConfig = Field(default_factory=DiscoveryConfig)
 
     @model_validator(mode="after")
     def validate_provider_separation_and_route(self) -> ApoapsisConfig:
