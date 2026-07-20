@@ -27,6 +27,23 @@ const store = {
   intakeRequestText: "",
   executionOperation: null,
   executionConfirmPending: false,
+  manualFrontierPreviews: null,
+  manualFrontierExportPending: false,
+  manualFrontierExport: null,
+  manualFrontierImportForm: { packageId: "", responseText: "", declaredModelName: "" },
+  manualFrontierApprovePendingId: null,
+  manualFrontierApplyPreviewId: null,
+  discoverSessions: null,
+  discoverSession: null,
+  discoverOperation: null,
+  discoverIdeaText: "",
+  discoverAnswerDrafts: {},
+  discoverFrontierAnswerDrafts: {},
+  discoverTransportChoice: "manual",
+  discoverApiSpendUsd: "1.00",
+  discoverManualImportForm: { packageId: "", responseText: "", declaredModelName: "" },
+  discoverFrontierExportPaths: null,
+  discoverBriefApprovePending: false,
   route: { name: "home" },
   busy: false,
   error: null,
@@ -113,7 +130,10 @@ function parseRoute() {
   if (parts[0] === "review" && parts[1]) {
     return { name: "review", taskId: decodeURIComponent(parts[1]) };
   }
-  const allowed = new Set(["home", "new", "evaluations", "models", "plans", "reviews"]);
+  if (parts[0] === "discover" && parts[1]) {
+    return { name: "discoverSession", sessionId: decodeURIComponent(parts[1]) };
+  }
+  const allowed = new Set(["home", "new", "evaluations", "models", "plans", "reviews", "discover"]);
   return { name: allowed.has(parts[0]) ? parts[0] : "home" };
 }
 
@@ -164,11 +184,31 @@ async function syncRoute() {
         store.busy = true;
         render();
         store.reviewOperation = null;
+        store.manualFrontierExport = null;
+        store.manualFrontierApprovePendingId = null;
+        store.manualFrontierApplyPreviewId = null;
         store.review = await api(`/api/reviews/${encodeURIComponent(store.route.taskId)}`);
+        store.manualFrontierPreviews = await api(
+          `/api/reviews/${encodeURIComponent(store.route.taskId)}/manual-frontier/previews`
+        ).catch(() => ({ previews: [] }));
         resumePendingReviewOperationPoll(store.route.taskId);
       }
     } else if (store.route.name === "new") {
       resumePendingIntakeOperationPoll();
+    } else if (store.route.name === "discover" && store.discoverSessions === null) {
+      store.busy = true;
+      render();
+      store.discoverSessions = await api("/api/discovery/sessions");
+    } else if (store.route.name === "discoverSession") {
+      if (!store.discoverSession || store.discoverSession.session.session_id !== store.route.sessionId) {
+        store.busy = true;
+        render();
+        store.discoverOperation = null;
+        store.discoverSession = await api(
+          `/api/discovery/sessions/${encodeURIComponent(store.route.sessionId)}`
+        );
+        resumePendingDiscoveryOperationPoll(store.route.sessionId);
+      }
     }
   } catch (error) {
     store.error = error.message;
@@ -210,6 +250,7 @@ function sidebar() {
         <a class="nav-link${active("new")}" href="#/new"><span class="nav-dot"></span><span>New task</span></a>
         <a class="nav-link${active("plans")}" href="#/plans"><span class="nav-dot"></span><span>Plans</span></a>
         <a class="nav-link${active("reviews")}" href="#/reviews"><span class="nav-dot"></span><span>Human review queue</span></a>
+        <a class="nav-link${active("discover") || active("discoverSession")}" href="#/discover"><span class="nav-dot"></span><span>Discovery & planning</span></a>
         <a class="nav-link${active("evaluations")}" href="#/evaluations"><span class="nav-dot"></span><span>Evaluations</span></a>
         <a class="nav-link${active("models")}" href="#/models"><span class="nav-dot"></span><span>Models & environment</span></a>
       </nav>
@@ -250,6 +291,7 @@ function topbar() {
 
 function routeTitle() {
   if (store.route.name === "task") return titleCase(store.route.view);
+  if (store.route.name === "discoverSession") return "Discovery";
   return titleCase(store.route.name);
 }
 
@@ -828,7 +870,102 @@ function reviewDetailView(detail) {
 
     <p class="section-title">Eligible actions</p>
     <section class="card card-pad">${reviewActionPanel(detail, eligible)}</section>
+
+    ${manualFrontierSection(detail, eligible)}
   </main>`;
+}
+
+// ---- Manual subscription-based frontier coding handoff (ADR 0031, 0033) ----
+
+function manualFrontierSection(detail, eligible) {
+  const previews = store.manualFrontierPreviews?.previews || [];
+  const eligibleForHandoff = eligible.includes("manual_frontier_handoff");
+  if (!eligibleForHandoff && !previews.length) return "";
+  return `
+    <p class="section-title">Manual subscription-based frontier handoff</p>
+    <section class="card card-pad">
+      <p class="muted">Use this when you have a ChatGPT or Claude <em>subscription</em> but no configured API credential. Apoapsis never automates either website and never stores or reuses your subscription session -- you upload one file by hand and paste back one response.</p>
+      ${eligibleForHandoff ? manualFrontierExportPanel(detail) : `<div class="notice mt-14">Manual handoff is not currently eligible for this task${previews.length ? " -- showing prior previews below." : "."}</div>`}
+      ${manualFrontierImportPanel(detail)}
+      ${previews.length ? manualFrontierPreviewList(detail, previews) : ""}
+    </section>`;
+}
+
+function manualFrontierExportPanel(detail) {
+  const exported = store.manualFrontierExport;
+  return `
+    <div class="mt-14">
+      <button class="button primary" data-action="manual-frontier-export" ${store.busy ? "disabled" : ""}>${store.manualFrontierExportPending ? "Exporting…" : "Export handoff package →"}</button>
+    </div>
+    ${exported ? manualFrontierExportResult(exported) : ""}`;
+}
+
+function manualFrontierExportResult(exported) {
+  const pkg = exported.package;
+  return `<div class="notice mt-14">
+    <strong>Upload this file to ChatGPT or Claude:</strong>
+    <div class="mt-14 file-item"><span>File to upload</span><code>${e(exported.markdown_artifact_absolute_path)}</code><button class="button ghost" data-action="copy-path" data-copy-path="${e(exported.markdown_artifact_absolute_path)}">Copy path</button></div>
+    <div class="file-item"><span>Canonical package (JSON)</span><code>${e(exported.package_artifact_absolute_path)}</code></div>
+    <div class="mono mt-14">PACKAGE ID: ${e(pkg.package_id)} · HASH: ${e(pkg.package_sha256)} · REPAIR ROUND: ${e(pkg.repair_round)}</div>
+    <p class="mt-14">Ask the model to return <strong>only</strong> the JSON response object the file describes, then paste it below (or upload the saved response file) once you have it.</p>
+  </div>`;
+}
+
+function manualFrontierImportPanel(detail) {
+  const form = store.manualFrontierImportForm;
+  return `<div class="mt-18">
+    <p class="section-title mt-0">Paste the response, or upload it as a file</p>
+    <div class="grid two">
+      <div>
+        <label class="section-title mt-0" for="mf-package-id">Package ID</label>
+        <input id="mf-package-id" class="mono" type="text" placeholder="MFH-..." value="${e(form.packageId)}">
+        <label class="section-title" for="mf-declared-model">Declared subscription model (operator-provided, unverified)</label>
+        <input id="mf-declared-model" class="mono" type="text" placeholder="claude-opus-4.6-web" value="${e(form.declaredModelName)}">
+      </div>
+      <div>
+        <label class="section-title mt-0" for="mf-response-text">Pasted response JSON</label>
+        <textarea id="mf-response-text" class="mono" rows="6" placeholder="{...}">${e(form.responseText)}</textarea>
+        <input id="mf-response-file" type="file" accept=".json,.txt,application/json,text/plain" class="mt-14">
+      </div>
+    </div>
+    <div class="flex-end mt-16"><button class="button primary" data-action="manual-frontier-import" ${store.busy ? "disabled" : ""}>Validate & preview →</button></div>
+  </div>`;
+}
+
+const MANUAL_FRONTIER_PREVIEW_STATUS = {
+  previewed: { label: "Previewed", pill: "warn" },
+  approved: { label: "Approved -- ready to apply", pill: "purple" },
+  applied: { label: "Applied", pill: "good" },
+  superseded: { label: "Superseded", pill: "bad" },
+};
+
+function manualFrontierPreviewList(detail, previews) {
+  return `<p class="section-title">Imported previews · ${previews.length}</p>
+    <div class="verification-list">${previews.slice().reverse().map((preview) => manualFrontierPreviewItem(detail, preview)).join("")}</div>`;
+}
+
+function manualFrontierPreviewItem(detail, preview) {
+  const stage = MANUAL_FRONTIER_PREVIEW_STATUS[preview.status] || { label: preview.status, pill: "warn" };
+  const canApprove = preview.status === "previewed";
+  const canApply = preview.status === "approved";
+  const pendingApprove = store.manualFrontierApprovePendingId === preview.preview_id;
+  const pendingApply = store.manualFrontierApplyPreviewId === preview.preview_id;
+  return `<div class="verification-item">
+    <div style="flex:1">
+      <strong>${e(preview.preview_id)}</strong>
+      <p class="mono">DECLARED MODEL (operator-declared, unverified): ${e(preview.declared_model_name)}</p>
+      <p>${e(preview.summary || "(no summary provided)")}</p>
+      <p class="meta">${e(preview.files_changed.length)} file(s) · ${e(preview.changed_lines)} changed line(s) · TOKENS/COST: UNMEASURED</p>
+      ${preview.patch ? `<details class="mt-14"><summary>Patch preview</summary><div class="mono" style="white-space: pre-wrap; overflow-wrap: anywhere;">${e(preview.patch)}</div></details>` : ""}
+      ${canApprove ? (pendingApprove
+        ? `<div class="approval-actions mt-14"><button class="button ghost" data-action="manual-frontier-approve-cancel">Cancel</button><button class="button primary" data-action="manual-frontier-approve-confirm" data-preview-id="${e(preview.preview_id)}" data-task-version="${e(detail.task_version)}" ${store.busy ? "disabled" : ""}>Confirm approval →</button></div>`
+        : `<div class="mt-14"><button class="button primary" data-action="manual-frontier-approve-intent" data-preview-id="${e(preview.preview_id)}">Approve preview (step 1 of 2) →</button></div>`) : ""}
+      ${canApply ? (pendingApply
+        ? `<div class="approval-actions mt-14"><button class="button ghost" data-action="manual-frontier-apply-cancel">Cancel</button><button class="button primary" data-action="manual-frontier-apply-confirm" data-preview-id="${e(preview.preview_id)}" ${store.busy ? "disabled" : ""}>Confirm apply & verify →</button></div>`
+        : `<div class="mt-14"><button class="button primary" data-action="manual-frontier-apply-intent" data-preview-id="${e(preview.preview_id)}">Apply & verify (step 2 of 2) →</button></div>`) : ""}
+    </div>
+    <span class="pill ${stage.pill}">${e(stage.label)}</span>
+  </div>`;
 }
 
 function reviewOperationPanel() {
@@ -846,13 +983,18 @@ function reviewOperationPanel() {
 }
 
 function reviewActionPanel(detail, eligible) {
-  if (!eligible.length) {
-    return `<p class="muted">No actions are currently eligible for this task.</p>`;
+  // manual_frontier_handoff has its own dedicated, fully self-contained
+  // section below (export/import/approve/apply) -- showing it again here
+  // as a generic action card would just duplicate that section with a
+  // raw, un-humanized label.
+  const genericEligible = eligible.filter((action) => action !== "manual_frontier_handoff");
+  if (!genericEligible.length) {
+    return `<p class="muted">No actions are currently eligible for this task${eligible.includes("manual_frontier_handoff") ? " other than the manual frontier handoff below" : ""}.</p>`;
   }
   if (store.reviewConfirm) {
     return reviewConfirmPanel(detail, store.reviewConfirm.action);
   }
-  return `<div class="grid two">${eligible.map((action) => reviewActionButton(action)).join("")}</div>`;
+  return `<div class="grid two">${genericEligible.map((action) => reviewActionButton(action)).join("")}</div>`;
 }
 
 function reviewActionButton(action) {
@@ -1322,6 +1464,218 @@ function reportView(detail) {
   </main>`;
 }
 
+// ---- Local-first discovery and frontier planning handoff (ADR 0032, 0033) ----
+
+const DISCOVERY_STATUS_LABELS = {
+  idea_entered: "Idea entered",
+  local_questions_proposed: "Local questions proposed",
+  local_answers_recorded: "Local answers recorded",
+  brief_proposed: "Idea brief proposed",
+  brief_approved: "Idea brief approved",
+  frontier_package_exported: "Frontier package exported",
+  frontier_clarification_proposed: "Frontier clarification proposed",
+  frontier_answers_recorded: "Frontier answers recorded",
+  plan_imported: "Plan imported",
+  failed: "Failed",
+};
+
+const DISCOVERY_OPERATION_STAGE = {
+  recorded: { label: "Recorded", pill: "warn" },
+  running: { label: "Running", pill: "purple" },
+  succeeded: { label: "Succeeded", pill: "good" },
+  failed: { label: "Failed", pill: "bad" },
+  ambiguous: { label: "Ambiguous", pill: "bad" },
+};
+
+function discoverListView() {
+  const sessions = store.discoverSessions?.sessions || [];
+  return `<main class="content narrow">
+    <div class="page-heading"><div><p class="eyebrow">DISCOVERY / BOUNDED, LOCAL-FIRST</p><h1>Firm up an idea<br>before designing it.</h1><p>A configured local model may propose a small, capped set of clarification questions and one idea brief -- never a general chat. Only you can approve the brief; only you can choose whether a frontier model is reached over an API or a manual subscription upload.</p></div></div>
+    <section class="card card-pad">
+      <label class="section-title mt-0" for="discover-idea">Describe the idea</label>
+      <textarea id="discover-idea" class="mono" rows="4" placeholder="Add resumable downloads with a pluggable storage backend.">${e(store.discoverIdeaText)}</textarea>
+      <div class="flex-end mt-16"><button class="button primary" data-action="discover-start" ${store.busy ? "disabled" : ""}>Start discovery →</button></div>
+    </section>
+    <p class="section-title">Sessions · ${sessions.length}</p>
+    <section class="card">${sessions.length ? `<div class="task-list">${sessions.map(discoverSessionRow).join("")}</div>` : emptyState("No discovery sessions yet", "Start one above, or use apoapsis discover start \"<idea>\" from the CLI.")}</section>
+  </main>`;
+}
+
+function discoverSessionRow(session) {
+  const stage = { label: DISCOVERY_STATUS_LABELS[session.status] || session.status, pill: session.status === "failed" ? "bad" : session.status === "plan_imported" ? "good" : "purple" };
+  return `<a class="task-row" href="#/discover/${encodeURIComponent(session.session_id)}">
+    <div class="task-main"><strong>${e(session.idea_text)}</strong><span>${e(session.session_id)} · v${e(session.version)}</span></div>
+    <span class="pill ${stage.pill}">${e(stage.label)}</span>
+    <span class="meta">${e(formatDate(session.updated_at))}</span><span class="arrow">→</span>
+  </a>`;
+}
+
+function discoverGenerateOperationId() {
+  const raw = (window.crypto && window.crypto.randomUUID) ? window.crypto.randomUUID() : `${Date.now()}-${Math.random()}`;
+  return `DISCOP-${raw.replaceAll("-", "").slice(0, 24).toUpperCase()}`;
+}
+
+function discoverSessionView() {
+  if (!store.discoverSession) return loadingView();
+  const detail = store.discoverSession;
+  const session = detail.session;
+  const activeOp = detail.active_operation;
+  if (activeOp && (!store.discoverOperation || store.discoverOperation.operation_id !== activeOp.operation_id)) {
+    store.discoverOperation = activeOp;
+    if (["recorded", "running"].includes(activeOp.status)) {
+      pollDiscoveryOperation(session.session_id, activeOp.operation_id);
+    }
+  }
+  const operationActive = store.discoverOperation && ["recorded", "running"].includes(store.discoverOperation.status);
+  return `<main class="content">
+    <p><a href="#/discover">← Back to discovery sessions</a></p>
+    <div class="page-heading"><div><p class="eyebrow">DISCOVERY / ${e(session.session_id)}</p><h1>${e(session.idea_text)}</h1><p>Version ${e(session.version)} · updated ${e(formatDate(session.updated_at))}</p></div><span class="pill ${session.status === "failed" ? "bad" : session.status === "plan_imported" ? "good" : "purple"}">${e(DISCOVERY_STATUS_LABELS[session.status] || session.status)}</span></div>
+    ${discoveryOperationPanel()}
+    ${!operationActive ? discoverySessionBody(detail) : ""}
+  </main>`;
+}
+
+function discoveryOperationPanel() {
+  const op = store.discoverOperation;
+  if (!op) return "";
+  const stage = DISCOVERY_OPERATION_STAGE[op.status] || { label: op.status, pill: "warn" };
+  let note;
+  if (op.status === "running") note = "A background worker is calling the model now. It is safe to close this tab -- progress is persisted and will still be here on reconnect.";
+  else if (op.status === "recorded") note = "Accepted and durably recorded; waiting for the background worker to pick it up.";
+  else if (op.status === "ambiguous") note = "The process running this operation may have crashed. Whether the model call was transmitted before that happened is unknown -- it was never automatically repeated.";
+  else note = op.result_summary || op.error || "";
+  return `<section class="card card-pad mt-16">
+    <div class="constraint-head"><span class="constraint-id">OPERATION ${e(op.operation_id)} · ${e(titleCase(op.action))}</span><span class="pill ${stage.pill}">${e(stage.label)}</span></div>
+    <p class="muted">${e(note)}</p>
+  </section>`;
+}
+
+function discoverySessionBody(detail) {
+  const session = detail.session;
+  switch (session.status) {
+    case "idea_entered": return discoveryIdeaEnteredView(detail);
+    case "local_questions_proposed": return discoveryAnswerQuestionsView(detail, session.local_questions, "local");
+    case "local_answers_recorded": return discoveryProposeBriefView(detail);
+    case "brief_proposed": return discoveryBriefApprovalView(detail);
+    case "brief_approved": return discoveryTransportChoiceView(detail);
+    case "frontier_package_exported": return discoveryFrontierPackageView(detail);
+    case "frontier_clarification_proposed": return discoveryAnswerQuestionsView(detail, session.frontier_questions, "frontier");
+    case "frontier_answers_recorded": return discoveryTransportChoiceView(detail);
+    case "plan_imported": return discoveryPlanImportedView(detail);
+    case "failed": return discoveryFailedView(detail);
+    default: return "";
+  }
+}
+
+function discoveryIdeaEnteredView(detail) {
+  return `<section class="card card-pad mt-16">
+    <p class="section-title mt-0">Local clarification (optional)</p>
+    <p class="muted">A configured local model may propose up to ${e(detail.max_clarification_questions ?? 5)} clarification questions -- the harness caps the count regardless of how many the model returns. This step is optional; you may skip straight to an idea brief.</p>
+    <div class="approval-actions mt-14">
+      <button class="button primary" data-action="discover-op-submit" data-op-action="local_questions" data-session-id="${e(detail.session.session_id)}" data-version="${e(detail.session.version)}" ${store.busy ? "disabled" : ""}>Propose clarification questions →</button>
+      <button class="button ghost" data-action="discover-op-submit" data-op-action="idea_brief" data-session-id="${e(detail.session.session_id)}" data-version="${e(detail.session.version)}" ${store.busy ? "disabled" : ""}>Skip to idea brief →</button>
+    </div>
+  </section>`;
+}
+
+function discoveryAnswerQuestionsView(detail, questions, kind) {
+  const drafts = kind === "local" ? store.discoverAnswerDrafts : store.discoverFrontierAnswerDrafts;
+  return `<section class="card card-pad mt-16">
+    <p class="section-title mt-0">${kind === "local" ? "Local" : "Frontier"} clarification questions · ${questions.length}</p>
+    <p class="muted">Answer in your own words -- your answers are preserved verbatim, never rewritten or answered on your behalf.</p>
+    ${questions.map((q) => `<div class="mt-14"><label class="section-title mt-0" for="discover-answer-${e(q.question_id)}">${e(q.text)}</label><textarea id="discover-answer-${e(q.question_id)}" data-question-id="${e(q.question_id)}" data-answer-kind="${kind}" class="mono" rows="2">${e(drafts[q.question_id] || "")}</textarea></div>`).join("")}
+    <div class="flex-end mt-16"><button class="button primary" data-action="discover-answer-submit" data-answer-kind="${kind}" data-session-id="${e(detail.session.session_id)}" data-version="${e(detail.session.version)}" ${store.busy ? "disabled" : ""}>Submit answers →</button></div>
+  </section>`;
+}
+
+function discoveryProposeBriefView(detail) {
+  return `<section class="card card-pad mt-16">
+    <p class="section-title mt-0">Answers recorded</p>
+    ${(detail.session.local_answers || []).map((a) => `<div class="file-item"><span>${e(a.question_id)}</span><span>${e(a.text)}</span></div>`).join("")}
+    <div class="mt-16"><button class="button primary" data-action="discover-op-submit" data-op-action="idea_brief" data-session-id="${e(detail.session.session_id)}" data-version="${e(detail.session.version)}" ${store.busy ? "disabled" : ""}>Propose idea brief →</button></div>
+  </section>`;
+}
+
+function discoveryBriefApprovalView(detail) {
+  const brief = detail.session.idea_brief;
+  const pending = store.discoverBriefApprovePending;
+  return `<section class="card card-pad mt-16">
+    <p class="section-title mt-0">Proposed idea brief</p>
+    <p class="objective">${e(brief.summary)}</p>
+    ${brief.goals.length ? `<p class="section-title">Goals</p><ul>${brief.goals.map((g) => `<li>${e(g)}</li>`).join("")}</ul>` : ""}
+    ${brief.non_goals.length ? `<p class="section-title">Non-goals</p><ul>${brief.non_goals.map((g) => `<li>${e(g)}</li>`).join("")}</ul>` : ""}
+    ${brief.key_constraints.length ? `<p class="section-title">Key constraints (verbatim)</p>${brief.key_constraints.map(constraintCard).join("")}` : ""}
+    ${brief.open_questions.length ? `<p class="section-title">Open questions</p><ul>${brief.open_questions.map((g) => `<li>${e(g)}</li>`).join("")}</ul>` : ""}
+    <div class="approval-bar mt-16"><div><strong>${pending ? "Confirm approval" : "Only you can approve this brief"}</strong><span>${pending ? `Approve version ${e(detail.session.version)}.` : "The local model proposed this brief; it has no authority to approve it itself."}</span></div><div class="approval-actions">${pending ? `<button class="button ghost" data-action="discover-brief-approve-cancel">Cancel</button><button class="button primary" data-action="discover-brief-approve-confirm" data-session-id="${e(detail.session.session_id)}" data-version="${e(detail.session.version)}" ${store.busy ? "disabled" : ""}>Confirm approval →</button>` : `<button class="button primary" data-action="discover-brief-approve-intent">Approve idea brief →</button>`}</div></div>
+  </section>`;
+}
+
+function discoveryTransportChoiceView(detail) {
+  const choice = store.discoverTransportChoice;
+  return `<section class="card card-pad mt-16">
+    <p class="section-title mt-0">Choose a frontier planning transport</p>
+    <p class="muted">Neither transport can approve a plan, invent a verification-command name, bypass a ceiling, or execute a slice.</p>
+    <div class="grid two mt-14">
+      <label class="constraint" style="cursor:pointer"><input type="radio" name="discover-transport" value="api" ${choice === "api" ? "checked" : ""} ${detail.frontier_api_configured ? "" : "disabled"}> <strong>API</strong> -- explicitly configured, spend-ceilinged.${detail.frontier_api_configured ? "" : " (not configured)"}</label>
+      <label class="constraint" style="cursor:pointer"><input type="radio" name="discover-transport" value="manual" ${choice === "manual" ? "checked" : ""}> <strong>Manual subscription</strong> -- upload one file, paste one response.</label>
+    </div>
+    <div class="flex-end mt-16"><button class="button primary" data-action="discover-export-package" data-session-id="${e(detail.session.session_id)}" data-version="${e(detail.session.version)}" ${store.busy ? "disabled" : ""}>Export frontier package →</button></div>
+  </section>`;
+}
+
+function discoveryFrontierPackageView(detail) {
+  const pkg = detail.frontier_package;
+  const session = detail.session;
+  return `<section class="card card-pad mt-16">
+    <p class="section-title mt-0">Frontier package exported · ${e(session.frontier_transport)} transport</p>
+    <div class="mono">PACKAGE ID: ${e(pkg.package_id)} · HASH: ${e(pkg.package_sha256)} · ROUND ${e(pkg.frontier_round)} of ${e(pkg.max_clarification_rounds)}</div>
+    ${session.frontier_transport === "manual" ? discoveryManualTransportPanel(detail) : discoveryApiTransportPanel(detail)}
+  </section>`;
+}
+
+function discoveryManualTransportPanel(detail) {
+  const exported = store.discoverFrontierExportPaths;
+  const form = store.discoverManualImportForm;
+  return `
+    ${exported ? `<div class="notice mt-14"><strong>Upload this file to ChatGPT or Claude:</strong><div class="mt-14 file-item"><span>File to upload</span><code>${e(exported.markdown_artifact_absolute_path)}</code><button class="button ghost" data-action="copy-path" data-copy-path="${e(exported.markdown_artifact_absolute_path)}">Copy path</button></div></div>` : `<p class="muted mt-14">The self-contained handoff Markdown file was written to this task's audit directory; re-export to see its path again if you navigated away.</p>`}
+    <p class="section-title">Paste the response, or upload it as a file</p>
+    <div class="grid two">
+      <div>
+        <label class="section-title mt-0" for="discover-mf-package-id">Package ID</label>
+        <input id="discover-mf-package-id" class="mono" type="text" value="${e(form.packageId || detail.frontier_package.package_id)}">
+        <label class="section-title" for="discover-mf-declared-model">Declared subscription model (operator-provided, unverified)</label>
+        <input id="discover-mf-declared-model" class="mono" type="text" placeholder="claude-opus-4.6-web" value="${e(form.declaredModelName)}">
+      </div>
+      <div>
+        <label class="section-title mt-0" for="discover-mf-response-text">Pasted response JSON</label>
+        <textarea id="discover-mf-response-text" class="mono" rows="6">${e(form.responseText)}</textarea>
+        <input id="discover-mf-response-file" type="file" accept=".json,.txt,application/json,text/plain" class="mt-14">
+      </div>
+    </div>
+    <div class="flex-end mt-16"><button class="button primary" data-action="discover-import-manual" data-session-id="${e(detail.session.session_id)}" ${store.busy ? "disabled" : ""}>Validate & apply response →</button></div>`;
+}
+
+function discoveryApiTransportPanel(detail) {
+  const preview = detail.api_preview;
+  if (!preview) return `<div class="notice mt-14">No API provider is configured for this project.</div>`;
+  return `
+    <div class="mt-14 mono">PROVIDER: ${e(preview.provider)} · MODEL: ${e(preview.model)}</div>
+    <div class="mono">MAX CALLS THIS ROUND: ${e(preview.max_calls_this_round)} · WORST-CASE COST: $${Number(preview.worst_case_call_cost_usd).toFixed(4)}</div>
+    <div class="mt-14"><label class="section-title mt-0" for="discover-spend-ceiling">Authorized spend ceiling (USD) for this one call</label><input id="discover-spend-ceiling" type="number" min="0" step="0.01" class="mono" value="${e(store.discoverApiSpendUsd)}"></div>
+    <div class="flex-end mt-16"><button class="button primary" data-action="discover-call-api" data-session-id="${e(detail.session.session_id)}" data-version="${e(detail.session.version)}" ${store.busy ? "disabled" : ""}>Authorize & call →</button></div>`;
+}
+
+function discoveryPlanImportedView(detail) {
+  const session = detail.session;
+  const plan = detail.plan_summary;
+  return `<section class="card result-hero mt-16"><div class="result-outcome"><span class="result-orb"></span><div><h2>Plan imported</h2><p>The frontier model returned a complete plan. It became an entirely ordinary Architect Mode plan -- review, validate, and approve it on the Plans page exactly as any other plan.</p></div></div></section>
+  ${plan ? `<section class="card card-pad mt-16"><p class="section-title mt-0">${e(plan.architecture_summary)}</p><div class="mono">${e(plan.plan_id)} · ${e(titleCase(plan.status))} · ${e(plan.slice_count)} slice(s)</div><div class="mt-14"><a class="button primary" href="#/plan/${encodeURIComponent(session.plan_id)}/overview">Open plan →</a></div></section>` : ""}`;
+}
+
+function discoveryFailedView(detail) {
+  return `<div class="notice mt-16">This discovery session stopped: ${e(detail.session.failure_reason || "no reason recorded")}</div>`;
+}
+
 function metric(label, value, note) {
   return `<article class="card metric"><span>${e(label)}</span><strong>${e(value)}</strong><small>${e(note)}</small></article>`;
 }
@@ -1350,6 +1704,8 @@ function render() {
   else if (store.route.name === "plans") view = plansView();
   else if (store.route.name === "review") view = reviewView();
   else if (store.route.name === "reviews") view = reviewsView();
+  else if (store.route.name === "discoverSession") view = discoverSessionView();
+  else if (store.route.name === "discover") view = discoverListView();
   else if (store.route.name === "new") view = newTaskView();
   else if (store.route.name === "evaluations") view = evaluationsView();
   else if (store.route.name === "models") view = modelsView();
@@ -1463,6 +1819,317 @@ async function approvePlanSlice(button) {
   }
 }
 
+// ---- Manual frontier coding handoff actions ----
+
+async function exportManualFrontierHandoff(taskId) {
+  store.busy = true;
+  store.error = null;
+  store.manualFrontierExportPending = true;
+  render();
+  try {
+    store.manualFrontierExport = await api(
+      `/api/reviews/${encodeURIComponent(taskId)}/manual-frontier/export`,
+      { method: "POST", body: JSON.stringify({}) }
+    );
+  } catch (error) {
+    store.error = error.message;
+  } finally {
+    store.busy = false;
+    store.manualFrontierExportPending = false;
+    render();
+  }
+}
+
+async function readFileFieldAsText(inputId) {
+  const field = document.getElementById(inputId);
+  if (!field || !field.files || !field.files.length) return null;
+  return await field.files[0].text();
+}
+
+async function importManualFrontierResponse(taskId) {
+  const packageId = (document.getElementById("mf-package-id")?.value || "").trim();
+  const declaredModelName = (document.getElementById("mf-declared-model")?.value || "").trim();
+  let responseText = (document.getElementById("mf-response-text")?.value || "").trim();
+  const fileText = await readFileFieldAsText("mf-response-file");
+  if (fileText) responseText = fileText;
+  store.manualFrontierImportForm = { packageId, responseText, declaredModelName };
+  if (!packageId || !responseText || !declaredModelName) {
+    store.error = "Package ID, declared model name, and a response (pasted or uploaded) are all required.";
+    render();
+    return;
+  }
+  const previewId = `MFPV-${(window.crypto?.randomUUID ? window.crypto.randomUUID() : `${Date.now()}-${Math.random()}`).replaceAll("-", "").slice(0, 24).toUpperCase()}`;
+  store.busy = true;
+  store.error = null;
+  render();
+  try {
+    await api(`/api/reviews/${encodeURIComponent(taskId)}/manual-frontier/import`, {
+      method: "POST",
+      body: JSON.stringify({ package_id: packageId, response_text: responseText, declared_model_name: declaredModelName, preview_id: previewId }),
+    });
+    store.manualFrontierImportForm = { packageId: "", responseText: "", declaredModelName: "" };
+    store.manualFrontierPreviews = await api(`/api/reviews/${encodeURIComponent(taskId)}/manual-frontier/previews`);
+  } catch (error) {
+    store.error = error.message;
+  } finally {
+    store.busy = false;
+    render();
+  }
+}
+
+async function approveManualFrontierPreview(taskId, previewId, taskVersion) {
+  store.busy = true;
+  store.error = null;
+  render();
+  try {
+    await api(
+      `/api/reviews/${encodeURIComponent(taskId)}/manual-frontier/previews/${encodeURIComponent(previewId)}/approve`,
+      { method: "POST", body: JSON.stringify({ expected_version: taskVersion }) }
+    );
+    store.manualFrontierPreviews = await api(`/api/reviews/${encodeURIComponent(taskId)}/manual-frontier/previews`);
+    store.manualFrontierApprovePendingId = null;
+  } catch (error) {
+    store.error = error.message;
+  } finally {
+    store.busy = false;
+    render();
+  }
+}
+
+async function applyManualFrontierPreview(taskId, previewId) {
+  const detail = store.review;
+  const operationId = reviewGenerateOperationId();
+  const payload = {
+    action: "manual_frontier_handoff",
+    operation_id: operationId,
+    expected_version: detail.task_version,
+    manual_frontier_preview_id: previewId,
+  };
+  if (detail.worktree_fingerprint) payload.expected_worktree_fingerprint = detail.worktree_fingerprint;
+  window.sessionStorage.setItem(reviewOperationStorageKey(taskId), JSON.stringify({ operationId, action: "manual_frontier_handoff" }));
+  store.busy = true;
+  store.error = null;
+  store.manualFrontierApplyPreviewId = null;
+  render();
+  try {
+    const record = await api(`/api/reviews/${encodeURIComponent(taskId)}/operations`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+    store.reviewOperation = record;
+    pollReviewOperation(taskId, operationId);
+  } catch (error) {
+    store.error = error.message;
+    window.sessionStorage.removeItem(reviewOperationStorageKey(taskId));
+  } finally {
+    store.busy = false;
+    render();
+  }
+}
+
+// ---- Discovery and frontier planning handoff actions ----
+
+async function startDiscoverySession() {
+  const field = document.getElementById("discover-idea");
+  const ideaText = (field ? field.value : store.discoverIdeaText || "").trim();
+  if (!ideaText) {
+    store.error = "Describe the idea before starting discovery.";
+    render();
+    return;
+  }
+  store.discoverIdeaText = ideaText;
+  store.busy = true;
+  store.error = null;
+  render();
+  try {
+    const record = await api("/api/discovery/sessions", {
+      method: "POST",
+      body: JSON.stringify({ idea_text: ideaText }),
+    });
+    store.discoverIdeaText = "";
+    store.discoverSessions = null;
+    window.location.hash = `#/discover/${encodeURIComponent(record.session_id)}`;
+  } catch (error) {
+    store.error = error.message;
+  } finally {
+    store.busy = false;
+    render();
+  }
+}
+
+let discoveryPollHandle = null;
+
+async function pollDiscoveryOperation(sessionId, operationId) {
+  if (discoveryPollHandle) {
+    clearTimeout(discoveryPollHandle);
+    discoveryPollHandle = null;
+  }
+  try {
+    const record = await api(`/api/discovery/operations/${encodeURIComponent(operationId)}`);
+    store.discoverOperation = record;
+    render();
+    if (record.status === "recorded" || record.status === "running") {
+      discoveryPollHandle = setTimeout(() => pollDiscoveryOperation(sessionId, operationId), 2000);
+      return;
+    }
+    window.sessionStorage.removeItem(discoveryOperationStorageKey(sessionId));
+    if (store.route.name === "discoverSession" && store.route.sessionId === sessionId) {
+      store.discoverSession = await api(`/api/discovery/sessions/${encodeURIComponent(sessionId)}`);
+      render();
+    }
+  } catch (error) {
+    store.error = error.message;
+    render();
+  }
+}
+
+function discoveryOperationStorageKey(sessionId) {
+  return `apoapsis-discovery-operation-${sessionId}`;
+}
+
+function resumePendingDiscoveryOperationPoll(sessionId) {
+  const raw = window.sessionStorage.getItem(discoveryOperationStorageKey(sessionId));
+  if (!raw) return;
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && parsed.operationId) pollDiscoveryOperation(sessionId, parsed.operationId);
+  } catch (error) {
+    window.sessionStorage.removeItem(discoveryOperationStorageKey(sessionId));
+  }
+}
+
+async function submitDiscoveryOperation(sessionId, action, version, extra = {}) {
+  const operationId = discoverGenerateOperationId();
+  window.sessionStorage.setItem(discoveryOperationStorageKey(sessionId), JSON.stringify({ operationId, action }));
+  store.busy = true;
+  store.error = null;
+  render();
+  try {
+    const record = await api(`/api/discovery/sessions/${encodeURIComponent(sessionId)}/operations`, {
+      method: "POST",
+      body: JSON.stringify({ action, operation_id: operationId, expected_version: version, ...extra }),
+    });
+    store.discoverOperation = record;
+    pollDiscoveryOperation(sessionId, operationId);
+  } catch (error) {
+    store.error = error.message;
+    window.sessionStorage.removeItem(discoveryOperationStorageKey(sessionId));
+  } finally {
+    store.busy = false;
+    render();
+  }
+}
+
+async function submitDiscoveryAnswers(sessionId, kind, version) {
+  const drafts = kind === "local" ? store.discoverAnswerDrafts : store.discoverFrontierAnswerDrafts;
+  const questions = kind === "local" ? store.discoverSession.session.local_questions : store.discoverSession.session.frontier_questions;
+  const answers = questions.map((q) => ({ question_id: q.question_id, text: (drafts[q.question_id] || "").trim() }));
+  if (answers.some((a) => !a.text)) {
+    store.error = "Answer every question before submitting.";
+    render();
+    return;
+  }
+  store.busy = true;
+  store.error = null;
+  render();
+  try {
+    const endpoint = kind === "local" ? "answers" : "frontier-answers";
+    await api(`/api/discovery/sessions/${encodeURIComponent(sessionId)}/${endpoint}`, {
+      method: "POST",
+      body: JSON.stringify({ answers, expected_version: version }),
+    });
+    store.discoverSession = await api(`/api/discovery/sessions/${encodeURIComponent(sessionId)}`);
+    if (kind === "local") store.discoverAnswerDrafts = {}; else store.discoverFrontierAnswerDrafts = {};
+  } catch (error) {
+    store.error = error.message;
+  } finally {
+    store.busy = false;
+    render();
+  }
+}
+
+async function approveDiscoveryBrief(sessionId, version) {
+  store.busy = true;
+  store.error = null;
+  render();
+  try {
+    await api(`/api/discovery/sessions/${encodeURIComponent(sessionId)}/approve-brief`, {
+      method: "POST",
+      body: JSON.stringify({ expected_version: version }),
+    });
+    store.discoverSession = await api(`/api/discovery/sessions/${encodeURIComponent(sessionId)}`);
+    store.discoverBriefApprovePending = false;
+  } catch (error) {
+    store.error = error.message;
+  } finally {
+    store.busy = false;
+    render();
+  }
+}
+
+async function exportDiscoveryFrontierPackage(sessionId, version) {
+  const selected = document.querySelector('input[name="discover-transport"]:checked');
+  const transport = selected ? selected.value : store.discoverTransportChoice;
+  store.discoverTransportChoice = transport;
+  store.busy = true;
+  store.error = null;
+  render();
+  try {
+    const result = await api(`/api/discovery/sessions/${encodeURIComponent(sessionId)}/export-frontier-package`, {
+      method: "POST",
+      body: JSON.stringify({ transport, expected_version: version }),
+    });
+    store.discoverFrontierExportPaths = result;
+    store.discoverSession = await api(`/api/discovery/sessions/${encodeURIComponent(sessionId)}`);
+  } catch (error) {
+    store.error = error.message;
+  } finally {
+    store.busy = false;
+    render();
+  }
+}
+
+async function importDiscoveryManualResponse(sessionId) {
+  const packageId = (document.getElementById("discover-mf-package-id")?.value || "").trim();
+  const declaredModelName = (document.getElementById("discover-mf-declared-model")?.value || "").trim();
+  let responseText = (document.getElementById("discover-mf-response-text")?.value || "").trim();
+  const fileText = await readFileFieldAsText("discover-mf-response-file");
+  if (fileText) responseText = fileText;
+  if (!packageId || !responseText || !declaredModelName) {
+    store.error = "Package ID, declared model name, and a response (pasted or uploaded) are all required.";
+    render();
+    return;
+  }
+  store.busy = true;
+  store.error = null;
+  render();
+  try {
+    await api(`/api/discovery/sessions/${encodeURIComponent(sessionId)}/import-manual-response`, {
+      method: "POST",
+      body: JSON.stringify({ package_id: packageId, response_text: responseText, declared_model_name: declaredModelName }),
+    });
+    store.discoverManualImportForm = { packageId: "", responseText: "", declaredModelName: "" };
+    store.discoverSession = await api(`/api/discovery/sessions/${encodeURIComponent(sessionId)}`);
+  } catch (error) {
+    store.error = error.message;
+  } finally {
+    store.busy = false;
+    render();
+  }
+}
+
+async function callDiscoveryFrontierApi(sessionId, version) {
+  const spendField = document.getElementById("discover-spend-ceiling");
+  const authorizedMaxSpendUsd = Number(spendField ? spendField.value : store.discoverApiSpendUsd);
+  if (!Number.isFinite(authorizedMaxSpendUsd) || authorizedMaxSpendUsd < 0) {
+    store.error = "Enter a valid, non-negative spend ceiling before authorizing.";
+    render();
+    return;
+  }
+  store.discoverApiSpendUsd = String(authorizedMaxSpendUsd);
+  await submitDiscoveryOperation(sessionId, "frontier_api_call", version, { authorized_max_spend_usd: authorizedMaxSpendUsd });
+}
+
 root.addEventListener("click", (event) => {
   const button = event.target.closest("[data-action]");
   if (!button) return;
@@ -1532,11 +2199,97 @@ root.addEventListener("click", (event) => {
       button.dataset.authorizationSha256
     );
   }
+  if (button.dataset.action === "copy-path") {
+    const path = button.dataset.copyPath || "";
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(path).then(() => {
+        button.textContent = "Copied";
+        setTimeout(() => { button.textContent = "Copy path"; }, 1500);
+      }).catch(() => {});
+    }
+  }
+  if (button.dataset.action === "manual-frontier-export") {
+    exportManualFrontierHandoff(store.route.taskId);
+  }
+  if (button.dataset.action === "manual-frontier-import") {
+    importManualFrontierResponse(store.route.taskId);
+  }
+  if (button.dataset.action === "manual-frontier-approve-intent") {
+    store.manualFrontierApprovePendingId = button.dataset.previewId;
+    render();
+  }
+  if (button.dataset.action === "manual-frontier-approve-cancel") {
+    store.manualFrontierApprovePendingId = null;
+    render();
+  }
+  if (button.dataset.action === "manual-frontier-approve-confirm") {
+    approveManualFrontierPreview(store.route.taskId, button.dataset.previewId, Number(button.dataset.taskVersion));
+  }
+  if (button.dataset.action === "manual-frontier-apply-intent") {
+    store.manualFrontierApplyPreviewId = button.dataset.previewId;
+    render();
+  }
+  if (button.dataset.action === "manual-frontier-apply-cancel") {
+    store.manualFrontierApplyPreviewId = null;
+    render();
+  }
+  if (button.dataset.action === "manual-frontier-apply-confirm") {
+    applyManualFrontierPreview(store.route.taskId, button.dataset.previewId);
+  }
+  if (button.dataset.action === "discover-start") startDiscoverySession();
+  if (button.dataset.action === "discover-op-submit") {
+    submitDiscoveryOperation(button.dataset.sessionId, button.dataset.opAction, Number(button.dataset.version));
+  }
+  if (button.dataset.action === "discover-answer-submit") {
+    submitDiscoveryAnswers(button.dataset.sessionId, button.dataset.answerKind, Number(button.dataset.version));
+  }
+  if (button.dataset.action === "discover-brief-approve-intent") {
+    store.discoverBriefApprovePending = true;
+    render();
+  }
+  if (button.dataset.action === "discover-brief-approve-cancel") {
+    store.discoverBriefApprovePending = false;
+    render();
+  }
+  if (button.dataset.action === "discover-brief-approve-confirm") {
+    approveDiscoveryBrief(button.dataset.sessionId, Number(button.dataset.version));
+  }
+  if (button.dataset.action === "discover-export-package") {
+    exportDiscoveryFrontierPackage(button.dataset.sessionId, Number(button.dataset.version));
+  }
+  if (button.dataset.action === "discover-import-manual") {
+    importDiscoveryManualResponse(button.dataset.sessionId);
+  }
+  if (button.dataset.action === "discover-call-api") {
+    callDiscoveryFrontierApi(button.dataset.sessionId, Number(button.dataset.version));
+  }
 });
 
 root.addEventListener("input", (event) => {
-  if (event.target && event.target.id === "intake-request") {
-    store.intakeRequestText = event.target.value;
+  const target = event.target;
+  if (!target) return;
+  if (target.id === "intake-request") {
+    store.intakeRequestText = target.value;
+  }
+  if (target.id === "discover-idea") {
+    store.discoverIdeaText = target.value;
+  }
+  if (target.dataset && target.dataset.questionId) {
+    const drafts = target.dataset.answerKind === "local" ? store.discoverAnswerDrafts : store.discoverFrontierAnswerDrafts;
+    drafts[target.dataset.questionId] = target.value;
+  }
+  if (target.id === "mf-package-id") store.manualFrontierImportForm.packageId = target.value;
+  if (target.id === "mf-declared-model") store.manualFrontierImportForm.declaredModelName = target.value;
+  if (target.id === "mf-response-text") store.manualFrontierImportForm.responseText = target.value;
+  if (target.id === "discover-mf-package-id") store.discoverManualImportForm.packageId = target.value;
+  if (target.id === "discover-mf-declared-model") store.discoverManualImportForm.declaredModelName = target.value;
+  if (target.id === "discover-mf-response-text") store.discoverManualImportForm.responseText = target.value;
+  if (target.id === "discover-spend-ceiling") store.discoverApiSpendUsd = target.value;
+});
+
+root.addEventListener("change", (event) => {
+  if (event.target && event.target.name === "discover-transport") {
+    store.discoverTransportChoice = event.target.value;
   }
 });
 

@@ -22,11 +22,22 @@ from apoapsis.architect.errors import (
     SliceExecutionNotFoundError,
     SlicePackagingError,
 )
+from apoapsis.discovery.errors import (
+    DiscoveryError,
+    PackageNotFoundError as DiscoveryPackageNotFoundError,
+    SessionNotFoundError,
+)
+from apoapsis.discovery.operation_store import DiscoveryOperationNotFoundError
 from apoapsis.execution.operation_errors import (
     ExecutionOperationError,
     ExecutionOperationNotFoundError,
 )
 from apoapsis.intake.errors import IntakeError, IntakeOperationNotFoundError
+from apoapsis.manual_frontier.errors import (
+    ManualFrontierError,
+    PackageNotFoundError as ManualFrontierPackageNotFoundError,
+    PreviewNotFoundError,
+)
 from apoapsis.review.errors import FrontierUnavailableError, OperationNotFoundError, ReviewError
 from apoapsis.ui.application import ApoapsisUIService, UIActionError
 from apoapsis.workflow.engine import (
@@ -110,8 +121,48 @@ class ApoapsisUIRequestHandler(BaseHTTPRequestHandler):
         if path.startswith("/api/reviews/") and path.endswith("/operations"):
             self._handle_review_operation_submit(path)
             return
+        if path.startswith("/api/reviews/") and path.endswith("/manual-frontier/export"):
+            self._handle_manual_frontier_export(path)
+            return
+        if path.startswith("/api/reviews/") and path.endswith("/manual-frontier/import"):
+            self._handle_manual_frontier_import(path)
+            return
+        if (
+            "/manual-frontier/previews/" in path
+            and path.endswith("/approve")
+            and path.startswith("/api/reviews/")
+        ):
+            self._handle_manual_frontier_preview_approve(path)
+            return
         if path == "/api/intake/operations":
             self._handle_intake_operation_submit()
+            return
+        if path == "/api/discovery/sessions":
+            self._handle_discovery_session_start()
+            return
+        if path.startswith("/api/discovery/sessions/") and path.endswith("/operations"):
+            self._handle_discovery_operation_submit(path)
+            return
+        if path.startswith("/api/discovery/sessions/") and path.endswith("/answers"):
+            self._handle_discovery_local_answers(path)
+            return
+        if path.startswith("/api/discovery/sessions/") and path.endswith("/approve-brief"):
+            self._handle_discovery_approve_brief(path)
+            return
+        if path.startswith("/api/discovery/sessions/") and path.endswith(
+            "/export-frontier-package"
+        ):
+            self._handle_discovery_export_frontier_package(path)
+            return
+        if path.startswith("/api/discovery/sessions/") and path.endswith(
+            "/import-manual-response"
+        ):
+            self._handle_discovery_import_manual_response(path)
+            return
+        if path.startswith("/api/discovery/sessions/") and path.endswith(
+            "/frontier-answers"
+        ):
+            self._handle_discovery_frontier_answers(path)
             return
         self._send_error(HTTPStatus.NOT_FOUND, "route not found")
 
@@ -248,6 +299,7 @@ class ApoapsisUIRequestHandler(BaseHTTPRequestHandler):
             expected_version = body.get("expected_version")
             expected_fingerprint = body.get("expected_worktree_fingerprint")
             additional_turns = body.get("additional_turns")
+            manual_frontier_preview_id = body.get("manual_frontier_preview_id")
             if not isinstance(action, str) or not action:
                 raise ValueError("action is required")
             if not isinstance(operation_id, str) or not operation_id:
@@ -265,6 +317,10 @@ class ApoapsisUIRequestHandler(BaseHTTPRequestHandler):
                 or isinstance(additional_turns, bool)
             ):
                 raise ValueError("additional_turns must be an integer")
+            if manual_frontier_preview_id is not None and not isinstance(
+                manual_frontier_preview_id, str
+            ):
+                raise ValueError("manual_frontier_preview_id must be a string")
             payload = self.server.service.submit_review_operation(
                 task_id,
                 action=action,
@@ -272,6 +328,7 @@ class ApoapsisUIRequestHandler(BaseHTTPRequestHandler):
                 expected_version=expected_version,
                 expected_worktree_fingerprint=expected_fingerprint,
                 additional_turns=additional_turns,
+                manual_frontier_preview_id=manual_frontier_preview_id,
             )
         except TaskNotFoundError:
             self._send_error(HTTPStatus.NOT_FOUND, "task not found")
@@ -302,6 +359,258 @@ class ApoapsisUIRequestHandler(BaseHTTPRequestHandler):
             self._send_error(HTTPStatus.BAD_REQUEST, str(exc))
         else:
             self._send_json(HTTPStatus.ACCEPTED, payload)
+
+    def _handle_manual_frontier_export(self, path: str) -> None:
+        task_id = unquote(
+            path[len("/api/reviews/") : -len("/manual-frontier/export")]
+        ).strip("/")
+        try:
+            payload = self.server.service.export_manual_frontier_handoff(task_id)
+        except TaskNotFoundError:
+            self._send_error(HTTPStatus.NOT_FOUND, "task not found")
+        except UIActionError as exc:
+            self._send_error(HTTPStatus.CONFLICT, str(exc))
+        except (TaskStoreError, ValueError) as exc:
+            self._send_error(HTTPStatus.BAD_REQUEST, str(exc))
+        else:
+            self._send_json(HTTPStatus.OK, payload)
+
+    def _handle_manual_frontier_import(self, path: str) -> None:
+        task_id = unquote(
+            path[len("/api/reviews/") : -len("/manual-frontier/import")]
+        ).strip("/")
+        try:
+            body = self._read_json_body()
+            package_id = body.get("package_id")
+            response_text = body.get("response_text")
+            declared_model_name = body.get("declared_model_name")
+            preview_id = body.get("preview_id")
+            if not isinstance(package_id, str) or not package_id:
+                raise ValueError("package_id is required")
+            if not isinstance(response_text, str) or not response_text.strip():
+                raise ValueError("response_text is required")
+            if not isinstance(declared_model_name, str) or not declared_model_name.strip():
+                raise ValueError("declared_model_name is required")
+            if not isinstance(preview_id, str) or not preview_id:
+                raise ValueError("preview_id is required")
+            payload = self.server.service.import_manual_frontier_response(
+                task_id,
+                package_id=package_id,
+                response_text=response_text,
+                declared_model_name=declared_model_name,
+                preview_id=preview_id,
+            )
+        except (TaskNotFoundError, ManualFrontierPackageNotFoundError):
+            self._send_error(HTTPStatus.NOT_FOUND, "not found")
+        except ManualFrontierError as exc:
+            self._send_error(HTTPStatus.CONFLICT, str(exc))
+        except (TaskStoreError, ValueError, json.JSONDecodeError) as exc:
+            self._send_error(HTTPStatus.BAD_REQUEST, str(exc))
+        else:
+            self._send_json(HTTPStatus.OK, payload)
+
+    def _handle_manual_frontier_preview_approve(self, path: str) -> None:
+        remainder = path[len("/api/reviews/") : -len("/approve")].strip("/")
+        task_part, _, preview_part = remainder.partition("/manual-frontier/previews/")
+        task_id = unquote(task_part)
+        preview_id = unquote(preview_part)
+        try:
+            expected_version = self._read_expected_version()
+            payload = self.server.service.approve_manual_frontier_preview(
+                task_id, preview_id, expected_task_version=expected_version
+            )
+        except (TaskNotFoundError, PreviewNotFoundError):
+            self._send_error(HTTPStatus.NOT_FOUND, "not found")
+        except ManualFrontierError as exc:
+            self._send_error(HTTPStatus.CONFLICT, str(exc))
+        except (TaskStoreError, ValueError, json.JSONDecodeError) as exc:
+            self._send_error(HTTPStatus.BAD_REQUEST, str(exc))
+        else:
+            self._send_json(HTTPStatus.OK, payload)
+
+    def _handle_discovery_session_start(self) -> None:
+        try:
+            body = self._read_json_body()
+            idea_text = body.get("idea_text")
+            if not isinstance(idea_text, str) or not idea_text.strip():
+                raise ValueError("idea_text is required")
+            payload = self.server.service.start_discovery_session(idea_text)
+        except (TaskStoreError, ValueError, json.JSONDecodeError) as exc:
+            self._send_error(HTTPStatus.BAD_REQUEST, str(exc))
+        else:
+            self._send_json(HTTPStatus.OK, payload)
+
+    @staticmethod
+    def _discovery_session_id(path: str, suffix: str) -> str:
+        return unquote(
+            path[len("/api/discovery/sessions/") : -len(suffix)]
+        ).strip("/")
+
+    def _handle_discovery_operation_submit(self, path: str) -> None:
+        session_id = self._discovery_session_id(path, "/operations")
+        try:
+            body = self._read_json_body()
+            action = body.get("action")
+            operation_id = body.get("operation_id")
+            expected_version = body.get("expected_version")
+            authorized_max_spend_usd = body.get("authorized_max_spend_usd")
+            if not isinstance(action, str) or not action:
+                raise ValueError("action is required")
+            if not isinstance(operation_id, str) or not operation_id:
+                raise ValueError("operation_id is required")
+            if not isinstance(expected_version, int) or isinstance(
+                expected_version, bool
+            ):
+                raise ValueError("expected_version must be an integer")
+            if authorized_max_spend_usd is not None and not isinstance(
+                authorized_max_spend_usd, (int, float)
+            ):
+                raise ValueError("authorized_max_spend_usd must be a number")
+            payload = self.server.service.submit_discovery_operation(
+                session_id,
+                action=action,
+                operation_id=operation_id,
+                expected_version=expected_version,
+                authorized_max_spend_usd=(
+                    float(authorized_max_spend_usd)
+                    if authorized_max_spend_usd is not None
+                    else None
+                ),
+            )
+        except SessionNotFoundError:
+            self._send_error(HTTPStatus.NOT_FOUND, "session not found")
+        except DiscoveryError as exc:
+            self._send_error(HTTPStatus.CONFLICT, str(exc))
+        except (TaskStoreError, ValueError, json.JSONDecodeError) as exc:
+            self._send_error(HTTPStatus.BAD_REQUEST, str(exc))
+        else:
+            self._send_json(HTTPStatus.ACCEPTED, payload)
+
+    def _handle_discovery_local_answers(self, path: str) -> None:
+        session_id = self._discovery_session_id(path, "/answers")
+        try:
+            body = self._read_json_body()
+            payload = self.server.service.record_discovery_local_answers(
+                session_id,
+                self._read_discovery_answers(body),
+                expected_version=self._require_int(body, "expected_version"),
+            )
+        except SessionNotFoundError:
+            self._send_error(HTTPStatus.NOT_FOUND, "session not found")
+        except DiscoveryError as exc:
+            self._send_error(HTTPStatus.CONFLICT, str(exc))
+        except (TaskStoreError, ValueError, json.JSONDecodeError) as exc:
+            self._send_error(HTTPStatus.BAD_REQUEST, str(exc))
+        else:
+            self._send_json(HTTPStatus.OK, payload)
+
+    def _handle_discovery_approve_brief(self, path: str) -> None:
+        session_id = self._discovery_session_id(path, "/approve-brief")
+        try:
+            expected_version = self._read_expected_version()
+            payload = self.server.service.approve_discovery_idea_brief(
+                session_id, expected_version=expected_version
+            )
+        except SessionNotFoundError:
+            self._send_error(HTTPStatus.NOT_FOUND, "session not found")
+        except DiscoveryError as exc:
+            self._send_error(HTTPStatus.CONFLICT, str(exc))
+        except (TaskStoreError, ValueError, json.JSONDecodeError) as exc:
+            self._send_error(HTTPStatus.BAD_REQUEST, str(exc))
+        else:
+            self._send_json(HTTPStatus.OK, payload)
+
+    def _handle_discovery_export_frontier_package(self, path: str) -> None:
+        session_id = self._discovery_session_id(path, "/export-frontier-package")
+        try:
+            body = self._read_json_body()
+            transport = body.get("transport")
+            if transport not in {"api", "manual"}:
+                raise ValueError('transport must be "api" or "manual"')
+            payload = self.server.service.export_discovery_frontier_package(
+                session_id,
+                transport=transport,
+                expected_version=self._require_int(body, "expected_version"),
+            )
+        except SessionNotFoundError:
+            self._send_error(HTTPStatus.NOT_FOUND, "session not found")
+        except DiscoveryError as exc:
+            self._send_error(HTTPStatus.CONFLICT, str(exc))
+        except (TaskStoreError, ValueError, json.JSONDecodeError) as exc:
+            self._send_error(HTTPStatus.BAD_REQUEST, str(exc))
+        else:
+            self._send_json(HTTPStatus.OK, payload)
+
+    def _handle_discovery_import_manual_response(self, path: str) -> None:
+        session_id = self._discovery_session_id(path, "/import-manual-response")
+        try:
+            body = self._read_json_body()
+            package_id = body.get("package_id")
+            response_text = body.get("response_text")
+            declared_model_name = body.get("declared_model_name")
+            if not isinstance(package_id, str) or not package_id:
+                raise ValueError("package_id is required")
+            if not isinstance(response_text, str) or not response_text.strip():
+                raise ValueError("response_text is required")
+            if not isinstance(declared_model_name, str) or not declared_model_name.strip():
+                raise ValueError("declared_model_name is required")
+            payload = self.server.service.import_discovery_manual_response(
+                session_id,
+                package_id=package_id,
+                response_text=response_text,
+                declared_model_name=declared_model_name,
+            )
+        except (SessionNotFoundError, DiscoveryPackageNotFoundError):
+            self._send_error(HTTPStatus.NOT_FOUND, "not found")
+        except DiscoveryError as exc:
+            self._send_error(HTTPStatus.CONFLICT, str(exc))
+        except (TaskStoreError, ValueError, json.JSONDecodeError) as exc:
+            self._send_error(HTTPStatus.BAD_REQUEST, str(exc))
+        else:
+            self._send_json(HTTPStatus.OK, payload)
+
+    def _handle_discovery_frontier_answers(self, path: str) -> None:
+        session_id = self._discovery_session_id(path, "/frontier-answers")
+        try:
+            body = self._read_json_body()
+            payload = self.server.service.record_discovery_frontier_answers(
+                session_id,
+                self._read_discovery_answers(body),
+                expected_version=self._require_int(body, "expected_version"),
+            )
+        except SessionNotFoundError:
+            self._send_error(HTTPStatus.NOT_FOUND, "session not found")
+        except DiscoveryError as exc:
+            self._send_error(HTTPStatus.CONFLICT, str(exc))
+        except (TaskStoreError, ValueError, json.JSONDecodeError) as exc:
+            self._send_error(HTTPStatus.BAD_REQUEST, str(exc))
+        else:
+            self._send_json(HTTPStatus.OK, payload)
+
+    @staticmethod
+    def _read_discovery_answers(body: dict[str, Any]) -> list[dict[str, Any]]:
+        answers = body.get("answers")
+        if not isinstance(answers, list) or not answers:
+            raise ValueError("answers must be a non-empty list")
+        parsed: list[dict[str, Any]] = []
+        for item in answers:
+            if (
+                not isinstance(item, dict)
+                or not isinstance(item.get("question_id"), str)
+                or not isinstance(item.get("text"), str)
+            ):
+                raise ValueError(
+                    "each answer must be {question_id: string, text: string}"
+                )
+            parsed.append({"question_id": item["question_id"], "text": item["text"]})
+        return parsed
+
+    @staticmethod
+    def _require_int(body: dict[str, Any], key: str) -> int:
+        value = body.get(key)
+        if not isinstance(value, int) or isinstance(value, bool):
+            raise ValueError(f"{key} must be an integer")
+        return value
 
     def _read_expected_version(self) -> int:
         body = self._read_json_body()
@@ -341,6 +650,19 @@ class ApoapsisUIRequestHandler(BaseHTTPRequestHandler):
                 )
                 operation_id = unquote(operation_id_part).strip("/")
                 payload = self.server.service.review_operation_status(operation_id)
+            elif "/manual-frontier/previews" in path and path.startswith("/api/reviews/"):
+                task_id = unquote(
+                    path[len("/api/reviews/") : path.index("/manual-frontier/previews")]
+                ).strip("/")
+                payload = self.server.service.manual_frontier_previews(task_id)
+            elif "/manual-frontier/packages/" in path and path.startswith("/api/reviews/"):
+                remainder = path[len("/api/reviews/") :]
+                task_part, _, package_part = remainder.partition(
+                    "/manual-frontier/packages/"
+                )
+                payload = self.server.service.manual_frontier_package_detail(
+                    unquote(task_part).strip("/"), unquote(package_part).strip("/")
+                )
             elif path.startswith("/api/reviews/"):
                 task_id = unquote(path[len("/api/reviews/") :]).strip("/")
                 payload = self.server.service.review_case_detail(task_id)
@@ -354,6 +676,18 @@ class ApoapsisUIRequestHandler(BaseHTTPRequestHandler):
                     path[len("/api/execution/operations/") :]
                 ).strip("/")
                 payload = self.server.service.execution_operation_status(operation_id)
+            elif path == "/api/discovery/sessions":
+                payload = self.server.service.discovery_sessions()
+            elif path.startswith("/api/discovery/operations/"):
+                operation_id = unquote(
+                    path[len("/api/discovery/operations/") :]
+                ).strip("/")
+                payload = self.server.service.discovery_operation_status(operation_id)
+            elif path.startswith("/api/discovery/sessions/"):
+                session_id = unquote(
+                    path[len("/api/discovery/sessions/") :]
+                ).strip("/")
+                payload = self.server.service.discovery_session_detail(session_id)
             else:
                 self._send_error(HTTPStatus.NOT_FOUND, "route not found")
                 return
@@ -364,6 +698,11 @@ class ApoapsisUIRequestHandler(BaseHTTPRequestHandler):
             IntakeOperationNotFoundError,
             ExecutionOperationNotFoundError,
             SliceExecutionNotFoundError,
+            ManualFrontierPackageNotFoundError,
+            PreviewNotFoundError,
+            SessionNotFoundError,
+            DiscoveryPackageNotFoundError,
+            DiscoveryOperationNotFoundError,
         ):
             self._send_error(HTTPStatus.NOT_FOUND, "not found")
         except (
@@ -372,6 +711,8 @@ class ApoapsisUIRequestHandler(BaseHTTPRequestHandler):
             ReviewError,
             IntakeError,
             ExecutionOperationError,
+            ManualFrontierError,
+            DiscoveryError,
             ValueError,
         ) as exc:
             self._send_error(HTTPStatus.BAD_REQUEST, str(exc))

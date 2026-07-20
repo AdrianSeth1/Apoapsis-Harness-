@@ -160,6 +160,37 @@ discovery and frontier planning handoff" section for full detail.
 service only so far, mirroring ADR 0031's own current scope). The exact
 next UI seam is described in ADR 0032's Non-goals.
 
+### Done -- local UI for manual frontier coding handoff and discovery/planning (ADR 0033)
+
+Built the local UI surface both ADR 0031 and ADR 0032 deferred: a new
+manual-frontier-handoff section on the Human Review case-detail page
+(export/copy-path, paste-or-upload import, deterministic validation
+findings, patch preview, two-step approve-then-apply, "Unmeasured"
+tokens/cost) and a new `#/discover` area (start/inspect sessions, local
+clarification questions and verbatim answers, IdeaBrief review and
+two-step approval, transport choice, manual export/import or API
+preview-then-authorize-then-call, frontier clarification rounds, and a
+direct link into the existing, unmodified Plans UI once a plan is
+imported). A new durable discovery-operation ledger
+(`discovery/operation_*`, `DiscoveryWorker`) mirrors the review/intake/
+execution pattern exactly so local-question and idea-brief model calls
+never block an HTTP handler.
+
+Both flows were live-verified end to end in a real browser against
+disposable projects using a real local model (no hosted call made) at
+1440px and 1100px, with no console errors -- see ADR 0033 for the full
+evidence. The live pass found and fixed two real bugs: `review.case
+._fresh_evidence()` didn't recognize a manual-frontier apply round as
+fresher than the original `report.json` (stale `stop_reason_text`/
+`verification_results`), and the generic eligible-actions grid duplicated
+the manual-frontier action as a raw card. 42 new deterministic tests
+(`tests/test_manual_frontier_ui.py`, `tests/test_discovery_ui.py`); full
+suite 685/685 passing.
+
+**Not done in this milestone**: the API frontier-planning transport was
+not exercised live (no `[models.frontier_coder]` configured); the
+unrelated full-site visual polish pass.
+
 ## For future coding agents
 
 Read `AGENTS.md`, then all of `HANDOFF.md`, before making changes. Check the Git

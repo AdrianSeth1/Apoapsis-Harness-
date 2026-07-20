@@ -133,6 +133,27 @@ def _fresh_evidence(
         )
         return verification_results, acceptance_coverage
 
+    if event_type == MANUAL_FRONTIER_ROUND_CONSUMED_EVENT:
+        verification_results = report_verification_results
+        operation_id = payload.get("operation_id")
+        if isinstance(operation_id, str):
+            manual_frontier_path = (
+                task_directory / f"manual-frontier-verification-{operation_id}.json"
+            )
+            if manual_frontier_path.is_file():
+                verification_results = [
+                    VerificationResult.model_validate_json(
+                        manual_frontier_path.read_text(encoding="utf-8")
+                    )
+                ]
+        coverage_payload = payload.get("coverage")
+        acceptance_coverage = (
+            [AcceptanceCoverage.model_validate(item) for item in coverage_payload]
+            if isinstance(coverage_payload, list)
+            else []
+        )
+        return verification_results, acceptance_coverage
+
     if event_type in _LOCAL_SESSION_EVENT_TYPES and local_session is not None:
         return local_session.verification_results, local_session.acceptance_coverage
 
@@ -183,11 +204,19 @@ def build_review_case(
             report_path.read_text(encoding="utf-8")
         )
     # `report.json` is a snapshot of the *original* stop only -- once a
-    # continuation or retry has run, the newest event's own payload (always
-    # including a "reason") is the accurate, current text; the original
-    # report's error would otherwise describe a stop reason that no longer
-    # applies.
-    if continuations_used == 0 and report and report.error:
+    # continuation, retry, or manual-frontier apply round (ADR 0031) has
+    # run, the newest event's own payload (always including a "reason") is
+    # the accurate, current text; the original report's error would
+    # otherwise describe a stop reason that no longer applies. A live
+    # browser pass first caught this for manual-frontier repair rounds: a
+    # failed apply correctly reclassified `stop_reason_kind` to
+    # `VERIFICATION_FAILED`, but `stop_reason_text` still showed the
+    # original escalation message, since only local/frontier continuation
+    # events were ever counted here.
+    state_advanced_since_report = continuations_used > 0 or any(
+        event.event_type == "manual_frontier_apply_started" for event in events
+    )
+    if not state_advanced_since_report and report and report.error:
         stop_reason_text = report.error
     else:
         stop_reason_text = _event_reason_text(stop_event)

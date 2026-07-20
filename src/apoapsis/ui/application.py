@@ -13,7 +13,32 @@ from apoapsis.architect.slice_service import (
 )
 from apoapsis.architect.slice_store import PlanSliceExecutionStore
 from apoapsis.architect.store import SQLitePlanStore
+from apoapsis.audit.store import TaskAuditStore
 from apoapsis.config import ApoapsisConfig, ExecutionMode
+from apoapsis.discovery.api import (
+    FrontierPlanningApiNotConfiguredError,
+    preview_frontier_planning_api_call,
+)
+from apoapsis.discovery.frontier_package import (
+    FrontierPlanningRequestPackage,
+    load_package as load_frontier_planning_package,
+)
+from apoapsis.discovery.manual import (
+    import_manual_frontier_planning_response as import_discovery_manual_response_fn,
+)
+from apoapsis.discovery.operation_schema import DiscoveryOperationAction
+from apoapsis.discovery.operation_service import prepare_discovery_operation
+from apoapsis.discovery.operation_store import DiscoveryOperationStore
+from apoapsis.discovery.schema import ClarificationAnswer
+from apoapsis.discovery.service import (
+    approve_idea_brief_step as approve_discovery_idea_brief_fn,
+    export_frontier_planning_package,
+    record_frontier_answers as record_discovery_frontier_answers_fn,
+    record_local_answers as record_discovery_local_answers_fn,
+    start_session as start_discovery_session_fn,
+)
+from apoapsis.discovery.store import SQLiteDiscoveryStore
+from apoapsis.discovery.worker import DiscoveryWorker
 from apoapsis.doctor import run_doctor
 from apoapsis.execution.authorization import build_execution_authorization_package
 from apoapsis.execution.operation_errors import ExecutionAuthorizationDriftError
@@ -23,6 +48,18 @@ from apoapsis.execution.operation_worker import ExecutionWorker
 from apoapsis.intake.execution import prepare_intake_operation
 from apoapsis.intake.store import IntakeOperationStore
 from apoapsis.intake.worker import IntakeWorker
+from apoapsis.manual_frontier.approve import (
+    approve_manual_frontier_preview as approve_manual_frontier_preview_fn,
+)
+from apoapsis.manual_frontier.importer import (
+    import_manual_frontier_response as import_manual_frontier_response_fn,
+)
+from apoapsis.manual_frontier.package import (
+    build_manual_frontier_handoff_package,
+    load_package as load_manual_frontier_package,
+    write_handoff_artifacts,
+)
+from apoapsis.manual_frontier.store import ManualFrontierPreviewStore
 from apoapsis.reporting.report import FinalTaskReport
 from apoapsis.repository.git import GitCommandError, GitRepository
 from apoapsis.review.case import build_review_case
@@ -97,6 +134,7 @@ class ApoapsisUIService:
         self._review_worker: ReviewWorker | None = None
         self._intake_worker: IntakeWorker | None = None
         self._execution_worker: ExecutionWorker | None = None
+        self._discovery_worker: DiscoveryWorker | None = None
 
     def start_background_workers(self) -> None:
         """Eagerly construct all three operation workers, running each
@@ -119,6 +157,7 @@ class ApoapsisUIService:
         self._worker()
         self._intake_worker_instance()
         self._execution_worker_instance()
+        self._discovery_worker_instance()
 
     def overview(self) -> dict[str, Any]:
         config = self._config()
@@ -577,10 +616,18 @@ class ApoapsisUIService:
         expected_version: int,
         expected_worktree_fingerprint: str | None = None,
         additional_turns: int | None = None,
+        manual_frontier_preview_id: str | None = None,
     ) -> dict[str, Any]:
         """Validate and durably record a review operation, then hand it to
         the background worker -- this method itself never calls a model or
-        runs a command; only ``ReviewWorker`` (on its own thread) does."""
+        runs a command; only ``ReviewWorker`` (on its own thread) does.
+
+        ``manual_frontier_preview_id`` is only meaningful for
+        ``action="manual_frontier_handoff"`` (ADR 0031): it must name a
+        preview the operator already explicitly approved in a separate,
+        earlier step (``approve_manual_frontier_preview``) -- this call is
+        the second of that action's two required approval steps and is
+        itself the actual worktree-mutating apply."""
 
         store = self._require_store()
         config = self._config()
@@ -601,6 +648,7 @@ class ApoapsisUIService:
             expected_version=expected_version,
             expected_worktree_fingerprint=expected_worktree_fingerprint,
             additional_turns=additional_turns,
+            manual_frontier_preview_id=manual_frontier_preview_id,
         )
         self._worker().submit(operation_id)
         return operation_store.get(operation_id).model_dump(mode="json")
@@ -652,6 +700,334 @@ class ApoapsisUIService:
         if self._intake_worker is None:
             self._intake_worker = IntakeWorker(self.project_root)
         return self._intake_worker
+
+    # ---- Manual subscription-based frontier coding handoff (ADR 0031) ----
+
+    def _manual_frontier_preview_store(self) -> ManualFrontierPreviewStore:
+        return ManualFrontierPreviewStore(
+            self.metadata_root / "manual-frontier-previews.db"
+        )
+
+    def manual_frontier_previews(self, task_id: str) -> dict[str, Any]:
+        previews = self._manual_frontier_preview_store().list_for_task(task_id)
+        return {"previews": [item.model_dump(mode="json") for item in previews]}
+
+    def export_manual_frontier_handoff(self, task_id: str) -> dict[str, Any]:
+        """Builds the immutable handoff package plus the self-contained
+        ``FRONTIER-CODING-HANDOFF.md`` a person uploads by hand to a
+        ChatGPT/Claude subscription session -- deterministic, no model
+        call, no worktree mutation. Returns both the project-relative and
+        absolute artifact paths so the browser can show exactly where the
+        file landed on disk."""
+
+        task_store = self._require_store()
+        config = self._config()
+        if config is None:
+            raise TaskStoreError(
+                "Apoapsis is not initialized; run 'apoapsis init' first"
+            )
+        review_case = build_review_case(self.project_root, task_store, config, task_id)
+        if ReviewActionKind.MANUAL_FRONTIER_HANDOFF not in review_case.eligible_actions:
+            raise UIActionError(
+                f"manual_frontier_handoff is not currently eligible for {task_id} "
+                f"(eligible actions: "
+                f"{[item.value for item in review_case.eligible_actions]})"
+            )
+        specification = task_store.get_task(task_id).specification
+        package = build_manual_frontier_handoff_package(
+            review_case,
+            specification,
+            config.verification.commands,
+            repair_round=review_case.manual_frontier_rounds_used,
+        )
+        audit = TaskAuditStore(self.project_root, task_id)
+        json_artifact, markdown_artifact = write_handoff_artifacts(audit, package)
+        return {
+            "package": package.model_dump(mode="json"),
+            "package_artifact_path": json_artifact.path,
+            "package_artifact_absolute_path": str(
+                self.project_root / json_artifact.path
+            ),
+            "markdown_artifact_path": markdown_artifact.path,
+            "markdown_artifact_absolute_path": str(
+                self.project_root / markdown_artifact.path
+            ),
+        }
+
+    def manual_frontier_package_detail(
+        self, task_id: str, package_id: str
+    ) -> dict[str, Any]:
+        return load_manual_frontier_package(
+            self.project_root, task_id, package_id
+        ).model_dump(mode="json")
+
+    def import_manual_frontier_response(
+        self,
+        task_id: str,
+        *,
+        package_id: str,
+        response_text: str,
+        declared_model_name: str,
+        preview_id: str,
+    ) -> dict[str, Any]:
+        """Validates a pasted (or uploaded) response and creates an
+        immutable preview -- never applies anything. Reuses exactly the
+        same checks the CLI's ``frontier-manual import`` command uses."""
+
+        task_store = self._require_store()
+        config = self._config()
+        if config is None:
+            raise TaskStoreError(
+                "Apoapsis is not initialized; run 'apoapsis init' first"
+            )
+        preview = import_manual_frontier_response_fn(
+            self.project_root,
+            task_store,
+            self._manual_frontier_preview_store(),
+            self._review_operation_store(),
+            config,
+            task_id=task_id,
+            package_id=package_id,
+            response_bytes=response_text.encode("utf-8"),
+            declared_model_name=declared_model_name,
+            preview_id=preview_id,
+        )
+        return preview.model_dump(mode="json")
+
+    def approve_manual_frontier_preview(
+        self, task_id: str, preview_id: str, *, expected_task_version: int
+    ) -> dict[str, Any]:
+        """Step 1 of 2: records explicit intent to apply a previewed
+        patch. Never mutates the worktree -- applying is a distinct,
+        separate ``submit_review_operation(action="manual_frontier_
+        handoff", manual_frontier_preview_id=preview_id)`` call, itself
+        gated by the same two-step confirmation pattern every other review
+        action already uses in this UI."""
+
+        task_store = self._require_store()
+        config = self._config()
+        if config is None:
+            raise TaskStoreError(
+                "Apoapsis is not initialized; run 'apoapsis init' first"
+            )
+        preview = approve_manual_frontier_preview_fn(
+            self.project_root,
+            task_store,
+            self._manual_frontier_preview_store(),
+            config,
+            task_id=task_id,
+            preview_id=preview_id,
+            expected_task_version=expected_task_version,
+        )
+        return preview.model_dump(mode="json")
+
+    # ---- Discovery and frontier planning handoff (ADR 0032) ----
+
+    def _discovery_store(self) -> SQLiteDiscoveryStore:
+        return SQLiteDiscoveryStore(self.metadata_root / "discovery-sessions.db")
+
+    def _discovery_operation_store(self) -> DiscoveryOperationStore:
+        return DiscoveryOperationStore(self.metadata_root / "discovery-operations.db")
+
+    def _discovery_worker_instance(self) -> DiscoveryWorker:
+        if self._discovery_worker is None:
+            self._discovery_worker = DiscoveryWorker(self.project_root)
+        return self._discovery_worker
+
+    def _plan_store_for_write(self) -> SQLitePlanStore:
+        """Unlike ``_plan_store()``/``_require_plan_store()`` (read-only;
+        never creates a database as a side effect of a GET), a discovery
+        response import may genuinely be the first thing in this project
+        to ever create a plan -- mirrors ``apoapsis plan``'s own CLI
+        helper, which always uses ``SQLitePlanStore``'s default
+        ``initialize=True``."""
+
+        return SQLitePlanStore(self.metadata_root / "architect-plans.db")
+
+    def discovery_sessions(self) -> dict[str, Any]:
+        sessions = self._discovery_store().list_sessions(limit=100)
+        return {"sessions": [item.model_dump(mode="json") for item in sessions]}
+
+    def start_discovery_session(self, idea_text: str) -> dict[str, Any]:
+        if self._store() is None:
+            raise TaskStoreError(
+                "Apoapsis is not initialized; run 'apoapsis init' first"
+            )
+        record = start_discovery_session_fn(self._discovery_store(), idea_text)
+        return record.model_dump(mode="json")
+
+    def discovery_session_detail(self, session_id: str) -> dict[str, Any]:
+        session = self._discovery_store().get_session(session_id)
+        config = self._config()
+        active_operation = self._discovery_operation_store().find_active_for_session(
+            session_id
+        )
+        package: dict[str, Any] | None = None
+        api_preview: dict[str, Any] | None = None
+        if session.frontier_package_id is not None:
+            try:
+                package_record = load_frontier_planning_package(
+                    self.project_root, session.frontier_package_id
+                )
+                package = package_record.model_dump(mode="json")
+                if (
+                    config is not None
+                    and session.frontier_transport == "api"
+                    and session.status.value == "frontier_package_exported"
+                ):
+                    try:
+                        api_preview = preview_frontier_planning_api_call(
+                            config, package_record
+                        ).model_dump(mode="json")
+                    except FrontierPlanningApiNotConfiguredError:
+                        api_preview = None
+            except Exception:
+                package = None
+        plan_summary: dict[str, Any] | None = None
+        if session.plan_id is not None:
+            plan_store = self._plan_store()
+            if plan_store is not None:
+                try:
+                    plan_summary = self._plan_summary(plan_store.get_plan(session.plan_id))
+                except Exception:
+                    plan_summary = None
+        return {
+            "session": session.model_dump(mode="json"),
+            "active_operation": (
+                active_operation.model_dump(mode="json")
+                if active_operation is not None
+                else None
+            ),
+            "frontier_package": package,
+            "api_preview": api_preview,
+            "plan_summary": plan_summary,
+            "max_clarification_questions": (
+                config.discovery.max_clarification_questions
+                if config is not None
+                else None
+            ),
+            "max_frontier_clarification_rounds": (
+                config.discovery.max_frontier_clarification_rounds
+                if config is not None
+                else None
+            ),
+            "frontier_api_configured": (
+                config is not None and config.models.frontier_coder is not None
+            ),
+        }
+
+    def submit_discovery_operation(
+        self,
+        session_id: str,
+        *,
+        action: str,
+        operation_id: str,
+        expected_version: int,
+        authorized_max_spend_usd: float | None = None,
+    ) -> dict[str, Any]:
+        """Validate and durably record a discovery model-call operation,
+        then hand it to the background worker -- this method itself never
+        calls a model; only ``DiscoveryWorker`` (on its own thread) does."""
+
+        config = self._config()
+        if config is None:
+            raise TaskStoreError(
+                "Apoapsis is not initialized; run 'apoapsis init' first"
+            )
+        operation_store = self._discovery_operation_store()
+        prepare_discovery_operation(
+            self.project_root,
+            self._discovery_store(),
+            operation_store,
+            session_id=session_id,
+            action=DiscoveryOperationAction(action),
+            operation_id=operation_id,
+            expected_version=expected_version,
+            authorized_max_spend_usd=authorized_max_spend_usd,
+        )
+        self._discovery_worker_instance().submit(operation_id)
+        return operation_store.get(operation_id).model_dump(mode="json")
+
+    def discovery_operation_status(self, operation_id: str) -> dict[str, Any]:
+        return self._discovery_operation_store().get(operation_id).model_dump(
+            mode="json"
+        )
+
+    def record_discovery_local_answers(
+        self, session_id: str, answers: list[dict[str, Any]], *, expected_version: int
+    ) -> dict[str, Any]:
+        parsed = [ClarificationAnswer.model_validate(item) for item in answers]
+        record = record_discovery_local_answers_fn(
+            self._discovery_store(), session_id, parsed, expected_version=expected_version
+        )
+        return record.model_dump(mode="json")
+
+    def approve_discovery_idea_brief(
+        self, session_id: str, *, expected_version: int
+    ) -> dict[str, Any]:
+        record = approve_discovery_idea_brief_fn(
+            self._discovery_store(), session_id, expected_version=expected_version
+        )
+        return record.model_dump(mode="json")
+
+    def export_discovery_frontier_package(
+        self, session_id: str, *, transport: str, expected_version: int
+    ) -> dict[str, Any]:
+        config = self._config()
+        if config is None:
+            raise TaskStoreError(
+                "Apoapsis is not initialized; run 'apoapsis init' first"
+            )
+        session, package, json_path, markdown_path = export_frontier_planning_package(
+            self.project_root,
+            self._discovery_store(),
+            config,
+            session_id,
+            transport=transport,
+            expected_version=expected_version,
+        )
+        return {
+            "session": session.model_dump(mode="json"),
+            "package": package.model_dump(mode="json"),
+            "package_artifact_path": json_path,
+            "package_artifact_absolute_path": str(self.project_root / json_path),
+            "markdown_artifact_path": markdown_path,
+            "markdown_artifact_absolute_path": str(self.project_root / markdown_path),
+        }
+
+    def import_discovery_manual_response(
+        self,
+        session_id: str,
+        *,
+        package_id: str,
+        response_text: str,
+        declared_model_name: str,
+    ) -> dict[str, Any]:
+        config = self._config()
+        if config is None:
+            raise TaskStoreError(
+                "Apoapsis is not initialized; run 'apoapsis init' first"
+            )
+        record = import_discovery_manual_response_fn(
+            self.project_root,
+            self._discovery_store(),
+            self._plan_store_for_write(),
+            config,
+            session_id=session_id,
+            package_id=package_id,
+            response_bytes=response_text.encode("utf-8"),
+            declared_model_name=declared_model_name,
+        )
+        return record.model_dump(mode="json")
+
+    def record_discovery_frontier_answers(
+        self, session_id: str, answers: list[dict[str, Any]], *, expected_version: int
+    ) -> dict[str, Any]:
+        parsed = [ClarificationAnswer.model_validate(item) for item in answers]
+        record = record_discovery_frontier_answers_fn(
+            self._discovery_store(), session_id, parsed, expected_version=expected_version
+        )
+        return record.model_dump(mode="json")
 
     def doctor(self) -> dict[str, Any]:
         """Run the existing explicit diagnostic command without provider probes."""

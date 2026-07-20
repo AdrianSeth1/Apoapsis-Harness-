@@ -51,9 +51,10 @@ def propose_local_clarification_questions(
     session_id: str,
     *,
     expected_version: int,
+    local_provider=None,
 ) -> DiscoverySessionRecord:
     session = discovery_store.get_session(session_id)
-    provider = build_local_provider(config.models.frontier)
+    provider = local_provider or build_local_provider(config.models.frontier)
     audit = DiscoveryAuditStore(root, session_id)
     questions = propose_clarification_questions(
         provider,
@@ -88,9 +89,10 @@ def propose_idea_brief_step(
     session_id: str,
     *,
     expected_version: int,
+    local_provider=None,
 ) -> DiscoverySessionRecord:
     session = discovery_store.get_session(session_id)
-    provider = build_local_provider(config.models.frontier)
+    provider = local_provider or build_local_provider(config.models.frontier)
     audit = DiscoveryAuditStore(root, session_id)
     brief = propose_idea_brief(
         provider, config.models.frontier, audit, session.idea_text, session.local_answers

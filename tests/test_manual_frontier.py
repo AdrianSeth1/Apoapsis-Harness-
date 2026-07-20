@@ -31,7 +31,7 @@ from apoapsis.config import ManualFrontierConfig
 from apoapsis.review.case import build_review_case
 from apoapsis.review.errors import ActiveOperationExistsError, InvalidReviewActionError
 from apoapsis.review.execution import execute_review_action
-from apoapsis.review.schema import ReviewActionKind
+from apoapsis.review.schema import ReviewActionKind, StopReasonKind
 from apoapsis.workflow.states import WorkflowState
 from apoapsis.reporting.report import TaskOutcome
 from tests.test_agent_loop import action
@@ -551,6 +551,20 @@ class ManualFrontierApplyTests(_ManualFrontierTestBase):
         new_case = build_review_case(self.root, self.store, config, task_id)
         self.assertEqual(new_case.manual_frontier_rounds_used, 1)
         self.assertIn(ReviewActionKind.MANUAL_FRONTIER_HANDOFF, new_case.eligible_actions)
+        # A live browser pass first caught this: stop_reason_kind correctly
+        # reclassified to VERIFICATION_FAILED, but stop_reason_text still
+        # showed the *original* escalation message from the never-updated
+        # report.json, because only local/frontier continuation events
+        # were ever counted as "state advanced since the report" -- never
+        # a manual-frontier apply round.
+        self.assertEqual(new_case.stop_reason_kind, StopReasonKind.VERIFICATION_FAILED)
+        self.assertNotIn("agent turn budget exhausted", new_case.stop_reason_text)
+        self.assertIn("manual-frontier patch", new_case.stop_reason_text)
+        # The same staleness gap applied to verification_results/
+        # acceptance_coverage: the UI must show the verification that just
+        # ran against the applied patch, not an empty/original snapshot.
+        self.assertEqual(len(new_case.verification_results), 1)
+        self.assertTrue(new_case.verification_results[0].commands)
 
     def test_repair_ceiling_removes_eligibility(self) -> None:
         from tests.test_vertical_slice import IMPLEMENTATION_PATCH

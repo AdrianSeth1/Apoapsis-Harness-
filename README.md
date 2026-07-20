@@ -199,15 +199,18 @@ The first slice provides:
 - an explicit **Run doctor** action. Merely opening the UI does not probe or
   load a model.
 
-Natural-language task extraction (New Task screen, ADR 0023) and
-post-approval task execution (Control room, ADR 0024, hardened by ADR 0026)
-are both live from the browser -- a user can go from a typed request to a
-completed or Human-Review-stopped task without touching the CLI. Only
-plan-slice execution remains visibly unavailable in this slice; continue
-using the CLI for that until its resumable application service and
-deterministic transition contract are implemented. The supplied Claude
-Design export is a visual reference only; its external prototype runtime is
-not shipped.
+Natural-language task extraction (New Task screen, ADR 0023),
+post-approval task execution (Control room, ADR 0024, hardened by ADR 0026),
+the manual subscription-based frontier coding handoff (a Human Review
+case-detail section, ADR 0031/0033), and local-first discovery plus
+frontier planning (`#/discover`, ADR 0032/0033) are all live from the
+browser -- a user can go from a typed request to a completed or
+Human-Review-stopped task, or from a one-line idea to an approved plan,
+without touching the CLI. Only plan-slice execution remains visibly
+unavailable in this slice; continue using the CLI for that until its
+resumable application service and deterministic transition contract are
+implemented. The supplied Claude Design export is a visual reference only;
+its external prototype runtime is not shipped.
 
 ## Current CLI workflow
 

@@ -160,17 +160,30 @@ def execute_manual_frontier_apply(
         kind="verification_result",
     )
 
-    def _return_to_review(event_type: str, reason: str, *, expected_version: int) -> str:
+    def _return_to_review(
+        event_type: str,
+        reason: str,
+        *,
+        expected_version: int,
+        coverage: list | None = None,
+    ) -> str:
+        # `coverage` (when STRICT rejected the apply) is carried on the
+        # event payload so `review.case._fresh_evidence()` can surface it
+        # without recomputing anything -- the exact same convention
+        # `review_verification_retry_incomplete` already uses.
+        payload: dict[str, object] = {
+            "reason": reason,
+            "operation_id": operation_id,
+            "preview_id": preview_id,
+        }
+        if coverage is not None:
+            payload["coverage"] = [item.model_dump(mode="json") for item in coverage]
         task_store.transition(
             task_id,
             WorkflowState.HUMAN_REVIEW_REQUIRED,
             actor=WorkflowActor.VERIFICATION_ENGINE,
             event_type=event_type,
-            payload={
-                "reason": reason,
-                "operation_id": operation_id,
-                "preview_id": preview_id,
-            },
+            payload=payload,
             expected_version=expected_version,
         )
         return reason
@@ -201,6 +214,7 @@ def execute_manual_frontier_apply(
                     "completion policy"
                 ),
                 expected_version=verifying.version,
+                coverage=coverage,
             )
 
     task_store.transition(
