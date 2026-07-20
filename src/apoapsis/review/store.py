@@ -93,6 +93,18 @@ class ReviewOperationStore:
                 """
             )
             ensure_lease_columns(connection, _TABLE)
+            self._ensure_manual_frontier_column(connection)
+
+    @staticmethod
+    def _ensure_manual_frontier_column(connection: sqlite3.Connection) -> None:
+        existing = {
+            str(row["name"])
+            for row in connection.execute(f"PRAGMA table_info({_TABLE})").fetchall()
+        }
+        if "manual_frontier_preview_id" not in existing:
+            connection.execute(
+                f"ALTER TABLE {_TABLE} ADD COLUMN manual_frontier_preview_id TEXT"
+            )
 
     def create(
         self,
@@ -103,6 +115,7 @@ class ReviewOperationStore:
         expected_task_version: int,
         expected_worktree_fingerprint: str | None = None,
         authorized_budget: ContinuationBudget | None = None,
+        manual_frontier_preview_id: str | None = None,
     ) -> ReviewOperationRecord:
         now = utc_now()
         connection = self._connect()
@@ -126,8 +139,9 @@ class ReviewOperationStore:
                     INSERT INTO review_operations (
                         operation_id, task_id, action, expected_task_version,
                         expected_worktree_fingerprint, authorized_budget_json,
-                        status, created_at, updated_at, result_summary, error
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)
+                        status, created_at, updated_at, result_summary, error,
+                        manual_frontier_preview_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?)
                     """,
                     (
                         operation_id,
@@ -143,6 +157,7 @@ class ReviewOperationStore:
                         ReviewOperationStatus.RECORDED.value,
                         now.isoformat(),
                         now.isoformat(),
+                        manual_frontier_preview_id,
                     ),
                 )
             except sqlite3.IntegrityError as exc:
@@ -395,6 +410,7 @@ class ReviewOperationStore:
                 if row["authorized_budget_json"]
                 else None
             ),
+            manual_frontier_preview_id=row["manual_frontier_preview_id"],
             status=ReviewOperationStatus(row["status"]),
             created_at=row["created_at"],
             updated_at=row["updated_at"],

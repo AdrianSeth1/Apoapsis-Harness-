@@ -64,6 +64,12 @@ content hashes and worktree pointers are not corrupted; see
 - Windows `START_APOAPSIS.cmd`/`STOP_APOAPSIS.cmd` controls that derive local
   Ollama models from configuration, warm the coding model, and explicitly
   release every configured local model's memory without touching hosted providers.
+- A manual subscription-based frontier coding handoff (`apoapsis
+  frontier-manual`, ADR 0031): export an immutable, hashed package and a
+  self-contained Markdown file to upload by hand to a ChatGPT/Claude
+  subscription session, then import, approve, and apply one bounded
+  response -- never automating either website, never storing or reusing a
+  subscription credential, and never letting the response claim completion.
 - An offline black/orange/purple local operator interface for real repository,
   task, specification, plan, Human Review, event, report, evaluation, and
   model-configuration data, including a durable New Task intake screen, a
@@ -82,6 +88,8 @@ routing and escalation, [ADR 0007](docs/adr/0007-apoapsis-namespace.md) records
 the product/runtime namespace migration, and
 [ADR 0008](docs/adr/0008-evaluation-and-diagnostic-tooling.md) records the
 evaluation harness and diagnostic tooling contract,
+[ADR 0031](docs/adr/0031-manual-subscription-frontier-handoff.md) records the
+manual subscription-based frontier coding handoff, and
 [ADR 0009](docs/adr/0009-execution-sandbox.md) records the execution
 sandbox, [ADR 0010](docs/adr/0010-context-measurement-and-wider-profiles.md)
 records the 128k/256k context profiles and the deterministic context-
@@ -366,6 +374,75 @@ apoapsis review recover --resume-recorded  # also runs every reclaimed operation
 explicit, opt-in action that actually runs every reclaimed operation in the
 foreground CLI process -- recovering data and authorizing a model to run
 are never conflated.
+
+## Manual subscription-based frontier coding handoff (ADR 0031)
+
+When a stopped task is eligible for frontier help but you only have a
+ChatGPT/Claude *subscription* -- no configured `[models.frontier_coder]`
+API credential -- `apoapsis frontier-manual` gives you a bounded, auditable
+way to use it by hand. Apoapsis never automates either website and never
+stores or reuses your subscription session; you upload one file and paste
+back one JSON response.
+
+```bash
+apoapsis frontier-manual export TASK-ABC123
+```
+
+This writes an immutable, hashed package (bound to the task's exact version
+and worktree fingerprint, the approved specification and active
+constraints, the current diff, relevant failure evidence, the configured
+verification catalog, and the exact response schema) plus a self-contained
+`FRONTIER-CODING-HANDOFF-<package_id>.md` under
+`.apoapsis/tasks/<task-id>/`. Upload that Markdown file to your ChatGPT or
+Claude subscription session and ask it to solve the task, returning only
+the JSON object the file describes -- one complete unified-diff patch and a
+short summary, nothing else. Save that response to a file, then:
+
+```bash
+apoapsis frontier-manual import TASK-ABC123 \
+  --package-id MFH-... --response response.json \
+  --declared-model-name "claude-opus-4.6-web" --preview-id MFPV-1
+apoapsis frontier-manual inspect TASK-ABC123 --preview-id MFPV-1
+```
+
+`import` rechecks the task's current version, eligibility, worktree
+fingerprint, the package's own integrity, active-operation conflicts,
+response size (before any JSON parsing), schema validity, package-hash
+self-consistency, patch parsing, and patch policy -- it creates a preview
+only and never touches the worktree. Applying the patch requires two
+explicit steps:
+
+```bash
+apoapsis frontier-manual approve TASK-ABC123 --preview-id MFPV-1 --expected-version 4
+apoapsis frontier-manual apply TASK-ABC123 --preview-id MFPV-1 \
+  --expected-version 4 --expected-fingerprint <digest> --operation-id RVOP-1
+```
+
+`apply` runs through the same durable review-operation machinery (ADR
+0020/0021/0025) every other review action uses -- only one operation may be
+active per task, a crash is recovered the same way, and `apply` applies the
+patch with the same patch parser/policy/applier and runs the same
+configured `VerificationRunner` every other path uses. **Only a passing
+verification result reaches `COMPLETE`** -- nothing in the pasted response
+can claim completion, select a command, or expand its own budget; the
+response schema has no field for any of that. If verification fails, the
+task returns to human review and is eligible for a small, configurable
+number of further repair rounds (`[manual_frontier] max_repair_rounds`,
+default 2) using the real failure evidence -- never an unbounded
+back-and-forth:
+
+```bash
+apoapsis frontier-manual status TASK-ABC123
+```
+
+`declared_model_name` is operator-typed provenance only (e.g.
+`"claude-opus-4.6-web"`) -- Apoapsis never verifies which model actually
+produced a response, and no token count or cost is ever recorded for this
+path (there is nothing to measure on a manual paste), never a fabricated
+`0`. This path is entirely separate from, and does not change, the
+existing automated API frontier path
+(`apoapsis review authorize-frontier-stage`/`continue-frontier`) --
+prefer that path once you have real API credentials configured.
 
 ## Durable new-task intake (ADR 0023)
 

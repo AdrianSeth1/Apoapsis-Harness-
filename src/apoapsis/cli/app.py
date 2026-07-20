@@ -10,6 +10,7 @@ from pathlib import Path
 from pydantic import ValidationError
 
 from apoapsis.architect.errors import ArchitectError, PlanImportError
+from apoapsis.audit.store import TaskAuditStore
 from apoapsis.architect.importer import import_planner_response
 from apoapsis.architect.package import build_planner_request_package
 from apoapsis.architect.audit import PlanAuditStore, write_package_artifact
@@ -34,6 +35,15 @@ from apoapsis.intake.errors import IntakeError
 from apoapsis.intake.execution import execute_intake_operation, run_intake_operation
 from apoapsis.intake.recovery import recover_stale_intake_operations
 from apoapsis.intake.store import IntakeOperationStore
+from apoapsis.manual_frontier.approve import approve_manual_frontier_preview
+from apoapsis.manual_frontier.errors import ManualFrontierError
+from apoapsis.manual_frontier.importer import import_manual_frontier_response
+from apoapsis.manual_frontier.package import (
+    build_manual_frontier_handoff_package,
+    load_package as load_manual_frontier_package,
+    write_handoff_artifacts,
+)
+from apoapsis.manual_frontier.store import ManualFrontierPreviewStore
 from apoapsis.review.case import build_review_case
 from apoapsis.review.errors import ReviewError
 from apoapsis.review.execution import execute_review_action, run_review_operation
@@ -853,6 +863,77 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    frontier_manual = subparsers.add_parser(
+        "frontier-manual",
+        help=(
+            "manual subscription-based frontier coding handoff (ADR 0031): "
+            "export a hashed package to upload to a ChatGPT/Claude "
+            "subscription session by hand, then import, approve, and apply "
+            "one bounded response -- never automates either website, never "
+            "reuses subscription credentials, never calls a hosted API"
+        ),
+    )
+    frontier_manual_subparsers = frontier_manual.add_subparsers(
+        dest="frontier_manual_command", required=True
+    )
+    fm_export = frontier_manual_subparsers.add_parser(
+        "export",
+        help=(
+            "export an immutable handoff package plus a self-contained "
+            "FRONTIER-CODING-HANDOFF.md to upload by hand"
+        ),
+    )
+    fm_export.add_argument("task_id")
+    fm_import = frontier_manual_subparsers.add_parser(
+        "import",
+        help="validate a pasted response and create an applyable preview",
+    )
+    fm_import.add_argument("task_id")
+    fm_import.add_argument("--package-id", required=True)
+    fm_import.add_argument(
+        "--response", required=True, type=Path, help="path to the pasted JSON response"
+    )
+    fm_import.add_argument(
+        "--declared-model-name",
+        required=True,
+        help=(
+            "operator-declared provenance for which subscription model "
+            "produced this response (e.g. 'claude-opus-4.6-web') -- never "
+            "inferred, never defaulted"
+        ),
+    )
+    fm_import.add_argument("--preview-id", required=True)
+    fm_inspect = frontier_manual_subparsers.add_parser(
+        "inspect", help="show one exported package or imported preview"
+    )
+    fm_inspect.add_argument("task_id")
+    fm_inspect_group = fm_inspect.add_mutually_exclusive_group(required=True)
+    fm_inspect_group.add_argument("--package-id")
+    fm_inspect_group.add_argument("--preview-id")
+    fm_approve = frontier_manual_subparsers.add_parser(
+        "approve",
+        help="step 1 of 2: record explicit intent to apply a previewed patch",
+    )
+    fm_approve.add_argument("task_id")
+    fm_approve.add_argument("--preview-id", required=True)
+    fm_approve.add_argument("--expected-version", type=int, required=True)
+    fm_apply = frontier_manual_subparsers.add_parser(
+        "apply",
+        help=(
+            "step 2 of 2: apply an approved preview's patch and run "
+            "verification -- only the verifier may complete the task"
+        ),
+    )
+    fm_apply.add_argument("task_id")
+    fm_apply.add_argument("--preview-id", required=True)
+    fm_apply.add_argument("--expected-version", type=int, required=True)
+    fm_apply.add_argument("--expected-fingerprint", required=True)
+    fm_apply.add_argument("--operation-id", required=True)
+    fm_status = frontier_manual_subparsers.add_parser(
+        "status", help="show manual-frontier eligibility and repair-round usage"
+    )
+    fm_status.add_argument("task_id")
+
     aggregate = subparsers.add_parser(
         "eval-aggregate",
         help="aggregate one or more persisted evaluation comparison reports",
@@ -890,6 +971,7 @@ def main(argv: list[str] | None = None) -> None:
         IntakeError,
         ExecutionOperationError,
         HostedSpendCeilingExceededError,
+        ManualFrontierError,
     ) as exc:
         parser.exit(2, f"error: {exc}\n")
     if result is not None:
@@ -971,6 +1053,8 @@ def _dispatch(args: argparse.Namespace) -> dict[str, object] | None:
         return _intake_command(root, store, args)
     if args.command == "execute":
         return _execute_command(root, store, args)
+    if args.command == "frontier-manual":
+        return _manual_frontier_command(root, store, args)
     if args.command == "inspect":
         record = store.get_task(args.task_id)
         result: dict[str, object] = {
@@ -1277,6 +1361,111 @@ def _execute_command(
         )
         return record.model_dump(mode="json")
     raise AssertionError(f"unhandled execute command: {args.execute_command}")
+
+
+def _manual_frontier_preview_store(root: Path) -> ManualFrontierPreviewStore:
+    metadata = root / ".apoapsis"
+    if not (metadata / "config.toml").is_file():
+        raise TaskStoreError("Apoapsis is not initialized; run 'apoapsis init' first")
+    return ManualFrontierPreviewStore(metadata / "manual-frontier-previews.db")
+
+
+def _manual_frontier_command(
+    root: Path, store: SQLiteTaskStore, args: argparse.Namespace
+) -> dict[str, object]:
+    config = ApoapsisConfig.from_toml(root / ".apoapsis" / "config.toml")
+    preview_store = _manual_frontier_preview_store(root)
+    review_operation_store = _review_operation_store(root)
+
+    if args.frontier_manual_command == "export":
+        review_case = build_review_case(root, store, config, args.task_id)
+        if ReviewActionKind.MANUAL_FRONTIER_HANDOFF not in review_case.eligible_actions:
+            raise ManualFrontierError(
+                f"manual_frontier_handoff is not currently eligible for "
+                f"{args.task_id} (eligible actions: "
+                f"{[item.value for item in review_case.eligible_actions]})"
+            )
+        specification = store.get_task(args.task_id).specification
+        package = build_manual_frontier_handoff_package(
+            review_case,
+            specification,
+            config.verification.commands,
+            repair_round=review_case.manual_frontier_rounds_used,
+        )
+        audit = TaskAuditStore(root, args.task_id)
+        json_artifact, markdown_artifact = write_handoff_artifacts(audit, package)
+        return {
+            "package": package.model_dump(mode="json"),
+            "package_artifact_path": json_artifact.path,
+            "markdown_artifact_path": markdown_artifact.path,
+        }
+    if args.frontier_manual_command == "import":
+        response_bytes = args.response.resolve().read_bytes()
+        preview = import_manual_frontier_response(
+            root,
+            store,
+            preview_store,
+            review_operation_store,
+            config,
+            task_id=args.task_id,
+            package_id=args.package_id,
+            response_bytes=response_bytes,
+            declared_model_name=args.declared_model_name,
+            preview_id=args.preview_id,
+        )
+        return preview.model_dump(mode="json")
+    if args.frontier_manual_command == "inspect":
+        if args.package_id:
+            return load_manual_frontier_package(
+                root, args.task_id, args.package_id
+            ).model_dump(mode="json")
+        preview = preview_store.get(args.preview_id)
+        if preview.task_id != args.task_id:
+            raise ManualFrontierError(
+                f"preview {args.preview_id} belongs to task {preview.task_id}, "
+                f"not {args.task_id}"
+            )
+        return preview.model_dump(mode="json")
+    if args.frontier_manual_command == "approve":
+        preview = approve_manual_frontier_preview(
+            root,
+            store,
+            preview_store,
+            config,
+            task_id=args.task_id,
+            preview_id=args.preview_id,
+            expected_task_version=args.expected_version,
+        )
+        return preview.model_dump(mode="json")
+    if args.frontier_manual_command == "apply":
+        record = execute_review_action(
+            root,
+            store,
+            review_operation_store,
+            config,
+            task_id=args.task_id,
+            action=ReviewActionKind.MANUAL_FRONTIER_HANDOFF,
+            operation_id=args.operation_id,
+            expected_version=args.expected_version,
+            expected_worktree_fingerprint=args.expected_fingerprint,
+            manual_frontier_preview_id=args.preview_id,
+        )
+        return record.model_dump(mode="json")
+    if args.frontier_manual_command == "status":
+        review_case = build_review_case(root, store, config, args.task_id)
+        previews = preview_store.list_for_task(args.task_id)
+        return {
+            "task_id": args.task_id,
+            "manual_frontier_eligible": (
+                ReviewActionKind.MANUAL_FRONTIER_HANDOFF in review_case.eligible_actions
+            ),
+            "manual_frontier_rounds_used": review_case.manual_frontier_rounds_used,
+            "max_manual_frontier_rounds": review_case.max_manual_frontier_rounds,
+            "previews": [item.model_dump(mode="json") for item in previews],
+        }
+    raise AssertionError(
+        f"unhandled frontier-manual command: {args.frontier_manual_command}"
+    )
 
 
 def _review_operation_store(root: Path) -> ReviewOperationStore:

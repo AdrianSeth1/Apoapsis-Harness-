@@ -98,6 +98,38 @@ execution and native desktop packaging remain intentionally unavailable; use
 the CLI for those until their own deterministic application services are
 built.
 
+### Done -- manual subscription-based frontier coding handoff (ADR 0031)
+
+Added a second, distinct path for reaching a frontier model from a stopped
+`HUMAN_REVIEW_REQUIRED` task, alongside (never replacing) the existing
+automated API frontier path: `apoapsis frontier-manual export/import/
+inspect/approve/apply/status`. Export writes an immutable, hashed package
+(bound to task id/version, worktree fingerprint, approved specification/
+constraints, current diff, relevant failure evidence, the verification
+catalog, and the exact response JSON schema) plus a self-contained
+`FRONTIER-CODING-HANDOFF-<package_id>.md` the user uploads by hand to their
+own ChatGPT/Claude subscription session -- no website automation, no stored
+or reused subscription credential, ever. Import rechecks task version,
+eligibility, worktree fingerprint, package hash, active-operation conflicts,
+response size, patch parsing, and patch policy, then creates a preview
+only. Applying requires two explicit steps (approve, then a real
+`MANUAL_FRONTIER_HANDOFF` review operation, reusing the existing
+`ReviewOperationStore`/lease/recovery machinery unchanged) and only a
+passing verification run (through the same `VerificationRunner` every
+other path uses) ever reaches `COMPLETE`. A failed apply is eligible for a
+small, deterministic, configurable number of repair rounds
+(`[manual_frontier] max_repair_rounds`, default 2) using the real failure
+evidence -- never an unbounded conversation. 22 new deterministic tests
+(`tests/test_manual_frontier.py`); full suite 623/623 passing. See ADR 0031
+and `HANDOFF.md`'s "Manual subscription-based frontier coding handoff"
+section for full detail.
+
+**Not done in this milestone**: a local UI surface for this path (CLI/
+service only so far). The exact next UI seam is a Human Review case-detail
+action alongside `authorize_frontier_stage`, following the identical
+two-step-confirmation/background-worker/polling pattern ADR 0020 Commit C2
+already established.
+
 ## For future coding agents
 
 Read `AGENTS.md`, then all of `HANDOFF.md`, before making changes. Check the Git

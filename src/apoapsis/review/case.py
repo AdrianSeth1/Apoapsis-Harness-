@@ -20,6 +20,12 @@ from apoapsis.workflow.states import WorkflowState
 
 LOCAL_CONTINUATION_STARTED = "review_local_continuation_started"
 FRONTIER_CONTINUATION_STARTED = "review_frontier_continuation_started"
+# One manual-frontier "repair round" is consumed each time an applied
+# manual-subscription patch fails verification and the task returns to
+# HUMAN_REVIEW_REQUIRED still eligible for another handoff (ADR 0031) --
+# never for a successful apply, since a successful apply reaches COMPLETE
+# and there is nothing left to repair.
+MANUAL_FRONTIER_ROUND_CONSUMED_EVENT = "manual_frontier_apply_verification_failed"
 
 _VERIFICATION_RETRY_EVENT_TYPES = frozenset(
     {"review_verification_retry_incomplete", "review_verification_retry_failed"}
@@ -268,12 +274,21 @@ def build_review_case(
             }
         )
 
+    manual_frontier_rounds_used = sum(
+        1
+        for event in events
+        if event.event_type == MANUAL_FRONTIER_ROUND_CONSUMED_EVENT
+    )
+    max_manual_frontier_rounds = config.manual_frontier.max_repair_rounds
+
     eligible_actions = eligible_actions_for(
         kind,
         frontier_available=frontier_available,
         continuations_used=continuations_used,
         max_continuations_per_task=config.review.max_continuations_per_task,
         frontier_stage_exists=frontier_stage_exists,
+        manual_frontier_rounds_used=manual_frontier_rounds_used,
+        max_manual_frontier_rounds=max_manual_frontier_rounds,
     )
 
     audit_artifact_locations: list[str] = []
@@ -326,6 +341,8 @@ def build_review_case(
         max_additional_turns_per_continuation=(
             config.review.max_additional_turns_per_continuation
         ),
+        manual_frontier_rounds_used=manual_frontier_rounds_used,
+        max_manual_frontier_rounds=max_manual_frontier_rounds,
         eligible_actions=eligible_actions,
         audit_artifact_locations=audit_artifact_locations,
     )
@@ -338,4 +355,5 @@ __all__ = [
     "continuation_additional_turns",
     "LOCAL_CONTINUATION_STARTED",
     "FRONTIER_CONTINUATION_STARTED",
+    "MANUAL_FRONTIER_ROUND_CONSUMED_EVENT",
 ]

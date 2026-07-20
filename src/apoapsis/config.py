@@ -326,6 +326,24 @@ class ReviewConfig(StrictModel):
     max_additional_turns_per_continuation: int = Field(default=12, ge=1, le=50)
 
 
+class ManualFrontierConfig(StrictModel):
+    """Ceilings for the manual subscription-based frontier handoff (ADR
+    0031). This path never authenticates to a hosted API and never
+    automates ChatGPT's or Claude's website -- the operator manually
+    uploads an exported package to their own subscription session and
+    pastes back one bounded response. ``max_repair_rounds`` bounds how many
+    times an applied-but-failing manual patch may be handed off again with
+    real failure evidence; it is deliberately small and finite, never an
+    unbounded conversation. ``max_response_bytes`` bounds the raw pasted
+    response file size before it is even parsed as JSON, so a caller cannot
+    exhaust memory with an oversized paste before schema validation runs.
+    """
+
+    max_repair_rounds: int = Field(default=2, ge=0, le=10)
+    max_response_bytes: int = Field(default=2_000_000, ge=1_000, le=20_000_000)
+    max_patch_bytes: int = Field(default=1_000_000, ge=1_000, le=10_000_000)
+
+
 class ApoapsisConfig(StrictModel):
     models: ModelsConfig
     execution: ExecutionConfig = Field(default_factory=ExecutionConfig)
@@ -335,6 +353,7 @@ class ApoapsisConfig(StrictModel):
     research: ResearchConfig = Field(default_factory=ResearchConfig)
     architect: ArchitectConfig = Field(default_factory=ArchitectConfig)
     review: ReviewConfig = Field(default_factory=ReviewConfig)
+    manual_frontier: ManualFrontierConfig = Field(default_factory=ManualFrontierConfig)
 
     @model_validator(mode="after")
     def validate_provider_separation_and_route(self) -> ApoapsisConfig:

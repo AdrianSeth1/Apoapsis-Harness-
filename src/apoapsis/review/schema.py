@@ -44,6 +44,14 @@ class ReviewActionKind(StrEnum):
     # session that already exists. Never offered once a frontier session
     # for this task already exists; use FRONTIER_CONTINUATION for that.
     AUTHORIZE_FRONTIER_STAGE = "authorize_frontier_stage"
+    # Applies an operator-approved patch obtained by manually uploading an
+    # exported handoff package to a ChatGPT/Claude subscription session and
+    # pasting back one bounded response (ADR 0031) -- never the automated
+    # API frontier path (AUTHORIZE_FRONTIER_STAGE/FRONTIER_CONTINUATION),
+    # never a website automation, never a stored subscription credential.
+    # Only ever submitted after `manual_frontier.execution.approve_preview`
+    # has recorded explicit user approval of a specific, hash-bound preview.
+    MANUAL_FRONTIER_HANDOFF = "manual_frontier_handoff"
 
 
 class ReviewOperationStatus(StrEnum):
@@ -105,6 +113,8 @@ class ReviewCase(StrictModel):
     continuations_used: int = Field(default=0, ge=0)
     max_continuations_per_task: int = Field(ge=1)
     max_additional_turns_per_continuation: int = Field(ge=1)
+    manual_frontier_rounds_used: int = Field(default=0, ge=0)
+    max_manual_frontier_rounds: int = Field(default=0, ge=0)
     eligible_actions: list[ReviewActionKind] = Field(default_factory=list)
     audit_artifact_locations: list[str] = Field(default_factory=list)
     generated_at: datetime = Field(default_factory=utc_now)
@@ -121,6 +131,11 @@ class ReviewOperationRecord(StrictModel):
     expected_task_version: int = Field(ge=1)
     expected_worktree_fingerprint: str | None = None
     authorized_budget: ContinuationBudget | None = None
+    # Only set for action == MANUAL_FRONTIER_HANDOFF: the id of the
+    # explicitly user-approved `ManualFrontierPreviewRecord` this operation
+    # applies (ADR 0031). Additive/optional so every existing operation
+    # kind and every pre-existing persisted row is unaffected.
+    manual_frontier_preview_id: str | None = None
     status: ReviewOperationStatus
     created_at: datetime
     updated_at: datetime

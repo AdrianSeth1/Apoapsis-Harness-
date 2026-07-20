@@ -76,6 +76,7 @@ _WORKTREE_CHECKED_ACTIONS = frozenset(
         ReviewActionKind.LOCAL_CONTINUATION,
         ReviewActionKind.FRONTIER_CONTINUATION,
         ReviewActionKind.AUTHORIZE_FRONTIER_STAGE,
+        ReviewActionKind.MANUAL_FRONTIER_HANDOFF,
     }
 )
 
@@ -319,6 +320,7 @@ def prepare_review_operation(
     expected_version: int,
     expected_worktree_fingerprint: str | None = None,
     additional_turns: int | None = None,
+    manual_frontier_preview_id: str | None = None,
 ) -> ReviewCase:
     """Every fast, synchronous, read-only check plus operation-record
     creation -- never a model call, never a worktree mutation. Safe to call
@@ -349,6 +351,10 @@ def prepare_review_operation(
             config.review.max_additional_turns_per_continuation
         ),
     )
+    if action == ReviewActionKind.MANUAL_FRONTIER_HANDOFF and (
+        manual_frontier_preview_id is None
+    ):
+        raise ReviewError("manual_frontier_handoff requires manual_frontier_preview_id")
     operation_store.create(
         operation_id,
         task_id,
@@ -356,6 +362,7 @@ def prepare_review_operation(
         expected_task_version=expected_version,
         expected_worktree_fingerprint=expected_worktree_fingerprint,
         authorized_budget=budget,
+        manual_frontier_preview_id=manual_frontier_preview_id,
     )
     return review_case
 
@@ -473,6 +480,24 @@ def run_review_operation(
                 budget=record.authorized_budget,
                 provider=provider,
             )
+        elif record.action == ReviewActionKind.MANUAL_FRONTIER_HANDOFF:
+            # Imported locally to avoid a module-load-time circular import:
+            # `manual_frontier` depends on `review` (ReviewCase, the
+            # operation store, execute_review_action), so `review.execution`
+            # must not depend on it at import time -- only inside this one
+            # dispatch branch, exactly like `ui/server.py`'s own lazy import
+            # of a heavier submodule.
+            from apoapsis.manual_frontier.apply import execute_manual_frontier_apply
+
+            summary = execute_manual_frontier_apply(
+                root,
+                task_store,
+                config,
+                review_case,
+                record.expected_task_version,
+                operation_id=operation_id,
+                preview_id=record.manual_frontier_preview_id,
+            )
         elif record.action == ReviewActionKind.AUTHORIZE_FRONTIER_STAGE:
             assert config.models.frontier_coder is not None
             provider = frontier_coder_provider or _build_provider(
@@ -513,6 +538,7 @@ def execute_review_action(
     expected_version: int,
     expected_worktree_fingerprint: str | None = None,
     additional_turns: int | None = None,
+    manual_frontier_preview_id: str | None = None,
     local_coder_provider: InstrumentedModelProvider | None = None,
     frontier_coder_provider: InstrumentedModelProvider | None = None,
 ) -> ReviewOperationRecord:
@@ -533,6 +559,7 @@ def execute_review_action(
         expected_version=expected_version,
         expected_worktree_fingerprint=expected_worktree_fingerprint,
         additional_turns=additional_turns,
+        manual_frontier_preview_id=manual_frontier_preview_id,
     )
     return run_review_operation(
         project_root,

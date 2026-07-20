@@ -331,6 +331,9 @@ class LocalContinuationTests(ReviewExecutionTestsBase):
                 ReviewActionKind.ABANDON,
                 ReviewActionKind.VERIFICATION_ONLY_RETRY,
                 ReviewActionKind.LOCAL_CONTINUATION,
+                # Manual subscription-frontier handoff (ADR 0031) never
+                # requires the automated API frontier to be configured.
+                ReviewActionKind.MANUAL_FRONTIER_HANDOFF,
             },
         )
         self.assertTrue(case.worktree_exists)

@@ -23,6 +23,7 @@ _EVENT_TYPE_STOP_REASON: dict[str, StopReasonKind] = {
         StopReasonKind.FRONTIER_AGENT_EXHAUSTED
     ),
     "review_frontier_stage_requires_human": StopReasonKind.FRONTIER_AGENT_EXHAUSTED,
+    "manual_frontier_apply_verification_failed": StopReasonKind.VERIFICATION_FAILED,
 }
 
 _BASE_ELIGIBLE_ACTIONS: dict[StopReasonKind, tuple[ReviewActionKind, ...]] = {
@@ -43,6 +44,7 @@ _BASE_ELIGIBLE_ACTIONS: dict[StopReasonKind, tuple[ReviewActionKind, ...]] = {
         ReviewActionKind.INSPECT_ONLY,
         ReviewActionKind.ABANDON,
         ReviewActionKind.VERIFICATION_ONLY_RETRY,
+        ReviewActionKind.MANUAL_FRONTIER_HANDOFF,
     ),
     StopReasonKind.LOCAL_AGENT_ESCALATION_UNAVAILABLE: (
         ReviewActionKind.INSPECT_ONLY,
@@ -50,12 +52,14 @@ _BASE_ELIGIBLE_ACTIONS: dict[StopReasonKind, tuple[ReviewActionKind, ...]] = {
         ReviewActionKind.VERIFICATION_ONLY_RETRY,
         ReviewActionKind.LOCAL_CONTINUATION,
         ReviewActionKind.AUTHORIZE_FRONTIER_STAGE,
+        ReviewActionKind.MANUAL_FRONTIER_HANDOFF,
     ),
     StopReasonKind.FRONTIER_AGENT_EXHAUSTED: (
         ReviewActionKind.INSPECT_ONLY,
         ReviewActionKind.ABANDON,
         ReviewActionKind.VERIFICATION_ONLY_RETRY,
         ReviewActionKind.FRONTIER_CONTINUATION,
+        ReviewActionKind.MANUAL_FRONTIER_HANDOFF,
     ),
     StopReasonKind.UNKNOWN: (
         ReviewActionKind.INSPECT_ONLY,
@@ -94,6 +98,8 @@ def eligible_actions_for(
     continuations_used: int,
     max_continuations_per_task: int,
     frontier_stage_exists: bool = False,
+    manual_frontier_rounds_used: int = 0,
+    max_manual_frontier_rounds: int = 0,
 ) -> list[ReviewActionKind]:
     """The deterministic, harness-computed eligible-action set for a stop
     reason -- filtered by current frontier availability (checked fresh,
@@ -130,5 +136,9 @@ def eligible_actions_for(
                 ReviewActionKind.LOCAL_CONTINUATION,
                 ReviewActionKind.FRONTIER_CONTINUATION,
             }
+        ]
+    if manual_frontier_rounds_used >= max_manual_frontier_rounds:
+        actions = [
+            item for item in actions if item != ReviewActionKind.MANUAL_FRONTIER_HANDOFF
         ]
     return actions

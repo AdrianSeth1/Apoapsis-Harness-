@@ -19,11 +19,11 @@ without replacing this canonical coding-agent handoff.
 | Item | Current value |
 | --- | --- |
 | Last verified | 2026-07-20 |
-| Working-tree version | `1.0` plus ADR 0013 Windows local-model lifecycle, ADR 0014 first local operator-interface slice, ADR 0015 verification layers and acceptance coverage, ADR 0016's corrective follow-up, ADR 0017's worktree-fingerprint/explicit-acceptance-designation hardening, the opt-in `local-strict` evaluation lane with its first live result, ADR 0018's acceptance-failure-evidence/bounded-specification-correction fixes, ADR 0019's Architect Mode planning foundation plus its Plans UI surface, ADR 0020's deterministic human-review-and-resume CLI and UI, ADR 0021's review/resume integrity hardening, ADR 0022's explicit human-authorized fresh frontier stage, ADR 0023's durable new-task intake (CLI/service seam and New Task UI screen), ADR 0024's durable post-approval task execution (CLI/service seam and control-room UI), ADR 0025's shared operation-lease and recovery-integrity hardening across all three operation ledgers, ADR 0026's immutable execution authorization and truthful live UI, ADR 0027's approved-plan to single-slice execution (CLI/service seam plus the Plans UI slice experience, Commit D3b), ADR 0028's planning comparison framework (Commit D4a) plus its Commit D4b live evaluation (0/6 completions, a consistent model-logic failure -- see Snapshot), ADR 0029's D4c diagnostic-probe infrastructure (a forensic diagnosis of the D4b read-loop plus evaluation-only single-slice prompt-condition/alternate-model probe infrastructure) plus its two completed live observations (a `progress_advisory` probe and an unmodified-production control, both `COMPLETE` on `SLICE-JOBS-001` -- see Snapshot), the D5a Docker-sandbox diagnostic-readiness pass (ADR 0009 amendment), and ADR 0030's D5b hosted-frontier spend ceiling (required, enforced before and after every hosted call; no live hosted call made) |
+| Working-tree version | `1.0` plus ADR 0031's manual subscription-based frontier coding handoff (CLI/service seam: export/import/approve/apply/status, `MANUAL_FRONTIER_HANDOFF` review action, no UI surface yet -- see ADR 0031's Non-goals for the exact next UI seam), ADR 0013 Windows local-model lifecycle, ADR 0014 first local operator-interface slice, ADR 0015 verification layers and acceptance coverage, ADR 0016's corrective follow-up, ADR 0017's worktree-fingerprint/explicit-acceptance-designation hardening, the opt-in `local-strict` evaluation lane with its first live result, ADR 0018's acceptance-failure-evidence/bounded-specification-correction fixes, ADR 0019's Architect Mode planning foundation plus its Plans UI surface, ADR 0020's deterministic human-review-and-resume CLI and UI, ADR 0021's review/resume integrity hardening, ADR 0022's explicit human-authorized fresh frontier stage, ADR 0023's durable new-task intake (CLI/service seam and New Task UI screen), ADR 0024's durable post-approval task execution (CLI/service seam and control-room UI), ADR 0025's shared operation-lease and recovery-integrity hardening across all three operation ledgers, ADR 0026's immutable execution authorization and truthful live UI, ADR 0027's approved-plan to single-slice execution (CLI/service seam plus the Plans UI slice experience, Commit D3b), ADR 0028's planning comparison framework (Commit D4a) plus its Commit D4b live evaluation (0/6 completions, a consistent model-logic failure -- see Snapshot), ADR 0029's D4c diagnostic-probe infrastructure (a forensic diagnosis of the D4b read-loop plus evaluation-only single-slice prompt-condition/alternate-model probe infrastructure) plus its two completed live observations (a `progress_advisory` probe and an unmodified-production control, both `COMPLETE` on `SLICE-JOBS-001` -- see Snapshot), the D5a Docker-sandbox diagnostic-readiness pass (ADR 0009 amendment), and ADR 0030's D5b hosted-frontier spend ceiling (required, enforced before and after every hosted call; no live hosted call made) |
 | Checked-out branch | `main` |
-| Repository state | The 1.0/lifecycle baseline, the ADR 0014 UI slice, the ADR 0015 acceptance-coverage milestone, the ADR 0016 correction, the ADR 0017 hardening, the `local-strict` lane, the ADR 0018 fixes, ADR 0019's Architect Mode foundation (CLI + Plans UI), ADR 0020's review/resume CLI and UI, ADR 0021's hardening, ADR 0022's `authorize_frontier_stage` action, ADR 0023's `apoapsis intake` seam, ADR 0024's `apoapsis execute` seam and control-room UI, ADR 0025's lease/recovery hardening, ADR 0026's execution-authorization hardening, ADR 0027's `apoapsis plan slice` seam plus its Plans UI slice experience (Commit D3b), ADR 0028's `apoapsis eval-planning` seam and `download-service-v2` fixture (Commit D4a), ADR 0029's `apoapsis eval-planning-probe` seam (D4c), the D5a Docker-sandbox diagnostic-readiness pass (ADR 0009 amendment), and ADR 0030's hosted-frontier spend ceiling (D5b) are all committed on `main`; live evaluation evidence is committed separately. `DESIGN.md` is preserved as a separate, committed user-supplied design reference. Run `git status` and `git log -1 --oneline` for the exact current state. |
+| Repository state | The 1.0/lifecycle baseline, the ADR 0014 UI slice, the ADR 0015 acceptance-coverage milestone, the ADR 0016 correction, the ADR 0017 hardening, the `local-strict` lane, the ADR 0018 fixes, ADR 0019's Architect Mode foundation (CLI + Plans UI), ADR 0020's review/resume CLI and UI, ADR 0021's hardening, ADR 0022's `authorize_frontier_stage` action, ADR 0023's `apoapsis intake` seam, ADR 0024's `apoapsis execute` seam and control-room UI, ADR 0025's lease/recovery hardening, ADR 0026's execution-authorization hardening, ADR 0027's `apoapsis plan slice` seam plus its Plans UI slice experience (Commit D3b), ADR 0028's `apoapsis eval-planning` seam and `download-service-v2` fixture (Commit D4a), ADR 0029's `apoapsis eval-planning-probe` seam (D4c), the D5a Docker-sandbox diagnostic-readiness pass (ADR 0009 amendment), ADR 0030's hosted-frontier spend ceiling (D5b), and ADR 0031's manual subscription-based frontier handoff (`apoapsis frontier-manual` seam, no UI surface yet) are all committed on `main`; live evaluation evidence is committed separately. `DESIGN.md` is preserved as a separate, committed user-supplied design reference. Run `git status` and `git log -1 --oneline` for the exact current state. |
 | Preserved substrate tag | `substrate-v0.1` at `4c2e735` |
-| Full deterministic suite | 601 tests, 0 failures, 0 errors, 10 intentional skips (2 live-network, 5 live-Docker gated on `APOAPSIS_RUN_LIVE_DOCKER_TESTS=1`, 3 machine currently lacks the Windows privilege to create symlinks) -- includes 28 tests for ADR 0029's D4c diagnostic-probe infrastructure, 12 tests from the D5a Docker-sandbox diagnostic-readiness pass (ADR 0009 amendment), and 25 new tests from the D5b hosted-spend-ceiling readiness pass (ADR 0030), all deterministic fake-provider/fake-process/pure-function coverage, distinct from the two live local observations below and from the still-unrun live-Docker/live-hosted gates |
+| Full deterministic suite | 623 tests, 0 failures, 0 errors, 10 intentional skips (2 live-network, 5 live-Docker gated on `APOAPSIS_RUN_LIVE_DOCKER_TESTS=1`, 3 machine currently lacks the Windows privilege to create symlinks) -- includes 22 new tests for ADR 0031's manual subscription-based frontier handoff (all deterministic, fake-provider-free since this path makes no model call of its own), 28 tests for ADR 0029's D4c diagnostic-probe infrastructure, 12 tests from the D5a Docker-sandbox diagnostic-readiness pass (ADR 0009 amendment), and 25 tests from the D5b hosted-spend-ceiling readiness pass (ADR 0030), all deterministic fake-provider/fake-process/pure-function coverage, distinct from the two live local observations below and from the still-unrun live-Docker/live-hosted gates |
 | Syntax check | `python -m compileall -q src tests` passed |
 | Diff check | `git diff --check` passed; Git reported only expected LF-to-CRLF working-copy warnings |
 | Live local coding result | Qwen3-Coder-Next Q4 completed the controlled download-service task in 10 turns and 3 verification runs |
@@ -81,6 +81,7 @@ commands, and writes a complete usage and audit report.
 | Record evidence and usage | Deterministic audit and reporting layers |
 | Decompose a large idea into implementation slices (Architect Mode, ADR 0019) | An external model may only propose an `ArchitecturePlan` via manual export/import; it has no status/approval/execution field, cannot invent a verification-command name or escape the repository in a suggested path, and cannot mark itself validated, approved, or executed -- only `SQLitePlanStore`'s deterministic, optimistic-versioned transitions do that, and approval never executes a slice |
 | Resume a task from HUMAN_REVIEW_REQUIRED (ADR 0020) | A model may only propose search/read/patch/verify actions inside a resumed, harness-bounded agent turn exactly as before; it cannot choose which action is eligible, expand its own budget, pick a workflow transition, or claim completion -- `review.execution.execute_review_action()` alone checks eligibility/version/fingerprint/ceilings and owns every resulting transition |
+| Manual subscription-based frontier handoff (ADR 0031) | A model reached by manually uploading an exported package to a ChatGPT/Claude subscription session may only return one bounded unified-diff patch and a free-text summary (`ManualFrontierResponseEnvelope`, `extra="forbid"` -- no status/completion/command/budget field exists for it to use); it cannot claim completion, select a verification command, or expand its own repair-round budget. Apoapsis alone parses, validates, previews, and (only after explicit two-step user approval) applies the patch through the same patch parser/policy/applier every other path uses, and only the verification runner decides completion |
 
 No provider adapter may bypass this boundary. A larger or hosted model receives
 more capability only through a separately configured budget and context package;
@@ -158,7 +159,8 @@ architecture.
 ### CLI and configuration
 
 - `src/apoapsis/cli/app.py` owns `apoapsis init`, `ui`, `run`, `task`, `approve`, `inspect`,
-  `worktree-create`, `verify`, `rollback`, and Research Mode commands.
+  `worktree-create`, `verify`, `rollback`, `frontier-manual` (ADR 0031), and
+  Research Mode commands.
 - `src/apoapsis/config.py` is the strict TOML schema and cross-provider validation.
 - `.apoapsis/config.toml` is generated per target repository; `.apoapsis/apoapsis.db` stores
   task state and workflow events.
@@ -406,6 +408,80 @@ architecture.
   that already exists for the task; it never launches a fresh frontier
   session from a local-only stop. Does not change one-shot mode's own
   execution path.
+
+### Manual subscription-based frontier coding handoff (ADR 0031)
+
+- `src/apoapsis/manual_frontier/` is a new package, structurally reusing
+  (not duplicating) `review/`'s crash-safety ledger: `ReviewOperationStore`,
+  `review.execution`'s prepare/run/execute dispatch, and
+  `review.classify`'s eligible-action ceiling pattern all handle the actual
+  mutation (applying the patch). This package adds only what is genuinely
+  new -- the package/response schemas, the immutable handoff-package
+  builder, a small preview ledger, the import validator, and the apply
+  handler `review.execution` dispatches to.
+- `manual_frontier/schema.py` defines `ManualFrontierHandoffPackage`
+  (immutable, hashed, bound to task id/version, worktree fingerprint,
+  specification/constraints, current diff, relevant evidence/failures, the
+  verification catalog, and the exact response JSON schema) and
+  `ManualFrontierResponseEnvelope` (`extra="forbid"`: `package_id`/
+  `package_sha256`/`task_id`/`task_version`/`patch`/`summary` only -- no
+  status, completion, command-selection, or budget field of any kind).
+- `manual_frontier/package.py`'s `build_manual_frontier_handoff_package()`
+  builds the package from the exact same `ReviewCase` projection every
+  other review action uses; `package_sha256` excludes `package_id`/
+  `generated_at` (ADR 0026's convention) so re-deriving from the same input
+  reproduces the same hash, and `verify_package_integrity()` detects
+  on-disk tampering. `write_handoff_artifacts()` writes the canonical JSON
+  package plus a single, self-contained
+  `FRONTIER-CODING-HANDOFF-<package_id>.md` to the task's existing audit
+  directory -- the file a user manually uploads to their own ChatGPT/
+  Claude subscription session.
+- `manual_frontier/importer.py`'s `import_manual_frontier_response()`
+  rechecks task version, eligibility (including the repair-round ceiling),
+  worktree fingerprint, active-operation conflicts, package integrity,
+  response size (checked in raw bytes before any JSON parsing), schema
+  validity, package-hash self-consistency, patch parsing, and patch policy
+  -- fails closed on the first violation, otherwise creates an immutable
+  `ManualFrontierPreviewRecord` at `PREVIEWED` in its own ledger
+  (`.apoapsis/manual-frontier-previews.db`). **Creates a preview only --
+  never touches the worktree or task state.**
+- Applying the patch requires two explicit steps:
+  `manual_frontier/approve.py`'s `approve_manual_frontier_preview()`
+  (records intent, rechecks freshness, flips `PREVIEWED -> APPROVED`) and
+  then submitting a real `ReviewActionKind.MANUAL_FRONTIER_HANDOFF`
+  operation through the unmodified `review.execution.execute_review_action`/
+  `prepare_review_operation`/`run_review_operation` seam --
+  `ReviewOperationRecord` gained one additive, optional
+  `manual_frontier_preview_id` field. `run_review_operation`'s dispatch for
+  this action lazily imports `manual_frontier/apply.py`'s
+  `execute_manual_frontier_apply()` (avoiding a module-load-time circular
+  import, the same technique `ui/server.py` already uses), which
+  independently re-checks preview status/task version/fingerprint/package
+  integrity again immediately before touching the worktree, applies the
+  patch with the same `GitPatchApplier`/`PatchPolicyValidator` every other
+  path uses, and runs the same `VerificationRunner` -- **only a passing
+  verification result (and, under `STRICT`, satisfied acceptance coverage)
+  reaches `COMPLETE`**; nothing in the response envelope can claim it. A
+  failing result returns to `HUMAN_REVIEW_REQUIRED` via
+  `manual_frontier_apply_verification_failed`, which is both how
+  `StopReasonKind.VERIFICATION_FAILED` classification recognizes it and how
+  `ReviewCase.manual_frontier_rounds_used` counts one repair round.
+- `[manual_frontier]` in `.apoapsis/config.toml` (`max_repair_rounds`,
+  default 2; `max_response_bytes`; `max_patch_bytes`) bounds the whole path
+  to a small, deterministic number of repair rounds -- never an unbounded
+  conversation. `ManualFrontierPreviewRecord.declared_model_name` is
+  required, non-empty, operator-typed provenance; Apoapsis never infers or
+  verifies which model actually produced a response. No token count or
+  cost is ever recorded for this path (there is no telemetry to measure on
+  a manual paste), and none is ever displayed as a fabricated `0`.
+- CLI: `apoapsis frontier-manual export/import/inspect/approve/apply/status`
+  (`src/apoapsis/cli/app.py`). Completely separate from, and does not
+  change, the existing automated API frontier path
+  (`AUTHORIZE_FRONTIER_STAGE`/`FRONTIER_CONTINUATION`) or
+  `workflow/states.py`. **No local UI surface yet** -- see ADR 0031's
+  Non-goals for the exact next UI seam (a Human Review case-detail action
+  alongside `authorize_frontier_stage`, reusing `submit_review_operation`
+  unchanged for the apply step since it is a normal review operation).
 
 ### Durable model-assisted new-task intake (ADR 0023)
 
