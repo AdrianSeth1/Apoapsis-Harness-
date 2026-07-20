@@ -16,6 +16,10 @@ On Windows, double-click:
   model for 30 minutes at its configured context size.
 - `STOP_APOAPSIS.cmd` when finished. It explicitly unloads every configured
   local Ollama model, including the research model, and releases model RAM/VRAM.
+- `OPEN_APOAPSIS.cmd` to open the local operator interface (`apoapsis ui`)
+  in your system browser without a terminal. It manages only the UI
+  process it starts -- it does not load or unload any model; use
+  `STOP_APOAPSIS.cmd` separately when you want model memory released.
 
 The shared Ollama service stays running after Stop; it is lightweight and may be
 used by other applications. Stop never touches hosted providers. To warm the
@@ -190,6 +194,51 @@ suite 685/685 passing.
 **Not done in this milestone**: the API frontier-planning transport was
 not exercised live (no `[models.frontier_coder]` configured); the
 unrelated full-site visual polish pass.
+
+### Done -- D5c browser-product polish and minimal Windows launcher (ADR 0034)
+
+Wrote the D5c decision memo (ADR 0034) comparing the existing CLI plus
+system browser against a WebView2/pywebview native window and a
+Tauri-style wrapper across installation size, signing, updater/security
+surface, toolchain discovery, capability handling, offline assets, process
+ownership, model unloading, portability, and maintenance complexity.
+Decision: keep the loopback application plus system browser, add one
+minimal `OPEN_APOAPSIS.cmd` launcher, and defer any native wrapper or
+installer -- no packaging framework was installed.
+
+Audited every existing primary surface (not only ADR 0033's new pages) for
+sales copy, hype, and anthropomorphism against `docs/product-design-
+handoff.md`'s "Content style" section. The shipped copy was already close
+to that bar; this pass removed one remaining slogan-style headline,
+renamed the Home navigation label from "Projects" to "Home", and added
+`document.title` updates per route (the browser tab title never changed
+before this). A live browser pass against a disposable initialized
+project (1440px and 1100px, real focus/zoom/console checks, no hosted or
+live-model call needed) found and fixed two real bugs: the Changes view
+asserted a specific ("baseline") completion policy with an unsupported
+justification whenever no report existed yet, even when the project was
+actually configured `strict`; and every detail route (task/plan/plan
+slice/review/discovery session) left the *previous* record's content
+rendered under a small error banner when a fetch for a new id failed,
+risking a user acting on the wrong task. Both are fixed and covered by new
+regression tests.
+
+`OPEN_APOAPSIS.cmd` mirrors `START_APOAPSIS.cmd`/`STOP_APOAPSIS.cmd`'s
+`PYTHONPATH`-based invocation (no installed package required): it checks
+for the Python launcher, Git, and an initialized project before running
+`apoapsis ui`, never installs/downloads/reconfigures anything, never
+unloads models or touches Docker/Ollama settings, and points users to
+`STOP_APOAPSIS.cmd` for releasing model memory. 10 new tests
+(`tests/test_launcher.py`, including one live subprocess check of the
+initialization guard) and 13 new tests
+(`tests/test_ui_copy_and_accessibility.py`). See ADR 0034 and HANDOFF's
+"Browser-product polish and minimal Windows launcher" section for full
+detail.
+
+**Not done in this milestone**: a native desktop window and any packaged
+installer/updater remain explicitly deferred (ADR 0034's rejected
+alternatives), to be revisited only if a native window is separately
+prioritized.
 
 ## For future coding agents
 

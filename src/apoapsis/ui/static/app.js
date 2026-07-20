@@ -51,6 +51,48 @@ const store = {
   planApprovalPending: false,
 };
 
+const ROUTE_TITLES = {
+  home: "Home",
+  new: "New Task",
+  plans: "Plans",
+  reviews: "Human Review",
+  discover: "Discovery & Planning",
+  evaluations: "Evaluations",
+  models: "Models & Environment",
+};
+
+const TASK_VIEW_TITLES = {
+  spec: "Specification",
+  control: "Control Room",
+  changes: "Changes & Verification",
+  review: "Human Review",
+  report: "Report & Audit",
+};
+
+const PLAN_VIEW_TITLES = {
+  overview: "Overview",
+  slices: "Implementation Slices",
+};
+
+function updateDocumentTitle() {
+  const route = store.route;
+  let label = "Apoapsis — Verified Coding Harness";
+  if (route.name === "task") {
+    label = `${TASK_VIEW_TITLES[route.view] || "Task"} · ${route.taskId} — Apoapsis`;
+  } else if (route.name === "plan") {
+    label = `${PLAN_VIEW_TITLES[route.view] || "Plan"} · ${route.planId} — Apoapsis`;
+  } else if (route.name === "planSlice") {
+    label = `Slice ${route.sliceId} · ${route.planId} — Apoapsis`;
+  } else if (route.name === "review") {
+    label = `Human Review · ${route.taskId} — Apoapsis`;
+  } else if (route.name === "discoverSession") {
+    label = `Discovery Session · ${route.sessionId} — Apoapsis`;
+  } else if (ROUTE_TITLES[route.name]) {
+    label = `${ROUTE_TITLES[route.name]} — Apoapsis`;
+  }
+  document.title = label;
+}
+
 const e = (value) => String(value ?? "")
   .replaceAll("&", "&amp;")
   .replaceAll("<", "&lt;")
@@ -149,6 +191,7 @@ async function syncRoute() {
   try {
     if (store.route.name === "task") {
       if (!store.task || store.task.task.task_id !== store.route.taskId) {
+        store.task = null;
         store.busy = true;
         render();
         store.executionOperation = null;
@@ -164,11 +207,13 @@ async function syncRoute() {
       store.plans = await api("/api/plans");
     } else if (store.route.name === "plan") {
       if (!store.plan || store.plan.plan.plan_id !== store.route.planId) {
+        store.plan = null;
         store.busy = true;
         render();
         store.plan = await api(`/api/plans/${encodeURIComponent(store.route.planId)}`);
       }
     } else if (store.route.name === "planSlice") {
+      store.planSlice = null;
       store.busy = true;
       store.planSliceApprovalPending = false;
       render();
@@ -181,6 +226,7 @@ async function syncRoute() {
       store.reviews = await api("/api/reviews");
     } else if (store.route.name === "review") {
       if (!store.review || store.review.task_id !== store.route.taskId) {
+        store.review = null;
         store.busy = true;
         render();
         store.reviewOperation = null;
@@ -201,6 +247,7 @@ async function syncRoute() {
       store.discoverSessions = await api("/api/discovery/sessions");
     } else if (store.route.name === "discoverSession") {
       if (!store.discoverSession || store.discoverSession.session.session_id !== store.route.sessionId) {
+        store.discoverSession = null;
         store.busy = true;
         render();
         store.discoverOperation = null;
@@ -246,7 +293,7 @@ function sidebar() {
       </a>
       <p class="nav-label">Workspace</p>
       <nav class="nav-list" aria-label="Workspace">
-        <a class="nav-link${active("home")}" href="#/home"><span class="nav-dot"></span><span>Projects</span></a>
+        <a class="nav-link${active("home")}" href="#/home"><span class="nav-dot"></span><span>Home</span></a>
         <a class="nav-link${active("new")}" href="#/new"><span class="nav-dot"></span><span>New task</span></a>
         <a class="nav-link${active("plans")}" href="#/plans"><span class="nav-dot"></span><span>Plans</span></a>
         <a class="nav-link${active("reviews")}" href="#/reviews"><span class="nav-dot"></span><span>Human review queue</span></a>
@@ -324,7 +371,7 @@ function homeView() {
   return `
     <main class="content">
       <div class="page-heading">
-        <div><p class="eyebrow">LOCAL-FIRST / VERIFIED BY CONSTRUCTION</p><h1>Engineering control,<br>without the guesswork.</h1><p>Apoapsis turns model proposals into inspectable tasks, bounded changes, deterministic checks, and durable evidence.</p></div>
+        <div><p class="eyebrow">LOCAL-FIRST / VERIFIED BY CONSTRUCTION</p><h1>Project status.</h1><p>Apoapsis turns model proposals into inspectable tasks, bounded changes, deterministic checks, and durable evidence.</p></div>
         <a class="button primary" href="#/new">New task →</a>
       </div>
       <section class="card hero-card">
@@ -1406,7 +1453,7 @@ function changesView(detail) {
   const coverage = report?.constraint_coverage || [];
   const verifications = report?.verification_results || [];
   const acceptanceCoverage = report?.acceptance_coverage || [];
-  const completionPolicy = report?.completion_policy || "baseline";
+  const completionPolicy = report?.completion_policy;
   return `<main class="content">
     <div class="page-heading"><div><p class="eyebrow">CHANGES / VERIFICATION</p><h1>Proposal versus proof.</h1><p>Changed paths, constraint dispositions, and command results are rendered from the final report. An absent report remains pending.</p></div><span class="pill ${report ? statusClass(report.outcome) : "warn"}">${report ? e(report.outcome) : "Pending"}</span></div>
     ${report ? `<div class="grid four">${metric("Files changed", files.length, "Validated paths")}${metric("Transmitted files", report.transmitted_files, "Provider context")}${metric("Transmitted lines", report.transmitted_lines, "Provider context")}${metric("Verify runs", verifications.length, "Recorded results")}</div>` : `<div class="notice">No final report is present for this task yet.</div>`}
@@ -1414,8 +1461,8 @@ function changesView(detail) {
       <section class="card"><div class="card-header"><div><h2>Files changed</h2><p>Accepted report paths</p></div></div><div class="card-body">${files.length ? `<div class="file-list">${files.map((file) => `<div class="file-item"><code>${e(file)}</code><span class="pill purple">changed</span></div>`).join("")}</div>` : `<p class="muted">No changed files are recorded.</p>`}</div></section>
       <section class="card"><div class="card-header"><div><h2>Constraint coverage</h2><p>Model disposition, not independent proof</p></div></div><div class="card-body">${coverage.length ? coverage.map((item) => `<div class="constraint"><div class="constraint-head"><span class="constraint-id">${e(item.constraint_id)}</span><span class="pill ${item.disposition === "included" ? "good" : "warn"}">${e(item.disposition)}</span></div><blockquote>${e(item.reason)}</blockquote></div>`).join("") : `<p class="muted">No coverage entries are recorded.</p>`}</div></section>
     </div>
-    <p class="section-title">Acceptance coverage · ${e(titleCase(completionPolicy))} completion policy</p>
-    <section class="card card-pad">${acceptanceCoverage.length ? `<div class="verification-list">${acceptanceCoverage.map(acceptanceCoverageItem).join("")}</div>` : `<p class="muted">${completionPolicy === "strict" ? "No active acceptance criteria are configured for this task." : "The baseline completion policy does not gate on acceptance coverage; this task recorded none."}</p>`}</section>
+    <p class="section-title">Acceptance coverage${completionPolicy ? ` · ${e(titleCase(completionPolicy))} completion policy` : ""}</p>
+    <section class="card card-pad">${acceptanceCoverage.length ? `<div class="verification-list">${acceptanceCoverage.map(acceptanceCoverageItem).join("")}</div>` : `<p class="muted">${!report ? "No final report exists yet, so acceptance coverage has not been computed." : completionPolicy === "strict" ? "No active acceptance criteria are configured for this task." : "The baseline completion policy does not gate on acceptance coverage; this task recorded none."}</p>`}</section>
     <p class="section-title">Verification results</p>
     <section class="card card-pad">${verifications.length ? `<div class="verification-list">${verifications.flatMap((result) => (result.commands || []).map((command) => verificationItem(command, result))).join("")}</div>` : `<p class="muted">No verification results are recorded.</p>`}</section>
   </main>`;
@@ -1689,6 +1736,7 @@ function loadingView() {
 }
 
 function render() {
+  updateDocumentTitle();
   if (!sessionToken) {
     root.innerHTML = `<div class="boot-screen"><span class="orbit-mark"><i></i><b></b></span><p class="eyebrow">SESSION REQUIRED</p><h1>Launch with <span class="orange mono">apoapsis ui</span></h1><p class="muted">The local API requires a fresh capability token and does not expose project data from a manually entered URL.</p></div>`;
     return;

@@ -112,7 +112,10 @@ records held-out correctness checks and cross-run metrics, and
 [ADR 0013](docs/adr/0013-local-model-operator-lifecycle.md) records safe local-
 model Start/Stop behavior, and
 [ADR 0014](docs/adr/0014-local-operator-interface.md) records the local
-application/API and browser-session security boundary. The
+application/API and browser-session security boundary, and
+[ADR 0034](docs/adr/0034-browser-launcher-and-native-wrapper-deferral.md)
+records the D5c decision to add a minimal Windows browser launcher while
+deferring any native desktop wrapper. The
 [Research Mode guide](docs/research-mode.md)
 covers setup and operation.
 
@@ -168,6 +171,18 @@ Launch the offline interface from an initialized project:
 ```powershell
 apoapsis ui
 ```
+
+On Windows, double-click `OPEN_APOAPSIS.cmd` instead of using a terminal.
+It checks for the Python launcher, Git, and an initialized project
+(reporting any of those missing in plain language before doing anything
+else), then runs `apoapsis ui` from the checkout and opens your system
+browser. It never installs, downloads, or reconfigures anything, and never
+loads or unloads a model -- it manages only the one UI process it starts.
+Closing its window (or Ctrl+C) stops just that process; use
+`STOP_APOAPSIS.cmd` separately to release local model memory. See
+[ADR 0034](docs/adr/0034-browser-launcher-and-native-wrapper-deferral.md)
+for why this stays a thin launcher around the existing browser surface
+rather than a native desktop window.
 
 It opens a capability-protected loopback session at `127.0.0.1:7331`. Use
 `apoapsis ui --no-open` to serve without opening a browser, or `--port` to select

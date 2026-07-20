@@ -78,3 +78,14 @@ shutdown behavior receive a separate packaging decision.
 - New UI mutations must be typed service methods, capability protected,
   optimistic where applicable, and covered for CLI/event parity. They may not
   widen the provider or workflow authority boundary.
+
+## Addendum (D5c, ADR 0034, 2026-07-20)
+
+The "future WebView/native wrapper" possibility above was formally
+evaluated and deliberately deferred: ADR 0034 compares the existing CLI
+plus system browser against a WebView2/pywebview native window and a
+Tauri-style wrapper, and adds `OPEN_APOAPSIS.cmd`, a minimal Windows
+launcher that runs the exact same `apoapsis ui` entry point this ADR
+established -- no new capability-delivery, process-ownership, or update
+mechanism. The loopback server, capability-token, and CSP boundary
+described above are unchanged.

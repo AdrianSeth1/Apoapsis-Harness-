@@ -19,11 +19,11 @@ without replacing this canonical coding-agent handoff.
 | Item | Current value |
 | --- | --- |
 | Last verified | 2026-07-20 |
-| Working-tree version | `1.0` plus ADR 0033's local UI for the manual frontier coding handoff and discovery/frontier planning (a new Human Review section plus a new `#/discover` UI area, both live-verified end to end in a real browser against a real local model, including two real bugs found and fixed live), ADR 0032's local-first Architect Mode discovery and frontier planning handoff (CLI/service seam: `apoapsis discover ...`, bounded local clarification + IdeaBrief approval, then an optional API- or manual-subscription-transport frontier planning stage feeding the existing, unmodified plan import/validate/approve machinery), ADR 0031's manual subscription-based frontier coding handoff (CLI/service seam: export/import/approve/apply/status, `MANUAL_FRONTIER_HANDOFF` review action), ADR 0013 Windows local-model lifecycle, ADR 0014 first local operator-interface slice, ADR 0015 verification layers and acceptance coverage, ADR 0016's corrective follow-up, ADR 0017's worktree-fingerprint/explicit-acceptance-designation hardening, the opt-in `local-strict` evaluation lane with its first live result, ADR 0018's acceptance-failure-evidence/bounded-specification-correction fixes, ADR 0019's Architect Mode planning foundation plus its Plans UI surface, ADR 0020's deterministic human-review-and-resume CLI and UI, ADR 0021's review/resume integrity hardening, ADR 0022's explicit human-authorized fresh frontier stage, ADR 0023's durable new-task intake (CLI/service seam and New Task UI screen), ADR 0024's durable post-approval task execution (CLI/service seam and control-room UI), ADR 0025's shared operation-lease and recovery-integrity hardening across all three operation ledgers, ADR 0026's immutable execution authorization and truthful live UI, ADR 0027's approved-plan to single-slice execution (CLI/service seam plus the Plans UI slice experience, Commit D3b), ADR 0028's planning comparison framework (Commit D4a) plus its Commit D4b live evaluation (0/6 completions, a consistent model-logic failure -- see Snapshot), ADR 0029's D4c diagnostic-probe infrastructure (a forensic diagnosis of the D4b read-loop plus evaluation-only single-slice prompt-condition/alternate-model probe infrastructure) plus its two completed live observations (a `progress_advisory` probe and an unmodified-production control, both `COMPLETE` on `SLICE-JOBS-001` -- see Snapshot), the D5a Docker-sandbox diagnostic-readiness pass (ADR 0009 amendment), and ADR 0030's D5b hosted-frontier spend ceiling (required, enforced before and after every hosted call; no live hosted call made) |
+| Working-tree version | `1.0` plus ADR 0034's D5c browser-product polish and minimal Windows launcher (`OPEN_APOAPSIS.cmd`, a website copy/accessibility audit, and two real bugs found and fixed by a live browser QA pass against a disposable project), ADR 0033's local UI for the manual frontier coding handoff and discovery/frontier planning (a new Human Review section plus a new `#/discover` UI area, both live-verified end to end in a real browser against a real local model, including two real bugs found and fixed live), ADR 0032's local-first Architect Mode discovery and frontier planning handoff (CLI/service seam: `apoapsis discover ...`, bounded local clarification + IdeaBrief approval, then an optional API- or manual-subscription-transport frontier planning stage feeding the existing, unmodified plan import/validate/approve machinery), ADR 0031's manual subscription-based frontier coding handoff (CLI/service seam: export/import/approve/apply/status, `MANUAL_FRONTIER_HANDOFF` review action), ADR 0013 Windows local-model lifecycle, ADR 0014 first local operator-interface slice, ADR 0015 verification layers and acceptance coverage, ADR 0016's corrective follow-up, ADR 0017's worktree-fingerprint/explicit-acceptance-designation hardening, the opt-in `local-strict` evaluation lane with its first live result, ADR 0018's acceptance-failure-evidence/bounded-specification-correction fixes, ADR 0019's Architect Mode planning foundation plus its Plans UI surface, ADR 0020's deterministic human-review-and-resume CLI and UI, ADR 0021's review/resume integrity hardening, ADR 0022's explicit human-authorized fresh frontier stage, ADR 0023's durable new-task intake (CLI/service seam and New Task UI screen), ADR 0024's durable post-approval task execution (CLI/service seam and control-room UI), ADR 0025's shared operation-lease and recovery-integrity hardening across all three operation ledgers, ADR 0026's immutable execution authorization and truthful live UI, ADR 0027's approved-plan to single-slice execution (CLI/service seam plus the Plans UI slice experience, Commit D3b), ADR 0028's planning comparison framework (Commit D4a) plus its Commit D4b live evaluation (0/6 completions, a consistent model-logic failure -- see Snapshot), ADR 0029's D4c diagnostic-probe infrastructure (a forensic diagnosis of the D4b read-loop plus evaluation-only single-slice prompt-condition/alternate-model probe infrastructure) plus its two completed live observations (a `progress_advisory` probe and an unmodified-production control, both `COMPLETE` on `SLICE-JOBS-001` -- see Snapshot), the D5a Docker-sandbox diagnostic-readiness pass (ADR 0009 amendment), and ADR 0030's D5b hosted-frontier spend ceiling (required, enforced before and after every hosted call; no live hosted call made) |
 | Checked-out branch | `main` |
-| Repository state | The 1.0/lifecycle baseline, the ADR 0014 UI slice, the ADR 0015 acceptance-coverage milestone, the ADR 0016 correction, the ADR 0017 hardening, the `local-strict` lane, the ADR 0018 fixes, ADR 0019's Architect Mode foundation (CLI + Plans UI), ADR 0020's review/resume CLI and UI, ADR 0021's hardening, ADR 0022's `authorize_frontier_stage` action, ADR 0023's `apoapsis intake` seam, ADR 0024's `apoapsis execute` seam and control-room UI, ADR 0025's lease/recovery hardening, ADR 0026's execution-authorization hardening, ADR 0027's `apoapsis plan slice` seam plus its Plans UI slice experience (Commit D3b), ADR 0028's `apoapsis eval-planning` seam and `download-service-v2` fixture (Commit D4a), ADR 0029's `apoapsis eval-planning-probe` seam (D4c), the D5a Docker-sandbox diagnostic-readiness pass (ADR 0009 amendment), ADR 0030's hosted-frontier spend ceiling (D5b), ADR 0031's manual subscription-based frontier handoff (`apoapsis frontier-manual` seam, no UI surface yet), and ADR 0032's discovery/frontier-planning handoff (`apoapsis discover` seam, no UI surface yet) are all committed on `main`; live evaluation evidence is committed separately. `DESIGN.md` is preserved as a separate, committed user-supplied design reference. Run `git status` and `git log -1 --oneline` for the exact current state. |
+| Repository state | The 1.0/lifecycle baseline, the ADR 0014 UI slice, the ADR 0015 acceptance-coverage milestone, the ADR 0016 correction, the ADR 0017 hardening, the `local-strict` lane, the ADR 0018 fixes, ADR 0019's Architect Mode foundation (CLI + Plans UI), ADR 0020's review/resume CLI and UI, ADR 0021's hardening, ADR 0022's `authorize_frontier_stage` action, ADR 0023's `apoapsis intake` seam, ADR 0024's `apoapsis execute` seam and control-room UI, ADR 0025's lease/recovery hardening, ADR 0026's execution-authorization hardening, ADR 0027's `apoapsis plan slice` seam plus its Plans UI slice experience (Commit D3b), ADR 0028's `apoapsis eval-planning` seam and `download-service-v2` fixture (Commit D4a), ADR 0029's `apoapsis eval-planning-probe` seam (D4c), the D5a Docker-sandbox diagnostic-readiness pass (ADR 0009 amendment), ADR 0030's hosted-frontier spend ceiling (D5b), ADR 0031's manual subscription-based frontier handoff (`apoapsis frontier-manual` seam, no UI surface yet), ADR 0032's discovery/frontier-planning handoff (`apoapsis discover` seam, no UI surface yet), and ADR 0034's D5c browser-product polish and `OPEN_APOAPSIS.cmd` launcher are all committed on `main`; live evaluation evidence is committed separately. `DESIGN.md` is preserved as a separate, committed user-supplied design reference. Run `git status` and `git log -1 --oneline` for the exact current state. |
 | Preserved substrate tag | `substrate-v0.1` at `4c2e735` |
-| Full deterministic suite | 685 tests, 0 failures, 0 errors, 10 intentional skips (2 live-network, 5 live-Docker gated on `APOAPSIS_RUN_LIVE_DOCKER_TESTS=1`, 3 machine currently lacks the Windows privilege to create symlinks) -- includes 16 new tests for ADR 0033's manual-frontier UI and 26 new tests for its discovery UI (both deterministic, fake-provider-backed for every model-driven branch), 20 tests for ADR 0032's discovery/frontier-planning handoff (deterministic fake-provider coverage throughout), 22 tests for ADR 0031's manual subscription-based frontier handoff (all deterministic, fake-provider-free since this path makes no model call of its own), 28 tests for ADR 0029's D4c diagnostic-probe infrastructure, 12 tests from the D5a Docker-sandbox diagnostic-readiness pass (ADR 0009 amendment), and 25 tests from the D5b hosted-spend-ceiling readiness pass (ADR 0030), all deterministic fake-provider/fake-process/pure-function coverage, distinct from the two live local observations below and from the still-unrun live-Docker/live-hosted gates |
+| Full deterministic suite | 708 tests, 0 failures, 0 errors, 10 intentional skips (2 live-network, 5 live-Docker gated on `APOAPSIS_RUN_LIVE_DOCKER_TESTS=1`, 3 machine currently lacks the Windows privilege to create symlinks) -- includes 10 new tests for ADR 0034's `OPEN_APOAPSIS.cmd` launcher (`tests/test_launcher.py`, one a live subprocess check) and 13 new tests for its website copy/accessibility audit (`tests/test_ui_copy_and_accessibility.py`), 16 new tests for ADR 0033's manual-frontier UI and 26 new tests for its discovery UI (both deterministic, fake-provider-backed for every model-driven branch), 20 tests for ADR 0032's discovery/frontier-planning handoff (deterministic fake-provider coverage throughout), 22 tests for ADR 0031's manual subscription-based frontier handoff (all deterministic, fake-provider-free since this path makes no model call of its own), 28 tests for ADR 0029's D4c diagnostic-probe infrastructure, 12 tests from the D5a Docker-sandbox diagnostic-readiness pass (ADR 0009 amendment), and 25 tests from the D5b hosted-spend-ceiling readiness pass (ADR 0030), all deterministic fake-provider/fake-process/pure-function coverage, distinct from the two live local observations below and from the still-unrun live-Docker/live-hosted gates |
 | Syntax check | `python -m compileall -q src tests` passed |
 | Diff check | `git diff --check` passed; Git reported only expected LF-to-CRLF working-copy warnings |
 | Live local coding result | Qwen3-Coder-Next Q4 completed the controlled download-service task in 10 turns and 3 verification runs |
@@ -40,6 +40,7 @@ without replacing this canonical coding-agent handoff.
 | D4c live evidence (2026-07-20, `SLICE-JOBS-001`, `qwen3-coder-next:q4_K_M`) | Two of the D4c probes above were run once each against the exact same slice D4b exercised. **Progress-advisory probe** (`progress_advisory`): 8 turns, one `v2-jobs-tests` run (passed), `AC-JOBS-STATE` proven, `COMPLETE`; 53,039 input / 876 output / 0 cached tokens, 151.4s. **Unmodified-production control** (`production`, same configured model and slice, run through this same probe infrastructure): 5 turns, one `v2-jobs-tests` run (passed), `COMPLETE`; 31,965 input / 803 output / 0 cached tokens, 109.4s. Both escaped D4b's read loop, edited, invoked verification, passed, and reached real `COMPLETE`. **The production control succeeded without the advisory prompt and in fewer turns** -- these two observations give no basis for changing the production prompt (`_AGENT_STEP_STATIC_PREFIX` untouched) or for attributing either success to the advisory note. They do show this model can solve and verify this slice: D4b's read loop is not a hard capability limitation. The contrast with D4b's 0/6 remains unexplained -- run-to-run or setup sensitivity is itself unmeasured. Covers only `SLICE-JOBS-001`, not the full three-slice plan or the held-out cross-slice oracle; no completion rate, reliability rate, or planning advantage is claimed. Probe 3 (alternate model) was not run. See ADR 0029's and `docs/evaluation/apoapsis-d4c-forensic-diagnosis-2026-07-19.md`'s live-evidence addenda. |
 
 | Live manual-frontier and discovery UI result (ADR 0033, 2026-07-20) | Both new UI surfaces were exercised end to end in a real browser against disposable, freshly-initialized projects, using the real local `qwen3-coder-next:q4_K_M` model over loopback Ollama for every local-model step (no hosted call made; the API frontier-planning transport was left unconfigured). Manual-frontier: a real escalated task's handoff package was exported, a hand-crafted response with a genuinely correct patch was imported/approved/applied through the real background `ReviewWorker`, the project's real `unit-tests` command passed, and the task correctly stopped again at `HUMAN_REVIEW_REQUIRED` (no acceptance-designated command configured -- correct fail-closed behavior). Discovery: a session progressed through two real local-model calls (4 clarification questions, then a verbatim-constraint-checked idea brief), manual-transport export, and a hand-crafted plan-response import, reaching `PLAN_IMPORTED` and linking into the existing, completely unmodified Plans UI. Checked at 1440px and 1100px; no console errors. This pass found and fixed two real bugs: `review.case._fresh_evidence()` never recognized a manual-frontier apply round as fresher than the original `report.json` (stale `stop_reason_text`/`verification_results` after a real, correct verification run), and the generic eligible-actions grid duplicated `manual_frontier_handoff` as a raw card alongside its own dedicated section. See ADR 0033. |
+| Live D5c browser-product-polish QA result (ADR 0034, 2026-07-20) | `apoapsis ui` was exercised end to end in a real browser against a disposable initialized project (a task drafted and approved via `apoapsis task`/`apoapsis approve` -- no model call needed) at 1440px and 1100px: Home, New Task, every task tab (Specification, Control room including the two-step "Start coding" preview shown then cancelled, Changes, Human review, Report), the standalone Human Review queue, Plans, Discovery, Evaluations, Models & environment, and an invalid-task-id error state. No console errors at any point; keyboard Tab navigation showed a visible focus ring; 150% zoom (via `document.documentElement.style.zoom`, since page-zoom keyboard shortcuts are not automatable in this environment) showed no clipping or overlap. Found and fixed two real bugs, neither caught by the deterministic suite: `changesView()` asserted an unsupported "baseline completion policy" claim whenever no report existed yet, even though the QA project was actually configured `strict` (confirmed by the same project's Models & environment page); and every detail route (task/plan/plan slice/review/discovery session) left the *previous* record's content rendered under a small error banner when a fetch for a new id failed. Both are fixed and covered by new regression tests. No hosted call and no live local-model call were made. See ADR 0034. |
 
 Update this table whenever its claims change. Never describe an uncommitted
 version as a committed release. Never claim that a provider path was proven
@@ -234,6 +235,20 @@ architecture.
   research. It leaves the shared Ollama service running and never stops Docker,
   tasks, or worktrees. The last result is atomically recorded in the ignored
   `.apoapsis/runtime/` directory. See ADR 0013.
+- `OPEN_APOAPSIS.cmd` (D5c, ADR 0034) is a minimal double-click launcher for
+  the local operator interface itself, distinct from Start/Stop's model
+  lifecycle: it checks for the Python launcher, Git, and an initialized
+  project (`.apoapsis/config.toml`) with a plain-language message and
+  non-zero exit on any failure, then runs `apoapsis ui` from the checkout
+  (same `PYTHONPATH`-based invocation as Start/Stop, no installed package
+  required). It never installs, downloads, or pulls anything, never
+  touches Docker/Ollama configuration, and never calls `operator_lifecycle
+  stop` -- closing its console window (or Ctrl+C) stops only the one UI
+  process it owns. It points users to `STOP_APOAPSIS.cmd` for releasing
+  local model memory rather than duplicating that behavior, and the
+  ordinary CLI remains unchanged and available for debugging/automation.
+  See ADR 0034 for the full comparison against a native WebView2/pywebview
+  window and a Tauri-style wrapper, both deliberately deferred.
 
 ### Specification and constraints
 
@@ -1648,6 +1663,81 @@ plan, compatibility tests, and an ADR.
   `base_url` for the CLI-level refusal tests (both refusal paths reject
   before any provider's `.complete()` is ever called). See ADR 0030.
 
+### Browser-product polish and minimal Windows launcher (ADR 0034, D5c, 2026-07-20)
+
+- Decision memo (ADR 0034) compares the existing CLI-plus-system-browser
+  surface against a WebView2/pywebview-style native window and a
+  Tauri-style wrapper across installation size, signing, updater/security
+  surface, toolchain discovery, loopback capability handling, offline
+  assets, process ownership/shutdown, model unloading, portability, and
+  maintenance complexity. Decision: retain the loopback application plus
+  system browser, add one minimal launcher (`OPEN_APOAPSIS.cmd`), and
+  defer any native wrapper or installer -- no packaging framework was
+  installed and no native window was implemented.
+- Full website audit of every existing primary surface (Home, New Task,
+  task Specification/Control room/Changes/Human review/Report tabs, Plans,
+  Discovery, Evaluations, Models & environment, Human Review queue and
+  case detail), not only ADR 0033's new pages. The shipped copy was
+  already close to the product-design handoff's calm, direct-language bar;
+  this pass removed the one remaining slogan-style headline ("Engineering
+  control, without the guesswork." -> "Project status."), renamed the Home
+  navigation label from "Projects" to "Home" (a personal-first,
+  single-repository product should not imply multiple projects), and added
+  `updateDocumentTitle()` so the browser tab title changes with navigation
+  (e.g. "Specification · TASK-... — Apoapsis") -- previously the tab title
+  never changed from the static `index.html` title regardless of route.
+- **Two real bugs found live, not by the deterministic suite** (`apoapsis
+  ui` exercised end to end against a disposable initialized project, real
+  browser, at 1440px and 1100px):
+  1. `changesView()` fell back to the literal string `"baseline"` whenever
+     a task had no final report yet, then rendered "The baseline
+     completion policy does not gate on acceptance coverage" -- an
+     unsupported, specific claim about a policy that could actually be
+     `strict` for the project (confirmed live: the QA project's Models &
+     environment page correctly showed `Strict`, while the same task's
+     Changes tab wrongly implied `baseline`). Fixed by only labeling the
+     policy when a report actually states it, and using a neutral,
+     report-existence-based message otherwise.
+  2. Every detail route (task, plan, plan slice, review case, discovery
+     session) left the *previous* record's full content rendered
+     underneath a small dismissible-looking error banner when a fetch for
+     a new id failed (e.g. a stale link to a deleted or nonexistent task)
+     -- a user could easily miss the banner and act on the wrong task's
+     specification. Fixed by nulling the relevant store field before each
+     refetch, so a failed lookup shows the existing loading/empty state
+     (each view already null-guards to `loadingView()`) rather than stale,
+     wrong content.
+- Accessibility/interaction review found the existing implementation
+  already correct on focus-visible outlines, `prefers-reduced-motion`
+  gating (transitions only apply under `(prefers-reduced-motion:
+  no-preference)`), and the two-step confirmation pattern for destructive
+  Human Review actions (`reviewConfirm`/`reviewConfirmPanel`, unchanged);
+  no CSS or interaction changes were needed there. Zoom to 150% (via
+  `document.documentElement.style.zoom`, since page-zoom keyboard shortcuts
+  are not automatable) and keyboard Tab navigation were both checked live
+  with no clipping, overlap, or missing focus indication.
+- New `tests/test_launcher.py` (10 tests: static content invariants --
+  never installs/downloads/reconfigures anything, checks Python/Git/
+  initialization in order before launching, points to `STOP_APOAPSIS.cmd`,
+  never claims to be a packaged native application -- plus one live
+  subprocess test proving the uninitialized-project guard actually exits
+  non-zero with the expected message) and new
+  `tests/test_ui_copy_and_accessibility.py` (13 tests: a banned-phrase
+  scan across every shipped asset, the Home label/hero-copy changes, the
+  new `document.title` wiring covering every top-level route, focus-
+  visible/reduced-motion CSS invariants, the two-step-confirmation
+  regression guard, and regression guards for both live-found bugs above).
+  Existing `tests/test_app_js_regression.py` (duplicate-declaration/route-
+  dispatch static checks plus the Node syntax/boot smoke tests) continues
+  to pass unchanged.
+- No hosted call and no live local-model call were made during this pass
+  -- every state exercised (specification approval, the control-room
+  "Start coding" preview shown then cancelled, changes/review/report empty
+  and pending states, Plans/Discovery/Evaluations/Models empty states, an
+  invalid-task-id error state) was reachable deterministically via the CLI
+  (`apoapsis task`/`apoapsis approve`) or by never confirming a model-
+  calling action.
+
 ### Routing and escalation
 
 - `src/apoapsis/workflow/routing.py` implements rule-based routing.
@@ -2158,6 +2248,8 @@ direct-frontier comparison claims remain unmeasured.
 | D4c diagnostic-probe infrastructure (ADR 0029): advisory-prompt-variant correctness (byte-identical production prefix plus one non-forcing appended note), behavior-summary detection of both the D4b-shaped read loop and a normal verify-and-complete session (including the corrected fresh-reread-with-new-evidence-is-never-no-progress case), the one-independent-variable invariant validated directly for all four combinations, alternate-model fail-closed authorization (unauthorized name, authorized-but-uninstalled name, and the bare-tag/`:latest` match), the alternate-model config clone changing only `.model`, both valid prompt-condition/model combinations run end-to-end against a real one-slice plan with the persisted artifacts recording each explicitly, the one invalid combination rejected end to end, and CLI coverage (rejected `--context-profile`, alternate-model/`progress_advisory` fail-closed, same-configured-model rejection against a real `apoapsis init` project) -- **plus regression proof that the injection point is inert by default**: an unmodified `BoundedAgentSession`/`VerticalSliceRunner` construction (no new argument) is byte-for-byte identical to before this ADR | `tests/test_diagnostic_probe.py` |
 | Docker sandbox diagnostic readiness (D5a, ADR 0009 amendment): doctor distinguishes Docker CLI missing, engine/Desktop unreachable, image absent, image present at the wrong digest (via one additional read-only fallback `docker image inspect` query, never a pull/retag), and a genuinely successful hardened self-test carrying the same hardening flags a real run would use | `tests/test_doctor.py::DoctorVerificationBackendTests`, `tests/test_docker_backend.py::DockerFailClosedTests` |
 | Hosted-frontier spend ceiling (D5b, ADR 0030): pessimistic worst-case call/run cost estimation, pre-call refusal that never mutates spend, post-call accumulation and breach detection using real recorded cost, a wrapped provider forwarding/refusing calls correctly through the real `run_eval_lane`/`VerticalSliceRunner` path (a completing two-call run and a ceiling that stops a lane on its second call), and CLI-level pre-flight refusal (missing ceiling, worst-case-exceeds-ceiling, and a local-only run never requiring one) before any fixture is copied or provider touched | `tests/test_spend_ceiling.py`, `tests/test_doctor.py::DoctorHostedPricingTests` |
+| `OPEN_APOAPSIS.cmd` launcher (D5c, ADR 0034): never installs/downloads/reconfigures anything, checks Python/Git/initialization in that order before launching the UI, launches the real `apoapsis.cli.app ui` entry point, points to `STOP_APOAPSIS.cmd` for model-memory release, never claims to be a packaged native application, and a live subprocess check proving the uninitialized-project guard actually exits non-zero with the expected message | `tests/test_launcher.py` |
+| Website copy/accessibility invariants (D5c, ADR 0034): banned hype/anthropomorphic-language scan across every shipped asset, calm Home label/hero copy, `document.title` wiring for every top-level route, focus-visible/reduced-motion CSS invariants, the two-step destructive-confirmation regression guard, and regressions for the two real bugs this pass found (an unsupported "baseline completion policy" claim before a report exists; stale detail content shown after a failed refetch) | `tests/test_ui_copy_and_accessibility.py` |
 
 Fake providers are the mandatory regression mechanism. Live model or network
 tests supplement them; they must not replace deterministic coverage.
