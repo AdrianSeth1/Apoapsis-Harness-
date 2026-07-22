@@ -116,9 +116,14 @@ FRONTIER_PLANNING_AUTHORITY_RULES: tuple[str, ...] = (
     "You cannot mark a plan approved, validated, or executed. That is "
     "decided solely by the Apoapsis harness after a human explicitly "
     "approves it through the harness's own, unmodified plan-approval flow.",
-    "verification_commands entries in any slice must name commands from "
+    "All slice, end-to-end, acceptance-proof, and whole-project "
+    "verification command entries must name commands from "
     "VERIFICATION_CATALOG only; inventing a command name is rejected by "
     "deterministic validation, never executed as a request.",
+    "A plan is not complete merely because it contains slices. It must "
+    "satisfy every PLANNING_QUALITY_REQUIREMENT supplied in this package; "
+    "missing architecture, integration, runtime, testing, or delivery "
+    "detail makes the plan invalid for approval.",
     "You have no shell, filesystem, Git, network, or workflow-transition "
     "authority; nothing you write executes anything.",
     "Clarification rounds are capped at a small, fixed maximum shown "
@@ -128,6 +133,41 @@ FRONTIER_PLANNING_AUTHORITY_RULES: tuple[str, ...] = (
     "on the user's behalf.",
     "This package and your response are both retained verbatim as an "
     "immutable audit record before any further action is taken.",
+)
+
+
+FRONTIER_PLANNING_QUALITY_REQUIREMENTS: tuple[str, ...] = (
+    "Return an implementation-ready architecture, not a feature list. "
+    "Identify components, ownership, provided/consumed interfaces, "
+    "dependencies, and the runtime path through the assembled system.",
+    "Define every cross-component integration contract with producer, "
+    "consumers, data flow, error behavior, and a concrete verification "
+    "obligation.",
+    "Perform an architectural pre-mortem before slicing. Identify likely "
+    "hard problems, explain why each is difficult, name affected "
+    "components and failure risks, propose a concrete solution, compare "
+    "alternatives, define how the solution will be validated, and state a "
+    "fallback or stop condition.",
+    "Describe entry points, configuration, credentials/secrets handling, "
+    "external services, lifecycle, failure recovery, and observability "
+    "without including credential values.",
+    "Provide slice-level, cross-slice integration, and end-to-end test "
+    "strategies. Every verification command must come from "
+    "VERIFICATION_CATALOG.",
+    "Map every acceptance criterion to a concrete proof obligation and "
+    "configured command, and name the whole-project commands that must "
+    "pass after integration.",
+    "Every slice must identify the architecture components, integration "
+    "contracts, and anticipated hard problems it implements, mitigates, "
+    "or verifies, plus interfaces, exclusions, failure handling, and "
+    "exact test obligations in its work_brief.",
+    "Define a delivery contract covering required artifacts, primary "
+    "documentation, install, launch/usage, tests, credential setup, and "
+    "readiness checks. Do not assume a filename alone makes the project "
+    "usable.",
+    "Ask clarification questions instead of inventing material product, "
+    "deployment, credential, or verification decisions when the supplied "
+    "evidence is insufficient.",
 )
 
 
@@ -164,6 +204,9 @@ class FrontierPlanningRequestPackage(StrictModel):
     response_json_schema: dict[str, Any]
     authority_rules: list[str] = Field(
         default_factory=lambda: list(FRONTIER_PLANNING_AUTHORITY_RULES)
+    )
+    planning_quality_requirements: list[str] = Field(
+        default_factory=lambda: list(FRONTIER_PLANNING_QUALITY_REQUIREMENTS)
     )
     max_clarification_rounds: int = Field(ge=0)
     max_clarification_questions: int = Field(ge=1)
@@ -219,6 +262,7 @@ __all__ = [
     "DiscoverySessionRecord",
     "FrontierPlanningResponseKind",
     "FRONTIER_PLANNING_AUTHORITY_RULES",
+    "FRONTIER_PLANNING_QUALITY_REQUIREMENTS",
     "FrontierPlanningRequestPackage",
     "FrontierPlanningResponseEnvelope",
 ]

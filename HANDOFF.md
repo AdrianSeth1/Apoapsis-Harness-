@@ -13,7 +13,7 @@ operational truth and the documentation must be corrected in the same change.
 
 | Item | Current value |
 | --- | --- |
-| Last verified | Through ADR 0037 on 2026-07-21, 61 focused tests and the full 722-test deterministic suite passed with 10 expected skips, plus compileall and `git diff --check`. ADRs 0038-0048 are unverified because the owner explicitly requested no test execution; run their documented commands before commit. |
+| Last verified | Through ADR 0037 on 2026-07-21, 61 focused tests and the full 722-test deterministic suite passed with 10 expected skips, plus compileall and `git diff --check`. ADRs 0038-0049 are unverified because the owner explicitly requested no test execution (ADR 0049 in addition to that is also blocked by the Python 3.10 environment on the change workspace); run their documented commands before commit. |
 | Version/state | Committed `1.0` through ADR 0034. ADR 0035 guided workflows/planning research and ADR 0036 hardening/compaction are working-tree changes. Check `git status` for exact local state. |
 | Branch | `main` |
 | Preserved tag | `substrate-v0.1` at `4c2e735`; never move or delete it. |
@@ -170,9 +170,12 @@ and hashes before provider construction or worktree mutation.
 - `request_escalation`
 
 The loop has separate turn, patch, verification, search/read, observation, and
-transmission ceilings. Defaults are 12 local turns with 8 patch attempts and 8
-frontier turns with 5 patch attempts. Raising a ceiling changes configuration,
-not model authority.
+transmission ceilings. Defaults are 20 local turns with 14 patch attempts and
+14 frontier turns with 9 patch attempts (ADR 0049); the slice
+`max_criteria_per_slice` ceiling (`[architect.ceilings]` in
+`.apoapsis/config.toml`) is 20, paired with a `max_work_brief_chars` of 3,500
+so the larger work brief stays consistent with the larger criterion budget.
+Raising a ceiling changes configuration, not model authority.
 
 Patch attempts are incremental against the current worktree. Dependency, test,
 verification-config, binary, secret, metadata, and out-of-root changes are
@@ -394,6 +397,12 @@ repair results and test-side-effect guidance, automatic final verification, and
 complete slice-contract/no-progress recovery, plus explicit fresh local execution
 after a pre-agent routing review, strong risk-aware local execution, richer
 frontier handoffs, and explicit finished-plan delivery.
+ADR 0049 bumps the coupled `[architect.ceilings].max_criteria_per_slice`
+ceiling (12 → 20, paired with `max_work_brief_chars` 2000 → 3500) and the
+local+frontier coder budgets in lockstep so a 13–20 criterion slice validates
+and is actually implementable inside the same one-coder-cycle scope; applies
+to every future `apoapsis init`, never silently rewrites an existing
+`.apoapsis/config.toml`.
 
 Read the relevant ADR completely before altering its area. Preserve old ADRs as
 history; supersede them with a new ADR rather than rewriting the old decision.

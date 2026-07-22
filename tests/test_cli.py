@@ -80,10 +80,18 @@ class CLITests(unittest.TestCase):
         self.assertIsNone(config.models.frontier_coder)
         self.assertEqual(config.execution.mode.value, "agent")
         self.assertEqual(config.execution.route.value, "auto")
-        self.assertEqual(config.execution.agent.max_patch_attempts, 8)
-        self.assertEqual(config.execution.frontier_agent.max_patch_attempts, 5)
-        self.assertEqual(config.execution.agent.max_turns, 12)
-        self.assertEqual(config.execution.frontier_agent.max_turns, 8)
+        # ADR 0049: coupled DEFAULT_CONFIG round-trip for the new
+        # `max_criteria_per_slice` ceiling (now 20) and the local / frontier
+        # coder budgets bumped in lockstep. Existing test overrides below
+        # this test deliberately use smaller values (see other test files)
+        # - this block must remain aligned with src/apoapsis/cli/app.py's
+        # DEFAULT_CONFIG string.
+        self.assertEqual(config.execution.agent.max_patch_attempts, 14)
+        self.assertEqual(config.execution.frontier_agent.max_patch_attempts, 9)
+        self.assertEqual(config.execution.agent.max_turns, 20)
+        self.assertEqual(config.execution.frontier_agent.max_turns, 14)
+        self.assertEqual(config.architect.ceilings.max_criteria_per_slice, 20)
+        self.assertEqual(config.architect.ceilings.max_work_brief_chars, 3500)
         self.assertEqual(config.context.max_files, 24)
         self.assertEqual(config.context.max_excerpt_lines, 240)
         self.assertEqual(config.context.max_total_chars, 180000)

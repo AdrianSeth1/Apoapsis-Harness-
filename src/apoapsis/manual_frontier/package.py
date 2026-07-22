@@ -264,6 +264,10 @@ def build_handoff_markdown(package: ManualFrontierHandoffPackage) -> str:
         for failure in package.normalized_failures:
             lines.append(f"### `{failure.command_name}`")
             lines.append("")
+            lines.append("```")
+            lines.append(failure.relevant_error)
+            lines.append("```")
+            lines.append("")
     if package.approved_slice_package is not None:
         lines.append("## Exact approved plan-slice contract")
         lines.append("")
@@ -318,10 +322,6 @@ def build_handoff_markdown(package: ManualFrontierHandoffPackage) -> str:
         )
         lines.append("```")
         lines.append("")
-            lines.append("```")
-            lines.append(failure.relevant_error)
-            lines.append("```")
-            lines.append("")
     lines.append("## Current diff (already applied to the worktree)")
     lines.append("")
     lines.append("```diff")

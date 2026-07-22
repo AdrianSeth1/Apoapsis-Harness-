@@ -127,11 +127,17 @@ def validate_plan(
     slice_ids = [item.slice_id for item in plan.slices]
     constraint_ids = [item.id for item in plan.hard_constraints]
     criterion_ids = [item.id for item in plan.acceptance_criteria]
+    component_ids = [item.component_id for item in plan.components]
+    contract_ids = [item.contract_id for item in plan.integration_contracts]
+    problem_ids = [item.problem_id for item in plan.anticipated_hard_problems]
     for label, ids in (
         ("decision", decision_ids),
         ("slice", slice_ids),
         ("hard constraint", constraint_ids),
         ("acceptance criterion", criterion_ids),
+        ("architecture component", component_ids),
+        ("integration contract", contract_ids),
+        ("anticipated hard problem", problem_ids),
     ):
         seen: set[str] = set()
         for identifier in ids:
@@ -142,11 +148,82 @@ def validate_plan(
     known_slice_ids = set(slice_ids)
     known_constraint_ids = set(constraint_ids)
     known_criterion_ids = set(criterion_ids)
+    known_component_ids = set(component_ids)
+    known_contract_ids = set(contract_ids)
+    known_problem_ids = set(problem_ids)
     active_constraint_ids = {
         item.id
         for item in plan.hard_constraints
         if item.status == ConstraintStatus.ACTIVE
     }
+
+    for component in plan.components:
+        for dependency in component.dependencies:
+            if dependency not in known_component_ids:
+                error(
+                    "UNKNOWN_COMPONENT_REFERENCE",
+                    f"component {component.component_id} depends on unknown "
+                    f"component {dependency}",
+                )
+
+    for contract in plan.integration_contracts:
+        if contract.producer_component_id not in known_component_ids:
+            error(
+                "UNKNOWN_COMPONENT_REFERENCE",
+                f"integration contract {contract.contract_id} names unknown "
+                f"producer component {contract.producer_component_id}",
+            )
+        for consumer_id in contract.consumer_component_ids:
+            if consumer_id not in known_component_ids:
+                error(
+                    "UNKNOWN_COMPONENT_REFERENCE",
+                    f"integration contract {contract.contract_id} names "
+                    f"unknown consumer component {consumer_id}",
+                )
+
+    for problem in plan.anticipated_hard_problems:
+        for component_id in problem.affected_component_ids:
+            if component_id not in known_component_ids:
+                error(
+                    "UNKNOWN_COMPONENT_REFERENCE",
+                    f"anticipated hard problem {problem.problem_id} names "
+                    f"unknown affected component {component_id}",
+                )
+
+    # verification_strategy is always a real (possibly empty) instance --
+    # PlanDeliveryContract/RuntimeDesign/VerificationStrategy all default
+    # via default_factory, never None -- so these loops simply no-op on a
+    # plan that left the section blank.
+    for obligation in plan.verification_strategy.acceptance_proof_obligations:
+        if obligation.criterion_id not in known_criterion_ids:
+            error(
+                "UNKNOWN_CRITERION_REFERENCE",
+                "verification strategy references unknown acceptance "
+                f"criterion {obligation.criterion_id}",
+            )
+        for command_name in obligation.verification_commands:
+            if command_name not in configured_names:
+                error(
+                    "UNKNOWN_VERIFICATION_COMMAND",
+                    "verification strategy names verification command "
+                    f"{command_name!r}, which is not configured",
+                )
+    for scenario in plan.verification_strategy.end_to_end_scenarios:
+        for command_name in scenario.verification_commands:
+            if command_name not in configured_names:
+                error(
+                    "UNKNOWN_VERIFICATION_COMMAND",
+                    f"end-to-end scenario {scenario.scenario_id} names "
+                    f"verification command {command_name!r}, which is "
+                    "not configured",
+                )
+    for command_name in plan.verification_strategy.whole_project_verification_commands:
+        if command_name not in configured_names:
+            error(
+                "UNKNOWN_VERIFICATION_COMMAND",
+                "verification strategy names whole-project verification "
+                f"command {command_name!r}, which is not configured",
+            )
 
     if len(plan.slices) > ceilings.max_slices:
         error(
@@ -183,6 +260,33 @@ def validate_plan(
                     "UNKNOWN_CRITERION_REFERENCE",
                     f"slice {item.slice_id} references unknown acceptance "
                     f"criterion {criterion_id}",
+                    slice_id=item.slice_id,
+                )
+
+        for component_id in item.architecture_component_ids:
+            if component_id not in known_component_ids:
+                error(
+                    "UNKNOWN_COMPONENT_REFERENCE",
+                    f"slice {item.slice_id} references unknown architecture "
+                    f"component {component_id}",
+                    slice_id=item.slice_id,
+                )
+
+        for contract_id in item.integration_contract_ids:
+            if contract_id not in known_contract_ids:
+                error(
+                    "UNKNOWN_CONTRACT_REFERENCE",
+                    f"slice {item.slice_id} references unknown integration "
+                    f"contract {contract_id}",
+                    slice_id=item.slice_id,
+                )
+
+        for problem_id in item.hard_problem_ids:
+            if problem_id not in known_problem_ids:
+                error(
+                    "UNKNOWN_HARD_PROBLEM_REFERENCE",
+                    f"slice {item.slice_id} references unknown anticipated "
+                    f"hard problem {problem_id}",
                     slice_id=item.slice_id,
                 )
 

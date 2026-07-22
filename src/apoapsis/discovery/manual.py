@@ -51,6 +51,26 @@ def build_frontier_planning_markdown(package: FrontierPlanningRequestPackage) ->
     for rule in package.authority_rules:
         lines.append(f"- {rule}")
     lines.append("")
+    lines.append("## Planning quality requirements (binding)")
+    lines.append("")
+    lines.append(
+        "A shallow list of coding tasks is not an acceptable plan. Before "
+        "returning `kind=plan`, reconcile the architecture as one runnable "
+        "or usable system, perform a pre-mortem for likely hard problems "
+        "and proposed solutions, trace every slice to that architecture "
+        "and risk analysis, and specify how the integrated result will be "
+        "tested. If material facts are missing, use the bounded "
+        "clarification response instead of inventing them."
+    )
+    for requirement in package.planning_quality_requirements:
+        lines.append(f"- {requirement}")
+    lines.append(
+        "Your plan will be rejected by deterministic validation if these "
+        "required structures are absent, reference unknown "
+        "components/contracts/criteria, or name verification commands "
+        "outside the supplied catalog."
+    )
+    lines.append("")
     lines.append("## Idea")
     lines.append("")
     lines.append(package.idea_text)
@@ -119,7 +139,7 @@ def build_frontier_planning_markdown(package: FrontierPlanningRequestPackage) ->
     else:
         lines.append("Research was not run for this planning session.")
     lines.append("")
-    lines.append("## Configured verification commands (informational only)")
+    lines.append("## Configured verification commands (allowed names only)")
     lines.append("")
     lines.append("| Name | Category | Acceptance | Description |")
     lines.append("| --- | --- | --- | --- |")
