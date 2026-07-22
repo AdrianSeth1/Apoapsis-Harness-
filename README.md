@@ -1026,18 +1026,18 @@ mode = "agent"
 route = "auto"
 
 [execution.agent]
-max_turns = 12
-max_patch_attempts = 8
-max_verification_runs = 4
-max_search_results = 20
-max_read_lines = 240
-max_observation_chars = 48000
-max_transmitted_observation_chars = 24000
+max_turns = 20
+max_patch_attempts = 14
+max_verification_runs = 7
+max_search_results = 24
+max_read_lines = 360
+max_observation_chars = 72000
+max_transmitted_observation_chars = 36000
 
 [execution.frontier_agent]
-max_turns = 8
-max_patch_attempts = 5
-max_verification_runs = 3
+max_turns = 14
+max_patch_attempts = 9
+max_verification_runs = 5
 max_search_results = 20
 max_read_lines = 240
 max_observation_chars = 48000

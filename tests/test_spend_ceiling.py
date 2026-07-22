@@ -430,9 +430,11 @@ required = true
         self,
     ) -> None:
         output_dir = self.root / ".apoapsis-eval" / "run"
-        # frontier_agent.max_turns defaults to 8; 8 calls at 1000 output
-        # tokens and $500/M is already $4.00 worst case -- $0.01 cannot
-        # possibly cover it.
+        # frontier_agent.max_turns defaults to 14 after ADR 0049's coupled
+        # ceiling/coder-budget bump; 14 calls at 1000 output tokens and
+        # $500/M is already $7.00 worst case -- $0.01 cannot possibly cover
+        # it. (Comment tracks the live DEFAULT_CONFIG value in
+        # src/apoapsis/cli/app.py; the test outcome is unchanged.)
         with self.assertRaisesRegex(TaskStoreError, "worst-case hosted spend"):
             _eval_download_service(
                 self.root, ["frontier"], None, output_dir, max_hosted_spend_usd=0.01
