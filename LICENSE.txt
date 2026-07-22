@@ -140,7 +140,7 @@ Required Notice: Copyright (c) 2026 aryamaan seth (aryamaanseth@gmail.com)
 ## Commercial Use
 
 Commercial use is **not** granted under these terms.  If you
-or your organization wishes to use AutoApply for any commercial
+or your organization wishes to use Apoapsisy for any commercial
 purpose -- including but not limited to internal business
 operations, paid services built on top of the software,
 SaaS / hosted offerings, or redistribution as part of a paid
