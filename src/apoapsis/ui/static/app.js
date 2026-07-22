@@ -155,6 +155,25 @@ async function api(path, options = {}) {
   return payload;
 }
 
+async function downloadApi(path, filename) {
+  const response = await fetch(path, {
+    headers: { "X-Apoapsis-Session": sessionToken || "" },
+  });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({ error: `HTTP ${response.status}` }));
+    throw new Error(payload.error || `HTTP ${response.status}`);
+  }
+  const blob = await response.blob();
+  const href = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = href;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(href);
+}
+
 function parseRoute() {
   const parts = (window.location.hash.replace(/^#\/?/, "") || "home").split("/").filter(Boolean);
   if (parts[0] === "task" && parts[1]) {
@@ -617,6 +636,8 @@ function planOverviewView(detail) {
   const validation = record.validation;
   const findings = validation?.findings || [];
   const canApprove = detail.available_actions?.includes("approve_plan");
+  const canValidate = detail.available_actions?.includes("validate_plan");
+  const delivery = detail.delivery;
   return `<main class="content narrow">
     <div class="page-heading"><div><p class="eyebrow">ARCHITECTURE / DECISIONS</p><h1>Design record,<br>not an execution order.</h1><p>Architect Mode designs; it never runs a shell command, edits a file, or executes a slice. Approving this plan only records a reviewed status -- nothing executes as a result.</p></div><span class="pill ${planStatusClass(record.status)}">${e(titleCase(record.status))}</span></div>
     <article class="card card-pad"><p class="section-title mt-0">Idea</p><blockquote class="objective">${e(record.idea_text)}</blockquote></article>
@@ -626,7 +647,8 @@ function planOverviewView(detail) {
     ${decisions.length ? decisions.map(decisionCard).join("") : `<div class="notice">No decisions were recorded for this plan.</div>`}
     <p class="section-title">Validation findings · ${findings.length}</p>
     <section class="card card-pad">
-      ${validation ? (findings.length ? `<div class="verification-list">${findings.map(findingItem).join("")}</div>` : `<p class="muted">No findings -- the plan validated cleanly against the current configuration.</p>`) : `<p class="muted">This plan has not been validated yet. Run <span class="mono orange">apoapsis plan validate ${e(record.plan_id)}</span>.</p>`}
+      ${validation ? (findings.length ? `<div class="verification-list">${findings.map(findingItem).join("")}</div>` : `<p class="muted">No findings -- the plan validated cleanly against the current configuration.</p>`) : `<p class="muted">This plan has not been checked against the current project configuration yet.</p>`}
+      ${canValidate ? `<div class="flex-end mt-16"><button class="button primary" data-action="plan-validate" data-plan-id="${e(record.plan_id)}" data-version="${e(record.version)}" ${store.busy ? "disabled" : ""}>Verify plan →</button></div>` : ""}
     </section>
     <p class="section-title">Package & provenance</p>
     <section class="card card-pad">
@@ -637,6 +659,8 @@ function planOverviewView(detail) {
     </section>
     <p class="section-title">Audit artifacts · ${(detail.artifacts || []).length}</p>
     <section class="card card-pad">${(detail.artifacts || []).length ? `<div class="artifact-list">${detail.artifacts.map((artifact) => `<div class="artifact-item"><code>${e(artifact)}</code></div>`).join("")}</div>` : `<p class="muted">No plan artifacts were discovered.</p>`}</section>
+    ${detail.can_prepare_delivery ? `<div class="approval-bar"><div><strong>All slices passed — prepare the finished project</strong><span>This checkpoints the final integrated slice branch, creates a downloadable project ZIP, records the plan as executed, and writes a whole-project frontier-review handoff. It does not alter your checked-out branch.</span></div><div class="approval-actions"><button class="button primary" data-action="plan-prepare-delivery" data-plan-id="${e(record.plan_id)}" ${store.busy ? "disabled" : ""}>Prepare finished project →</button></div></div>` : ""}
+    ${delivery ? `<section class="card card-pad mt-16"><p class="section-title mt-0">Finished project</p><p class="objective">The integrated result is ready to download and use outside Apoapsis.</p><div class="file-item"><span>Final commit</span><code>${e(delivery.final_commit)}</code></div><div class="file-item"><span>Whole-project frontier review handoff</span><code>${e(delivery.frontier_review_handoff_path)}</code></div><div class="file-item"><span>Archive SHA-256</span><code>${e(delivery.archive_sha256)}</code></div><div class="approval-actions mt-14"><button class="button primary" data-action="plan-download-delivery" data-plan-id="${e(record.plan_id)}" data-filename="${e(String(delivery.archive_path).split("/").pop())}">Download finished project →</button><button class="button ghost" data-action="plan-download-frontier-handoff" data-plan-id="${e(record.plan_id)}" data-filename="${e(String(delivery.frontier_review_handoff_path).split("/").pop())}">Download frontier review handoff →</button></div></section>` : ""}
     ${canApprove ? `<div class="approval-bar"><div><strong>${store.planApprovalPending ? "Confirm this version" : "Validated — ready for approval"}</strong><span>${store.planApprovalPending ? `Approve version ${e(record.version)} of ${e(record.plan_id)}. This records a reviewed status only; it does not execute any slice.` : "A human must explicitly approve before this plan is considered reviewed. Approval never executes a slice."}</span></div><div class="approval-actions">${store.planApprovalPending ? `<button class="button ghost" data-action="plan-approve-cancel">Cancel</button><button class="button primary" data-action="plan-approve-confirm" data-plan-id="${e(record.plan_id)}" data-version="${e(record.version)}" ${store.busy ? "disabled" : ""}>Confirm approval →</button>` : `<button class="button primary" data-action="plan-approve-intent">Approve plan →</button>`}</div></div>` : ""}
   </main>`;
 }
@@ -660,7 +684,7 @@ function planSlicesView(detail) {
   const orderedSlices = order.map((id) => byId.get(id)).filter(Boolean);
   const statusById = new Map((detail.slices || []).map((item) => [item.slice_id, item]));
   return `<main class="content">
-    <div class="page-heading"><div><p class="eyebrow">IMPLEMENTATION SLICES / ONE AT A TIME</p><h1>Work through the plan.</h1><p>Open a Ready slice, package and approve it, then start coding. If it finishes, commit and merge that slice's work into this project before starting a dependent slice. Apoapsis checks that dependency from Git; it never merges automatically.</p></div><span class="pill purple">${orderedSlices.length} slice(s)</span></div>
+    <div class="page-heading"><div><p class="eyebrow">IMPLEMENTATION SLICES / ONE AT A TIME</p><h1>Work through the plan.</h1><p>Open a Ready slice, package and approve it, then start coding. Packaging the next slice checkpoints completed earlier work on its isolated branch and inherits that exact commit. Your checked-out branch is never moved or merged automatically.</p></div><span class="pill purple">${orderedSlices.length} slice(s)</span></div>
     ${orderedSlices.length ? orderedSlices.map((slice) => sliceCard(slice, record.plan_id, statusById.get(slice.slice_id))).join("") : emptyState("No slices in this plan", "The imported plan did not include any implementation slices.")}
   </main>`;
 }
@@ -749,7 +773,7 @@ function sliceDependencySection(slice, pkg) {
     <p class="section-title mt-0">Dependency evidence · ${dependencies.length}</p>
     ${evidence.length
       ? `<div class="verification-list">${evidence.map(sliceDependencyEvidenceItem).join("")}</div>`
-      : `<p class="muted">Depends on ${dependencies.map((item) => e(item)).join(", ")}. Package this slice to compute real, git-proven dependency evidence -- reaching COMPLETE alone is never enough; a dependency's work must actually be committed and merged into the current repository first.</p>`}
+      : `<p class="muted">Depends on ${dependencies.map((item) => e(item)).join(", ")}. Package this slice to checkpoint completed dependency work and record the exact inherited Git commit. Incomplete or failed slices are never inherited.</p>`}
   </section>`;
 }
 
@@ -772,7 +796,7 @@ function slicePackagePreview(pkg) {
     <p class="section-title mt-0">Immutable package · ${e(pkg.package_id)}</p>
     <div class="mono">HASH ${e(pkg.package_sha256)}</div>
     <div class="mt-14 mono">REPOSITORY: ${e(pkg.repository_root)}</div>
-    <div class="mono">HEAD ${e(pkg.repository_head_commit)} · FINGERPRINT ${e(pkg.repository_fingerprint)}</div>
+    <div class="mono">PROJECT HEAD ${e(pkg.repository_head_commit)} · EXECUTION BASE ${e(pkg.execution_base_commit || pkg.repository_head_commit)} · FINGERPRINT ${e(pkg.repository_fingerprint)}</div>
     <p class="section-title">Exclusions</p>
     ${(pkg.exclusions || []).length ? `<ul>${pkg.exclusions.map((item) => `<li>${e(item)}</li>`).join("")}</ul>` : `<p class="muted">None recorded.</p>`}
     <p class="section-title">Interface contracts</p>
@@ -820,12 +844,18 @@ function sliceTaskLinksSection(detail) {
   const humanReview = taskRecord.state === "HUMAN_REVIEW_REQUIRED";
   const stopped = taskRecord.state === "HUMAN_REVIEW_REQUIRED";
   const complete = taskRecord.state === "COMPLETE";
+  const stoppedBeforeAgent = stopped
+    && Number(task.report?.agent_turns || 0) === 0
+    && !task.report?.worktree_path
+    && task.report?.agent_route === "human_review_required";
   const primaryHref = stopped ? `#/review/${encodeURIComponent(taskId)}` : `#/task/${encodeURIComponent(taskId)}/control`;
   const primaryLabel = stopped ? "Open recovery options →" : complete ? "View completed task →" : "Open control room →";
   const stateExplanation = stopped
-    ? "Coding stopped and needs your decision. Open recovery options to continue locally, retry verification, or create a manual ChatGPT or Claude handoff."
+    ? (stoppedBeforeAgent
+      ? "Routing stopped before any coding agent ran. Open recovery options and choose Run locally to explicitly authorize one fresh bounded local execution."
+      : "Coding stopped and needs your decision. Open recovery options to repair locally, retry verification, or create a manual ChatGPT or Claude handoff.")
     : complete
-      ? "This slice passed its configured completion checks. Commit its worktree changes and merge that branch into the project before starting any dependent slice."
+      ? "This slice passed its configured completion checks. Packaging the next slice will checkpoint and inherit this work without changing your checked-out branch."
       : "This approved slice is ready to use the normal coding control room.";
   return `<section class="card card-pad mt-16">
     <p class="section-title mt-0">Derived task · ${e(taskId)}</p>
@@ -844,9 +874,11 @@ function sliceTaskLinksSection(detail) {
 const REVIEW_ACTION_LABELS = {
   inspect_only: "Inspect only",
   abandon: "Abandon & roll back",
-  verification_only_retry: "Retry verification",
+  verification_only_retry: "Verify current changes",
   local_continuation: "Continue locally",
   frontier_continuation: "Continue with frontier",
+  authorize_local_stage: "Run locally",
+  authorize_frontier_run: "Run with frontier",
   authorize_frontier_stage: "Authorize a fresh frontier stage",
 };
 
@@ -1034,10 +1066,30 @@ function manualFrontierPreviewItem(detail, preview) {
 function reviewOperationPanel() {
   const op = store.reviewOperation;
   if (!op) return "";
-  const stage = REVIEW_OPERATION_STAGE[op.status] || { label: op.status, pill: "warn" };
+  const taskStillNeedsReview = op.status === "succeeded"
+    && store.review?.workflow_state === "HUMAN_REVIEW_REQUIRED";
+  const stoppedAfterContinuation = taskStillNeedsReview
+    && ["local_continuation", "frontier_continuation"].includes(op.action);
+  const stoppedAfterLocalStage = taskStillNeedsReview
+    && op.action === "authorize_local_stage";
+  const stoppedAfterFrontierRun = taskStillNeedsReview
+    && op.action === "authorize_frontier_run";
+  const verificationRetryFailed = taskStillNeedsReview
+    && op.action === "verification_only_retry";
+  const stage = stoppedAfterContinuation
+    ? { label: "Repair incomplete", pill: "bad" }
+    : (stoppedAfterLocalStage || stoppedAfterFrontierRun
+      ? { label: stoppedAfterLocalStage ? "Local run incomplete" : "Frontier run incomplete", pill: "bad" }
+      : (verificationRetryFailed
+        ? { label: "Verification still failing", pill: "bad" }
+        : (REVIEW_OPERATION_STAGE[op.status] || { label: op.status, pill: "warn" })));
   let note;
   if (op.status === "running") note = "A background worker is performing this action now. It is safe to close this tab -- progress is persisted and will still be here on reconnect.";
   else if (op.status === "recorded") note = "Accepted and durably recorded; waiting for the background worker to pick it up.";
+  else if (stoppedAfterContinuation) note = `${op.result_summary || "The repair stopped before completion."} Required verification has not passed, so this task and its dependent slices remain blocked.`;
+  else if (stoppedAfterLocalStage) note = `${op.result_summary || "The local run stopped before completion."} Required verification has not passed, so this task and its dependent slices remain blocked.`;
+  else if (stoppedAfterFrontierRun) note = `${op.result_summary || "The frontier run stopped before completion."} Required verification has not passed, so this task and its dependent slices remain blocked.`;
+  else if (verificationRetryFailed) note = `${op.result_summary || "Verification did not pass."} The task and its dependent slices remain blocked.`;
   else note = op.result_summary || op.error || "";
   return `<section class="card card-pad mt-16">
     <div class="constraint-head"><span class="constraint-id">OPERATION ${e(op.operation_id)} · ${e(REVIEW_ACTION_LABELS[op.action] || op.action)}</span><span class="pill ${stage.pill}">${e(stage.label)}</span></div>
@@ -1050,14 +1102,18 @@ function reviewActionPanel(detail, eligible) {
   // section below (export/import/approve/apply) -- showing it again here
   // as a generic action card would just duplicate that section with a
   // raw, un-humanized label.
-  const genericEligible = eligible.filter((action) => action !== "manual_frontier_handoff");
-  if (!genericEligible.length) {
+  const repairEligible = eligible.includes("local_continuation");
+  const genericEligible = eligible.filter((action) => action !== "manual_frontier_handoff"
+    && !(repairEligible && action === "local_continuation"));
+  if (!genericEligible.length && !repairEligible) {
     return `<p class="muted">No actions are currently eligible for this task${eligible.includes("manual_frontier_handoff") ? " other than the manual frontier handoff below" : ""}.</p>`;
   }
   if (store.reviewConfirm) {
     return reviewConfirmPanel(detail, store.reviewConfirm.action);
   }
-  return `<div class="grid two">${genericEligible.map((action) => reviewActionButton(action)).join("")}</div>`;
+  const repairTurns = Math.min(10, Number(detail.max_additional_turns_per_continuation || 10));
+  const repairCard = repairEligible ? `<article class="card card-pad"><h3>Repair and verify</h3><p class="muted">Resume the local coding agent for up to ${e(repairTurns)} additional turns so it can continue the approved implementation, correct rejected edits, add missing tests if needed, and run verification.</p><button class="button primary" data-action="review-repair" data-repair-turns="${e(repairTurns)}" ${store.busy ? "disabled" : ""}>Repair and verify →</button></article>` : "";
+  return `<div class="grid two">${repairCard}${genericEligible.map((action) => reviewActionButton(action)).join("")}</div>`;
 }
 
 function reviewActionButton(action) {
@@ -1065,9 +1121,11 @@ function reviewActionButton(action) {
   const description = {
     inspect_only: "No mutation -- just records that a human looked at this case.",
     abandon: "Cleans up the worktree (if one exists) and marks the task rolled back.",
-    verification_only_retry: "Re-runs configured verification against the current worktree. No model is called.",
+    verification_only_retry: "Runs configured verification against the current worktree. No model is called.",
     local_continuation: "Resumes the local coding agent with additional authorized turns.",
     frontier_continuation: "Resumes the frontier coding agent with additional authorized turns.",
+    authorize_local_stage: "Explicitly overrides this routing stop and starts a fresh bounded local coding run. The normal worktree, patch policy, verification, and audit controls still apply.",
+    authorize_frontier_run: "Explicitly starts this untouched task with the configured frontier coder. The normal worktree, patch policy, verification, and audit controls still apply.",
     authorize_frontier_stage: "Starts a brand-new frontier coding-agent stage using the local session's diff, failures, and full configured frontier budget. Never launches automatically.",
   }[action] || "";
   return `<article class="card card-pad"><h3>${e(label)}</h3><p class="muted">${e(description)}</p><button class="button ${action === "inspect_only" ? "ghost" : "primary"}" data-action="review-act-intent" data-review-action="${e(action)}">${e(label)} →</button></article>`;
@@ -1076,20 +1134,25 @@ function reviewActionButton(action) {
 function reviewConfirmPanel(detail, action) {
   const needsTurns = action === "local_continuation" || action === "frontier_continuation";
   const isFrontierStage = action === "authorize_frontier_stage";
+  const isFrontierRun = action === "authorize_frontier_run";
+  const isLocalStage = action === "authorize_local_stage";
   const frontierBudget = detail.configured_frontier_budget;
   const copy = {
     inspect_only: "Records that a human explicitly reviewed this case. No other state changes.",
     abandon: "This cleans up the worktree (if one exists) and marks the task ROLLED_BACK. This cannot be undone.",
-    verification_only_retry: "Re-runs configured verification against the current worktree right now. No model is called.",
+    verification_only_retry: "Runs configured verification against the current worktree right now. No model is called.",
     local_continuation: "Resumes the local coding agent from exactly where it stopped, with the authorized additional turns. This calls a model.",
     frontier_continuation: "Resumes the frontier coding agent from exactly where it stopped, with the authorized additional turns. This calls a hosted/frontier model and may incur cost.",
+    authorize_local_stage: "This task stopped before any agent ran because deterministic routing required a human decision. Run it once with the configured local coding model. This is a fresh bounded execution, not a continuation; all normal patch and verification controls remain active.",
+    authorize_frontier_run: "This task stopped before any agent ran because deterministic routing required a human decision. Run it once with the configured frontier coding model. This is a fresh bounded execution, not a continuation, and may incur hosted-model cost.",
     authorize_frontier_stage: "Starts a fresh frontier coding-agent stage from the local session's exact diff and failures. This is a new session, not a continuation, and calls a hosted/frontier model -- it may incur cost.",
   }[action] || "";
   return `<div class="approval-bar">
     <div>
       <strong>Confirm: ${e(REVIEW_ACTION_LABELS[action] || action)}</strong>
       <span>${e(copy)}</span>
-      ${isFrontierStage ? `<div class="mt-14 mono">MODEL: ${e(detail.frontier_model || "unknown")} · BUDGET: ${e(frontierBudget?.max_turns ?? "—")} turns / ${e(frontierBudget?.max_patch_attempts ?? "—")} patch attempts / ${e(frontierBudget?.max_verification_runs ?? "—")} verify runs</div>` : ""}
+      ${isFrontierStage || isFrontierRun ? `<div class="mt-14 mono">MODEL: ${e(detail.frontier_model || "unknown")} · BUDGET: ${e(frontierBudget?.max_turns ?? "—")} turns / ${e(frontierBudget?.max_patch_attempts ?? "—")} patch attempts / ${e(frontierBudget?.max_verification_runs ?? "—")} verify runs</div>` : ""}
+      ${isLocalStage ? `<div class="mt-14 mono">ROUTE OVERRIDE: LOCAL ONLY · BUDGET: ${e(detail.configured_local_budget?.max_turns ?? "—")} turns / ${e(detail.configured_local_budget?.max_patch_attempts ?? "—")} patch attempts / ${e(detail.configured_local_budget?.max_verification_runs ?? "—")} verify runs</div>` : ""}
       ${needsTurns ? `<div class="mt-14"><label class="section-title mt-0" for="review-additional-turns">Additional turns (max ${e(detail.max_additional_turns_per_continuation)})</label><input id="review-additional-turns" type="number" min="1" max="${e(detail.max_additional_turns_per_continuation)}" value="${e(store.reviewAdditionalTurns)}" class="mono"></div>` : ""}
     </div>
     <div class="approval-actions">
@@ -1112,10 +1175,12 @@ function reviewGenerateOperationId() {
 
 let reviewPollHandle = null;
 
-async function submitReviewAction(taskId, action) {
+async function submitReviewAction(taskId, action, additionalTurnsOverride) {
   const detail = store.review;
   const additionalTurnsField = document.getElementById("review-additional-turns");
-  const additionalTurns = additionalTurnsField ? Number(additionalTurnsField.value) : undefined;
+  const additionalTurns = additionalTurnsOverride !== undefined
+    ? Number(additionalTurnsOverride)
+    : (additionalTurnsField ? Number(additionalTurnsField.value) : undefined);
   const operationId = reviewGenerateOperationId();
   const payload = { action, operation_id: operationId, expected_version: detail.task_version };
   if (detail.worktree_fingerprint) payload.expected_worktree_fingerprint = detail.worktree_fingerprint;
@@ -1162,9 +1227,17 @@ async function pollReviewOperation(taskId, operationId) {
     }
     window.sessionStorage.removeItem(reviewOperationStorageKey(taskId));
     if (store.route.name === "review" && store.route.taskId === taskId) {
-      store.review = await api(`/api/reviews/${encodeURIComponent(taskId)}`);
-      store.reviews = null;
-      render();
+      const taskDetail = await api(`/api/tasks/${encodeURIComponent(taskId)}`);
+      if (taskDetail.task?.state === "COMPLETE") {
+        store.review = null;
+        store.reviews = null;
+        store.task = taskDetail;
+        window.location.hash = `#/task/${encodeURIComponent(taskId)}/report`;
+      } else {
+        store.review = await api(`/api/reviews/${encodeURIComponent(taskId)}`);
+        store.reviews = null;
+        render();
+      }
     }
   } catch (error) {
     store.error = error.message;
@@ -1877,6 +1950,74 @@ async function approvePlan(button) {
   }
 }
 
+async function validatePlan(button) {
+  const planId = button.dataset.planId;
+  const version = Number(button.dataset.version);
+  store.busy = true;
+  store.error = null;
+  render();
+  try {
+    await api(`/api/plans/${encodeURIComponent(planId)}/validate`, {
+      method: "POST",
+      body: JSON.stringify({ expected_version: version }),
+    });
+    store.plan = await api(`/api/plans/${encodeURIComponent(planId)}`);
+    store.plans = null;
+    store.planApprovalPending = false;
+  } catch (error) {
+    store.error = error.message;
+  } finally {
+    store.busy = false;
+    render();
+  }
+}
+
+async function preparePlanDelivery(button) {
+  const planId = button.dataset.planId;
+  store.busy = true;
+  store.error = null;
+  render();
+  try {
+    await api(`/api/plans/${encodeURIComponent(planId)}/delivery`, {
+      method: "POST",
+      body: JSON.stringify({ confirm: true }),
+    });
+    store.plan = await api(`/api/plans/${encodeURIComponent(planId)}`);
+    store.plans = null;
+  } catch (error) {
+    store.error = error.message;
+  } finally {
+    store.busy = false;
+    render();
+  }
+}
+
+async function downloadPlanDelivery(button) {
+  store.error = null;
+  try {
+    await downloadApi(
+      `/api/plans/${encodeURIComponent(button.dataset.planId)}/delivery/download`,
+      button.dataset.filename || "finished-project.zip",
+    );
+  } catch (error) {
+    store.error = error.message;
+    render();
+  }
+}
+
+async function downloadPlanFrontierHandoff(button) {
+  store.error = null;
+  try {
+    await downloadApi(
+      `/api/plans/${encodeURIComponent(button.dataset.planId)}/delivery/frontier-handoff`,
+      button.dataset.filename || "frontier-whole-project-review.md",
+    );
+  } catch (error) {
+    store.error = error.message;
+    render();
+  }
+}
+
 async function packagePlanSlice(button) {
   const planId = button.dataset.planId;
   const sliceId = button.dataset.sliceId;
@@ -2258,6 +2399,10 @@ root.addEventListener("click", (event) => {
     render();
   }
   if (button.dataset.action === "plan-approve-confirm") approvePlan(button);
+  if (button.dataset.action === "plan-validate") validatePlan(button);
+  if (button.dataset.action === "plan-prepare-delivery") preparePlanDelivery(button);
+  if (button.dataset.action === "plan-download-delivery") downloadPlanDelivery(button);
+  if (button.dataset.action === "plan-download-frontier-handoff") downloadPlanFrontierHandoff(button);
   if (button.dataset.action === "slice-package") packagePlanSlice(button);
   if (button.dataset.action === "slice-approve-intent") {
     store.planSliceApprovalPending = true;
@@ -2278,6 +2423,13 @@ root.addEventListener("click", (event) => {
   }
   if (button.dataset.action === "review-act-confirm") {
     submitReviewAction(store.route.taskId, button.dataset.reviewAction);
+  }
+  if (button.dataset.action === "review-repair") {
+    submitReviewAction(
+      store.route.taskId,
+      "local_continuation",
+      Number(button.dataset.repairTurns),
+    );
   }
   if (button.dataset.action === "intake-submit") submitIntakeOperation();
   if (button.dataset.action === "intake-reset") {

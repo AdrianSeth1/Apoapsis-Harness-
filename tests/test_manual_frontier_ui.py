@@ -214,6 +214,10 @@ timeout_seconds = 30
         self.assertTrue(Path(result["markdown_artifact_absolute_path"]).is_file())
         self.assertTrue(result["markdown_artifact_absolute_path"].endswith(".md"))
         self.assertIn(result["package"]["package_id"], result["package_artifact_absolute_path"])
+        self.assertEqual(result["package"]["schema_version"], "1.1")
+        self.assertIsNotNone(result["package"]["repository_context"])
+        self.assertTrue(result["package"]["prior_agent_sessions"])
+        self.assertIn("verification_results", result["package"])
 
     def test_import_then_approve_then_apply_two_step_confirmation(self) -> None:
         exported = self._export()

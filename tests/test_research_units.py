@@ -264,6 +264,26 @@ class LicenseAndRankingTests(unittest.TestCase):
         self.assertEqual(duplicates, 1)
         self.assertEqual({item.candidate_id for item in selected}, {"CAND-1", "CAND-3"})
 
+    def test_single_available_source_can_fill_fetch_budget(self) -> None:
+        candidates = [
+            SourceCandidate(
+                candidate_id=f"CAND-{index}",
+                source=ResearchSourceName.GITHUB,
+                source_type=ResearchSourceType.GITHUB_FILE,
+                title=f"candidate {index}",
+                url=f"https://github.com/example/repo{index}/blob/main/file.py",
+                repository=f"example/repo{index}",
+                deterministic_score=0.8,
+                deduplication_key=f"github:{index}",
+            )
+            for index in range(5)
+        ]
+
+        selected, duplicates = SourceRanker().rank(candidates, [], limit=5)
+
+        self.assertEqual(duplicates, 0)
+        self.assertEqual(len(selected), 5)
+
 
 class MetadataAndProvenanceTests(unittest.TestCase):
     def test_github_and_reddit_metadata_parsing(self) -> None:

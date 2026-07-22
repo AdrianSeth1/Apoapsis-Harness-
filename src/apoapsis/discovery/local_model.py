@@ -177,6 +177,26 @@ def _source_text(idea_text: str, answers: Sequence[ClarificationAnswer]) -> str:
     return idea_text + "\n" + "\n".join(item.text for item in answers)
 
 
+def _canonical_verbatim_source(candidate: str, source: str) -> str | None:
+    """Resolve harmless presentation noise to the user's actual substring.
+
+    The brief prompt historically displayed answers as Markdown bullets, so a
+    local model could faithfully copy ``- Gmail`` even though the user's stored
+    answer was ``Gmail``.  Accept only that narrow class of presentation noise,
+    whitespace folding, and case differences, then return the exact characters
+    from ``source``.  The persisted ``verbatim_source`` therefore remains truly
+    verbatim rather than retaining a normalized or model-invented spelling.
+    """
+
+    cleaned = re.sub(r"^(?:[-*+]\s+|\d+[.)]\s+)", "", candidate.strip())
+    words = re.findall(r"\S+", cleaned)
+    if not words:
+        return None
+    pattern = r"\s+".join(re.escape(word) for word in words)
+    match = re.search(pattern, source, flags=re.IGNORECASE)
+    return match.group(0) if match is not None else None
+
+
 def parse_brief(
     content: str, idea_text: str, answers: Sequence[ClarificationAnswer]
 ) -> IdeaBrief:
@@ -186,13 +206,21 @@ def parse_brief(
     except ValidationError as exc:
         raise DiscoveryModelError(f"idea brief proposal is invalid: {exc}") from exc
     source = _source_text(idea_text, answers)
+    constraints = []
     for constraint in brief.key_constraints:
-        if constraint.verbatim_source not in source:
+        canonical = _canonical_verbatim_source(
+            constraint.verbatim_source, source
+        )
+        if canonical is None:
             raise DiscoveryModelError(
                 f"key constraint {constraint.id} verbatim_source is not an "
-                "exact substring of the idea text and answers"
+                "exact substring of the idea text and answers after removing "
+                "only harmless list formatting and normalizing whitespace/case"
             )
-    return brief
+        constraints.append(
+            constraint.model_copy(update={"verbatim_source": canonical})
+        )
+    return brief.model_copy(update={"key_constraints": constraints})
 
 
 def _call(

@@ -4,7 +4,15 @@ import json
 from pathlib import Path
 from typing import Any
 
-from apoapsis.architect.schema import ArchitecturePlan, PlanRecord, PlanStatus
+from apoapsis.architect.audit import PlanAuditStore
+from apoapsis.architect.delivery import load_plan_delivery, prepare_plan_delivery
+from apoapsis.architect.schema import (
+    ArchitecturePlan,
+    PlanRecord,
+    PlanStatus,
+    PlanValidationResult,
+    ValidationSeverity,
+)
 from apoapsis.architect.slice_service import (
     approve_slice,
     package_slice,
@@ -13,6 +21,7 @@ from apoapsis.architect.slice_service import (
 )
 from apoapsis.architect.slice_store import PlanSliceExecutionStore
 from apoapsis.architect.store import SQLitePlanStore
+from apoapsis.architect.validation import validate_plan as validate_architecture_plan
 from apoapsis.audit.store import TaskAuditStore
 from apoapsis.config import ApoapsisConfig, ExecutionMode
 from apoapsis.discovery.api import (
@@ -56,6 +65,7 @@ from apoapsis.manual_frontier.importer import (
 )
 from apoapsis.manual_frontier.package import (
     build_manual_frontier_handoff_package,
+    compile_manual_frontier_evidence,
     load_package as load_manual_frontier_package,
     write_handoff_artifacts,
 )
@@ -449,6 +459,11 @@ class ApoapsisUIService:
                 for path in sorted(plan_directory.rglob("*"))
                 if path.is_file()
             ]
+        slices = self._plan_slice_statuses(record)
+        delivery = load_plan_delivery(self.project_root, plan_id)
+        all_slices_complete = bool(slices) and all(
+            item.get("status") == "complete" for item in slices
+        )
         return {
             "plan": record.model_dump(mode="json"),
             "events": [
@@ -457,8 +472,43 @@ class ApoapsisUIService:
             "artifacts": artifacts,
             "dependency_order": _slice_dependency_order(record.plan),
             "available_actions": self._plan_available_actions(record),
-            "slices": self._plan_slice_statuses(record),
+            "slices": slices,
+            "all_slices_complete": all_slices_complete,
+            "delivery": delivery.model_dump(mode="json") if delivery else None,
+            "can_prepare_delivery": (
+                record.status in {PlanStatus.APPROVED, PlanStatus.EXECUTED}
+                and all_slices_complete
+                and delivery is None
+            ),
         }
+
+    def prepare_plan_delivery(self, plan_id: str) -> dict[str, Any]:
+        delivery = prepare_plan_delivery(
+            self.project_root,
+            self._require_plan_store(),
+            self._plan_slice_store(),
+            self._require_store(),
+            plan_id,
+        )
+        return delivery.model_dump(mode="json")
+
+    def plan_delivery_archive(self, plan_id: str) -> Path:
+        delivery = load_plan_delivery(self.project_root, plan_id)
+        if delivery is None:
+            raise TaskStoreError(f"plan {plan_id} has no prepared delivery")
+        target = (self.project_root / delivery.archive_path).resolve()
+        if not target.is_relative_to(self.metadata_root.resolve()) or not target.is_file():
+            raise TaskStoreError("prepared delivery archive is unavailable")
+        return target
+
+    def plan_delivery_frontier_handoff(self, plan_id: str) -> Path:
+        delivery = load_plan_delivery(self.project_root, plan_id)
+        if delivery is None:
+            raise TaskStoreError(f"plan {plan_id} has no prepared delivery")
+        target = (self.project_root / delivery.frontier_review_handoff_path).resolve()
+        if not target.is_relative_to(self.metadata_root.resolve()) or not target.is_file():
+            raise TaskStoreError("whole-project frontier handoff is unavailable")
+        return target
 
     def plan_slice_detail(self, plan_id: str, slice_id: str) -> dict[str, Any]:
         """Everything the app needs to let a person select, inspect,
@@ -582,6 +632,53 @@ class ApoapsisUIService:
                 for event in store.events(approved.plan_id)
             ],
             "available_actions": self._plan_available_actions(approved),
+        }
+
+    def validate_plan(self, plan_id: str, *, expected_version: int) -> dict[str, Any]:
+        """Run the same deterministic validation as ``apoapsis plan
+        validate`` and persist the same versioned result and audit artifact.
+        No model or project command is invoked."""
+
+        store = self._require_plan_store()
+        config = self._config()
+        if config is None:
+            raise TaskStoreError(
+                "Apoapsis is not initialized; run 'apoapsis init' first"
+            )
+        record = store.get_plan(plan_id)
+        if record.version != expected_version:
+            raise ConcurrentPlanTransitionError(
+                f"expected version {expected_version}, found {record.version}"
+            )
+        configured_names = {
+            command.name for command in config.verification.commands
+        }
+        findings = validate_architecture_plan(
+            record.plan,
+            configured_verification_commands=configured_names,
+            ceilings=config.architect.ceilings,
+        )
+        result = PlanValidationResult(
+            plan_id=plan_id,
+            plan_version=record.version,
+            valid=not any(
+                finding.severity == ValidationSeverity.ERROR
+                for finding in findings
+            ),
+            findings=findings,
+        )
+        updated = store.record_validation(
+            plan_id, result, expected_version=expected_version
+        )
+        PlanAuditStore(self.project_root, plan_id).write_json(
+            f"validation-v{record.version}.json",
+            result,
+            kind="plan_validation_result",
+        )
+        return {
+            "plan": updated.model_dump(mode="json"),
+            "validation": result.model_dump(mode="json"),
+            "available_actions": self._plan_available_actions(updated),
         }
 
     def review_cases(self) -> dict[str, Any]:
@@ -736,11 +833,21 @@ class ApoapsisUIService:
                 f"{[item.value for item in review_case.eligible_actions]})"
             )
         specification = task_store.get_task(task_id).specification
+        context, sessions, slice_package = compile_manual_frontier_evidence(
+            self.project_root,
+            review_case,
+            specification,
+            config,
+            task_store.events(task_id),
+        )
         package = build_manual_frontier_handoff_package(
             review_case,
             specification,
             config.verification.commands,
             repair_round=review_case.manual_frontier_rounds_used,
+            repository_context=context,
+            prior_agent_sessions=sessions,
+            approved_slice_package=slice_package,
         )
         audit = TaskAuditStore(self.project_root, task_id)
         json_artifact, markdown_artifact = write_handoff_artifacts(audit, package)
@@ -1118,6 +1225,8 @@ class ApoapsisUIService:
 
     @staticmethod
     def _plan_available_actions(record: PlanRecord) -> list[str]:
+        if record.status == PlanStatus.PROPOSED:
+            return ["validate_plan"]
         if record.status == PlanStatus.VALIDATED:
             return ["approve_plan"]
         return []

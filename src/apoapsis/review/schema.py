@@ -38,6 +38,15 @@ class ReviewActionKind(StrEnum):
     VERIFICATION_ONLY_RETRY = "verification_only_retry"
     LOCAL_CONTINUATION = "local_continuation"
     FRONTIER_CONTINUATION = "frontier_continuation"
+    # Starts a fresh local coding stage when deterministic AUTO routing stopped
+    # before any agent/worktree (for example, a critical-risk task). This is an
+    # explicit per-operation user override, not a continuation
+    # and not a change to the project's configured default route.
+    AUTHORIZE_LOCAL_STAGE = "authorize_local_stage"
+    # Starts a fresh frontier-only execution after deterministic routing stopped
+    # before any worktree/session. Distinct from a frontier stage built from a
+    # prior local attempt and from continuation of an existing frontier session.
+    AUTHORIZE_FRONTIER_RUN = "authorize_frontier_run"
     # Starts a *fresh* configured frontier stage after a local session
     # stopped, once the user explicitly approves it (ADR 0022) -- distinct
     # from FRONTIER_CONTINUATION, which only ever resumes a frontier

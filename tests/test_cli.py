@@ -33,6 +33,22 @@ class CLITests(unittest.TestCase):
             main(["--project-root", str(self.root), *arguments])
         return json.loads(output.getvalue())
 
+    def test_review_run_local_parser(self) -> None:
+        arguments = build_parser().parse_args(
+            [
+                "review",
+                "run-local",
+                "TASK-1",
+                "--expected-version",
+                "7",
+                "--operation-id",
+                "RVOP-1",
+            ]
+        )
+        self.assertEqual(arguments.review_command, "run-local")
+        self.assertEqual(arguments.task_id, "TASK-1")
+        self.assertEqual(arguments.expected_version, 7)
+
     def test_init_task_inspect_and_approve(self) -> None:
         self.assertEqual(build_parser().prog, "apoapsis")
         self.assertEqual(__version__, "1.0.0")
@@ -40,6 +56,14 @@ class CLITests(unittest.TestCase):
         self.assertTrue(initialized["initialized"])
         self.assertTrue((self.root / ".apoapsis" / "apoapsis.db").is_file())
         self.assertFalse((self.root / ".sol").exists())
+        # init must keep its own runtime state (constantly rewritten by
+        # every task/plan/discovery operation) out of git, or the
+        # dirty-parent-repository check (ADR 0026) would fail closed on
+        # Apoapsis's own bookkeeping forever, not just on real project
+        # changes.
+        self.assertTrue(initialized["gitignore_updated"])
+        gitignore_text = (self.root / ".gitignore").read_text(encoding="utf-8")
+        self.assertIn(".apoapsis/", gitignore_text.splitlines())
         config = ApoapsisConfig.from_toml(self.root / ".apoapsis" / "config.toml")
         self.assertEqual(config.models.frontier.provider, "ollama")
         self.assertEqual(
@@ -56,19 +80,23 @@ class CLITests(unittest.TestCase):
         self.assertIsNone(config.models.frontier_coder)
         self.assertEqual(config.execution.mode.value, "agent")
         self.assertEqual(config.execution.route.value, "auto")
+        self.assertEqual(config.execution.agent.max_patch_attempts, 8)
+        self.assertEqual(config.execution.frontier_agent.max_patch_attempts, 5)
         self.assertEqual(config.execution.agent.max_turns, 12)
         self.assertEqual(config.execution.frontier_agent.max_turns, 8)
         self.assertEqual(config.context.max_files, 24)
         self.assertEqual(config.context.max_excerpt_lines, 240)
         self.assertEqual(config.context.max_total_chars, 180000)
         self.assertEqual(config.context.max_import_depth, 2)
+        self.assertTrue(config.patch.allow_test_changes)
+        self.assertTrue(config.patch.allow_dependency_changes)
         self.assertEqual(config.models.local_research.provider, "ollama")
         self.assertEqual(config.models.local_research.model, "qwen3.6:27b")
         self.assertEqual(config.models.local_research.temperature, 0.0)
         self.assertEqual(config.models.local_research.context_window_tokens, 32768)
         self.assertFalse(config.research.sources.reddit.enabled)
         self.assertNotIn("-t", config.verification.commands[0].argv)
-        self.assertEqual(config.execution.completion_policy.value, "strict")
+        self.assertEqual(config.execution.completion_policy.value, "baseline")
         self.assertFalse(config.verification.commands[0].acceptance)
         self.assertTrue(config.verification.commands[0].description)
 
@@ -102,6 +130,20 @@ class CLITests(unittest.TestCase):
         approved = self.invoke("approve", task_id, "--version", "2")
         self.assertEqual(approved["state"], "SPEC_APPROVED")
         self.assertEqual(approved["version"], 3)
+
+    def test_init_appends_to_an_existing_gitignore_without_duplicating(self) -> None:
+        (self.root / ".gitignore").write_text("node_modules/\n", encoding="utf-8")
+        initialized = self.invoke("init")
+        self.assertTrue(initialized["gitignore_updated"])
+        lines = (self.root / ".gitignore").read_text(encoding="utf-8").splitlines()
+        self.assertEqual(lines, ["node_modules/", ".apoapsis/"])
+
+    def test_init_does_not_duplicate_an_already_present_gitignore_entry(self) -> None:
+        (self.root / ".gitignore").write_text(".apoapsis/\n", encoding="utf-8")
+        initialized = self.invoke("init")
+        self.assertFalse(initialized["gitignore_updated"])
+        lines = (self.root / ".gitignore").read_text(encoding="utf-8").splitlines()
+        self.assertEqual(lines, [".apoapsis/"])
 
     def test_context_profiles_scale_frontier_and_repository_budgets(self) -> None:
         self.invoke("init")

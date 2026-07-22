@@ -15,6 +15,7 @@ from apoapsis.config import (
     CompletionPolicy,
     ContextCompilerConfig,
     ExecutionMode,
+    effective_config_for_specification,
 )
 from apoapsis.repository.fingerprint import compute_worktree_fingerprint
 from apoapsis.repository.git import GitRepository
@@ -130,6 +131,7 @@ def build_execution_authorization_package(
     one function that decides what 'the same authorization' means."""
 
     root = Path(project_root).resolve()
+    config = effective_config_for_specification(config, specification)
     repository = GitRepository(root)
     head = repository.run(["rev-parse", "HEAD"]).stdout.strip()
     fingerprint = compute_worktree_fingerprint(root)

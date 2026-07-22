@@ -107,6 +107,9 @@ max_search_results = 10
 max_read_lines = 120
 max_observation_chars = 20000
 
+[patch]
+allow_test_changes = false
+
 [verification]
 [[verification.commands]]
 name = "download-tests"
@@ -451,6 +454,32 @@ class ExecutionUIServerTests(ExecutionUIServiceTests):
             )
         self.assertEqual(bad_request.exception.code, 400)
         bad_request.exception.close()
+
+    def test_http_impossible_verification_contract_returns_409_json(self) -> None:
+        shutil.rmtree(self.root / "tests")
+        authorization_sha256 = self._http_authorization_sha256()
+
+        with self.assertRaises(urllib.error.HTTPError) as conflict:
+            self.request(
+                f"/api/tasks/{self.task_id}/execute",
+                method="POST",
+                payload={
+                    "operation_id": "EXOP-HTTP-IMPOSSIBLE-VERIFICATION",
+                    "expected_version": self.task_version,
+                    "expected_authorization_sha256": authorization_sha256,
+                },
+                token=self.token,
+            )
+
+        self.assertEqual(conflict.exception.code, 409)
+        payload = json.load(conflict.exception)
+        conflict.exception.close()
+        self.assertIn("missing directory 'tests'", payload["error"])
+        self.assertIn("explicitly allow test changes", payload["error"])
+        with self.assertRaises(Exception):
+            self._execution_operation_store().get(
+                "EXOP-HTTP-IMPOSSIBLE-VERIFICATION"
+            )
 
     def test_http_submit_returns_202_and_is_pollable(self) -> None:
         with patch(

@@ -91,7 +91,31 @@ class UiCopyStyleTests(unittest.TestCase):
         self.assertIn("Optional planning research", source)
         self.assertIn("Skip research and continue", source)
         self.assertIn("Waiting for dependencies", source)
-        self.assertIn("Commit its worktree changes and merge that branch", source)
+        self.assertIn("Packaging the next slice will checkpoint and inherit", source)
+
+    def test_plan_validation_and_failed_verification_have_ui_buttons(self) -> None:
+        source = APP_JS.read_text(encoding="utf-8")
+        self.assertIn("Verify plan →", source)
+        self.assertIn("Repair and verify →", source)
+        self.assertIn(
+            'const repairEligible = eligible.includes("local_continuation");',
+            source,
+        )
+        self.assertIn("continue the approved implementation", source)
+        self.assertIn('authorize_local_stage: "Run locally"', source)
+        self.assertIn('authorize_frontier_run: "Run with frontier"', source)
+        self.assertIn("Routing stopped before any coding agent ran", source)
+        self.assertIn("Local run incomplete", source)
+        self.assertIn("Prepare finished project", source)
+        self.assertIn("Download finished project", source)
+        self.assertIn("Whole-project frontier review handoff", source)
+        self.assertNotIn("apoapsis plan validate", source)
+        self.assertIn("Repair incomplete", source)
+        self.assertIn("Required verification has not passed", source)
+        self.assertIn("Verification still failing", source)
+        self.assertIn('verification_only_retry: "Verify current changes"', source)
+        self.assertIn('taskDetail.task?.state === "COMPLETE"', source)
+        self.assertIn("/report`", source)
 
     def test_changes_view_never_asserts_a_completion_policy_before_a_report_exists(
         self,

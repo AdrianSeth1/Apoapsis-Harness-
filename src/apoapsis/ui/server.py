@@ -39,6 +39,7 @@ from apoapsis.manual_frontier.errors import (
     PreviewNotFoundError,
 )
 from apoapsis.review.errors import FrontierUnavailableError, OperationNotFoundError, ReviewError
+from apoapsis.repository.readiness import VerificationContractError
 from apoapsis.ui.application import ApoapsisUIService, UIActionError
 from apoapsis.workflow.engine import (
     ConcurrentTransitionError,
@@ -117,6 +118,12 @@ class ApoapsisUIRequestHandler(BaseHTTPRequestHandler):
             return
         if path.startswith("/api/plans/") and path.endswith("/approve"):
             self._handle_plan_approve(path)
+            return
+        if path.startswith("/api/plans/") and path.endswith("/validate"):
+            self._handle_plan_validate(path)
+            return
+        if path.startswith("/api/plans/") and path.endswith("/delivery"):
+            self._handle_plan_delivery(path)
             return
         if path.startswith("/api/reviews/") and path.endswith("/operations"):
             self._handle_review_operation_submit(path)
@@ -208,7 +215,7 @@ class ApoapsisUIRequestHandler(BaseHTTPRequestHandler):
             )
         except TaskNotFoundError:
             self._send_error(HTTPStatus.NOT_FOUND, "task not found")
-        except ExecutionOperationError as exc:
+        except (ExecutionOperationError, VerificationContractError) as exc:
             self._send_error(HTTPStatus.CONFLICT, str(exc))
         except (TaskStoreError, ValueError, json.JSONDecodeError) as exc:
             self._send_error(HTTPStatus.BAD_REQUEST, str(exc))
@@ -231,6 +238,42 @@ class ApoapsisUIRequestHandler(BaseHTTPRequestHandler):
         ) as exc:
             self._send_error(HTTPStatus.CONFLICT, str(exc))
         except (PlanStoreError, ValueError, json.JSONDecodeError) as exc:
+            self._send_error(HTTPStatus.BAD_REQUEST, str(exc))
+        else:
+            self._send_json(HTTPStatus.OK, payload)
+
+    def _handle_plan_validate(self, path: str) -> None:
+        plan_id = unquote(path[len("/api/plans/") : -len("/validate")]).strip("/")
+        try:
+            expected_version = self._read_expected_version()
+            payload = self.server.service.validate_plan(
+                plan_id, expected_version=expected_version
+            )
+        except PlanNotFoundError:
+            self._send_error(HTTPStatus.NOT_FOUND, "plan not found")
+        except (
+            ConcurrentPlanTransitionError,
+            InvalidPlanTransitionError,
+            PlanActionError,
+        ) as exc:
+            self._send_error(HTTPStatus.CONFLICT, str(exc))
+        except (PlanStoreError, TaskStoreError, ValueError, json.JSONDecodeError) as exc:
+            self._send_error(HTTPStatus.BAD_REQUEST, str(exc))
+        else:
+            self._send_json(HTTPStatus.OK, payload)
+
+    def _handle_plan_delivery(self, path: str) -> None:
+        plan_id = unquote(path[len("/api/plans/") : -len("/delivery")]).strip("/")
+        try:
+            body = self._read_json_body()
+            if body.get("confirm") is not True:
+                raise ValueError("confirm must be true")
+            payload = self.server.service.prepare_plan_delivery(plan_id)
+        except PlanNotFoundError:
+            self._send_error(HTTPStatus.NOT_FOUND, "plan not found")
+        except (SlicePackagingError, PlanActionError, ConcurrentPlanTransitionError) as exc:
+            self._send_error(HTTPStatus.CONFLICT, str(exc))
+        except (TaskStoreError, PlanStoreError, ValueError, json.JSONDecodeError) as exc:
             self._send_error(HTTPStatus.BAD_REQUEST, str(exc))
         else:
             self._send_json(HTTPStatus.OK, payload)
@@ -638,6 +681,21 @@ class ApoapsisUIRequestHandler(BaseHTTPRequestHandler):
                 payload = self.server.service.plan_slice_detail(
                     unquote(plan_part), unquote(slice_part)
                 )
+            elif path.startswith("/api/plans/") and path.endswith("/delivery/download"):
+                plan_id = unquote(
+                    path[len("/api/plans/") : -len("/delivery/download")]
+                ).strip("/")
+                self._send_download(self.server.service.plan_delivery_archive(plan_id))
+                return
+            elif path.startswith("/api/plans/") and path.endswith("/delivery/frontier-handoff"):
+                plan_id = unquote(
+                    path[len("/api/plans/") : -len("/delivery/frontier-handoff")]
+                ).strip("/")
+                self._send_download(
+                    self.server.service.plan_delivery_frontier_handoff(plan_id),
+                    content_type="text/markdown; charset=utf-8",
+                )
+                return
             elif path.startswith("/api/plans/"):
                 plan_id = unquote(path[len("/api/plans/") :]).strip("/")
                 payload = self.server.service.plan_detail(plan_id)
@@ -718,6 +776,21 @@ class ApoapsisUIRequestHandler(BaseHTTPRequestHandler):
             self._send_error(HTTPStatus.BAD_REQUEST, str(exc))
         else:
             self._send_json(HTTPStatus.OK, payload)
+
+    def _send_download(
+        self, target: Path, *, content_type: str = "application/zip"
+    ) -> None:
+        content = target.read_bytes()
+        self.send_response(HTTPStatus.OK)
+        self._security_headers()
+        self.send_header("Content-Type", content_type)
+        self.send_header(
+            "Content-Disposition", f'attachment; filename="{target.name}"'
+        )
+        self.send_header("Content-Length", str(len(content)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(content)
 
     def _authorized(self) -> bool:
         supplied = self.headers.get("X-Apoapsis-Session", "")

@@ -210,6 +210,25 @@ class LocalModelTests(DiscoveryTestsBase):
         brief = propose_idea_brief(provider, self._config().models.frontier, audit, IDEA_TEXT, [])
         self.assertEqual(brief.key_constraints[0].verbatim_source, "Preserve the current public API.")
 
+    def test_brief_canonicalizes_prompt_bullet_to_actual_user_answer(self) -> None:
+        response = json.loads(_brief_json(verbatim_ok=True))
+        response["key_constraints"][0]["text"] = "- Gmail"
+        response["key_constraints"][0]["verbatim_source"] = "- Gmail"
+        fake = FakeModelProvider([json.dumps(response)])
+        provider = InstrumentedModelProvider(fake, ProviderPricing())
+        audit = DiscoveryAuditStore(self.root, "DISC-TEST")
+
+        brief = propose_idea_brief(
+            provider,
+            self._config().models.frontier,
+            audit,
+            "Build an email assistant.",
+            [ClarificationAnswer(question_id="Q-1", text="Gmail")],
+        )
+
+        self.assertEqual(brief.key_constraints[0].verbatim_source, "Gmail")
+        self.assertEqual(len(fake.invocations), 1)
+
     def test_brief_verbatim_constraint_check_fails_after_correction(self) -> None:
         fake = FakeModelProvider(
             [_brief_json(verbatim_ok=False), _brief_json(verbatim_ok=False)]

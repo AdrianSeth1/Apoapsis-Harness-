@@ -257,6 +257,12 @@ class RepositoryInspector:
     def replacement_patch(
         self, path: str, old_text: str, new_text: str
     ) -> str:
+        if old_text == new_text:
+            raise AgentInspectionError(
+                "replace_text old_text and new_text are identical; no edit was "
+                "requested. Change the failing implementation or test described "
+                "by the freshest verification evidence."
+            )
         relative = self._validate_path(path)
         if relative not in self._repository_files():
             raise AgentInspectionError(f"path is not a repository file: {relative}")
@@ -345,7 +351,7 @@ class RepositoryInspector:
 
     def _changed_paths(self) -> set[str]:
         raw = self.repository.run(
-            ["status", "--porcelain=v1", "-z"]
+            ["status", "--porcelain=v1", "-z", "--untracked-files=all"]
         ).stdout
         return {
             self._normalize_path(item[3:])

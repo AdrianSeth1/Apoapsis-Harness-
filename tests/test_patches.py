@@ -50,11 +50,20 @@ class PatchPolicyTests(unittest.TestCase):
             self.violations(one_file_patch(".sol/config.toml")),
         )
 
-    def test_detects_dependency_verification_and_deleted_test_changes(self) -> None:
+    def test_dependency_changes_default_allowed_but_can_be_forbidden(self) -> None:
+        result = PatchPolicyValidator().validate(
+            self.parser.parse(one_file_patch("pyproject.toml")), self.root
+        )
+        self.assertTrue(result.accepted)
         self.assertIn(
             "unexpected_dependency_change",
-            self.violations(one_file_patch("pyproject.toml")),
+            self.violations(
+                one_file_patch("pyproject.toml"),
+                allow_dependency_changes=False,
+            ),
         )
+
+    def test_detects_verification_and_deleted_test_changes(self) -> None:
         self.assertIn(
             "verification_config_change",
             self.violations(one_file_patch(".github/workflows/tests.yml")),
@@ -63,9 +72,19 @@ class PatchPolicyTests(unittest.TestCase):
             "deleted_test",
             self.violations(one_file_patch("tests/test_api.py", deleted=True)),
         )
+
+    def test_default_allows_non_deleted_test_changes(self) -> None:
+        result = PatchPolicyValidator().validate(
+            self.parser.parse(one_file_patch("tests/test_api.py")), self.root
+        )
+        self.assertTrue(result.accepted)
+
+    def test_can_explicitly_forbid_non_deleted_test_changes(self) -> None:
         self.assertIn(
             "unexpected_test_change",
-            self.violations(one_file_patch("tests/test_api.py")),
+            self.violations(
+                one_file_patch("tests/test_api.py"), allow_test_changes=False
+            ),
         )
 
     def test_detects_binary_and_excessive_diff(self) -> None:
@@ -99,14 +118,6 @@ class PatchPolicyTests(unittest.TestCase):
         )
         self.assertTrue(result.accepted)
 
-    def test_can_explicitly_allow_non_deleted_test_changes(self) -> None:
-        result = PatchPolicyValidator(
-            PatchPolicyConfig(allow_test_changes=True)
-        ).validate(
-            self.parser.parse(one_file_patch("tests/test_api.py")), self.root
-        )
-        self.assertTrue(result.accepted)
-
     def test_canonicalizes_unmarked_blank_context_inside_hunk(self) -> None:
         patch = (
             "diff --git a/src/a.py b/src/a.py\n"
@@ -120,6 +131,78 @@ class PatchPolicyTests(unittest.TestCase):
         )
         parsed = self.parser.parse(patch)
         self.assertIn("\n \n-old\n", parsed.raw)
+
+    def test_reconstructs_unmarked_new_file_lines_and_hunk_count(self) -> None:
+        patch = (
+            "diff --git a/new_module.py b/new_module.py\n"
+            "new file mode 100644\n"
+            "--- /dev/null\n"
+            "+++ b/new_module.py\n"
+            "@@ -0,0 +1,99 @@\n"
+            "+\"\"\"Generated module.\"\"\"\n"
+            "+\n"
+            "def get_credentials():\n"
+            "+    return None\n"
+        )
+        parsed = self.parser.parse(patch)
+        self.assertIn("@@ -0,0 +1,4 @@\n", parsed.raw)
+        self.assertIn("\n+def get_credentials():\n", parsed.raw)
+        self.assertEqual(parsed.files[0].added_lines, 4)
+
+    def test_new_file_reconstruction_applies_through_git(self) -> None:
+        subprocess.run(
+            ["git", "init", "-b", "main"],
+            cwd=self.root,
+            check=True,
+            capture_output=True,
+        )
+        patch = (
+            "diff --git a/new_module.py b/new_module.py\n"
+            "new file mode 100644\n"
+            "--- /dev/null\n"
+            "+++ b/new_module.py\n"
+            "@@ -0,0 +1,85 @@\n"
+            "+value = 1\n"
+            "def read_value():\n"
+            "+    return value\n"
+        )
+        parsed = self.parser.parse(patch)
+        GitPatchApplier().apply(parsed, self.root)
+        self.assertEqual(
+            (self.root / "new_module.py").read_text(encoding="utf-8"),
+            "value = 1\ndef read_value():\n    return value\n",
+        )
+
+    def test_applier_reports_individual_files_in_new_untracked_directory(self) -> None:
+        subprocess.run(
+            ["git", "init", "-b", "main"],
+            cwd=self.root,
+            check=True,
+            capture_output=True,
+        )
+        patch = (
+            "diff --git a/tests/__init__.py b/tests/__init__.py\n"
+            "new file mode 100644\n"
+            "--- /dev/null\n"
+            "+++ b/tests/__init__.py\n"
+            "@@ -0,0 +1 @@\n"
+            "+# package\n"
+            "diff --git a/tests/test_feature.py b/tests/test_feature.py\n"
+            "new file mode 100644\n"
+            "--- /dev/null\n"
+            "+++ b/tests/test_feature.py\n"
+            "@@ -0,0 +1 @@\n"
+            "+assert True\n"
+        )
+
+        changed = GitPatchApplier().apply(self.parser.parse(patch), self.root)
+
+        self.assertEqual(changed, ["tests/__init__.py", "tests/test_feature.py"])
+
+    def test_existing_file_unmarked_code_remains_rejected(self) -> None:
+        patch = one_file_patch("src/a.py").replace("+new\n", "new\n")
+        with self.assertRaisesRegex(UnifiedDiffError, "non-diff content"):
+            self.parser.parse(patch)
 
     def test_canonicalizes_exact_markdown_diff_wrappers(self) -> None:
         patch = one_file_patch("src/a.py")

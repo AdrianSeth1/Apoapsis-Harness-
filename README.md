@@ -120,7 +120,11 @@ records the D5c decision to add a minimal Windows browser launcher while
 deferring any native desktop wrapper, and
 [ADR 0035](docs/adr/0035-guided-workflows-and-planning-research.md) records
 the guided project/task/plan/slice/recovery journeys and optional planning-
-research stage. The
+research stage, and
+[ADR 0036](docs/adr/0036-operational-hardening-and-documentation-compaction.md)
+records clarification source canonicalization, fair research-query allocation,
+known-impossible verification preflight, less brittle patch budgets, and the
+current-state documentation split. The
 [Research Mode guide](docs/research-mode.md)
 covers setup and operation.
 
@@ -253,6 +257,40 @@ Initialize Apoapsis inside an existing Git repository:
 apoapsis init
 ```
 
+Initialization writes an example Python unittest command, not a universal test
+contract. Replace it with this repository's real verification command before
+starting coding. New projects allow the bounded coding agent to add and edit
+test files by default (`patch.allow_test_changes = true`), so a from-scratch
+slice can create its own `tests/` directory. Test deletion remains forbidden,
+and dependency manifest edits are also allowed by default
+(`patch.allow_dependency_changes = true`) so generated applications can declare
+the libraries they actually use. Verification-configuration changes remain
+forbidden. Set either allow flag to `false` if a repository must
+protect existing tests; if its configured unittest command then points at a
+missing directory, execution refuses before creating an operation, worktree, or
+model call and shows an actionable configuration error in the browser.
+
+When test edits are allowed, the inverse is enforced during coding: a missing
+directory used by a required unittest-discovery command becomes an explicit
+implementation obligation. The model must create the importable directory and
+meaningful task-focused tests. Apoapsis rejects escalation based only on that
+known repairable failure and keeps the bounded session working; it never waives
+the required check or manufactures tests itself. Declared Python dependencies in
+`requirements*.txt` or `pyproject.toml` are installed automatically into a
+task-scoped dependency directory before verification. Package build/install scripts
+are allowed, bounded by the configured install timeout, and their command, output,
+status, backend, and script permission are retained in the verification artifact.
+Generated tests should still mock credentials, browser interaction, and live remote
+services unless an owner-configured check explicitly requires them.
+
+For blank-repository work, Apoapsis normalizes a narrow class of malformed
+new-file diffs produced by local models: missing outer `+` markers and an
+incorrect added-line count in a single `/dev/null` text-file hunk. The original
+proposal and normalized applied diff are both audited. Existing-file edits,
+deletions, binary patches, multi-hunk new files, and all patch-policy checks
+remain strict. The coding prompt also receives the effective test/dependency
+edit flags instead of a generic rule that may contradict project policy.
+
 Draft a task without model inference. Repeated flags preserve constraints and
 criteria as separate source-backed records:
 
@@ -299,7 +337,9 @@ Your configured `[models.frontier]` local model may propose up to
 `[discovery] max_clarification_questions` (default 5) clarification
 questions -- fewer is fine, and the harness caps the count regardless of
 how many the model returns. Answer in your own words; they are preserved
-verbatim, never rewritten:
+verbatim, never rewritten. If a local model copies a prompt-added Markdown list
+marker or changes only case/whitespace, Apoapsis resolves it back to the exact
+matching characters from your idea or answer; paraphrases still fail:
 
 ```bash
 apoapsis discover answer-questions DISC-ABC123 --expected-version 2 \
@@ -316,6 +356,12 @@ Research uses the existing restricted source adapters and tool-less local
 research model; only a compact brief plus provenance-bound evidence IDs enter
 the frontier planning package. If `[models.local_research]` is not configured,
 the interface says so and planning can continue without research.
+
+The model proposes bounded typed queries; it does not receive a browser, raw
+network access, credentials, or arbitrary URL fetching. Apoapsis distributes
+the candidate budget across planned queries, performs allowlisted fetches,
+sanitizes and attributes evidence, and records sources that yielded no relevant
+findings in the research audit directory.
 
 Then choose either frontier transport:
 
@@ -335,7 +381,7 @@ apoapsis discover call-api DISC-ABC123 --authorize-planning-spend-usd 1.00
 
 The frontier model may return a small, capped number of further
 clarification questions (`[discovery] max_frontier_clarification_rounds`,
-default 2 -- answer them with `apoapsis discover answer-frontier-questions`
+default 10 -- answer them with `apoapsis discover answer-frontier-questions`
 and export again) or a complete plan. A returned plan becomes an entirely
 ordinary Architect Mode plan -- inspect, validate, and approve it exactly
 as described below, through the same unmodified commands:
@@ -424,10 +470,49 @@ caller-supplied `--operation-id`; resubmitting the same operation id is
 always rejected, so a retried or ambiguous request can never silently
 repeat a model call:
 
+The local UI provides the routine path without terminal commands: proposed
+plans show **Verify plan**, and verification-failed Human Review cases show
+**Repair and verify** when bounded local continuation budget remains. These
+buttons call the same versioned, audited services as the CLI.
+When deterministic risk routing stops a task before any coding agent or worktree
+exists, Human Review instead shows **Run locally**. Confirming it explicitly
+authorizes one fresh bounded local execution. It does not change the project's
+default route: the override applies only to that operation, which still uses the
+normal execution authorization, isolated worktree, patch policy, verification,
+reporting, and audit path.
+If `[models.frontier_coder]` is configured, the same untouched routing-review
+state also offers **Run with frontier**. This is a fresh frontier-only execution,
+not a continuation or a silent hosted call; confirmation displays the model and
+bounded budget.
+If a fresh run finishes without passing required verification, the operation is
+labeled **Local run incomplete** or **Frontier run incomplete**, as appropriate,
+and dependent slices stay blocked; it is not presented as successful
+implementation.
+Budget-exhausted implementation stops use the same **Repair and verify** button
+when a bounded local continuation remains available; the user does not need to
+choose a technical continuation action from a generic menu.
+If a continuation operation finishes but verification still fails, the UI labels
+it **Repair incomplete** rather than presenting the operation ledger's technical
+`succeeded` status as task success. **Repair and verify** remains available while
+the freshest verification is failing and continuation budget remains.
+Successful repair automatically opens the completed task's report; incomplete
+repair stays on Human Review with its newest failure evidence.
+The no-model follow-up is labeled **Verify current changes** in Human Review.
+If a bounded coding session ends after edits newer than its last check, Apoapsis
+automatically runs one final full verification within the existing verification
+budget. This is harness-owned verification, not model authority, and is skipped
+when the current fingerprint already has complete results.
+An unchanged diff or exact file excerpt can be inspected once. Repeating a
+read-only observation that adds no evidence is rejected with a direct instruction
+to make a corrected edit or inspect somewhere relevant, and three repeated
+violations stop as no progress instead of consuming the remaining turn budget.
+
 ```bash
 apoapsis review abandon TASK-ABC123 --expected-version 4 --operation-id RVOP-1
 apoapsis review retry-verification TASK-ABC123 \
   --expected-version 4 --expected-fingerprint <digest> --operation-id RVOP-2
+apoapsis review run-local TASK-ABC123 \
+  --expected-version 4 --operation-id RVOP-LOCAL-1
 apoapsis review continue-local TASK-ABC123 \
   --expected-version 4 --expected-fingerprint <digest> \
   --operation-id RVOP-3 --additional-turns 6
@@ -446,6 +531,17 @@ and the number of continuations per task are both capped by
 `max_continuations_per_task`). `continue-frontier` is only ever offered when
 a frontier agent session already exists for that task; it never launches a
 fresh frontier attempt from a local-only stop.
+
+`run-local` is deliberately separate from `continue-local`: it is only offered
+for a routing review that happened before any local session or worktree existed.
+If startup fails before normal execution begins, the task returns to the same
+routing-review state and can be inspected or explicitly retried.
+
+Manual ChatGPT/Claude coding handoffs include bounded repository excerpts
+selected under cloud-exclusion rules, prior local/frontier session history,
+complete verification evidence, and the exact approved plan-slice package when
+one exists. They do not export credentials, ignored secrets, or unrelated
+audit-only data.
 
 Starting a fresh frontier stage from a local-only stop is a distinct,
 explicitly confirmed action (ADR 0022), never something `continue-frontier`
@@ -467,6 +563,17 @@ the *current* configuration, not whatever was true at the original stop --
 adding `[models.frontier_coder]` to `.apoapsis/config.toml` after a
 local-only stop is enough to make the action available on the next
 `review inspect`.
+
+A failed verification or incomplete acceptance stop can also offer
+`continue-local` when continuation budget remains. This is the repair path when
+the failed check requires code or test changes; `retry-verification` is only for
+rerunning unchanged work. New test files are accounted for individually even
+when Git would normally summarize their untracked parent directory.
+
+Fresh `apoapsis init` projects use `completion_policy = "baseline"`: all
+required verification commands must pass, while a separate acceptance-command
+mapping is optional. Set it to `"strict"` when every active acceptance criterion
+must be explicitly mapped to an acceptance-designated command.
 
 Every operation is re-validated against fresh state (task version, worktree
 fingerprint, eligibility, budgets) immediately before it does anything,
@@ -656,22 +763,34 @@ apoapsis plan slice status PLAN-ABC123 SLICE-1
 apoapsis plan slice start PLAN-ABC123 SLICE-1
 ```
 
-`package` deterministically compiles an immutable record of exactly what
+`package` checkpoints completed earlier slice work on its Apoapsis-owned task
+branch, then deterministically compiles an immutable record of exactly what
 approving the slice would authorize -- its exact inherited hard constraints
 and acceptance criteria (copied verbatim from the plan, never reworded),
-configured verification commands, and dependency evidence -- with no model
-call and no task created yet. A dependency slice is only ever considered
-satisfied once its own task is genuinely complete *and* its finished work
-has actually been committed and merged into the current repository, proven
-by git ancestry -- reaching `COMPLETE` alone is never enough, since Apoapsis
-never merges a worktree automatically; the human commits and merges a
-finished slice's branch themselves before its dependents can be packaged.
+full work brief, required interfaces, exclusions, integration assumptions, stop
+conditions, advisory paths/symbols, configured verification commands, dependency
+evidence, and exact inherited execution-base commit -- with no model call and no
+task created yet. The complete approved contract is preserved in the coding
+task's model context. Repairs of older slice tasks recover it from the exact
+hash-bound package approved for that task without rewriting prior audit files. The next
+slice's isolated worktree starts from the latest completed earlier slice, so
+all accumulated prior code is available to its model and verification. The
+user's checked-out branch is never moved or merged automatically. Incomplete,
+failed, or Human Review slices are never inherited, and divergent completed
+branches fail closed instead of triggering an automatic conflict resolution.
+Once every slice reaches COMPLETE, the Plan Overview shows **Prepare finished
+project**. This checkpoints the exact integrated tip, records the plan as
+EXECUTED, and creates a downloadable source ZIP containing
+`APOAPSIS-USING-THE-FINISHED-PROJECT.md`. A separate
+`FRONTIER-WHOLE-PROJECT-REVIEW-<plan-id>.md` can be uploaded with that ZIP for a
+full architecture, integration, security, operability, and verification-gap
+review. Preparing a delivery never moves or merges the checked-out branch.
 `approve` creates the derived task from that exact package (the normal
 specification-approval transitions, unchanged) but does not start it;
 `start` hands it to the same durable execution service `apoapsis execute
 start` uses. A slice's status is always read live from its derived task's
-real state, never a separate, independently-tracked copy of it. Nothing
-here ever starts a next slice, merges, or commits automatically.
+real state, never a separate, independently-tracked copy of it. Nothing here ever
+starts a next slice or merges into the user's branch.
 
 The same flow is available from the browser: a plan's Implementation Slices
 tab shows live per-slice status, an Inspect view renders the same immutable
@@ -908,7 +1027,7 @@ route = "auto"
 
 [execution.agent]
 max_turns = 12
-max_patch_attempts = 4
+max_patch_attempts = 8
 max_verification_runs = 4
 max_search_results = 20
 max_read_lines = 240
@@ -917,7 +1036,7 @@ max_transmitted_observation_chars = 24000
 
 [execution.frontier_agent]
 max_turns = 8
-max_patch_attempts = 3
+max_patch_attempts = 5
 max_verification_runs = 3
 max_search_results = 20
 max_read_lines = 240
@@ -1040,10 +1159,21 @@ cached_input_per_million_usd = 0
 ```
 
 `route = "auto"` sends low, medium, and unclassified tasks local-first and
-escalates only after the local stage stops. High-risk tasks go directly to the
-frontier coder, while critical-risk tasks require human review. Routes can be
+escalates only after the local stage stops. High-risk tasks also run local-first,
+using Apoapsis's maximum finite local turns, patch attempts, verification runs,
+search/read limits, and repository context sized to the configured model's
+declared window; they escalate to frontier when configured. Critical-risk tasks
+require an explicit human choice between the available local/frontier paths.
+Routes can be
 overridden with `--agent-route local_only`, `local_then_frontier`, or
 `frontier_only`.
+
+If AUTO routing selects a frontier or human path that is unavailable, the task
+can stop before an agent runs. Human Review makes that explicit and offers
+**Run locally** when a fresh local execution is safe to authorize; this is a
+one-operation user decision, not a silent weakening of future routing policy.
+When a frontier coder is configured, **Run with frontier** is offered alongside
+it for an explicit fresh hosted execution.
 
 Before the first frontier coding call, Apoapsis writes
 `frontier-escalation-package.json` containing the approved task and constraints,
@@ -1176,11 +1306,12 @@ model for exactly what it does and does not cover.
 
 ## Acceptance coverage and the completion policy (ADR 0015, 0016, 0017, 0018)
 
-Configured verification passing is a development signal, not proof that the
-product is done. `apoapsis init` writes `completion_policy = "strict"`, but
-its generated command is **never** marked `acceptance = true`
-automatically -- acceptance designation is always an explicit decision you
-make once you have decided a command's pass is real product proof:
+Configured verification passing is the default completion gate.
+`apoapsis init` writes `completion_policy = "baseline"`; every required
+command must pass. Its generated command is **never** marked
+`acceptance = true` automatically -- acceptance designation remains an
+explicit decision for projects that opt into strict criterion-by-criterion
+proof:
 
 ```toml
 [[verification.commands]]
@@ -1193,15 +1324,15 @@ required = true
 acceptance = false   # opt in explicitly once you decide this is real proof
 
 [execution]
-completion_policy = "strict"   # apoapsis init's default
+completion_policy = "baseline"   # apoapsis init's default
 ```
 
-Set `acceptance = true` on a command yourself when you're ready, then map
+To use strict completion, set `completion_policy = "strict"`, set
+`acceptance = true` on a command yourself when you're ready, then map
 `AcceptanceCriterion.verification_method` to its name (or let a model
-propose that mapping -- see below). Until you do, `apoapsis doctor` and the
-UI overview both warn that `STRICT` has no acceptance-designated command,
-and tasks with active acceptance criteria correctly stop at
-`HUMAN_REVIEW_REQUIRED` instead of silently reaching `COMPLETE`.
+propose that mapping -- see below). In strict mode, `apoapsis doctor` and
+the UI overview warn when no acceptance command is designated, and tasks
+with active unmapped criteria stop at `HUMAN_REVIEW_REQUIRED`.
 
 Specification extraction receives a deterministic **acceptance-command
 catalog** built fresh from `[verification.commands]` on every call (name,

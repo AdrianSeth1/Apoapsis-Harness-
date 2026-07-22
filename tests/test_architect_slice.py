@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from apoapsis.architect.audit import write_package_artifact
+from apoapsis.architect.delivery import prepare_plan_delivery
 from apoapsis.architect.errors import (
     ActiveSliceExecutionExistsError,
     SliceApprovalError,
@@ -16,6 +17,7 @@ from apoapsis.architect.errors import (
 )
 from apoapsis.architect.package import build_planner_request_package
 from apoapsis.architect.schema import PlanValidationResult, ValidationSeverity
+from apoapsis.architect.slice_package import enrich_specification_with_slice_package
 from apoapsis.architect.slice_service import (
     approve_slice,
     package_slice,
@@ -418,6 +420,57 @@ class SlicePackagingTests(PlanSliceExecutionTestsBase):
         self.assertNotIn("suggested_paths", spec_fields)
         self.assertNotIn("allowed_paths", spec_fields)
 
+    def test_derived_specification_preserves_full_approved_slice_contract(self) -> None:
+        slice_with_contract = make_slice(suggested_paths=["src/generation.py"]).model_copy(
+            update={
+                "interface_contracts": ["generate_reply(text: str) -> str"],
+                "exclusions": ["Do not send the message."],
+                "integration_assumptions": [
+                    "API key is supplied via the environment."
+                ],
+                "stop_conditions": ["A coherent reply is returned."],
+                "suggested_symbols": ["generate_reply"],
+                "work_brief": "Implement the approved contextual reply generator.",
+            }
+        )
+        record, config = self._approved_plan(slices=[slice_with_contract])
+        package = package_slice(
+            self.root,
+            self.plan_store,
+            self.slice_store,
+            self.task_store,
+            self.operation_store,
+            record.plan_id,
+            "SLICE-1",
+            expected_plan_version=record.version,
+            config=config,
+        )
+
+        facts = "\n".join(
+            item.text for item in package.derived_specification.known_facts
+        )
+        self.assertIn("Implement the approved contextual reply generator", facts)
+        self.assertIn("generate_reply(text: str) -> str", facts)
+        self.assertIn("Do not send the message", facts)
+        self.assertIn("API key is supplied", facts)
+        self.assertIn("A coherent reply is returned", facts)
+        self.assertIn("Advisory suggested paths (not an allowlist)", facts)
+        self.assertEqual(
+            package.derived_specification.verification_requirements,
+            slice_with_contract.verification_commands,
+        )
+        legacy_specification = package.derived_specification.model_copy(
+            update={"known_facts": [], "verification_requirements": []}
+        )
+        restored = enrich_specification_with_slice_package(
+            legacy_specification, package
+        )
+        self.assertEqual(restored.known_facts, package.derived_specification.known_facts)
+        self.assertEqual(
+            restored.verification_requirements,
+            package.derived_specification.verification_requirements,
+        )
+
 
 class DependencyEvidenceTests(PlanSliceExecutionTestsBase):
     def test_dependency_never_satisfied_by_status_alone(self) -> None:
@@ -439,7 +492,7 @@ class DependencyEvidenceTests(PlanSliceExecutionTestsBase):
                 config=config,
             )
 
-    def test_dependency_complete_but_not_merged_is_still_blocked(self) -> None:
+    def test_completed_dependency_is_checkpointed_and_inherited_without_main_merge(self) -> None:
         base = make_slice(slice_id="SLICE-1")
         dependent = make_slice(slice_id="SLICE-2", dependencies=["SLICE-1"])
         record, config = self._approved_plan(slices=[base, dependent])
@@ -470,13 +523,53 @@ class DependencyEvidenceTests(PlanSliceExecutionTestsBase):
         )
         self.assertEqual(status["status"], "complete")
 
-        # SLICE-1's task reached COMPLETE, but nothing merged its worktree
-        # branch back into main -- SLICE-2 must still be blocked.
-        with self.assertRaises(SlicePackagingError):
-            package_slice(
-                self.root, self.plan_store, self.slice_store, self.task_store, self.operation_store, record.plan_id, "SLICE-2",
-                expected_plan_version=record.version, config=config,
+        main_before = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=self.root, check=True,
+            capture_output=True, text=True,
+        ).stdout.strip()
+        package2 = package_slice(
+            self.root, self.plan_store, self.slice_store, self.task_store,
+            self.operation_store, record.plan_id, "SLICE-2",
+            expected_plan_version=record.version, config=config,
+        )
+        self.assertEqual(package2.inherited_slice_ids, ["SLICE-1"])
+        self.assertNotEqual(package2.execution_base_commit, main_before)
+        main_after = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=self.root, check=True,
+            capture_output=True, text=True,
+        ).stdout.strip()
+        self.assertEqual(main_after, main_before)
+        approve_slice(
+            self.root, self.task_store, self.slice_store, record.plan_id,
+            "SLICE-2", expected_package_sha256=package2.package_sha256,
+        )
+        slice2_patch = (
+            "diff --git a/slice2.txt b/slice2.txt\n"
+            "new file mode 100644\n"
+            "--- /dev/null\n"
+            "+++ b/slice2.txt\n"
+            "@@ -0,0 +1 @@\n"
+            "+slice two\n"
+        )
+        with patch(
+            "apoapsis.execution.operation_service._build_providers",
+            return_value=(
+                self._provider([slice2_patch]),
+                self._provider([slice2_patch]),
+                None,
+            ),
+        ):
+            start_slice(
+                self.root, self.task_store, self.slice_store,
+                self.operation_store, record.plan_id, "SLICE-2", config,
             )
+        slice2_record = self.slice_store.get(record.plan_id, "SLICE-2")
+        from apoapsis.execution.worktree import WorktreeManager
+        slice2_path = WorktreeManager(self.root).describe(
+            slice2_record.task_id.removeprefix("TASK-").lower()
+        ).path
+        inherited_source = Path(slice2_path) / "src" / "download_service" / "downloader.py"
+        self.assertIn("response.status_code == 206", inherited_source.read_text(encoding="utf-8"))
 
     def test_dependency_satisfied_once_merged_into_current_head(self) -> None:
         base = make_slice(slice_id="SLICE-1")
@@ -505,9 +598,8 @@ class DependencyEvidenceTests(PlanSliceExecutionTestsBase):
             )
         slice1_record = self.slice_store.get(record.plan_id, "SLICE-1")
         branch = self._worktree_branch(slice1_record.task_id)
-        # The human commits the completed worktree's changes and merges
-        # that branch into main themselves, through ordinary git commands
-        # -- Apoapsis never does either automatically.
+        # A manual merge remains supported; the inherited base resolves to
+        # the same completed branch tip.
         self._commit_worktree(slice1_record.task_id)
         self._git("merge", "--no-ff", "-m", "merge slice 1", branch)
 
@@ -601,6 +693,20 @@ class SliceApprovalAndExecutionTests(PlanSliceExecutionTestsBase):
         )
         self.assertEqual(status["status"], "complete")
         self.assertEqual(status["task_state"], "COMPLETE")
+
+        delivery = prepare_plan_delivery(
+            self.root,
+            self.plan_store,
+            self.slice_store,
+            self.task_store,
+            record.plan_id,
+        )
+        self.assertTrue((self.root / delivery.archive_path).is_file())
+        self.assertTrue((self.root / delivery.frontier_review_handoff_path).is_file())
+        self.assertEqual(delivery.completed_slice_ids, ["SLICE-1"])
+        self.assertEqual(
+            self.plan_store.get_plan(record.plan_id).status.value, "executed"
+        )
 
     def test_human_review_stop_reflected_in_status(self) -> None:
         record, config = self._approved_plan()

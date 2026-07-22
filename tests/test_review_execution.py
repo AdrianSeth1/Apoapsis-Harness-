@@ -242,7 +242,6 @@ class SpecificationNotApprovedTests(ReviewExecutionTestsBase):
             self.store.get_task(report.task_id).state, WorkflowState.ROLLED_BACK
         )
 
-
 class RoutingRequiresHumanTests(ReviewExecutionTestsBase):
     def test_critical_risk_stops_before_any_worktree(self) -> None:
         config = self._agent_config()
@@ -255,7 +254,11 @@ class RoutingRequiresHumanTests(ReviewExecutionTestsBase):
         self.assertEqual(case.stop_reason_kind, StopReasonKind.ROUTING_REQUIRES_HUMAN)
         self.assertEqual(
             set(case.eligible_actions),
-            {ReviewActionKind.INSPECT_ONLY, ReviewActionKind.ABANDON},
+            {
+                ReviewActionKind.INSPECT_ONLY,
+                ReviewActionKind.ABANDON,
+                ReviewActionKind.AUTHORIZE_LOCAL_STAGE,
+            },
         )
         self.assertFalse(case.worktree_exists)
 
@@ -272,6 +275,84 @@ class RoutingRequiresHumanTests(ReviewExecutionTestsBase):
         self.assertEqual(
             self.store.get_task(report.task_id).state, WorkflowState.ROLLED_BACK
         )
+
+    def test_human_can_authorize_fresh_bounded_local_stage(self) -> None:
+        config = self._agent_config(local_turns=3)
+        report = self._run([specification_with_risk("critical")], config)
+        case = build_review_case(self.root, self.store, config, report.task_id)
+        local_fake = FakeModelProvider(
+            [
+                action("propose_patch", unified_diff=COMPLETE_PATCH),
+                action("submit_for_verification"),
+            ]
+        )
+
+        operation = execute_review_action(
+            self.root,
+            self.store,
+            self.operation_store,
+            config,
+            task_id=report.task_id,
+            action=ReviewActionKind.AUTHORIZE_LOCAL_STAGE,
+            operation_id="RVOP-LOCAL-1",
+            expected_version=case.task_version,
+            local_coder_provider=InstrumentedModelProvider(
+                local_fake, ProviderPricing()
+            ),
+        )
+
+        self.assertEqual(operation.status.value, "succeeded")
+        self.assertEqual(
+            self.store.get_task(report.task_id).state, WorkflowState.COMPLETE
+        )
+        session = self._agent_session(report.task_id)
+        self.assertEqual(session.turns, 2)
+        authorization = next(
+            event
+            for event in self.store.events(report.task_id)
+            if event.event_type == "review_local_stage_authorized"
+        )
+        self.assertEqual(authorization.payload["route_override"], "local_only")
+
+    def test_human_can_authorize_fresh_frontier_run(self) -> None:
+        frontier_config = FrontierProviderConfig(
+            base_url="https://frontier.invalid/v1", model="frontier-coder"
+        )
+        config = self._agent_config(frontier_coder=frontier_config)
+        report = self._run([specification_with_risk("critical")], config)
+        case = build_review_case(self.root, self.store, config, report.task_id)
+        self.assertIn(ReviewActionKind.AUTHORIZE_FRONTIER_RUN, case.eligible_actions)
+        frontier_fake = FakeModelProvider(
+            [
+                action("propose_patch", unified_diff=COMPLETE_PATCH),
+                action("submit_for_verification"),
+            ]
+        )
+
+        operation = execute_review_action(
+            self.root,
+            self.store,
+            self.operation_store,
+            config,
+            task_id=report.task_id,
+            action=ReviewActionKind.AUTHORIZE_FRONTIER_RUN,
+            operation_id="RVOP-FRONTIER-1",
+            expected_version=case.task_version,
+            frontier_coder_provider=InstrumentedModelProvider(
+                frontier_fake, ProviderPricing()
+            ),
+        )
+
+        self.assertEqual(operation.status.value, "succeeded")
+        self.assertEqual(
+            self.store.get_task(report.task_id).state, WorkflowState.COMPLETE
+        )
+        authorization = next(
+            event
+            for event in self.store.events(report.task_id)
+            if event.event_type == "review_frontier_run_authorized"
+        )
+        self.assertEqual(authorization.payload["route_override"], "frontier_only")
 
 
 class AcceptanceCoverageOneShotTests(ReviewExecutionTestsBase):

@@ -25,6 +25,7 @@ from apoapsis.config import (
     ModelsConfig,
     PatchPolicyConfig,
     ApoapsisConfig,
+    effective_config_for_specification,
 )
 from apoapsis.models.telemetry import InstrumentedModelProvider
 from apoapsis.models.provider import ProviderError
@@ -107,6 +108,13 @@ class AgentActionTests(unittest.TestCase):
             remaining_budgets={"turns": 1},
             verification_commands=["tests"],
             history=[{"action": "inspect_diff"}],
+            patch_policy={
+                "allow_dependency_changes": False,
+                "allow_test_changes": True,
+            },
+            next_action_requirements=[
+                "Do not request inspect_diff again until an edit is accepted."
+            ],
         )
         prefix = prompt_static_prefix("agent_step")
         self.assertTrue(first.startswith(prefix))
@@ -115,6 +123,11 @@ class AgentActionTests(unittest.TestCase):
             first[: len(prefix)].encode("utf-8"),
             second[: len(prefix)].encode("utf-8"),
         )
+        self.assertIn('"allow_test_changes": true', second)
+        self.assertIn("you may add or edit tests", second)
+        self.assertIn("Apoapsis installs declared", second)
+        self.assertIn("including their install scripts", second)
+        self.assertIn("Do not request inspect_diff again", second)
         failing = VerificationCommandResult(
             name="tests",
             category="tests",
@@ -213,7 +226,11 @@ class DeterministicRoutingTests(unittest.TestCase):
         )
         self.assertEqual(
             select_agent_route(high, execution, frontier_available=True).route,
-            AgentRoute.FRONTIER_ONLY,
+            AgentRoute.LOCAL_THEN_FRONTIER,
+        )
+        self.assertEqual(
+            select_agent_route(high, execution, frontier_available=False).route,
+            AgentRoute.LOCAL_ONLY,
         )
         self.assertEqual(
             select_agent_route(
@@ -221,6 +238,28 @@ class DeterministicRoutingTests(unittest.TestCase):
             ).route,
             AgentRoute.HUMAN_REVIEW_REQUIRED,
         )
+
+    def test_high_risk_local_profile_uses_maximum_finite_ceiling(self) -> None:
+        specification = make_specification().model_copy(
+            update={"risk_level": RiskLevel.HIGH}
+        )
+        config = ApoapsisConfig(
+            models=ModelsConfig(
+                frontier=FrontierProviderConfig(
+                    provider="ollama",
+                    base_url="http://127.0.0.1:11434",
+                    model="local",
+                    context_window_tokens=65_536,
+                )
+            ),
+            verification=VerificationConfig(commands=[]),
+        )
+        effective = effective_config_for_specification(config, specification)
+        self.assertEqual(effective.execution.agent.max_turns, 50)
+        self.assertEqual(effective.execution.agent.max_patch_attempts, 20)
+        self.assertEqual(effective.execution.agent.max_verification_runs, 20)
+        self.assertEqual(effective.context.max_files, 100)
+        self.assertLessEqual(effective.context.max_total_chars, 65_536 * 3)
 
 
 class BoundedAgentIntegrationTests(unittest.TestCase):
@@ -427,6 +466,65 @@ class BoundedAgentIntegrationTests(unittest.TestCase):
         )
         self.assertNotIn("[STALE:", first_request["prompt"])
 
+    def test_final_turn_edit_is_verified_automatically(self) -> None:
+        fake = FakeModelProvider(
+            [
+                specification_response(),
+                action("inspect_diff"),
+                action("read_file", path="src/download_service/downloader.py", start_line=1, end_line=4),
+                action("read_file", path="src/download_service/downloader.py", start_line=5, end_line=8),
+                action("read_file", path="src/download_service/downloader.py", start_line=9, end_line=12),
+                action("read_file", path="src/download_service/downloader.py", start_line=13, end_line=16),
+                action("read_file", path="src/download_service/downloader.py", start_line=17, end_line=21),
+                action("search_repository", query="class Downloader", path_glob="**/*.py"),
+                action("propose_patch", unified_diff=COMPLETE_PATCH),
+            ]
+        )
+        self._inject_task_id(fake)
+
+        report = VerticalSliceRunner(
+            self.root,
+            self.store,
+            InstrumentedModelProvider(fake),
+            self._config(),
+        ).run(REQUEST, approve=lambda specification: True)
+
+        self.assertEqual(report.outcome, TaskOutcome.COMPLETE)
+        self.assertEqual(report.agent_turns, 8)
+        self.assertEqual(report.agent_verification_runs, 1)
+        self.assertIsNone(report.error)
+
+    def test_repeated_empty_diff_inspection_stops_without_draining_budget(self) -> None:
+        fake = FakeModelProvider(
+            [
+                specification_response(),
+                action("inspect_diff"),
+                action("inspect_diff"),
+                action("inspect_diff"),
+                action("inspect_diff"),
+                action("inspect_diff"),
+            ]
+        )
+        self._inject_task_id(fake)
+
+        report = VerticalSliceRunner(
+            self.root,
+            self.store,
+            InstrumentedModelProvider(fake),
+            self._config(),
+        ).run(REQUEST, approve=lambda specification: True)
+
+        self.assertEqual(report.outcome, TaskOutcome.HUMAN_REVIEW_REQUIRED)
+        self.assertEqual(report.agent_turns, 4)
+        self.assertIn("prohibited no-progress repository", report.error or "")
+        fourth_turn = json.loads(
+            (self.root / ".apoapsis" / "tasks" / report.task_id / "agent-turn-004.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertFalse(fourth_turn["accepted"])
+        self.assertIn("make a corrected edit", fourth_turn["summary"])
+
     def test_explicit_escalation_stops_without_frontier_fallback(self) -> None:
         fake = FakeModelProvider(
             [
@@ -452,6 +550,68 @@ class BoundedAgentIntegrationTests(unittest.TestCase):
             self.store.get_task(report.task_id).state,
             WorkflowState.HUMAN_REVIEW_REQUIRED,
         )
+
+    def test_missing_required_test_scaffold_blocks_escalation_and_is_repaired(self) -> None:
+        shutil.rmtree(self.root / "tests")
+        self._git("add", "-A")
+        self._git("commit", "-m", "remove test scaffold")
+        test_patch = (
+            "diff --git a/tests/test_smoke.py b/tests/test_smoke.py\n"
+            "new file mode 100644\n"
+            "--- /dev/null\n"
+            "+++ b/tests/test_smoke.py\n"
+            "@@ -0,0 +1,16 @@\n"
+            "+import sys\n"
+            "+import unittest\n"
+            "+from pathlib import Path\n"
+            "+\n"
+            "+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))\n"
+            "+from download_service import Downloader\n"
+            "+\n"
+            "+class SmokeTests(unittest.TestCase):\n"
+            "+    def test_resumable_implementation_checks_partial_response(self):\n"
+            "+        source = Path(Downloader.__module__.replace('.', '/'))\n"
+            "+        source = (Path(__file__).resolve().parents[1] / 'src' / source).with_suffix('.py')\n"
+            "+        content = source.read_text(encoding='utf-8')\n"
+            "+        self.assertIn('status_code == 206', content)\n"
+            "+        self.assertIn('Range', content)\n"
+            "+\n"
+            "+\n"
+        )
+        fake = FakeModelProvider(
+            [
+                specification_response(),
+                action("propose_patch", unified_diff=COMPLETE_PATCH),
+                action("run_check", command_name="download-tests"),
+                action(
+                    "request_escalation",
+                    reason="No tests directory exists and the task did not ask for tests.",
+                ),
+                action("propose_patch", unified_diff=test_patch),
+                action("run_check", command_name="download-tests"),
+            ]
+        )
+        self._inject_task_id(fake)
+        report = VerticalSliceRunner(
+            self.root,
+            self.store,
+            InstrumentedModelProvider(fake),
+            self._config(),
+        ).run(REQUEST, approve=lambda specification: True)
+
+        self.assertEqual(report.outcome, TaskOutcome.COMPLETE)
+        self.assertTrue(Path(report.worktree_path, "tests", "test_smoke.py").is_file())
+        audit = self.root / ".apoapsis" / "tasks" / report.task_id
+        refused = json.loads(
+            (audit / "agent-turn-003.json").read_text(encoding="utf-8")
+        )
+        self.assertFalse(refused["accepted"])
+        self.assertIn("escalation refused", refused["summary"])
+        request = json.loads(
+            (audit / "call-004-request.json").read_text(encoding="utf-8")
+        )
+        self.assertIn("REQUIRED_VERIFICATION_OBLIGATIONS_JSON", request["prompt"])
+        self.assertIn("create that importable directory", request["prompt"])
 
     def test_local_failure_escalates_to_frontier_repair_on_same_worktree(self) -> None:
         frontier_config = FrontierProviderConfig(
@@ -642,7 +802,7 @@ class BoundedAgentIntegrationTests(unittest.TestCase):
         )
         self.assertIn("provider call failed", package["trigger"])
 
-    def test_high_risk_auto_route_skips_local_coding(self) -> None:
+    def test_high_risk_auto_route_uses_maximum_local_before_frontier(self) -> None:
         frontier_config = FrontierProviderConfig(
             base_url="https://frontier.invalid/v1",
             model="big-coder-v1",
@@ -673,11 +833,11 @@ class BoundedAgentIntegrationTests(unittest.TestCase):
         ).run(REQUEST, approve=lambda specification: True)
 
         self.assertEqual(report.outcome, TaskOutcome.COMPLETE)
-        self.assertEqual(report.agent_route, AgentRoute.FRONTIER_ONLY)
+        self.assertEqual(report.agent_route, AgentRoute.LOCAL_THEN_FRONTIER)
         self.assertEqual(report.local_agent_turns, 0)
         self.assertEqual(report.frontier_agent_turns, 2)
-        self.assertFalse(report.escalation_triggered)
-        self.assertIsNone(report.escalation_package_path)
+        self.assertTrue(report.escalation_triggered)
+        self.assertIsNotNone(report.escalation_package_path)
 
     def test_repository_inspector_rejects_path_escape(self) -> None:
         inspector = RepositoryInspector(
@@ -740,6 +900,14 @@ class BoundedAgentIntegrationTests(unittest.TestCase):
                 "src/download_service/downloader.py",
                 "not present",
                 "replacement",
+            )
+        with self.assertRaisesRegex(
+            AgentInspectionError, "old_text and new_text are identical"
+        ):
+            inspector.replacement_patch(
+                "src/download_service/downloader.py",
+                "        downloaded = 0",
+                "        downloaded = 0",
             )
 
 

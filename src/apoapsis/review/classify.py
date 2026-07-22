@@ -7,6 +7,8 @@ from apoapsis.workflow.states import WorkflowState
 _EVENT_TYPE_STOP_REASON: dict[str, StopReasonKind] = {
     "specification_not_approved": StopReasonKind.SPECIFICATION_NOT_APPROVED,
     "deterministic_route_requires_human": StopReasonKind.ROUTING_REQUIRES_HUMAN,
+    "review_local_stage_start_failed": StopReasonKind.ROUTING_REQUIRES_HUMAN,
+    "review_frontier_run_start_failed": StopReasonKind.ROUTING_REQUIRES_HUMAN,
     "acceptance_coverage_incomplete": StopReasonKind.ACCEPTANCE_COVERAGE_INCOMPLETE,
     "review_verification_retry_incomplete": (
         StopReasonKind.ACCEPTANCE_COVERAGE_INCOMPLETE
@@ -34,16 +36,20 @@ _BASE_ELIGIBLE_ACTIONS: dict[StopReasonKind, tuple[ReviewActionKind, ...]] = {
     StopReasonKind.ROUTING_REQUIRES_HUMAN: (
         ReviewActionKind.INSPECT_ONLY,
         ReviewActionKind.ABANDON,
+        ReviewActionKind.AUTHORIZE_LOCAL_STAGE,
+        ReviewActionKind.AUTHORIZE_FRONTIER_RUN,
     ),
     StopReasonKind.ACCEPTANCE_COVERAGE_INCOMPLETE: (
         ReviewActionKind.INSPECT_ONLY,
         ReviewActionKind.ABANDON,
         ReviewActionKind.VERIFICATION_ONLY_RETRY,
+        ReviewActionKind.LOCAL_CONTINUATION,
     ),
     StopReasonKind.VERIFICATION_FAILED: (
         ReviewActionKind.INSPECT_ONLY,
         ReviewActionKind.ABANDON,
         ReviewActionKind.VERIFICATION_ONLY_RETRY,
+        ReviewActionKind.LOCAL_CONTINUATION,
         ReviewActionKind.MANUAL_FRONTIER_HANDOFF,
     ),
     StopReasonKind.LOCAL_AGENT_ESCALATION_UNAVAILABLE: (
@@ -123,6 +129,7 @@ def eligible_actions_for(
             not in {
                 ReviewActionKind.FRONTIER_CONTINUATION,
                 ReviewActionKind.AUTHORIZE_FRONTIER_STAGE,
+                ReviewActionKind.AUTHORIZE_FRONTIER_RUN,
             }
         ]
     if frontier_stage_exists and ReviewActionKind.AUTHORIZE_FRONTIER_STAGE in actions:

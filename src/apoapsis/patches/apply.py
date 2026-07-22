@@ -223,7 +223,15 @@ class GitPatchApplier:
 
     @staticmethod
     def _changed_paths(repository: GitRepository) -> set[str]:
-        status = repository.run(["status", "--porcelain=v1", "-z"]).stdout
+        # Git normally collapses an entirely untracked directory to one
+        # porcelain entry such as ``?? tests/``.  Patch policy reasons about
+        # files, so that default made a valid patch adding
+        # ``tests/__init__.py`` look as though it had unexpectedly changed the
+        # directory ``tests/``.  Always request individual untracked files for
+        # the before/after path comparison.
+        status = repository.run(
+            ["status", "--porcelain=v1", "-z", "--untracked-files=all"]
+        ).stdout
         entries = [entry for entry in status.split("\0") if entry]
         paths: set[str] = set()
         index = 0

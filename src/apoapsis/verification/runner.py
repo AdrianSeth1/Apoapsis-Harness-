@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import os
+import hashlib
+import sys
+import tempfile
 import time
 import tomllib
 from datetime import datetime, timezone
@@ -74,6 +77,8 @@ class VerificationConfig(StrictModel):
         default_factory=lambda: list(DEFAULT_ENVIRONMENT_ALLOWLIST)
     )
     backend: ExecutionBackendConfig = Field(default_factory=ExecutionBackendConfig)
+    auto_install_dependencies: bool = True
+    dependency_install_timeout_seconds: float = Field(default=600.0, gt=0, le=3600)
 
     @classmethod
     def from_toml(cls, path: str | Path) -> VerificationConfig:
@@ -110,7 +115,45 @@ class VerificationRunner:
         results: list[VerificationCommandResult] = []
         integrity_violations: list[str] = []
         try:
+            environment = {
+                key: os.environ[key]
+                for key in self.config.environment_allowlist
+                if key in os.environ
+            }
+            dependency_command, dependency_environment = self._dependency_install(
+                Path(project_root), task_id
+            )
+            environment.update(dependency_environment)
             stop = False
+            if dependency_command is not None:
+                outcome = self.backend.run_command(
+                    context, dependency_command, environment=environment
+                )
+                stdout, stdout_cut = self._truncate(outcome.stdout)
+                stderr, stderr_cut = self._truncate(outcome.stderr)
+                dependency_result = VerificationCommandResult(
+                    name=dependency_command.name,
+                    category=dependency_command.category,
+                    argv=dependency_command.argv,
+                    required=True,
+                    cwd=context.display_root,
+                    status=outcome.status,
+                    exit_code=outcome.exit_code,
+                    stdout=stdout,
+                    stderr=stderr,
+                    output_truncated=stdout_cut or stderr_cut,
+                    started_at=outcome.started_at,
+                    finished_at=outcome.finished_at,
+                    duration_seconds=outcome.duration_seconds,
+                    backend=outcome.backend,
+                    backend_metadata={
+                        **outcome.backend_metadata,
+                        "harness_selected": True,
+                        "install_scripts_allowed": True,
+                    },
+                )
+                results.append(dependency_result)
+                stop = dependency_result.status != VerificationStatus.PASSED
             for command in self.config.commands:
                 if stop:
                     now = datetime.now(timezone.utc)
@@ -130,14 +173,10 @@ class VerificationRunner:
                         )
                     )
                     continue
-                environment = {
-                    key: os.environ[key]
-                    for key in self.config.environment_allowlist
-                    if key in os.environ
-                }
-                environment.update(command.environment)
+                command_environment = dict(environment)
+                command_environment.update(command.environment)
                 outcome = self.backend.run_command(
-                    context, command, environment=environment
+                    context, command, environment=command_environment
                 )
                 stdout, stdout_cut = self._truncate(outcome.stdout)
                 stderr, stderr_cut = self._truncate(outcome.stderr)
@@ -188,6 +227,73 @@ class VerificationRunner:
             duration_seconds=time.monotonic() - started_clock,
             integrity_violations=integrity_violations,
         )
+
+    def _dependency_install(
+        self, project_root: Path, task_id: str
+    ) -> tuple[VerificationCommand | None, dict[str, str]]:
+        if not self.config.auto_install_dependencies:
+            return None, {}
+        requirements = [
+            path
+            for path in sorted(project_root.glob("requirements*.txt"))
+            if any(
+                line.strip() and not line.lstrip().startswith("#")
+                for line in path.read_text(encoding="utf-8").splitlines()
+            )
+        ]
+        pyproject = project_root / "pyproject.toml"
+        pyproject_has_dependencies = False
+        if pyproject.is_file():
+            with pyproject.open("rb") as handle:
+                project_table = tomllib.load(handle).get("project", {})
+            pyproject_has_dependencies = bool(
+                isinstance(project_table, dict)
+                and (
+                    project_table.get("dependencies")
+                    or project_table.get("optional-dependencies")
+                )
+            )
+        manifest = (
+            requirements[0]
+            if requirements
+            else pyproject if pyproject_has_dependencies else None
+        )
+        if manifest is None:
+            return None, {}
+        digest = hashlib.sha256(manifest.read_bytes()).hexdigest()[:16]
+        if self.backend.backend_name == "host":
+            target = (
+                Path(tempfile.gettempdir())
+                / "apoapsis-dependencies"
+                / task_id
+                / digest
+            ).resolve()
+            target.mkdir(parents=True, exist_ok=True)
+            target_arg = str(target)
+        else:
+            target_arg = f".apoapsis-dependencies/{digest}"
+        argv = [
+            sys.executable if self.backend.backend_name == "host" else "python",
+            "-m",
+            "pip",
+            "install",
+            "--upgrade",
+            "--target",
+            target_arg,
+        ]
+        if manifest == pyproject:
+            argv.append(".")
+        else:
+            argv.extend(["-r", manifest.name])
+        command = VerificationCommand(
+            name="dependency-install",
+            category="dependencies",
+            argv=argv,
+            timeout_seconds=self.config.dependency_install_timeout_seconds,
+            required=True,
+            description="Harness-selected installation of declared project dependencies.",
+        )
+        return command, {"PYTHONPATH": target_arg}
 
     def _truncate(self, output: str) -> tuple[str, bool]:
         limit = self.config.output_limit_chars

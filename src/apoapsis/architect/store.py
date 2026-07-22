@@ -270,6 +270,65 @@ class SQLitePlanStore:
             connection.close()
         return self.get_plan(plan_id)
 
+    def mark_executed(
+        self,
+        plan_id: str,
+        *,
+        expected_version: int,
+        final_commit: str,
+        delivery_path: str,
+    ) -> PlanRecord:
+        """Record that every approved slice was integrated and delivered."""
+
+        now = utc_now()
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT status, version FROM plans WHERE plan_id = ?", (plan_id,)
+            ).fetchone()
+            if row is None:
+                raise PlanNotFoundError(plan_id)
+            source = PlanStatus(row["status"])
+            version = int(row["version"])
+            if version != expected_version:
+                raise ConcurrentPlanTransitionError(
+                    f"expected version {expected_version}, found {version}"
+                )
+            if source != PlanStatus.APPROVED:
+                raise PlanActionError(
+                    f"plan delivery requires APPROVED, found {source.value}"
+                )
+            cursor = connection.execute(
+                "UPDATE plans SET status = ?, version = version + 1, updated_at = ? "
+                "WHERE plan_id = ? AND version = ?",
+                (PlanStatus.EXECUTED.value, now.isoformat(), plan_id, version),
+            )
+            if cursor.rowcount != 1:
+                raise ConcurrentPlanTransitionError(
+                    f"plan {plan_id} changed during delivery"
+                )
+            self._insert_event(
+                connection,
+                plan_id,
+                event_type="plan_delivery_prepared",
+                from_status=source,
+                to_status=PlanStatus.EXECUTED,
+                actor=PlanActor.USER,
+                payload={
+                    "final_commit": final_commit,
+                    "delivery_path": delivery_path,
+                },
+                created_at=now,
+            )
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+        return self.get_plan(plan_id)
+
     def create_revision(
         self,
         plan_id: str,

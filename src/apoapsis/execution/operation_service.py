@@ -26,7 +26,10 @@ from apoapsis.operations.lease import (
     new_owner_id,
 )
 from apoapsis.repository.git import GitRepository
-from apoapsis.repository.readiness import require_clean_parent_repository
+from apoapsis.repository.readiness import (
+    require_clean_parent_repository,
+    require_viable_verification_contract,
+)
 from apoapsis.workflow.engine import SQLiteTaskStore
 from apoapsis.workflow.states import WorkflowState
 from apoapsis.workflow.vertical_slice import VerticalSliceRunner
@@ -99,6 +102,7 @@ def prepare_execution_operation(
             f"task {task_id} is not eligible for execution: expected "
             f"SPEC_APPROVED, found {task.state.value}"
         )
+    require_viable_verification_contract(root, config)
     package = build_execution_authorization_package(
         root,
         operation_id=operation_id,
@@ -197,6 +201,7 @@ def run_execution_operation(
                 f"found {current_head})"
             )
         require_clean_parent_repository(root)
+        require_viable_verification_contract(root, config)
         if record.authorization_sha256 is not None:
             fresh_package = build_execution_authorization_package(
                 root,

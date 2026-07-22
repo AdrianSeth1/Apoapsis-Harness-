@@ -65,6 +65,9 @@ class PlanAuditStore:
         text = json.dumps(serializable, indent=2, sort_keys=True) + "\n"
         return _atomic_write(self.root, filename, self.project_root, text, kind)
 
+    def write_text(self, filename: str, value: str, *, kind: str) -> AuditArtifact:
+        return _atomic_write(self.root, filename, self.project_root, value, kind)
+
     def artifacts(self) -> list[str]:
         if not self.root.is_dir():
             return []

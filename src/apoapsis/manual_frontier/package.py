@@ -7,14 +7,21 @@ from pathlib import Path
 from typing import Any
 
 from apoapsis.audit.store import AuditArtifact, TaskAuditStore
+from apoapsis.agent.session import AgentSessionResult
+from apoapsis.architect.slice_schema import PlanSliceExecutionPackage
+from apoapsis.context.compiler import ContextPackage
+from apoapsis.context.compiler import ContextCompiler
+from apoapsis.config import ApoapsisConfig, effective_config_for_specification
 from apoapsis.manual_frontier.schema import (
     ManualFrontierHandoffPackage,
     ManualFrontierResponseEnvelope,
     VerificationCatalogEntry,
 )
 from apoapsis.review.schema import ReviewCase
+from apoapsis.review.case import read_agent_session
 from apoapsis.specification.schema import TaskSpecification
 from apoapsis.verification.runner import VerificationCommand
+from apoapsis.workflow.events import WorkflowEvent
 
 # Fixed, non-negotiable statements included verbatim in every exported
 # package and rendered in the Markdown file, so the boundary is explicit to
@@ -61,6 +68,71 @@ def _verification_catalog(
     ]
 
 
+def compile_manual_frontier_evidence(
+    project_root: str | Path,
+    review_case: ReviewCase,
+    specification: TaskSpecification,
+    config: ApoapsisConfig,
+    events: list[WorkflowEvent],
+) -> tuple[ContextPackage, list[AgentSessionResult], PlanSliceExecutionPackage | None]:
+    """Compile the cloud-safe repository and prior-attempt evidence once.
+
+    This is shared by CLI and UI exports so a manual frontier handoff never
+    depends on which surface the operator used.
+    """
+
+    if review_case.worktree_path is None:
+        raise ValueError("manual frontier evidence requires an existing worktree")
+    effective = effective_config_for_specification(config, specification)
+    failure_queries = [
+        text
+        for failure in review_case.normalized_failures
+        for text in (failure.root_error, failure.relevant_error)
+        if text
+    ]
+    context = ContextCompiler(effective.context).compile(
+        specification,
+        review_case.worktree_path,
+        extra_queries=failure_queries,
+    )
+    task_directory = (
+        Path(project_root).resolve() / ".apoapsis" / "tasks" / review_case.task_id
+    )
+    sessions = [
+        item
+        for item in (
+            read_agent_session(task_directory, ""),
+            read_agent_session(task_directory, "frontier-"),
+        )
+        if item is not None
+    ]
+    approved_slice_package = None
+    approval = next(
+        (
+            event
+            for event in reversed(events)
+            if event.event_type == "plan_slice_specification_approved"
+        ),
+        None,
+    )
+    if approval is not None:
+        plan_id = approval.payload.get("plan_id")
+        slice_id = approval.payload.get("slice_id")
+        if isinstance(plan_id, str) and isinstance(slice_id, str):
+            # Imported here to keep the review/manual-handoff module graph
+            # acyclic during application startup.
+            from apoapsis.architect.slice_service import read_latest_slice_package
+
+            candidate = read_latest_slice_package(project_root, plan_id, slice_id)
+            expected_hash = approval.payload.get("package_sha256")
+            if candidate is not None and (
+                not isinstance(expected_hash, str)
+                or candidate.package_sha256 == expected_hash
+            ):
+                approved_slice_package = candidate
+    return context, sessions, approved_slice_package
+
+
 def build_manual_frontier_handoff_package(
     review_case: ReviewCase,
     specification: TaskSpecification,
@@ -68,6 +140,9 @@ def build_manual_frontier_handoff_package(
     *,
     package_id: str | None = None,
     repair_round: int = 0,
+    repository_context: ContextPackage | None = None,
+    prior_agent_sessions: list[AgentSessionResult] | None = None,
+    approved_slice_package: PlanSliceExecutionPackage | None = None,
 ) -> ManualFrontierHandoffPackage:
     """Deterministically build the immutable manual-frontier handoff
     package (ADR 0031) from the exact same ``ReviewCase`` projection every
@@ -102,6 +177,10 @@ def build_manual_frontier_handoff_package(
         stop_reason_kind=review_case.stop_reason_kind,
         stop_reason_text=review_case.stop_reason_text,
         normalized_failures=review_case.normalized_failures,
+        verification_results=review_case.verification_results,
+        repository_context=repository_context,
+        prior_agent_sessions=prior_agent_sessions or [],
+        approved_slice_package=approved_slice_package,
         verification_catalog=_verification_catalog(verification_commands),
         response_schema=response_schema,
         authority_rules=list(MANUAL_FRONTIER_AUTHORITY_RULES),
@@ -116,9 +195,17 @@ def verify_package_integrity(package: ManualFrontierHandoffPackage) -> bool:
     """Recompute ``package_sha256`` from a package's own content and
     compare -- used before trusting any package reloaded from disk."""
 
-    payload = package.model_dump(
-        mode="json", exclude={"package_id", "generated_at", "package_sha256"}
-    )
+    excluded = {"package_id", "generated_at", "package_sha256"}
+    if package.schema_version == "1.0":
+        excluded.update(
+            {
+                "verification_results",
+                "repository_context",
+                "prior_agent_sessions",
+                "approved_slice_package",
+            }
+        )
+    payload = package.model_dump(mode="json", exclude=excluded)
     return _sha256_canonical(payload) == package.package_sha256
 
 
@@ -177,6 +264,60 @@ def build_handoff_markdown(package: ManualFrontierHandoffPackage) -> str:
         for failure in package.normalized_failures:
             lines.append(f"### `{failure.command_name}`")
             lines.append("")
+    if package.approved_slice_package is not None:
+        lines.append("## Exact approved plan-slice contract")
+        lines.append("")
+        lines.append("```json")
+        lines.append(
+            json.dumps(
+                package.approved_slice_package.model_dump(mode="json"),
+                indent=2,
+                sort_keys=True,
+            )
+        )
+        lines.append("```")
+        lines.append("")
+    if package.repository_context is not None:
+        lines.append("## Bounded repository evidence")
+        lines.append("")
+        lines.append(
+            "These excerpts were selected deterministically under the project's "
+            "cloud-exclusion rules. Treat paths not shown here as unknown."
+        )
+        lines.append("")
+        for evidence in package.repository_context.evidence:
+            lines.append(f"### `{evidence.path}`")
+            lines.append("")
+            lines.append("```")
+            lines.append(evidence.content or "(path-only evidence; content unavailable)")
+            lines.append("```")
+            lines.append("")
+    if package.prior_agent_sessions:
+        lines.append("## Prior coding-agent attempts")
+        lines.append("")
+        lines.append("```json")
+        lines.append(
+            json.dumps(
+                [item.model_dump(mode="json") for item in package.prior_agent_sessions],
+                indent=2,
+                sort_keys=True,
+            )
+        )
+        lines.append("```")
+        lines.append("")
+    if package.verification_results:
+        lines.append("## Complete verification history")
+        lines.append("")
+        lines.append("```json")
+        lines.append(
+            json.dumps(
+                [item.model_dump(mode="json") for item in package.verification_results],
+                indent=2,
+                sort_keys=True,
+            )
+        )
+        lines.append("```")
+        lines.append("")
             lines.append("```")
             lines.append(failure.relevant_error)
             lines.append("```")
@@ -268,6 +409,7 @@ def load_package(root: str | Path, task_id: str, package_id: str) -> ManualFront
 
 __all__ = [
     "MANUAL_FRONTIER_AUTHORITY_RULES",
+    "compile_manual_frontier_evidence",
     "build_manual_frontier_handoff_package",
     "verify_package_integrity",
     "build_handoff_markdown",

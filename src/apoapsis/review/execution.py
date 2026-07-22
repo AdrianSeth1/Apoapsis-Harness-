@@ -9,10 +9,20 @@ from apoapsis.agent.session import (
     AgentSessionResult,
     BoundedAgentSession,
 )
+from apoapsis.architect.slice_package import enrich_specification_with_slice_package
+from apoapsis.architect.slice_schema import PlanSliceExecutionPackage
 from apoapsis.audit.store import TaskAuditStore
-from apoapsis.config import ApoapsisConfig, CompletionPolicy, FrontierProviderConfig
+from apoapsis.config import (
+    AgentRoute,
+    ApoapsisConfig,
+    CompletionPolicy,
+    FrontierProviderConfig,
+    effective_config_for_specification,
+)
 from apoapsis.context.compiler import ContextCompiler
 from apoapsis.execution.worktree import WorktreeManager
+from apoapsis.execution.operation_service import execute_execution_operation
+from apoapsis.execution.operation_store import ExecutionOperationStore
 from apoapsis.models.base import (
     ConstraintCoverage,
     ConstraintDisposition,
@@ -56,6 +66,7 @@ from apoapsis.review.schema import (
     ReviewOperationRecord,
 )
 from apoapsis.review.store import ReviewOperationStore
+from apoapsis.specification.schema import TaskSpecification
 from apoapsis.verification.results import VerificationStatus
 from apoapsis.verification.runner import VerificationRunner
 from apoapsis.workflow.acceptance import (
@@ -64,7 +75,7 @@ from apoapsis.workflow.acceptance import (
 )
 from apoapsis.workflow.engine import SQLiteTaskStore
 from apoapsis.workflow.escalation import build_local_to_frontier_escalation
-from apoapsis.workflow.events import WorkflowActor
+from apoapsis.workflow.events import WorkflowActor, WorkflowEvent
 from apoapsis.workflow.states import WorkflowState
 
 _CONTINUATION_ACTIONS = frozenset(
@@ -79,6 +90,61 @@ _WORKTREE_CHECKED_ACTIONS = frozenset(
         ReviewActionKind.MANUAL_FRONTIER_HANDOFF,
     }
 )
+
+
+def _continuation_specification(
+    root: Path,
+    specification: TaskSpecification,
+    events: list[WorkflowEvent],
+) -> TaskSpecification:
+    """Restore an approved plan slice's full contract for model repair.
+
+    Older slice tasks persisted only the derived one-line objective. The exact
+    approved package remains immutable audit evidence, so continuations may use
+    it without rewriting the task specification or granting new authority.
+    """
+
+    approved = next(
+        (
+            event
+            for event in reversed(events)
+            if event.event_type == "plan_slice_specification_approved"
+        ),
+        None,
+    )
+    if approved is None:
+        return specification
+    plan_id = approved.payload.get("plan_id")
+    slice_id = approved.payload.get("slice_id")
+    package_id = approved.payload.get("package_id")
+    if not all(
+        isinstance(item, str) and item
+        for item in (plan_id, slice_id, package_id)
+    ):
+        return specification
+    artifact = (
+        root
+        / ".apoapsis"
+        / "plans"
+        / plan_id
+        / f"slice-{slice_id}-package-{package_id}.json"
+    )
+    if not artifact.is_file():
+        return specification
+    try:
+        package = PlanSliceExecutionPackage.model_validate_json(
+            artifact.read_text(encoding="utf-8")
+        )
+    except (OSError, ValueError) as exc:
+        raise ReviewError(
+            f"approved slice package cannot be read for continuation: {exc}"
+        ) from exc
+    expected_hash = approved.payload.get("package_sha256")
+    if isinstance(expected_hash, str) and package.package_sha256 != expected_hash:
+        raise ReviewError(
+            "approved slice package hash no longer matches the task authorization"
+        )
+    return enrich_specification_with_slice_package(specification, package)
 
 
 def _build_provider(provider_config: FrontierProviderConfig) -> InstrumentedModelProvider:
@@ -498,6 +564,34 @@ def run_review_operation(
                 operation_id=operation_id,
                 preview_id=record.manual_frontier_preview_id,
             )
+        elif record.action == ReviewActionKind.AUTHORIZE_LOCAL_STAGE:
+            provider = local_coder_provider or _build_provider(
+                config.models.local_coder or config.models.frontier
+            )
+            summary = _execute_authorize_local_stage(
+                root,
+                task_store,
+                config,
+                review_case,
+                record.expected_task_version,
+                operation_id=operation_id,
+                provider=provider,
+            )
+        elif record.action == ReviewActionKind.AUTHORIZE_FRONTIER_RUN:
+            if config.models.frontier_coder is None:
+                raise FrontierUnavailableError("no frontier coder is configured")
+            provider = frontier_coder_provider or _build_provider(
+                config.models.frontier_coder
+            )
+            summary = _execute_authorize_frontier_run(
+                root,
+                task_store,
+                config,
+                review_case,
+                record.expected_task_version,
+                operation_id=operation_id,
+                provider=provider,
+            )
         elif record.action == ReviewActionKind.AUTHORIZE_FRONTIER_STAGE:
             assert config.models.frontier_coder is not None
             provider = frontier_coder_provider or _build_provider(
@@ -722,10 +816,12 @@ def _execute_continuation(
         )
 
     specification = task_store.get_task(task_id).specification
+    config = effective_config_for_specification(config, specification)
     base_agent_config = (
         config.execution.frontier_agent if is_frontier else config.execution.agent
     )
     events = task_store.events(task_id)
+    specification = _continuation_specification(root, specification, events)
     started_event_type = (
         FRONTIER_CONTINUATION_STARTED if is_frontier else LOCAL_CONTINUATION_STARTED
     )
@@ -773,6 +869,7 @@ def _execute_continuation(
         model_role=role,
         audit_prefix=prefix,
         completion_policy=config.execution.completion_policy,
+        patch_policy=config.patch,
     )
 
     started_event = f"review_{'frontier' if is_frontier else 'local'}_continuation_started"
@@ -847,6 +944,154 @@ def _execute_continuation(
         expected_version=escalation.version,
     )
     return f"continuation stopped again: {result.stop_reason}"
+
+
+def _execute_authorize_local_stage(
+    root: Path,
+    task_store: SQLiteTaskStore,
+    config: ApoapsisConfig,
+    review_case: ReviewCase,
+    expected_version: int,
+    *,
+    operation_id: str,
+    provider: InstrumentedModelProvider,
+) -> str:
+    """Run one explicitly authorized fresh local stage after route review.
+
+    The review operation is the user's durable authorization. The actual coding
+    run still goes through the ordinary execution-operation authorization,
+    isolated worktree, bounded agent, patch policy, and verifier. Only this
+    child execution's route is overridden; project configuration is unchanged.
+    """
+
+    if review_case.worktree_exists or review_case.worktree_path is not None:
+        raise ReviewError(
+            "Run locally is only valid before any task worktree exists"
+        )
+    task_directory = root / ".apoapsis" / "tasks" / review_case.task_id
+    if read_agent_session(task_directory, "") is not None:
+        raise ReviewError(
+            "Run locally cannot start over an existing local agent session; "
+            "use Repair and verify instead"
+        )
+
+    execution = config.execution.model_copy(update={"route": AgentRoute.LOCAL_ONLY})
+    local_config = config.model_copy(update={"execution": execution})
+    authorized = task_store.transition(
+        review_case.task_id,
+        WorkflowState.SPEC_APPROVED,
+        actor=WorkflowActor.USER,
+        event_type="review_local_stage_authorized",
+        payload={
+            "reason": "human explicitly authorized local execution after routing review",
+            "review_operation_id": operation_id,
+            "route_override": AgentRoute.LOCAL_ONLY.value,
+        },
+        expected_version=expected_version,
+    )
+    execution_operation_id = (
+        f"EXOP-LOCAL-{operation_id.removeprefix('RVOP-')}"
+    )
+    try:
+        result = execute_execution_operation(
+            root,
+            task_store,
+            ExecutionOperationStore(root / ".apoapsis" / "execution-operations.db"),
+            local_config,
+            task_id=review_case.task_id,
+            operation_id=execution_operation_id,
+            expected_version=authorized.version,
+            local_coder_provider=provider,
+        )
+    except Exception as exc:
+        current = task_store.get_task(review_case.task_id)
+        if current.state == WorkflowState.SPEC_APPROVED:
+            task_store.transition(
+                review_case.task_id,
+                WorkflowState.HUMAN_REVIEW_REQUIRED,
+                actor=WorkflowActor.SYSTEM,
+                event_type="review_local_stage_start_failed",
+                payload={
+                    "reason": f"{type(exc).__name__}: {exc}",
+                    "review_operation_id": operation_id,
+                    "execution_operation_id": execution_operation_id,
+                },
+                expected_version=current.version,
+            )
+        raise
+    return (
+        "fresh local stage finished through execution operation "
+        f"{execution_operation_id}: {result.result_summary}"
+    )
+
+
+def _execute_authorize_frontier_run(
+    root: Path,
+    task_store: SQLiteTaskStore,
+    config: ApoapsisConfig,
+    review_case: ReviewCase,
+    expected_version: int,
+    *,
+    operation_id: str,
+    provider: InstrumentedModelProvider,
+) -> str:
+    """Run one explicitly authorized fresh frontier-only execution."""
+
+    if review_case.worktree_exists or review_case.worktree_path is not None:
+        raise ReviewError("Run with frontier is only valid before a worktree exists")
+    task_directory = root / ".apoapsis" / "tasks" / review_case.task_id
+    if read_agent_session(task_directory, "") is not None or read_agent_session(
+        task_directory, "frontier-"
+    ) is not None:
+        raise ReviewError(
+            "Run with frontier cannot start over an existing agent session"
+        )
+    execution = config.execution.model_copy(update={"route": AgentRoute.FRONTIER_ONLY})
+    frontier_config = config.model_copy(update={"execution": execution})
+    authorized = task_store.transition(
+        review_case.task_id,
+        WorkflowState.SPEC_APPROVED,
+        actor=WorkflowActor.USER,
+        event_type="review_frontier_run_authorized",
+        payload={
+            "reason": "human explicitly authorized frontier execution after routing review",
+            "review_operation_id": operation_id,
+            "route_override": AgentRoute.FRONTIER_ONLY.value,
+        },
+        expected_version=expected_version,
+    )
+    execution_operation_id = f"EXOP-FRONTIER-{operation_id.removeprefix('RVOP-')}"
+    try:
+        result = execute_execution_operation(
+            root,
+            task_store,
+            ExecutionOperationStore(root / ".apoapsis" / "execution-operations.db"),
+            frontier_config,
+            task_id=review_case.task_id,
+            operation_id=execution_operation_id,
+            expected_version=authorized.version,
+            frontier_coder_provider=provider,
+        )
+    except Exception as exc:
+        current = task_store.get_task(review_case.task_id)
+        if current.state == WorkflowState.SPEC_APPROVED:
+            task_store.transition(
+                review_case.task_id,
+                WorkflowState.HUMAN_REVIEW_REQUIRED,
+                actor=WorkflowActor.SYSTEM,
+                event_type="review_frontier_run_start_failed",
+                payload={
+                    "reason": f"{type(exc).__name__}: {exc}",
+                    "review_operation_id": operation_id,
+                    "execution_operation_id": execution_operation_id,
+                },
+                expected_version=current.version,
+            )
+        raise
+    return (
+        "fresh frontier run finished through execution operation "
+        f"{execution_operation_id}: {result.result_summary}"
+    )
 
 
 def _execute_authorize_frontier_stage(
@@ -944,6 +1189,7 @@ def _execute_authorize_frontier_stage(
         model_role=ModelRole.FRONTIER_CODING_AGENT,
         audit_prefix="frontier-",
         completion_policy=config.execution.completion_policy,
+        patch_policy=config.patch,
     )
     try:
         result: AgentSessionResult = session.run()

@@ -160,12 +160,25 @@ class ResearchEngine:
 
         all_candidates: list[SourceCandidate] = []
         searched_sources: set[ResearchSourceName] = set()
-        for query in queries:
+        for query_index, query in enumerate(queries):
             self._within_deadline(deadline)
             source = self.sources.get(query.source)
             if source is None:
                 continue
             searched_sources.add(query.source)
+            remaining_total = max(
+                1, self.config.budget.max_candidates - len(all_candidates)
+            )
+            remaining_queries = len(queries) - query_index
+            # Reserve a fair share for every planned query.  Previously the
+            # first broad GitHub query could consume the entire global
+            # candidate budget, so later, often more specific questions were
+            # never searched at all.
+            remaining = max(
+                1,
+                (remaining_total + remaining_queries - 1)
+                // remaining_queries,
+            )
             key = self.cache.key(
                 "search",
                 {
@@ -178,9 +191,6 @@ class ResearchEngine:
             )
             cached = cache_lookup(key)
             if cached is None:
-                remaining = max(
-                    1, self.config.budget.max_candidates - len(all_candidates)
-                )
                 candidates = await source.search(
                     query,
                     SourceBudget(
@@ -198,10 +208,8 @@ class ResearchEngine:
                 )
             else:
                 candidates = [SourceCandidate.model_validate(item) for item in cached]
-            all_candidates.extend(candidates)
-            if len(all_candidates) >= self.config.budget.max_candidates:
-                all_candidates = all_candidates[: self.config.budget.max_candidates]
-                break
+            all_candidates.extend(candidates[:remaining])
+            all_candidates = all_candidates[: self.config.budget.max_candidates]
         all_candidates = [
             item.model_copy(
                 update={
@@ -410,6 +418,13 @@ class ResearchEngine:
             else:
                 proposal = EvidenceExtractionProposal.model_validate(
                     cached_extraction
+                )
+            if not proposal.findings:
+                rejected_evidence.append(
+                    {
+                        "candidate_id": source.candidate_id,
+                        "reason": "local extraction found no relevant evidence",
+                    }
                 )
             for finding in proposal.findings:
                 rejection = self._evidence_rejection(

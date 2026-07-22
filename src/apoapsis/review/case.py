@@ -4,7 +4,7 @@ from pathlib import Path
 
 from apoapsis.agent.inspection import RepositoryInspector
 from apoapsis.agent.session import AgentSessionResult
-from apoapsis.config import ApoapsisConfig
+from apoapsis.config import ApoapsisConfig, effective_config_for_specification
 from apoapsis.execution.worktree import WorktreeError, WorktreeManager
 from apoapsis.repository.fingerprint import compute_worktree_fingerprint
 from apoapsis.reporting.report import FinalTaskReport
@@ -182,6 +182,7 @@ def build_review_case(
 
     root = Path(project_root).resolve()
     record = store.get_task(task_id)
+    config = effective_config_for_specification(config, record.specification)
     if record.state != WorkflowState.HUMAN_REVIEW_REQUIRED:
         raise ReviewCaseError(
             f"task {task_id} is not at HUMAN_REVIEW_REQUIRED "

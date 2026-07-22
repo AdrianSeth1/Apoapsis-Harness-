@@ -202,7 +202,7 @@ deterministic but not a security sandbox. The opt-in Docker backend additionally
 denies network access and constrains filesystem writes, CPU, memory, and
 processes; its real success path still needs to be proven on this machine.
 
-Under the normal strict completion policy, required development checks must
+Under strict completion, required development checks must
 pass and every active acceptance criterion must be **Proven** by an explicitly
 owner-designated acceptance command at the current worktree fingerprint.
 Changing the code makes that proof stale until the command runs again.

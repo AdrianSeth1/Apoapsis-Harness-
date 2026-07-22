@@ -21,7 +21,7 @@ from apoapsis.agent.actions import (
 )
 from apoapsis.agent.inspection import AgentInspectionError, RepositoryInspector
 from apoapsis.audit.store import TaskAuditStore
-from apoapsis.config import AgentLoopConfig, CompletionPolicy
+from apoapsis.config import AgentLoopConfig, CompletionPolicy, PatchPolicyConfig
 from apoapsis.context.compiler import ContextCompiler, ContextPackage
 from apoapsis.context.provenance import (
     ContextEvidence,
@@ -35,6 +35,7 @@ from apoapsis.patches.apply import PatchApplicationError
 from apoapsis.patches.parser import UnifiedDiffError, UnifiedDiffParser
 from apoapsis.patches.validator import PatchPolicyError
 from apoapsis.repository.fingerprint import compute_worktree_fingerprint
+from apoapsis.repository.readiness import required_verification_scaffolding
 from apoapsis.specification.schema import StrictModel, TaskSpecification
 from apoapsis.verification.failures import FailureNormalizer, NormalizedFailure
 from apoapsis.verification.results import VerificationResult, VerificationStatus
@@ -171,6 +172,7 @@ class BoundedAgentSession:
         audit_prefix: str = "",
         completion_policy: CompletionPolicy = CompletionPolicy.BASELINE,
         agent_step_prompt_fn: AgentStepPromptBuilder = agent_step_prompt,
+        patch_policy: PatchPolicyConfig | None = None,
     ) -> None:
         self.specification = specification
         self.worktree = Path(worktree).resolve()
@@ -184,6 +186,7 @@ class BoundedAgentSession:
         self.model_role = model_role
         self.audit_prefix = audit_prefix
         self.completion_policy = completion_policy
+        self.patch_policy = patch_policy
         # Defaults to the production prompt builder byte-for-byte; only an
         # explicit override (evaluation-only diagnostic infrastructure, see
         # ADR 0029) ever substitutes a different one. Ordinary product
@@ -228,6 +231,7 @@ class BoundedAgentSession:
         model_role: ModelRole = ModelRole.CODING_AGENT,
         audit_prefix: str = "",
         completion_policy: CompletionPolicy = CompletionPolicy.BASELINE,
+        patch_policy: PatchPolicyConfig | None = None,
     ) -> "BoundedAgentSession":
         """Reconstruct a session continuing from ``prior_result`` (ADR 0020).
 
@@ -256,6 +260,7 @@ class BoundedAgentSession:
             model_role=model_role,
             audit_prefix=audit_prefix,
             completion_policy=completion_policy,
+            patch_policy=patch_policy,
         )
         session.records = list(prior_result.turn_records)
         if prior_result.turn_records:
@@ -278,6 +283,12 @@ class BoundedAgentSession:
 
     def run(self, *, start_turn: int = 1) -> AgentSessionResult:
         for turn in range(start_turn, self.config.max_turns + 1):
+            no_progress_reason = self._repeated_no_progress_stop_reason()
+            if no_progress_reason is not None:
+                return self._result(
+                    AgentSessionOutcome.ESCALATION_REQUIRED,
+                    no_progress_reason,
+                )
             context = self._context_for_turn(turn)
             prompt = self.agent_step_prompt_fn(
                 context,
@@ -290,6 +301,18 @@ class BoundedAgentSession:
                     item.model_dump(mode="json", exclude={"observation_ledger"})
                     for item in self.records
                 ],
+                patch_policy=(
+                    {
+                        "allow_dependency_changes": (
+                            self.patch_policy.allow_dependency_changes
+                        ),
+                        "allow_test_changes": self.patch_policy.allow_test_changes,
+                    }
+                    if self.patch_policy is not None
+                    else None
+                ),
+                verification_obligations=self._verification_obligations(),
+                next_action_requirements=self._next_action_requirements(),
             )
             response = self.model_call(
                 ModelOperation.AGENT_STEP,
@@ -313,6 +336,22 @@ class BoundedAgentSession:
                 continue
 
             if isinstance(action, RequestEscalationAction):
+                obligations = self._repairable_failed_verification_obligations()
+                if obligations:
+                    self._record(
+                        AgentTurnRecord(
+                            turn=turn,
+                            action=action.action,
+                            accepted=False,
+                            summary=(
+                                "escalation refused: the latest verification "
+                                "failure is repairable under the active patch "
+                                "policy. Satisfy the harness-derived verification "
+                                f"obligations, then rerun verification. {' '.join(obligations)}"
+                            )[:2_000],
+                        )
+                    )
+                    continue
                 self._record(
                     AgentTurnRecord(
                         turn=turn,
@@ -344,10 +383,137 @@ class BoundedAgentSession:
                     "full deterministic verification passed",
                 )
 
+        final_verification_reason: str | None = None
+        if self._final_verification_needed():
+            try:
+                result = self._verify(self.verification_config.commands)
+            except AgentInspectionError as exc:
+                final_verification_reason = (
+                    f"automatic final verification could not run: {exc}"
+                )
+            else:
+                verification_passed = (
+                    result.status == VerificationStatus.PASSED
+                    and self._all_required_checks_passed()
+                )
+                if self._check_completion(verification_passed):
+                    return self._result(
+                        AgentSessionOutcome.COMPLETE,
+                        "automatic final deterministic verification passed",
+                    )
+                final_verification_reason = (
+                    "automatic final deterministic verification did not pass"
+                )
+
+        reason = f"agent turn budget exhausted after {self.config.max_turns} turns"
+        if final_verification_reason is not None:
+            reason = f"{reason}; {final_verification_reason}"
         return self._result(
             AgentSessionOutcome.ESCALATION_REQUIRED,
-            f"agent turn budget exhausted after {self.config.max_turns} turns",
+            reason,
         )
+
+    def _next_action_requirements(self) -> list[str]:
+        requirements: list[str] = []
+        if not self.inspector.has_changes() and any(
+            item.action == "inspect_diff"
+            and item.summary == "current worktree has no diff"
+            for item in self.records
+        ):
+            requirements.append(
+                "Do not request inspect_diff again until an edit is accepted; "
+                "the worktree is unchanged and the previous inspection was empty."
+            )
+        if self.records and (
+            not self.records[-1].accepted
+            and "added no new evidence" in self.records[-1].summary
+        ):
+            requirements.append(
+                "Do not repeat the previous read-only action; it returned no new "
+                "evidence. Make an edit, inspect a different relevant location, "
+                "run an allowed check after edits, or request a specific escalation."
+            )
+        latest_edit = next(
+            (
+                item
+                for item in reversed(self.records)
+                if item.action in {"propose_patch", "replace_text"}
+            ),
+            None,
+        )
+        if latest_edit is not None and not latest_edit.accepted:
+            requirements.append(
+                "The latest edit was rejected. Correct that edit now. Prefer "
+                "replace_text after reading the exact current file when unified "
+                "diff markers were the problem."
+            )
+        return requirements
+
+    def _repeated_no_progress_stop_reason(self) -> str | None:
+        tail = self.records[-3:]
+        if len(tail) == 3 and all(
+            not item.accepted
+            and (
+                item.summary.startswith(
+                    "inspect_diff rejected: worktree unchanged"
+                )
+                or "added no new evidence" in item.summary
+            )
+            for item in tail
+        ):
+            return (
+                "coding model repeated prohibited no-progress repository "
+                "observations three times without making progress"
+            )
+        return None
+
+    def _final_verification_needed(self) -> bool:
+        """Run harness-owned verification when the model's final edits are
+        newer than all recorded checks. Never rerun a complete check against
+        an unchanged fingerprint, and never exceed the configured budget."""
+
+        if (
+            not self.inspector.has_changes()
+            or self.verification_runs >= self.config.max_verification_runs
+        ):
+            return False
+        current = self.command_results.get(self._verification_state_digest())
+        if current is None:
+            return True
+        configured = {item.name for item in self.verification_config.commands}
+        return not configured.issubset(current)
+
+    def _verification_obligations(self) -> list[str]:
+        return required_verification_scaffolding(
+            self.worktree,
+            self.verification_config,
+            allow_test_changes=(
+                self.patch_policy is not None
+                and self.patch_policy.allow_test_changes
+            ),
+            allow_dependency_changes=(
+                self.patch_policy is not None
+                and self.patch_policy.allow_dependency_changes
+            ),
+        )
+
+    def _repairable_failed_verification_obligations(self) -> list[str]:
+        obligations = self._verification_obligations()
+        if not obligations or not self.verification_results:
+            return []
+        latest = self.verification_results[-1]
+        output = "\n".join(
+            f"{item.stdout}\n{item.stderr}" for item in latest.commands
+        ).lower()
+        known_missing_scaffold = (
+            "start directory is not importable" in output
+            or "no module named tests" in output
+        )
+        missing_declared_dependency = (
+            "no module named" in output
+            and any(item.startswith("Third-party Python imports") for item in obligations)
+        )
+        return obligations if known_missing_scaffold or missing_declared_dependency else []
 
     def interrupted(self, reason: str) -> AgentSessionResult:
         """Persist a deterministic stop when the selected provider fails."""
@@ -377,6 +543,12 @@ class BoundedAgentSession:
                 action.path, action.start_line, action.end_line
             )
             added = self._add_evidence([evidence])
+            if not added:
+                raise AgentInspectionError(
+                    "read_file rejected: the requested excerpt added no new "
+                    "evidence because it is already present or the observation "
+                    "budget has no remaining capacity; make a corrected edit"
+                )
             self._record(
                 AgentTurnRecord(
                     turn=turn,
@@ -392,8 +564,25 @@ class BoundedAgentSession:
             return False
 
         if isinstance(action, InspectDiffAction):
+            if not self.inspector.has_changes() and any(
+                item.action == "inspect_diff"
+                and item.summary == "current worktree has no diff"
+                for item in self.records
+            ):
+                raise AgentInspectionError(
+                    "inspect_diff rejected: worktree unchanged since the prior "
+                    "empty inspection; make a corrected edit using replace_text "
+                    "or propose_patch"
+                )
             evidence = self.inspector.diff()
             added = self._add_evidence([evidence] if evidence else [])
+            if evidence is not None and not added:
+                raise AgentInspectionError(
+                    "inspect_diff rejected: the current diff added no new evidence "
+                    "because it is already present or the observation budget has "
+                    "no remaining capacity; make a corrected edit or run an "
+                    "allowed check"
+                )
             self._record(
                 AgentTurnRecord(
                     turn=turn,

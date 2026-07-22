@@ -185,6 +185,32 @@ class UIServiceTests(unittest.TestCase):
         self.assertEqual(detail["dependency_order"], ["SLICE-1"])
         self.assertEqual(detail["available_actions"], ["approve_plan"])
 
+    def test_plan_can_be_validated_through_ui_service(self) -> None:
+        proposed_id = "PLAN-UI-VALIDATE"
+        self.plan_store.create_plan(
+            proposed_id, "PKG-UI-VALIDATE", self.plan.idea_text, self.plan
+        )
+        service = ApoapsisUIService(self.root)
+        before = self.plan_store.get_plan(proposed_id)
+
+        detail = service.plan_detail(proposed_id)
+        self.assertEqual(detail["available_actions"], ["validate_plan"])
+        result = service.validate_plan(
+            proposed_id, expected_version=before.version
+        )
+
+        self.assertTrue(result["validation"]["valid"])
+        self.assertEqual(result["plan"]["status"], "validated")
+        self.assertEqual(result["available_actions"], ["approve_plan"])
+        artifact = (
+            self.root
+            / ".apoapsis"
+            / "plans"
+            / proposed_id
+            / f"validation-v{before.version}.json"
+        )
+        self.assertTrue(artifact.is_file())
+
     def test_plan_approval_uses_the_same_deterministic_transition_record(self) -> None:
         service = ApoapsisUIService(self.root)
         before = self.plan_store.get_plan(self.plan_id)

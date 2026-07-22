@@ -39,14 +39,14 @@ def select_agent_route(
         reason = "critical-risk tasks require an explicit human routing decision"
     elif specification.risk_level == RiskLevel.HIGH:
         route = (
-            AgentRoute.FRONTIER_ONLY
+            AgentRoute.LOCAL_THEN_FRONTIER
             if frontier_available
-            else AgentRoute.HUMAN_REVIEW_REQUIRED
+            else AgentRoute.LOCAL_ONLY
         )
         reason = (
-            "high-risk task routed directly to the configured frontier provider"
+            "high-risk task uses the maximum bounded local profile before frontier review"
             if frontier_available
-            else "high-risk task has no configured frontier provider"
+            else "high-risk task uses the maximum bounded local profile"
         )
     elif frontier_available:
         route = AgentRoute.LOCAL_THEN_FRONTIER

@@ -60,6 +60,7 @@ from apoapsis.manual_frontier.errors import ManualFrontierError
 from apoapsis.manual_frontier.importer import import_manual_frontier_response
 from apoapsis.manual_frontier.package import (
     build_manual_frontier_handoff_package,
+    compile_manual_frontier_evidence,
     load_package as load_manual_frontier_package,
     write_handoff_artifacts,
 )
@@ -191,11 +192,11 @@ cached_input_per_million_usd = 0
 [execution]
 mode = "agent"
 route = "auto"
-completion_policy = "strict"
+completion_policy = "baseline"
 
 [execution.agent]
 max_turns = 12
-max_patch_attempts = 4
+max_patch_attempts = 8
 max_verification_runs = 4
 max_search_results = 20
 max_read_lines = 240
@@ -204,7 +205,7 @@ max_transmitted_observation_chars = 24000
 
 [execution.frontier_agent]
 max_turns = 8
-max_patch_attempts = 3
+max_patch_attempts = 5
 max_verification_runs = 3
 max_search_results = 20
 max_read_lines = 240
@@ -245,8 +246,8 @@ cloud_excluded_paths = [
 [patch]
 max_changed_lines = 500
 max_files = 20
-allow_dependency_changes = false
-allow_test_changes = false
+allow_dependency_changes = true
+allow_test_changes = true
 dependency_files = [
   "pyproject.toml", "requirements*.txt", "poetry.lock", "uv.lock",
   "package.json", "package-lock.json", "pnpm-lock.yaml", "yarn.lock"
@@ -302,7 +303,7 @@ project_write_access = false
 expose_project_secrets = false
 
 [research.synthesis]
-minimum_distinct_sources = 3
+minimum_distinct_sources = 1
 prefer_comparative_patterns = true
 require_provenance = true
 
@@ -313,6 +314,8 @@ reddit_ttl_hours = 24
 [verification]
 stop_on_failure = false
 output_limit_chars = 100000
+auto_install_dependencies = true
+dependency_install_timeout_seconds = 600
 environment_allowlist = [
   "PATH", "PATHEXT", "SYSTEMROOT", "COMSPEC", "TEMP", "TMP",
   "USERPROFILE", "HOME", "VIRTUAL_ENV"
@@ -325,14 +328,11 @@ description = "Runs the project's full test suite."
 argv = ["python", "-m", "unittest", "discover", "-s", "tests", "-v"]
 timeout_seconds = 120
 required = true
-# Acceptance designation is an explicit owner decision (ADR 0017), never
-# generated automatically: mark acceptance = true only once you have
-# decided this command's pass is strong enough evidence that a criterion
-# is genuinely done, then map AcceptanceCriterion.verification_method to
-# "unit-tests" (or add a separate, stronger acceptance command). Until you
-# do, `apoapsis doctor` will warn that strict has no acceptance-designated
-# command, and tasks with active acceptance criteria correctly stop at
-# HUMAN_REVIEW_REQUIRED instead of silently reaching COMPLETE.
+# Baseline completion still requires this command to pass. Acceptance
+# designation remains an explicit owner decision (ADR 0017): if you switch
+# completion_policy to "strict", mark acceptance = true only after deciding
+# this command is strong enough product proof, then map each criterion's
+# verification_method to "unit-tests" (or another acceptance command).
 acceptance = false
 
 [architect.ceilings]
@@ -934,6 +934,13 @@ def build_parser() -> argparse.ArgumentParser:
     review_retry.add_argument("--expected-version", type=int, required=True)
     review_retry.add_argument("--expected-fingerprint", required=True)
     review_retry.add_argument("--operation-id", required=True)
+    review_run_local = review_subparsers.add_parser(
+        "run-local",
+        help="start a fresh bounded local run after deterministic routing review",
+    )
+    review_run_local.add_argument("task_id")
+    review_run_local.add_argument("--expected-version", type=int, required=True)
+    review_run_local.add_argument("--operation-id", required=True)
     review_continue_local = review_subparsers.add_parser(
         "continue-local", help="resume the bounded local coding agent"
     )
@@ -1216,6 +1223,34 @@ def _dispatch(args: argparse.Namespace) -> dict[str, object] | None:
     raise AssertionError(f"unhandled command: {args.command}")
 
 
+def _ensure_apoapsis_gitignored(root: Path) -> bool:
+    """Ensures ``.apoapsis/`` (Apoapsis's own runtime state -- task, plan,
+    and discovery databases, caches, and audit artifacts, never project
+    source) is excluded from git tracking. If it is committed instead,
+    every task/plan/discovery operation's routine writes under it make
+    the repository perpetually "dirty," and
+    ``repository.readiness.require_clean_parent_repository`` (ADR 0026)
+    deliberately fails closed on any dirty tracked state before starting
+    execution -- it cannot distinguish Apoapsis's own bookkeeping from a
+    real uncommitted change to the user's project, so it refuses either
+    way. Idempotent: returns ``False`` and leaves the file untouched if an
+    existing ``.gitignore`` already has an entry covering ``.apoapsis/``,
+    in whichever of its common spellings."""
+
+    gitignore = root / ".gitignore"
+    entry = ".apoapsis/"
+    already_covered = {".apoapsis", ".apoapsis/", "/.apoapsis", "/.apoapsis/"}
+    if gitignore.is_file():
+        existing = gitignore.read_text(encoding="utf-8")
+        if any(line.strip() in already_covered for line in existing.splitlines()):
+            return False
+        separator = "" if existing == "" or existing.endswith("\n") else "\n"
+        gitignore.write_text(f"{existing}{separator}{entry}\n", encoding="utf-8")
+        return True
+    gitignore.write_text(f"{entry}\n", encoding="utf-8")
+    return True
+
+
 def _init(root: Path) -> dict[str, object]:
     GitRepository(root)
     metadata = root / ".apoapsis"
@@ -1226,10 +1261,12 @@ def _init(root: Path) -> dict[str, object]:
         config.write_text(DEFAULT_CONFIG, encoding="utf-8")
         created_config = True
     SQLiteTaskStore(metadata / "apoapsis.db")
+    gitignore_updated = _ensure_apoapsis_gitignored(root)
     return {
         "initialized": True,
         "metadata_directory": str(metadata),
         "config_created": created_config,
+        "gitignore_updated": gitignore_updated,
     }
 
 
@@ -1643,11 +1680,21 @@ def _manual_frontier_command(
                 f"{[item.value for item in review_case.eligible_actions]})"
             )
         specification = store.get_task(args.task_id).specification
+        context, sessions, slice_package = compile_manual_frontier_evidence(
+            root,
+            review_case,
+            specification,
+            config,
+            store.events(args.task_id),
+        )
         package = build_manual_frontier_handoff_package(
             review_case,
             specification,
             config.verification.commands,
             repair_round=review_case.manual_frontier_rounds_used,
+            repository_context=context,
+            prior_agent_sessions=sessions,
+            approved_slice_package=slice_package,
         )
         audit = TaskAuditStore(root, args.task_id)
         json_artifact, markdown_artifact = write_handoff_artifacts(audit, package)
@@ -1774,6 +1821,20 @@ def _review_command(
             operation_id=args.operation_id,
             expected_version=args.expected_version,
             expected_worktree_fingerprint=args.expected_fingerprint,
+        )
+        return record.model_dump(mode="json")
+    if args.review_command == "run-local":
+        _, local_coder_provider, _ = _build_agent_providers(config)
+        record = execute_review_action(
+            root,
+            store,
+            operation_store,
+            config,
+            task_id=args.task_id,
+            action=ReviewActionKind.AUTHORIZE_LOCAL_STAGE,
+            operation_id=args.operation_id,
+            expected_version=args.expected_version,
+            local_coder_provider=local_coder_provider,
         )
         return record.model_dump(mode="json")
     if args.review_command in {"continue-local", "continue-frontier"}:

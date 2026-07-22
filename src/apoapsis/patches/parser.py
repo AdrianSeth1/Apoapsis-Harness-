@@ -57,6 +57,7 @@ class UnifiedDiffParser:
             raise UnifiedDiffError(
                 "patch must contain only a Git unified diff beginning with diff --git"
             )
+        normalized = self._canonicalize_new_file_hunks(normalized)
         normalized = self._canonicalize_blank_context_lines(normalized)
         normalized += "\n"
         starts = [
@@ -157,4 +158,65 @@ class UnifiedDiffParser:
             if in_hunk and line == "":
                 line = " "
             result.append(line)
+        return "\n".join(result)
+
+    @staticmethod
+    def _canonicalize_new_file_hunks(content: str) -> str:
+        """Reconstruct an unambiguous single-hunk new-file diff.
+
+        A text diff from ``/dev/null`` with one zero-old-line hunk has no
+        context or deletions: every physical body line is necessarily new file
+        content. Restore missing outer ``+`` markers and recompute its added
+        line count. Other diff shapes remain strict and unchanged.
+        """
+
+        lines = content.split("\n")
+        starts = [
+            index for index, line in enumerate(lines) if line.startswith("diff --git ")
+        ]
+        if not starts:
+            return content
+        result: list[str] = []
+        for position, start in enumerate(starts):
+            end = starts[position + 1] if position + 1 < len(starts) else len(lines)
+            chunk = lines[start:end]
+            hunk_indexes = [
+                index for index, line in enumerate(chunk) if line.startswith("@@ ")
+            ]
+            is_text_new_file = (
+                any(line.startswith("new file mode ") for line in chunk)
+                and any(line == "--- /dev/null" for line in chunk)
+                and not any(
+                    line.startswith(("GIT binary patch", "Binary files "))
+                    for line in chunk
+                )
+            )
+            if not is_text_new_file or len(hunk_indexes) != 1:
+                result.extend(chunk)
+                continue
+            hunk_index = hunk_indexes[0]
+            match = re.fullmatch(
+                r"@@ -0(?:,0)? \+\d+(?:,\d+)? @@(.*)", chunk[hunk_index]
+            )
+            if match is None:
+                result.extend(chunk)
+                continue
+            body = chunk[hunk_index + 1 :]
+            canonical_body: list[str] = []
+            added_count = 0
+            for line in body:
+                if line == r"\ No newline at end of file":
+                    canonical_body.append(line)
+                    continue
+                canonical_body.append(line if line.startswith("+") else f"+{line}")
+                added_count += 1
+            suffix = match.group(1)
+            header = (
+                "@@ -0,0 +0,0 @@"
+                if added_count == 0
+                else f"@@ -0,0 +1,{added_count} @@{suffix}"
+            )
+            result.extend(chunk[:hunk_index])
+            result.append(header)
+            result.extend(canonical_body)
         return "\n".join(result)

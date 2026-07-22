@@ -57,6 +57,14 @@ class ClassifyStopReasonTests(unittest.TestCase):
                 StopReasonKind.ROUTING_REQUIRES_HUMAN,
             ),
             (
+                "review_local_stage_start_failed",
+                StopReasonKind.ROUTING_REQUIRES_HUMAN,
+            ),
+            (
+                "review_frontier_run_start_failed",
+                StopReasonKind.ROUTING_REQUIRES_HUMAN,
+            ),
+            (
                 "acceptance_coverage_incomplete",
                 StopReasonKind.ACCEPTANCE_COVERAGE_INCOMPLETE,
             ),
@@ -149,6 +157,43 @@ class ClassifyStopReasonTests(unittest.TestCase):
 
 
 class EligibleActionsTests(unittest.TestCase):
+    def test_routing_review_offers_fresh_local_stage(self) -> None:
+        actions = eligible_actions_for(
+            StopReasonKind.ROUTING_REQUIRES_HUMAN,
+            frontier_available=False,
+            continuations_used=0,
+            max_continuations_per_task=5,
+        )
+        self.assertIn(ReviewActionKind.AUTHORIZE_LOCAL_STAGE, actions)
+        self.assertNotIn(ReviewActionKind.LOCAL_CONTINUATION, actions)
+
+    def test_routing_review_offers_frontier_run_when_configured(self) -> None:
+        actions = eligible_actions_for(
+            StopReasonKind.ROUTING_REQUIRES_HUMAN,
+            frontier_available=True,
+            continuations_used=0,
+            max_continuations_per_task=5,
+        )
+        self.assertIn(ReviewActionKind.AUTHORIZE_FRONTIER_RUN, actions)
+
+    def test_failed_verification_offers_local_repair_continuation(self) -> None:
+        actions = eligible_actions_for(
+            StopReasonKind.VERIFICATION_FAILED,
+            frontier_available=False,
+            continuations_used=2,
+            max_continuations_per_task=5,
+        )
+        self.assertIn(ReviewActionKind.LOCAL_CONTINUATION, actions)
+
+    def test_incomplete_acceptance_offers_local_repair_continuation(self) -> None:
+        actions = eligible_actions_for(
+            StopReasonKind.ACCEPTANCE_COVERAGE_INCOMPLETE,
+            frontier_available=False,
+            continuations_used=2,
+            max_continuations_per_task=5,
+        )
+        self.assertIn(ReviewActionKind.LOCAL_CONTINUATION, actions)
+
     def test_frontier_continuation_removed_when_unavailable(self) -> None:
         actions = eligible_actions_for(
             StopReasonKind.FRONTIER_AGENT_EXHAUSTED,

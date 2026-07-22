@@ -88,6 +88,14 @@ Official documentation uses a separate `allowed_domains` list under
 `[research.sources.official_docs]`; it does not inherit the broader network
 allowlist or accept arbitrary model-selected sites as authoritative.
 
+The global candidate ceiling is divided across all validated planned queries,
+so one broad first query cannot prevent later, more specific questions from
+being searched. When only one source adapter actually returns candidates, it
+may fill the fetch budget; cross-source balancing applies when multiple sources
+are present. A retrieved source from which the local model extracts no relevant
+finding is written to `rejected-evidence.jsonl` with that reason instead of
+disappearing behind a generic empty-evidence error.
+
 Enable Reddit only after configuring approved API access:
 
 ```toml

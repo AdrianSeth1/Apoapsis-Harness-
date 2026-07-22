@@ -8,9 +8,11 @@ from apoapsis.architect.errors import (
     ActiveSliceExecutionExistsError,
     SliceApprovalError,
     SliceExecutionNotFoundError,
+    SlicePackagingError,
 )
 from apoapsis.architect.slice_package import (
     build_plan_slice_execution_package,
+    checkpoint_completed_prior_slices,
     dependency_evidence,
     write_plan_slice_execution_package,
 )
@@ -49,9 +51,44 @@ def package_slice(
     config: ApoapsisConfig,
 ):
     """Deterministically builds and durably records an immutable
-    ``PlanSliceExecutionPackage`` -- no model call, no task creation, no
-    repository mutation. Safe to call more than once before approval; a
-    fresh package simply replaces the prior one at ``PACKAGED``."""
+    ``PlanSliceExecutionPackage`` -- no model call and no task creation.
+    Completed earlier slices are first checkpointed on their isolated task
+    branches so the package can authorize an exact inherited base commit;
+    the user's checked-out branch is never moved or merged. Safe to call
+    more than once before approval."""
+
+    plan_record = plan_store.get_plan(plan_id)
+    if plan_record.version != expected_plan_version:
+        raise SlicePackagingError(
+            f"expected plan version {expected_plan_version}, found "
+            f"{plan_record.version}"
+        )
+    if plan_record.status.value != "approved":
+        raise SlicePackagingError(
+            f"plan {plan_id} must be APPROVED to package a slice, found "
+            f"{plan_record.status.value}"
+        )
+    # Run every read-only provenance, plan, configuration, repository, and
+    # dependency gate before checkpointing any completed task branch.
+    build_plan_slice_execution_package(
+        project_root,
+        plan_store,
+        slice_store,
+        task_store,
+        operation_store,
+        plan_id,
+        slice_id,
+        expected_plan_version=expected_plan_version,
+        config=config,
+    )
+    execution_base_commit, inherited_slice_ids = checkpoint_completed_prior_slices(
+        project_root,
+        plan_id,
+        plan_record.plan,
+        slice_id,
+        task_store,
+        slice_store,
+    )
 
     package = build_plan_slice_execution_package(
         project_root,
@@ -63,6 +100,8 @@ def package_slice(
         slice_id,
         expected_plan_version=expected_plan_version,
         config=config,
+        execution_base_commit=execution_base_commit,
+        inherited_slice_ids=inherited_slice_ids,
     )
     write_plan_slice_execution_package(project_root, package)
     slice_store.record_package(
@@ -157,6 +196,10 @@ def approve_slice(
             "slice_id": slice_id,
             "package_id": package.package_id,
             "package_sha256": package.package_sha256,
+            "execution_base_commit": (
+                package.execution_base_commit or package.repository_head_commit
+            ),
+            "inherited_slice_ids": package.inherited_slice_ids,
         },
         expected_version=drafted.version,
     )

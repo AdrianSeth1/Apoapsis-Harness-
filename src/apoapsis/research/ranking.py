@@ -38,11 +38,16 @@ class SourceRanker:
         selected: list[SourceCandidate] = []
         per_repository: dict[str, int] = defaultdict(int)
         per_source: dict[str, int] = defaultdict(int)
+        distinct_sources = {item.source.value for item in unique.values()}
         for candidate in scored:
             repository = candidate.repository or candidate.deduplication_key
             if per_repository[repository] >= 2:
                 continue
-            source_limit = max(2, (limit + 1) // 2)
+            source_limit = (
+                limit
+                if len(distinct_sources) == 1
+                else max(2, (limit + 1) // 2)
+            )
             if per_source[candidate.source.value] >= source_limit:
                 continue
             selected.append(candidate)
@@ -51,4 +56,3 @@ class SourceRanker:
             if len(selected) >= limit:
                 break
         return selected, duplicate_count
-

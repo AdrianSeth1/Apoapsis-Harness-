@@ -40,11 +40,10 @@ class SliceExecutionStatus(StrEnum):
 
 
 class DependencyEvidence(StrictModel):
-    """Deterministic proof (or disproof) that one dependency slice's work
-    has actually landed in the repository state this slice would start
-    from -- never inferred merely from the dependency's own status being
-    ``COMPLETE``. See ``build_plan_slice_execution_package``'s docstring
-    for the exact git-ancestry check this records."""
+    """Deterministic proof (or disproof) that one dependency has a real
+    completed task worktree and resolvable branch tip that packaging can
+    checkpoint and inherit. Status alone is insufficient because the
+    worktree and commit are resolved independently."""
 
     slice_id: str = Field(pattern=r"^SLICE-[A-Za-z0-9._-]+$")
     satisfied: bool
@@ -97,6 +96,10 @@ class PlanSliceExecutionPackage(StrictModel):
     repository_root: str = Field(min_length=1)
     repository_head_commit: str = Field(min_length=1)
     repository_fingerprint: str = Field(min_length=1)
+    # Optional only for backward-compatible reading of packages written
+    # before ADR 0039. Newly built packages always populate this field.
+    execution_base_commit: str | None = Field(default=None, min_length=1)
+    inherited_slice_ids: list[str] = Field(default_factory=list)
     derived_specification: TaskSpecification
     generated_at: datetime = Field(default_factory=utc_now)
     # Filled in after the rest of the package is built, excluded from its

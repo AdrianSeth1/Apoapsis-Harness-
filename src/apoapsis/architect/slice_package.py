@@ -45,6 +45,121 @@ def _find_slice(plan: ArchitecturePlan, slice_id: str) -> ImplementationSlice:
     raise SlicePackagingError(f"plan has no slice {slice_id}")
 
 
+def _approved_slice_fact(
+    package_reference: str, field: str, text: str
+) -> TraceableStatement:
+    return TraceableStatement(
+        text=text,
+        source=SourceKind.APPROVED_DECISION,
+        source_reference=f"{package_reference}/{field}",
+    )
+
+
+def _slice_contract_facts(
+    *,
+    package_reference: str,
+    architecture_summary: str,
+    work_brief: str,
+    interface_contracts: list[str],
+    exclusions: list[str],
+    integration_assumptions: list[str],
+    stop_conditions: list[str],
+    suggested_paths: list[str],
+    suggested_symbols: list[str],
+) -> list[TraceableStatement]:
+    """Preserve the approved execution contract in the derived task.
+
+    These are model context, not new filesystem policy. Suggested paths and
+    symbols remain explicitly advisory, while the work brief, exclusions,
+    interfaces, assumptions, and stop conditions retain their approved source.
+    """
+
+    facts = [
+        _approved_slice_fact(
+            package_reference,
+            "architecture-summary",
+            f"Approved plan architecture summary:\n{architecture_summary}",
+        ),
+        _approved_slice_fact(
+            package_reference,
+            "work-brief",
+            f"Approved slice work brief:\n{work_brief}",
+        ),
+    ]
+    grouped = (
+        ("interface-contracts", "Required interface contracts", interface_contracts),
+        ("exclusions", "Explicit slice exclusions", exclusions),
+        (
+            "integration-assumptions",
+            "Approved integration assumptions",
+            integration_assumptions,
+        ),
+        ("stop-conditions", "Approved stop conditions", stop_conditions),
+        (
+            "suggested-paths",
+            "Advisory suggested paths (not an allowlist)",
+            suggested_paths,
+        ),
+        ("suggested-symbols", "Advisory suggested symbols", suggested_symbols),
+    )
+    for field, label, values in grouped:
+        if values:
+            facts.append(
+                _approved_slice_fact(
+                    package_reference,
+                    field,
+                    f"{label}:\n" + "\n".join(f"- {value}" for value in values),
+                )
+            )
+    return facts
+
+
+def enrich_specification_with_slice_package(
+    specification: TaskSpecification,
+    package: PlanSliceExecutionPackage,
+) -> TaskSpecification:
+    """Backfill approved slice context for tasks created by older packages.
+
+    Existing audit artifacts are never rewritten. A continuation may enrich its
+    in-memory model context from the exact immutable package the user approved.
+    """
+
+    package_reference = f"{package.plan_id}@v{package.plan_version}/{package.slice_id}"
+    additions = _slice_contract_facts(
+        package_reference=package_reference,
+        architecture_summary=package.architecture_summary,
+        work_brief=package.work_brief,
+        interface_contracts=package.interface_contracts,
+        exclusions=package.exclusions,
+        integration_assumptions=package.integration_assumptions,
+        stop_conditions=package.stop_conditions,
+        suggested_paths=package.advisory_suggested_paths,
+        suggested_symbols=package.advisory_suggested_symbols,
+    )
+    existing = {
+        (item.source_reference, item.text) for item in specification.known_facts
+    }
+    known_facts = [
+        *specification.known_facts,
+        *(
+            item
+            for item in additions
+            if (item.source_reference, item.text) not in existing
+        ),
+    ]
+    verification_requirements = list(
+        dict.fromkeys(
+            [*specification.verification_requirements, *package.verification_commands]
+        )
+    )
+    return specification.model_copy(
+        update={
+            "known_facts": known_facts,
+            "verification_requirements": verification_requirements,
+        }
+    )
+
+
 def _exact_constraints(
     plan: ArchitecturePlan, slice_obj: ImplementationSlice
 ) -> list[HardConstraint]:
@@ -93,6 +208,97 @@ def _relevant_decisions(plan: ArchitecturePlan) -> list:
     return list(plan.decisions)
 
 
+def checkpoint_completed_prior_slices(
+    project_root: str | Path,
+    plan_id: str,
+    plan: ArchitecturePlan,
+    current_slice_id: str,
+    task_store: SQLiteTaskStore,
+    slice_store: PlanSliceExecutionStore,
+    *,
+    include_current: bool = False,
+) -> tuple[str | None, list[str]]:
+    """Checkpoint completed slices in this plan and return the newest tip.
+
+    Checkpoints are ordinary commits on Apoapsis-owned task branches. The
+    project's checked-out branch is never moved or merged. Because a plan
+    permits only one active slice, each newly packaged slice can start from
+    the latest completed predecessor and naturally accumulate all prior
+    slice work.
+    """
+
+    root = Path(project_root).resolve()
+    repository = GitRepository(root)
+    inherited: list[tuple[str, str]] = []
+    found_current = any(item.slice_id == current_slice_id for item in plan.slices)
+    if not found_current:
+        raise SlicePackagingError(f"plan has no slice {current_slice_id}")
+    for slice_obj in plan.slices:
+        if slice_obj.slice_id == current_slice_id and not include_current:
+            continue
+        try:
+            record = slice_store.get(plan_id, slice_obj.slice_id)
+        except Exception:
+            continue
+        if record.task_id is None:
+            continue
+        task = task_store.get_task(record.task_id)
+        if task.state != WorkflowState.COMPLETE:
+            continue
+        slug = record.task_id.removeprefix("TASK-").lower()
+        try:
+            managed = WorktreeManager(root).describe(slug)
+        except WorktreeError as exc:
+            raise SlicePackagingError(
+                f"completed prior slice {slice_obj.slice_id} has no usable "
+                "worktree to inherit"
+            ) from exc
+        status = repository.run(
+            ["status", "--porcelain=v1"], cwd=managed.path
+        ).stdout
+        if status.strip():
+            repository.run(["add", "-A"], cwd=managed.path)
+            hooks_dir = root / ".apoapsis" / "runtime" / "empty-git-hooks"
+            hooks_dir.mkdir(parents=True, exist_ok=True)
+            repository.run(
+                [
+                    "-c",
+                    "user.name=Apoapsis Harness",
+                    "-c",
+                    "user.email=apoapsis@localhost",
+                    "-c",
+                    f"core.hooksPath={hooks_dir}",
+                    "-c",
+                    "commit.gpgSign=false",
+                    "commit",
+                    "-m",
+                    f"apoapsis: checkpoint {plan_id}/{slice_obj.slice_id}",
+                ],
+                cwd=managed.path,
+            )
+        tip = repository.run(["rev-parse", "HEAD"], cwd=managed.path).stdout.strip()
+        inherited.append((slice_obj.slice_id, tip))
+    if not inherited:
+        return None, []
+    candidates = []
+    for _slice_id, candidate in inherited:
+        if all(
+            repository.run(
+                ["merge-base", "--is-ancestor", commit, candidate], check=False
+            ).returncode
+            == 0
+            for _other_id, commit in inherited
+        ):
+            candidates.append(candidate)
+    if not candidates:
+        raise SlicePackagingError(
+            "completed slice branches diverge; Apoapsis will not guess an "
+            "integration order or merge conflicts automatically"
+        )
+    latest_commit = candidates[0]
+    return latest_commit, [slice_id for slice_id, _commit in inherited]
+
+
 def _dependency_evidence(
     project_root: Path,
     task_store: SQLiteTaskStore,
@@ -101,14 +307,10 @@ def _dependency_evidence(
     plan_id: str,
     slice_obj: ImplementationSlice,
 ) -> list[DependencyEvidence]:
-    """Deterministically proves (or disproves) that each dependency slice's
-    work has actually landed in the repository state this slice would
-    start from. A dependency's derived task reaching ``COMPLETE`` is never
-    sufficient by itself -- Apoapsis never merges a completed slice's
-    isolated worktree automatically (unchanged from ADR 0024), so the only
-    safe proof is git ancestry: the dependency's worktree branch must be
-    an ancestor of the current repository HEAD, meaning a human has
-    already merged it in through their own, ordinary git workflow.
+    """Deterministically proves that every dependency has a completed,
+    inheritable task worktree. Packaging checkpoints those branches before
+    building the immutable package, so dependent execution can use the
+    recorded branch tip without requiring a merge into the user's branch.
 
     The dependency's *current* status is read from its derived task's own
     real, current workflow state -- never from this store's own persisted
@@ -172,57 +374,16 @@ def _dependency_evidence(
                 )
             )
             continue
-        # Apoapsis never commits a successful worktree's changes
-        # automatically (unchanged from ADR 0024) -- they sit as
-        # uncommitted content on disk until a human commits them. A
-        # branch whose tip still equals the *true* base commit it was
-        # created from (recorded on the execution operation at prepare
-        # time -- NOT ``WorktreeManager.describe()``'s own ``base_commit``
-        # field, which is actually the worktree's *current* HEAD, always
-        # trivially equal to itself) has nothing git can prove was ever
-        # merged: "is an ancestor of HEAD" would be trivially true for it
-        # regardless of merge status, since it never diverged from HEAD's
-        # own history to begin with. Only once the human has actually
-        # committed the dependency's work does the ancestry check below
-        # become a meaningful proof at all.
-        true_base_commit = None
-        if dependency_record.execution_operation_id is not None:
-            try:
-                true_base_commit = operation_store.get(
-                    dependency_record.execution_operation_id
-                ).expected_repository_head
-            except Exception:
-                true_base_commit = None
         worktree_tip = repository.run(
             ["rev-parse", managed.branch], check=False
         ).stdout.strip()
-        if true_base_commit is None or worktree_tip == true_base_commit:
+        if not worktree_tip:
             evidence.append(
                 DependencyEvidence(
                     slice_id=dependency_slice_id,
                     satisfied=False,
                     reason=(
-                        "dependency's worktree has no commits beyond its "
-                        "base -- its changes must be committed (and then "
-                        "merged) before this dependency can be proven "
-                        "satisfied"
-                    ),
-                    dependency_task_id=dependency_record.task_id,
-                    dependency_branch=managed.branch,
-                )
-            )
-            continue
-        ancestry_check = repository.run(
-            ["merge-base", "--is-ancestor", managed.branch, "HEAD"], check=False
-        )
-        if ancestry_check.returncode != 0:
-            evidence.append(
-                DependencyEvidence(
-                    slice_id=dependency_slice_id,
-                    satisfied=False,
-                    reason=(
-                        "dependency's branch has not been merged into the "
-                        "current repository state"
+                        "dependency's worktree branch has no resolvable commit"
                     ),
                     dependency_task_id=dependency_record.task_id,
                     dependency_branch=managed.branch,
@@ -233,7 +394,9 @@ def _dependency_evidence(
             DependencyEvidence(
                 slice_id=dependency_slice_id,
                 satisfied=True,
-                reason="dependency complete and merged into current HEAD",
+                reason=(
+                    "dependency complete with an inheritable isolated-branch tip"
+                ),
                 dependency_task_id=dependency_record.task_id,
                 dependency_branch=managed.branch,
                 dependency_commit=worktree_tip,
@@ -322,9 +485,12 @@ def build_plan_slice_execution_package(
     *,
     expected_plan_version: int,
     config: ApoapsisConfig,
+    execution_base_commit: str | None = None,
+    inherited_slice_ids: list[str] | None = None,
 ) -> PlanSliceExecutionPackage:
     """Deterministically compiles exactly what approving this slice would
-    authorize -- no model call, no repository mutation, no task creation.
+    authorize -- no model call and no task creation. The service checkpoints
+    completed predecessor worktrees before calling this builder.
     Requires the plan to be ``APPROVED`` at exactly ``expected_plan_
     version``, revalidates it against the *current* configured
     constraints/criteria/verification-command catalog (never trusting a
@@ -396,15 +562,28 @@ def build_plan_slice_execution_package(
     derived_task_id = "TASK-" + hashlib.sha256(
         f"{plan_id}:{slice_id}:{expected_plan_version}".encode("utf-8")
     ).hexdigest()[:24].upper()
+    package_reference = f"{plan_id}@v{expected_plan_version}/{slice_id}"
     derived_specification = TaskSpecification(
         task_id=derived_task_id,
         objective=TraceableStatement(
             text=slice_obj.objective,
             source=SourceKind.APPROVED_DECISION,
-            source_reference=f"{plan_id}@v{expected_plan_version}/{slice_id}",
+            source_reference=package_reference,
         ),
         acceptance_criteria=inherited_criteria,
         hard_constraints=inherited_constraints,
+        known_facts=_slice_contract_facts(
+            package_reference=package_reference,
+            architecture_summary=record.plan.architecture_summary,
+            work_brief=slice_obj.work_brief,
+            interface_contracts=list(slice_obj.interface_contracts),
+            exclusions=list(slice_obj.exclusions),
+            integration_assumptions=list(slice_obj.integration_assumptions),
+            stop_conditions=list(slice_obj.stop_conditions),
+            suggested_paths=list(slice_obj.suggested_paths),
+            suggested_symbols=list(slice_obj.suggested_symbols),
+        ),
+        verification_requirements=list(slice_obj.verification_commands),
         risk_level=slice_obj.risk_level,
     )
 
@@ -436,6 +615,8 @@ def build_plan_slice_execution_package(
         repository_root=str(root),
         repository_head_commit=fingerprint.head_commit,
         repository_fingerprint=fingerprint.digest,
+        execution_base_commit=execution_base_commit or fingerprint.head_commit,
+        inherited_slice_ids=list(inherited_slice_ids or []),
         derived_specification=derived_specification,
     )
     # ``package_id`` is excluded too, for the same reason ADR 0026's

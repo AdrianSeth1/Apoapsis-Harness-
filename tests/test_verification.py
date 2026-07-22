@@ -3,8 +3,10 @@ from __future__ import annotations
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 
+from apoapsis.execution.backend import ExecutionContext, RawCommandOutcome
 from apoapsis.verification.failures import FailureNormalizer
 from apoapsis.verification.results import VerificationStatus
 from apoapsis.verification.runner import (
@@ -47,6 +49,55 @@ class VerificationRunnerTests(unittest.TestCase):
         self.assertIn("passed", result.commands[0].stdout)
         self.assertEqual(result.commands[1].exit_code, 7)
         self.assertIn("broken", result.commands[1].stderr)
+
+    def test_declared_dependencies_are_installed_before_verification(self) -> None:
+        (self.root / "requirements.txt").write_text("example-sdk==1.2.3\n", encoding="utf-8")
+
+        class RecordingBackend:
+            backend_name = "host"
+
+            def __init__(self):
+                self.calls = []
+
+            def prepare(self, project_root, task_id, attempt):
+                return ExecutionContext(root=project_root, display_root=str(project_root), extra={})
+
+            def run_command(self, context, command, *, environment):
+                self.calls.append((command, environment))
+                now = datetime.now(timezone.utc)
+                return RawCommandOutcome(
+                    exit_code=0,
+                    stdout="ok",
+                    stderr="",
+                    status=VerificationStatus.PASSED,
+                    started_at=now,
+                    finished_at=now,
+                    duration_seconds=0,
+                    backend="host",
+                    backend_metadata={"sandboxed": False},
+                )
+
+            def finalize(self, context):
+                return []
+
+        backend = RecordingBackend()
+        config = VerificationConfig(
+            commands=[
+                VerificationCommand(
+                    name="tests",
+                    category="tests",
+                    argv=[sys.executable, "-m", "unittest"],
+                )
+            ]
+        )
+        result = VerificationRunner(config, backend=backend).run(
+            "TASK-VERIFY-DEPS", self.root
+        )
+
+        self.assertEqual([item.name for item in result.commands], ["dependency-install", "tests"])
+        self.assertIn("requirements.txt", backend.calls[0][0].argv)
+        self.assertIn("PYTHONPATH", backend.calls[1][1])
+        self.assertTrue(result.commands[0].backend_metadata["install_scripts_allowed"])
 
     def test_timeout_and_stop_on_failure_skip_remaining_checks(self) -> None:
         config = VerificationConfig(

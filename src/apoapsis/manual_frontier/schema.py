@@ -7,8 +7,12 @@ from typing import Literal
 from pydantic import ConfigDict, Field
 
 from apoapsis.review.schema import StopReasonKind
+from apoapsis.agent.session import AgentSessionResult
+from apoapsis.architect.slice_schema import PlanSliceExecutionPackage
+from apoapsis.context.compiler import ContextPackage
 from apoapsis.specification.schema import HardConstraint, StrictModel, TaskSpecification, utc_now
 from apoapsis.verification.failures import NormalizedFailure
+from apoapsis.verification.results import VerificationResult
 
 
 class VerificationCatalogEntry(StrictModel):
@@ -44,7 +48,7 @@ class ManualFrontierHandoffPackage(StrictModel):
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=False)
 
-    schema_version: Literal["1.0"] = "1.0"
+    schema_version: Literal["1.0", "1.1"] = "1.1"
     package_id: str = Field(pattern=r"^MFH-[A-Za-z0-9._-]+$")
     task_id: str = Field(pattern=r"^TASK-[A-Za-z0-9._-]+$")
     task_version: int = Field(ge=1)
@@ -57,6 +61,10 @@ class ManualFrontierHandoffPackage(StrictModel):
     stop_reason_kind: StopReasonKind
     stop_reason_text: str
     normalized_failures: list[NormalizedFailure] = Field(default_factory=list)
+    verification_results: list[VerificationResult] = Field(default_factory=list)
+    repository_context: ContextPackage | None = None
+    prior_agent_sessions: list[AgentSessionResult] = Field(default_factory=list)
+    approved_slice_package: PlanSliceExecutionPackage | None = None
     verification_catalog: list[VerificationCatalogEntry] = Field(default_factory=list)
     response_schema: dict[str, object]
     authority_rules: list[str] = Field(default_factory=list)

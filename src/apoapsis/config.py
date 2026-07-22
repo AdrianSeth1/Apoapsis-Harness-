@@ -10,7 +10,7 @@ from urllib.parse import urlparse
 from pydantic import Field, model_validator
 
 from apoapsis.research.schemas import ResearchBudget, ResearchMode
-from apoapsis.specification.schema import StrictModel
+from apoapsis.specification.schema import RiskLevel, StrictModel, TaskSpecification
 from apoapsis.verification.runner import VerificationConfig
 
 
@@ -124,7 +124,7 @@ class CompletionPolicy(StrEnum):
 
 class AgentLoopConfig(StrictModel):
     max_turns: int = Field(default=12, ge=1, le=50)
-    max_patch_attempts: int = Field(default=4, ge=1, le=20)
+    max_patch_attempts: int = Field(default=8, ge=1, le=20)
     max_verification_runs: int = Field(default=4, ge=1, le=20)
     max_search_results: int = Field(default=20, ge=1, le=100)
     max_read_lines: int = Field(default=240, ge=1, le=2_000)
@@ -144,7 +144,7 @@ class ExecutionConfig(StrictModel):
     frontier_agent: AgentLoopConfig = Field(
         default_factory=lambda: AgentLoopConfig(
             max_turns=8,
-            max_patch_attempts=3,
+            max_patch_attempts=5,
             max_verification_runs=3,
             max_search_results=20,
             max_read_lines=240,
@@ -177,8 +177,8 @@ class ContextCompilerConfig(StrictModel):
 class PatchPolicyConfig(StrictModel):
     max_changed_lines: int = Field(default=500, ge=1, le=100_000)
     max_files: int = Field(default=20, ge=1, le=1000)
-    allow_dependency_changes: bool = False
-    allow_test_changes: bool = False
+    allow_dependency_changes: bool = True
+    allow_test_changes: bool = True
     dependency_files: list[str] = Field(
         default_factory=lambda: [
             "pyproject.toml",
@@ -275,7 +275,7 @@ class ResearchSecurityConfig(StrictModel):
 
 
 class ResearchSynthesisConfig(StrictModel):
-    minimum_distinct_sources: int = Field(default=3, ge=1, le=20)
+    minimum_distinct_sources: int = Field(default=1, ge=1, le=20)
     prefer_comparative_patterns: bool = True
     require_provenance: bool = True
 
@@ -339,7 +339,7 @@ class DiscoveryConfig(StrictModel):
     """
 
     max_clarification_questions: int = Field(default=5, ge=1, le=20)
-    max_frontier_clarification_rounds: int = Field(default=2, ge=0, le=10)
+    max_frontier_clarification_rounds: int = Field(default=10, ge=0, le=10)
     max_response_bytes: int = Field(default=2_000_000, ge=1_000, le=20_000_000)
 
 
@@ -422,3 +422,45 @@ class ApoapsisConfig(StrictModel):
             if key in raw
         }
         return cls.model_validate(selected)
+
+
+def effective_config_for_specification(
+    config: ApoapsisConfig, specification: TaskSpecification
+) -> ApoapsisConfig:
+    """Derive the finite, auditable execution profile for one task.
+
+    High/critical-risk work that a user permits to run locally gets the
+    strongest local loop and repository-inspection ceilings supported by the
+    harness. Context volume is still tied to the configured model's declared
+    window; patch policy, commands, state transitions, and completion authority
+    are unchanged.
+    """
+
+    if specification.risk_level not in {RiskLevel.HIGH, RiskLevel.CRITICAL}:
+        return config
+    local_model = config.models.local_coder or config.models.frontier
+    context_tokens = local_model.context_window_tokens or 32_768
+    context_chars = min(
+        2_000_000, max(config.context.max_total_chars, context_tokens * 3)
+    )
+    agent = AgentLoopConfig(
+        max_turns=50,
+        max_patch_attempts=20,
+        max_verification_runs=20,
+        max_search_results=100,
+        max_read_lines=2_000,
+        max_observation_chars=1_000_000,
+        max_transmitted_observation_chars=min(1_000_000, context_tokens * 3),
+    )
+    execution = config.execution.model_copy(update={"agent": agent})
+    context = config.context.model_copy(
+        update={
+            "max_files": 100,
+            "max_excerpt_lines": 1_000,
+            "max_total_chars": context_chars,
+            "match_context_lines": 200,
+            "max_search_terms": 50,
+            "max_import_depth": 10,
+        }
+    )
+    return config.model_copy(update={"execution": execution, "context": context})

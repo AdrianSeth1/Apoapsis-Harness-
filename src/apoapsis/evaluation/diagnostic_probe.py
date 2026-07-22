@@ -122,6 +122,9 @@ def progress_advisory_agent_step_prompt(
     remaining_budgets: dict[str, int],
     verification_commands: list[str],
     history: list[dict[str, object]],
+    patch_policy: dict[str, bool] | None = None,
+    verification_obligations: list[str] | None = None,
+    next_action_requirements: list[str] | None = None,
 ) -> str:
     """The evaluation-only Probe 2 prompt variant (ADR 0029). Identical
     signature to `apoapsis.models.prompts.agent_step_prompt` so it can be
@@ -137,6 +140,9 @@ def progress_advisory_agent_step_prompt(
         remaining_budgets=remaining_budgets,
         verification_commands=verification_commands,
         history=history,
+        patch_policy=patch_policy,
+        verification_obligations=verification_obligations,
+        next_action_requirements=next_action_requirements,
     )
     return f"{base}\n{_PROGRESS_ADVISORY_NOTE}\n"
 

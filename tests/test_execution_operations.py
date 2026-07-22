@@ -39,6 +39,10 @@ from apoapsis.execution.operation_service import (
 from apoapsis.execution.operation_store import ExecutionOperationStore
 from apoapsis.models.telemetry import InstrumentedModelProvider
 from apoapsis.operations.lease import new_owner_id
+from apoapsis.repository.readiness import (
+    VerificationContractError,
+    required_verification_scaffolding,
+)
 from apoapsis.reporting.report import TaskOutcome
 from apoapsis.specification.schema import TaskSpecification
 from apoapsis.verification.runner import VerificationCommand, VerificationConfig
@@ -118,7 +122,9 @@ class ExecutionOperationTestsBase(unittest.TestCase):
             context=ContextCompilerConfig(
                 max_files=10, max_excerpt_lines=200, max_total_chars=50_000
             ),
-            patch=PatchPolicyConfig(max_changed_lines=100),
+            patch=PatchPolicyConfig(
+                max_changed_lines=100, allow_test_changes=False
+            ),
             verification=VerificationConfig(
                 commands=[
                     VerificationCommand(
@@ -204,6 +210,43 @@ class ExecutionOperationTestsBase(unittest.TestCase):
 
 
 class SuccessfulExecutionTests(ExecutionOperationTestsBase):
+    def test_third_party_import_without_manifest_is_an_agent_obligation(self) -> None:
+        (self.root / "integration.py").write_text(
+            "import googleapiclient.discovery\n", encoding="utf-8"
+        )
+        obligations = required_verification_scaffolding(
+            self.root,
+            self._agent_config().verification,
+            allow_test_changes=True,
+            allow_dependency_changes=True,
+        )
+        self.assertTrue(
+            any("googleapiclient" in item and "no requirements" in item for item in obligations)
+        )
+
+    def test_prepare_rejects_impossible_unittest_contract(self) -> None:
+        shutil.rmtree(self.root / "tests")
+        self._git("add", "-A")
+        self._git("commit", "-m", "remove test scaffold")
+        task_id, version = self._create_approved_task()
+
+        with self.assertRaisesRegex(
+            VerificationContractError,
+            "no permitted model patch can make this command runnable",
+        ):
+            prepare_execution_operation(
+                self.root,
+                self.store,
+                self.operation_store,
+                task_id=task_id,
+                operation_id="EXOP-IMPOSSIBLE-TESTS",
+                expected_version=version,
+                config=self._agent_config(route=AgentRoute.LOCAL_ONLY),
+            )
+
+        with self.assertRaises(ExecutionOperationError):
+            self.operation_store.get("EXOP-IMPOSSIBLE-TESTS")
+
     def test_local_agent_completes_via_execute_approved_task(self) -> None:
         task_id, version = self._create_approved_task()
         config = self._agent_config(route=AgentRoute.LOCAL_ONLY, local_turns=8)

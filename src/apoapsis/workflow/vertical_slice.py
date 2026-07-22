@@ -19,6 +19,7 @@ from apoapsis.config import (
     ExecutionMode,
     FrontierProviderConfig,
     ApoapsisConfig,
+    effective_config_for_specification,
 )
 from apoapsis.context.compiler import ContextCompiler, ContextPackage
 from apoapsis.context.measurement import (
@@ -112,6 +113,7 @@ class VerticalSliceRunner:
             config.models.local_coder or config.models.frontier
         )
         self.frontier_coder_config = config.models.frontier_coder
+        self._context_compiler_supplied = context_compiler is not None
         self.context_compiler = context_compiler or ContextCompiler(config.context)
         self.research_engine = research_engine
         self.research_mode = research_mode
@@ -145,6 +147,28 @@ class VerticalSliceRunner:
         # infrastructure (ADR 0029) ever passes an override; no product CLI/
         # UI/service call site does.
         self.agent_step_prompt_fn = agent_step_prompt_fn
+
+    def _execution_base(self, task_id: str, repository_head: str) -> tuple[str, list[str]]:
+        """Return the exact human-approved base for a packaged plan slice."""
+
+        for event in reversed(self.store.events(task_id)):
+            if event.event_type != "plan_slice_specification_approved":
+                continue
+            candidate = event.payload.get("execution_base_commit")
+            inherited = event.payload.get("inherited_slice_ids", [])
+            if not isinstance(candidate, str) or not candidate.strip():
+                return repository_head, []
+            resolved = GitRepository(self.project_root).run(
+                ["rev-parse", "--verify", f"{candidate}^{{commit}}"]
+            ).stdout.strip()
+            return resolved, [str(item) for item in inherited]
+        return repository_head, []
+
+    def _prompt_patch_policy(self) -> dict[str, bool]:
+        return {
+            "allow_dependency_changes": self.config.patch.allow_dependency_changes,
+            "allow_test_changes": self.config.patch.allow_test_changes,
+        }
 
     def run(
         self, request: str, *, approve: ApprovalCallback
@@ -304,12 +328,16 @@ class VerticalSliceRunner:
         the durable execution service)."""
 
         self.specification = specification
+        self.config = effective_config_for_specification(self.config, specification)
+        if not self._context_compiler_supplied:
+            self.context_compiler = ContextCompiler(self.config.context)
         if self.audit is None:
             self.audit = TaskAuditStore(self.project_root, task_id)
         try:
             head = GitRepository(self.project_root).run(
                 ["rev-parse", "HEAD"]
             ).stdout.strip()
+            execution_base, inherited_slice_ids = self._execution_base(task_id, head)
             self.audit.write_json(
                 "approved-specification.json",
                 specification,
@@ -409,8 +437,17 @@ class VerticalSliceRunner:
                     error=self.routing_decision.reason,
                 )
             manager = WorktreeManager(self.project_root)
-            worktree = manager.create(self._task_slug(task_id), base_ref=head)
+            worktree = manager.create(
+                self._task_slug(task_id), base_ref=execution_base
+            )
             self.worktree_path = worktree.path
+            if execution_base != head:
+                implementation_context = self.context_compiler.compile(
+                    specification,
+                    self.worktree_path,
+                    external_research_brief=research_brief,
+                    research_evidence_ids=research_ids,
+                )
             implementing = self.store.transition(
                 task_id,
                 WorkflowState.IMPLEMENTING,
@@ -420,6 +457,11 @@ class VerticalSliceRunner:
                     "branch": worktree.branch,
                     "path": worktree.path,
                     "base_commit": worktree.base_commit,
+                    "repository_head": head,
+                    "inherited_slice_ids": inherited_slice_ids,
+                    "execution_context_sha256": (
+                        implementation_context.context_sha256
+                    ),
                 },
                 expected_version=routed.version,
             )
@@ -430,7 +472,10 @@ class VerticalSliceRunner:
                 )
             patch_response = self._model_call(
                 ModelOperation.IMPLEMENT_PATCH,
-                implementation_prompt(implementation_context),
+                implementation_prompt(
+                    implementation_context,
+                    patch_policy=self._prompt_patch_policy(),
+                ),
                 implementation_context,
                 requested_output="unified_diff",
             )
@@ -491,6 +536,7 @@ class VerticalSliceRunner:
                         repair_context,
                         patch_response.content[:20_000],
                         rejection[:8_000],
+                        patch_policy=self._prompt_patch_policy(),
                     ),
                     repair_context,
                     requested_output="unified_diff",
@@ -602,6 +648,7 @@ class VerticalSliceRunner:
                     failing_command,
                     failure.relevant_error,
                     current_diff,
+                    patch_policy=self._prompt_patch_policy(),
                 ),
                 repair_context,
                 requested_output="unified_diff",
@@ -845,6 +892,7 @@ class VerticalSliceRunner:
             model_role=role,
             audit_prefix=audit_prefix,
             completion_policy=self.config.execution.completion_policy,
+            patch_policy=self.config.patch,
         )
         if self.agent_step_prompt_fn is not None:
             session_kwargs["agent_step_prompt_fn"] = self.agent_step_prompt_fn
