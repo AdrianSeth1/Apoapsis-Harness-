@@ -560,7 +560,7 @@ class BoundedAgentIntegrationTests(unittest.TestCase):
             "new file mode 100644\n"
             "--- /dev/null\n"
             "+++ b/tests/test_smoke.py\n"
-            "@@ -0,0 +1,16 @@\n"
+            "@@ -0,0 +1,14 @@\n"
             "+import sys\n"
             "+import unittest\n"
             "+from pathlib import Path\n"
@@ -575,8 +575,6 @@ class BoundedAgentIntegrationTests(unittest.TestCase):
             "+        content = source.read_text(encoding='utf-8')\n"
             "+        self.assertIn('status_code == 206', content)\n"
             "+        self.assertIn('Range', content)\n"
-            "+\n"
-            "+\n"
         )
         fake = FakeModelProvider(
             [

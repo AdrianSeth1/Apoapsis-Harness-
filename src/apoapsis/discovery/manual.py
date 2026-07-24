@@ -155,6 +155,23 @@ def build_frontier_planning_markdown(package: FrontierPlanningRequestPackage) ->
     lines.append(json.dumps(package.architect_ceilings, indent=2, sort_keys=True))
     lines.append("```")
     lines.append("")
+    lines.append("## LOCAL_CODER_BUDGET (informational only)")
+    lines.append("")
+    lines.append(
+        "This is the bounded turn/patch-attempt/verification-run budget the "
+        "harness actually gives its local coding model to implement one "
+        "slice end to end. It is small on purpose -- the local model is far "
+        "less capable than you are. A slice this package asks you to design "
+        "will be attempted by that model against exactly this budget, not "
+        "against your own capabilities. Use it to size slices per the "
+        "PLANNING_QUALITY_REQUIREMENTS below, not merely to fit under "
+        "Architect Mode's structural ceilings."
+    )
+    lines.append("")
+    lines.append("```json")
+    lines.append(json.dumps(package.local_coder_budget, indent=2, sort_keys=True))
+    lines.append("```")
+    lines.append("")
     lines.append("## Required response format")
     lines.append("")
     lines.append(

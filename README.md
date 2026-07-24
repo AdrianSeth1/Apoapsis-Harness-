@@ -124,7 +124,22 @@ research stage, and
 [ADR 0036](docs/adr/0036-operational-hardening-and-documentation-compaction.md)
 records clarification source canonicalization, fair research-query allocation,
 known-impossible verification preflight, less brittle patch budgets, and the
-current-state documentation split. The
+current-state documentation split, and
+[ADR 0050](docs/adr/0050-native-desktop-shell-and-project-management.md)
+supersedes ADR 0034's native-wrapper deferral, adopting a Tauri 2 desktop
+shell around the existing unchanged Python backend and building only a
+disposable Phase 1 spike so far, and
+[ADR 0051](docs/adr/0051-native-project-registry-and-safe-import.md)
+implements that plan's Phase 2 (project registry) and Phase 3 (safe file
+import) as a Python service layer, not yet wired to a native picker or the
+browser UI, [ADR 0052](docs/adr/0052-reference-projects-and-desktop-home-menu.md) adds
+Phase 4 (read-only reference-project attachment) and Phase 5 (a Home-screen
+data service and an unbuilt native menu skeleton), and
+[ADR 0053](docs/adr/0053-privileged-desktop-local-ipc-channel.md) builds
+Phase 6's privileged local IPC channel connecting the two, and
+[ADR 0054](docs/adr/0054-native-picker-wiring-and-phase7-coverage.md) wires
+a native picker to the remaining menu actions and fills several Phase 7
+deterministic-coverage gaps. The
 [Research Mode guide](docs/research-mode.md)
 covers setup and operation.
 
@@ -208,6 +223,74 @@ It opens a capability-protected loopback session at `127.0.0.1:7331`. Use
 a different loopback port. All HTML, CSS, and JavaScript assets ship with
 Apoapsis; the interface contacts no CDN and never calls a model provider
 directly.
+
+### Native desktop shell (spike only -- not a released feature)
+
+[ADR 0050](docs/adr/0050-native-desktop-shell-and-project-management.md)
+supersedes ADR 0034's deferral and adopts Tauri 2 as the future native
+desktop shell, rendering the same existing offline UI inside a real window
+instead of a browser tab, with the Python backend started as a managed child
+process behind an unchanged capability-token boundary. Only a disposable
+Phase 1 spike exists today (`spikes/native-shell-tauri/`, explicitly not
+wired into packaging); it has not been compiled or run on real Windows
+hardware. Native project selection/switching, a safe file-import workflow,
+and read-only reference-project attachment are designed in ADR 0050 but not
+yet implemented. Use `OPEN_APOAPSIS.cmd`/`apoapsis ui` above until a later
+change reports real native-shell evidence.
+
+**Filesystem capability boundary:** even once built, the native shell may
+hold user-granted filesystem capability the browser-only surface never had
+(a native folder picker, reading a chosen project's Git state, copying files
+during an explicitly approved import). This is application-level control,
+never model control -- models remain untrusted typed proposers restricted to
+Apoapsis-supplied evidence from inside one bound project root, exactly as
+`HANDOFF.md`'s authority boundary already requires, with or without a native
+shell.
+
+[ADR 0051](docs/adr/0051-native-project-registry-and-safe-import.md) builds
+the Python side of that boundary now, ahead of the native picker:
+`src/apoapsis/desktop/` has a project registry (recent projects, explicit
+initialization only, never automatic), opaque window-scoped capability
+sessions (never a raw path), and a preview/approve/execute file-import
+workflow that hard-excludes `.git`/`.apoapsis`/`.sol`, dependency/build/
+virtual-environment directories, and secret-like filenames by default,
+never follows symlinks, requires a second confirmation before replacing any
+file (with an automatic backup), and writes a durable JSON audit manifest.
+None of this is reachable from the browser UI or a model yet -- it has no
+HTTP route and no menu entry; it is direct-Python-call-only until the
+native shell (or an HTTP boundary in front of it) is built.
+
+[ADR 0052](docs/adr/0052-reference-projects-and-desktop-home-menu.md) adds
+two more pieces on the same terms. **Attach reference project**
+(`DesktopReferenceService`) is a third, distinct operation from Open
+project and Import files: it grants read-only access to a second Git
+repository for inspection, and only ever copies evidence the operator
+explicitly selects one file at a time -- each captured piece records its
+exact source project, commit, path, and hash, and is cached under the
+*primary* project's own `.apoapsis/reference-evidence/`, never written
+into the reference project or the primary project's tracked source.
+**Home-screen data** (`DesktopHomeService`) assembles project identity, Git
+state, initialization state, verification readiness, and the recent-
+projects list into one deterministic payload for a future native Home
+screen. A real (but still unbuilt and never compiled) `File`/`View`/`Help`
+menu skeleton now exists in the disposable Tauri spike.
+
+[ADR 0053](docs/adr/0053-privileged-desktop-local-ipc-channel.md) builds
+the local-IPC channel that skeleton needed: a second loopback HTTP
+listener started alongside the existing browser-facing UI server, in the
+same process, on its own port, guarded by its own capability token the
+browser webview never receives (so `ProjectCapabilitySessions`' in-memory
+sessions survive across repeated calls, unlike a fresh-subprocess-per-click
+design would). Three menu handlers (recent projects, close project,
+environment diagnostics) make real calls over it, and
+[ADR 0054](docs/adr/0054-native-picker-wiring-and-phase7-coverage.md) wires
+the remaining four (open project, import files/folder, attach reference
+project) to a real native folder/file picker (`tauri-plugin-dialog`), so
+every File-menu action except "Show Project Folder" now has a real,
+end-to-end (if still uncompiled/unverified) path from a menu click to a
+Python service call. The existing browser-facing server and its
+`app.js`/HTTP surface remain completely untouched by any of this --
+verified by a static regression test that scans for exactly that.
 
 The first slice provides:
 
@@ -1223,6 +1306,28 @@ Configure `[models.local_research]` in `.apoapsis/config.toml` with a locally
 available Ollama model. GitHub and configured official documentation are enabled
 by default. Reddit remains disabled until its approved API credentials and
 applicable terms are configured.
+
+Official documentation research is direct-URL-only by default and only ever
+reaches domains explicitly listed in **both**
+`[research.sources.official_docs].allowed_domains` and
+`[research.security].allow_domains` — add every vendor you need (for example
+`developers.google.com`, `www.twilio.com`, `developer.vonage.com`) to both
+lists, or that research question is reported as an unusable query rather than
+silently producing nothing. A harness-owned seam for real official-document
+search exists (`OfficialDocumentSearchProvider`, ADR 0055), and Tavily
+is the one concrete, owner-authorized provider implemented behind it (ADR
+0056; Brave Search was the initial pick but was dropped after its free tier
+turned out to require a credit card and metered billing) — set
+`search_provider = "tavily"`, add `api.tavily.com` to
+`[research.security].allow_domains`, and provide an API key via
+`TAVILY_API_KEY` (or your own `search_credentials_env` name) to enable
+it. This integration has deterministic fake-fetcher test coverage only; no
+live call to the real Tavily API has been made. Any other `search_provider`
+value still fails clearly rather than guessing at another vendor. When a research task
+retrieves sources but genuinely finds nothing relevant, Apoapsis runs exactly
+one bounded, audited recovery pass over the same sources before reporting a
+classified, actionable failure (for example: "5 sources were retrieved and
+all 5 produced no relevant findings") instead of a generic provenance error.
 
 Research can also be run independently for an already approved task:
 

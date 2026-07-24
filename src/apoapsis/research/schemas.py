@@ -149,6 +149,23 @@ class SourceCandidate(StrictModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
     deterministic_score: float = Field(default=0.0, ge=0.0, le=1.0)
     deduplication_key: str = Field(min_length=1)
+    # Populated by the engine (not the source adapter) from the originating
+    # planned query, so fair allocation and audit can be computed per
+    # research question as well as per source adapter. Optional/`None` keeps
+    # every existing adapter and fixture that predates this field valid.
+    research_question_id: str | None = None
+
+
+class SearchResultCandidate(StrictModel):
+    """One untrusted result returned by a configured official-document
+    search provider, before domain filtering or candidate ranking. The
+    harness -- never the local model -- turns these into ``SourceCandidate``
+    objects, and only after ``validate_domain`` confirms the URL is inside
+    the configured official-document allowlist."""
+
+    title: str = Field(min_length=1)
+    url: str = Field(min_length=1)
+    snippet: str = ""
 
 
 class SourceLocator(StrictModel):
@@ -331,6 +348,7 @@ class ResearchTelemetry(StrictModel):
     trigger_reasons: list[str] = Field(default_factory=list)
     effective_mode: ResearchMode
     queries_generated: int = Field(ge=0)
+    queries_unusable: int = Field(default=0, ge=0)
     sources_searched: list[ResearchSourceName] = Field(default_factory=list)
     candidates_found: int = Field(ge=0)
     candidates_after_deduplication: int = Field(ge=0)
@@ -351,6 +369,10 @@ class ResearchTelemetry(StrictModel):
     research_latency_seconds: float = Field(ge=0)
     changed_proposed_plan: bool = False
     user_accepted_recommendation: bool | None = None
+    recovery_attempted: bool = False
+    recovery_evidence_found: int = Field(default=0, ge=0)
+    sources_with_no_relevant_findings: int = Field(default=0, ge=0)
+    sources_with_provenance_rejected_findings: int = Field(default=0, ge=0)
 
 
 class ResearchOutcome(StrictModel):

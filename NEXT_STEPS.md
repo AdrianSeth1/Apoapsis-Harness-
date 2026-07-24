@@ -101,20 +101,90 @@ scope.
 
 ### Priority 4: improve research retrieval quality
 
-ADR 0036 prevents query starvation and improves empty-evidence diagnostics, but
-does not establish live quality. Next work should use preserved audit records to
-measure:
+ADR 0036 prevents query starvation and improves empty-evidence diagnostics.
+ADR 0055 fixes the reproduced misleading-provenance-error bug (operation
+`DISCOP-796622810B804FE59E87536D`): classified failure reasons, pre-retrieval
+official-doc query-feasibility checks, per-question fair allocation in
+`SourceRanker`, one bounded recovery pass on total extraction failure, and a
+harness-owned official-doc search-provider seam with no vendor implemented
+yet. Its new/updated tests in `tests/test_research_units.py` and
+`tests/test_research_integration.py` were added but intentionally not run
+this session; run them before treating ADR 0055 as verified. None of this
+establishes live retrieval quality. Next work should:
 
-- candidate relevance per planned question;
-- zero-finding source rate;
-- official-doc URL/domain configuration failures;
-- authenticated versus anonymous GitHub search behavior;
-- cache effects and source diversity.
+- configure and verify the one implemented `OfficialDocumentSearchProvider`
+  (ADR 0056: Tavily, chosen over Brave Search after Brave's free tier
+  turned out to require a credit card and metered billing) -- set
+  `TAVILY_API_KEY`, add `api.tavily.com` to both allowlists, and run a real
+  authorized query before treating official-doc search as working;
+- use preserved audit records (now including `unusable-queries.jsonl` and
+  `recovery.json`) to measure candidate relevance per planned question,
+  zero-finding source rate, official-doc URL/domain configuration failures,
+  authenticated versus anonymous GitHub search behavior, and cache effects
+  and source diversity;
+- measure how often the new bounded recovery pass actually finds evidence a
+  first pass missed, versus how often it is a wasted extra model call.
 
 Keep network execution inside restricted adapters. Do not give a model a raw
 browser, arbitrary URL fetch, shell, credentials, or direct network access.
 
-### Priority 5: collect missing operational evidence
+### Priority 5: native desktop shell (ADR 0050/0051) -- verify what exists, then wire it up
+
+- Run the still-unexecuted test modules and fold results into `HANDOFF.md`'s
+  Snapshot (needs Python 3.11+; this sandbox's default 3.10 cannot even
+  import `apoapsis.config`):
+  ```powershell
+  python -m unittest tests.test_native_shell_spike -v
+  python -m unittest tests.test_desktop_registry tests.test_desktop_import -v
+  python -m unittest tests.test_desktop_reference tests.test_desktop_home -v
+  python -m unittest tests.test_desktop_ipc_server -v
+  python -m unittest tests.test_desktop_authority_boundary -v
+  ```
+- Build and run `spikes/native-shell-tauri/src-tauri` on a real Windows
+  machine with a Rust + Tauri 2 toolchain. Confirm no system browser tab
+  opens, and record real startup time, packaged size, and failure-dialog
+  behavior before treating Phase 1 as closed. (A rootless Linux pass got
+  the real Tauri 2 dependency graph to resolve and partially compile through
+  glib/gio bindings before a Linux-only GTK3 system-library gap; `main.rs`
+  itself has still never been type-checked against the real `tauri` API --
+  see ADR 0050's evidence section.)
+- ADR 0051 implemented Phase 2 (project registry) and Phase 3 (safe
+  import); ADR 0052 implemented Phase 4 (read-only reference-project
+  attachment/evidence capture) and Phase 5's backend half (Home-screen data
+  service, plus a real but unbuilt `tauri::menu` File/View/Help skeleton);
+  ADR 0053 implemented Phase 6's privileged local-IPC channel (second
+  loopback listener, same process, own token, fourteen typed routes); ADR
+  0054 wired a native picker (`tauri-plugin-dialog`) to every remaining
+  menu handler except `show_project_folder`, and filled several Phase 7
+  coverage gaps (readiness timeout, import atomicity, one-project-per-
+  window, static authority-boundary regression tests).
+- **Next, and now the clear bottleneck -- this cannot be done from a
+  sandboxed Linux environment; it needs a real Windows machine**: build
+  and run `spikes/native-shell-tauri/src-tauri` with a real Rust + Tauri 2
+  toolchain. This is Phase 1's original, still-unmet requirement (see ADR
+  0050) and blocks everything downstream of it:
+  - Confirm no system browser tab opens; record real startup time,
+    packaged size, and failure-dialog behavior.
+  - Correct whatever `tauri-plugin-dialog`/`tauri::menu` API mismatches
+    the real compiler finds (ADR 0054 disclosed these as best-effort,
+    unverified guesses at the crate's actual method names).
+  - Only then: exercise the full manual checklist in ADR 0050's Phase 8
+    (project selection, import preview/collision/replacement/rejection
+    cases, reference-project attachment, ordinary task execution
+    regression, window-close process cleanup, DPI/scaling).
+- Smaller, still-outstanding gaps once real hardware is available: a
+  file-tree picker for selecting *which* files become reference evidence
+  (today only whole-project attach is wired), and the `show_project_folder`
+  "reveal in file manager" action.
+- Real HTTP/JS wiring on the *browser-facing* server is **not** the plan --
+  the whole point of Phase 6 is that the browser-facing surface must not
+  gain filesystem-adjacent capability. The native window's own frontend
+  calls the privileged channel directly.
+- Never let a model receive a native file handle, an arbitrary path, or a
+  filesystem API; only the desktop controller may hold user-granted
+  filesystem capability, and only within what the user explicitly selected.
+
+### Priority 6: collect missing operational evidence
 
 - Re-run the full deterministic suite cleanly after current changes.
 - Repeat supported Windows Start/Stop lifecycle checks when model use is

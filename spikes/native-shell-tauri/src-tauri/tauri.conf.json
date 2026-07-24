@@ -1,0 +1,28 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Apoapsis Native Shell Spike",
+  "version": "0.0.0",
+  "identifier": "invalid.spike.apoapsis-native-shell",
+  "build": {
+    "frontendDist": "../../../src/apoapsis/ui/static"
+  },
+  "app": {
+    "withGlobalTauri": false,
+    "windows": [
+      {
+        "title": "Apoapsis",
+        "url": "about:blank",
+        "width": 1440,
+        "height": 900,
+        "visible": false
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": false,
+    "icon": ["icons/icon.ico"]
+  }
+}

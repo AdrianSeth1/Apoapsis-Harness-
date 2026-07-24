@@ -60,6 +60,47 @@ _NOT_PASSED_EXECUTION_STATUSES = frozenset(
 )
 
 
+# Substrings of a rejected propose_patch/replace_text summary that mean the
+# model resent something already true of the current worktree rather than
+# proposing a genuinely new edit: a whole-file patch for a path that already
+# has that exact content (`git apply`'s own wording), a whole-file patch
+# whose base no longer matches because an earlier attempt already changed
+# that path, or a replace_text call with identical old/new text. Observed
+# directly in a live local-coder run that lost track of its own prior
+# patches and repeated one of these three verbatim for several turns in a
+# row instead of reading the current file and correcting course.
+_NO_PROGRESS_EDIT_REJECTION_SUBSTRINGS = (
+    "already exists in working directory",
+    "depends on old contents",
+    "old_text and new_text are identical",
+)
+
+
+def _is_no_progress_edit_rejection(summary: str) -> bool:
+    return any(marker in summary for marker in _NO_PROGRESS_EDIT_REJECTION_SUBSTRINGS)
+
+
+# `git apply --check`'s own whitespace-strictness messages for a unified
+# diff whose added-line content doesn't match what its hunk header and
+# trailing newline actually describe. Observed directly in a live local-coder
+# run that resent the same "new blank line at EOF" failure on
+# services/storage/__init__.py three turns running: the added lines
+# themselves are usually fine, but the diff has one extra blank "+" line (or
+# a missing/extra trailing newline) that the hunk's own line count then
+# doesn't match, so simply retrying the identical diff fails identically
+# forever.
+_WHITESPACE_PATCH_REJECTION_SUBSTRINGS = (
+    "new blank line at EOF",
+    "trailing whitespace",
+    "space before tab",
+    "indent with spaces",
+)
+
+
+def _is_whitespace_patch_rejection(summary: str) -> bool:
+    return any(marker in summary for marker in _WHITESPACE_PATCH_REJECTION_SUBSTRINGS)
+
+
 class AgentSessionOutcome(StrEnum):
     COMPLETE = "complete"
     ESCALATION_REQUIRED = "escalation_required"
@@ -433,6 +474,37 @@ class BoundedAgentSession:
                 "evidence. Make an edit, inspect a different relevant location, "
                 "run an allowed check after edits, or request a specific escalation."
             )
+        if self.records and (
+            not self.records[-1].accepted
+            and _is_no_progress_edit_rejection(self.records[-1].summary)
+        ):
+            requirements.append(
+                "Your last edit was rejected as a no-op or a duplicate of content "
+                "already in the worktree -- resending the same patch or "
+                "replace_text will be rejected again for the same reason. Call "
+                "read_file on the exact target path first to see its current "
+                "byte-for-byte content, then submit a genuinely different edit "
+                "against only what is still missing or wrong."
+            )
+        if self.records and (
+            not self.records[-1].accepted
+            and self.records[-1].action == "propose_patch"
+            and _is_whitespace_patch_rejection(self.records[-1].summary)
+        ):
+            requirements.append(
+                "Your last propose_patch was rejected by git apply's "
+                "whitespace check (for example 'new blank line at EOF', "
+                "'trailing whitespace', or 'space before tab'). This means "
+                "your diff's hunk header line count does not match its "
+                "actual added/context lines, usually because of one extra "
+                "or missing blank '+' line at the end of the hunk, or a "
+                "stray trailing newline. Resending the identical diff will "
+                "fail the same way again. Switch to replace_text for this "
+                "edit instead of propose_patch -- read_file the exact "
+                "current content first, then submit old_text/new_text "
+                "without hand-writing a diff hunk, which avoids this class "
+                "of error entirely."
+            )
         latest_edit = next(
             (
                 item
@@ -464,6 +536,40 @@ class BoundedAgentSession:
             return (
                 "coding model repeated prohibited no-progress repository "
                 "observations three times without making progress"
+            )
+        # Same failure class as above, but for edit actions: three
+        # consecutive rejected propose_patch/replace_text calls that are
+        # each a no-op or a duplicate of content already applied (a
+        # smaller local coder can lose track of its own prior patches
+        # across several turns and keep resending the same rejected edit
+        # instead of reading the current file and correcting it) is just
+        # as clearly not making progress as three empty inspections, and
+        # should stop burning the remaining turn/patch budget the same way.
+        if len(tail) == 3 and all(
+            not item.accepted
+            and item.action in {"propose_patch", "replace_text"}
+            and _is_no_progress_edit_rejection(item.summary)
+            for item in tail
+        ):
+            return (
+                "coding model repeated a rejected no-op or duplicate edit "
+                "three times without making progress"
+            )
+        # Same failure class again: three consecutive propose_patch calls
+        # rejected by git apply's whitespace strictness check. The guidance
+        # in _next_action_requirements tells the model to switch to
+        # replace_text after the first one; if it instead keeps resending
+        # diff hunks with the same malformed trailing content three times
+        # running, it is not converging and should stop burning budget.
+        if len(tail) == 3 and all(
+            not item.accepted
+            and item.action == "propose_patch"
+            and _is_whitespace_patch_rejection(item.summary)
+            for item in tail
+        ):
+            return (
+                "coding model repeated a patch rejected by git apply's "
+                "whitespace check three times without switching approach"
             )
         return None
 
