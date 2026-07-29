@@ -142,7 +142,13 @@ FRONTIER_PLANNING_QUALITY_REQUIREMENTS: tuple[str, ...] = (
     "dependencies, and the runtime path through the assembled system.",
     "Define every cross-component integration contract with producer, "
     "consumers, data flow, error behavior, and a concrete verification "
-    "obligation.",
+    "obligation. Set `runtime_boundary` on every contract to how the "
+    "producer and consumer actually communicate at runtime -- "
+    "`in_process`, `same_origin_http`, `cross_origin_http`, `filesystem`, "
+    "or `subprocess`. Leave it `unspecified` only when you genuinely do "
+    "not know: Apoapsis uses this field to detect a plan that requires a "
+    "mechanism its own verification commands forbid, and `unspecified` "
+    "asserts nothing and so disables that check for the contract.",
     "Perform an architectural pre-mortem before slicing. Identify likely "
     "hard problems, explain why each is difficult, name affected "
     "components and failure risks, propose a concrete solution, compare "

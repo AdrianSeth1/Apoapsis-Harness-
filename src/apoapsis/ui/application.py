@@ -70,6 +70,7 @@ from apoapsis.manual_frontier.package import (
     write_handoff_artifacts,
 )
 from apoapsis.manual_frontier.store import ManualFrontierPreviewStore
+from apoapsis.reporting.current_state import project_current_task_evidence
 from apoapsis.reporting.report import FinalTaskReport
 from apoapsis.repository.git import GitCommandError, GitRepository
 from apoapsis.review.case import build_review_case
@@ -91,6 +92,40 @@ from apoapsis.workflow.states import WorkflowState
 
 class UIActionError(TaskStoreError):
     """Raised when the UI requests an unavailable deterministic action."""
+
+
+LOCAL_POWER_WARNING = (
+    "Experimental. Lets the local model edit more freely inside an isolated "
+    "disposable copy. It cannot touch Apoapsis state, Git metadata, secrets, "
+    "or system files. Final changes still require verification and review."
+)
+
+
+def _local_power_preview(config: ApoapsisConfig) -> dict[str, Any]:
+    """The read-only view of the Local Power Sandbox boundary (ADR 0059).
+
+    Always returned, including when the mode is disabled, so the UI can state
+    plainly that the strict one-action loop is what is about to run rather
+    than leaving the operator to infer it from an absent key.
+    """
+
+    local_power = config.execution.local_power
+    return {
+        "enabled": local_power.enabled,
+        "experimental": True,
+        "warning": LOCAL_POWER_WARNING,
+        "workspace": local_power.workspace.value,
+        "allow_shell": local_power.allow_shell,
+        "allow_network": local_power.allow_network,
+        "max_turns": local_power.max_turns,
+        "max_seconds": local_power.max_seconds,
+        "max_shell_commands": local_power.max_shell_commands,
+        "max_changed_files": local_power.max_changed_files,
+        "max_changed_lines": local_power.max_changed_lines,
+        "forbidden_paths": sorted(local_power.forbidden_paths),
+        "require_verification": local_power.require_verification,
+        "require_final_diff_review": local_power.require_final_diff_review,
+    }
 
 
 def _slice_dependency_order(plan: ArchitecturePlan) -> list[str]:
@@ -213,7 +248,16 @@ class ApoapsisUIService:
     def task_detail(self, task_id: str) -> dict[str, Any]:
         store = self._require_store()
         record = store.get_task(task_id)
+        events = store.events(record.task_id)
         report = self._report(record.task_id)
+        # `report` above is the preserved original-stop snapshot and stays
+        # in the payload verbatim; `current_evidence` is what the Report
+        # page must label the task with (ADR 0072). Shipping both, clearly
+        # named, is the point: the operator can see that a repair happened
+        # without either record overwriting the other.
+        current_evidence = project_current_task_evidence(
+            self.project_root, store, record.task_id, record=record, events=events
+        ).model_dump(mode="json")
         task_directory = self.metadata_root / "tasks" / record.task_id
         artifacts: list[str] = []
         if task_directory.is_dir():
@@ -232,10 +276,9 @@ class ApoapsisUIService:
                 active_operation = active_record.model_dump(mode="json")
         return {
             "task": record.model_dump(mode="json"),
-            "events": [
-                event.model_dump(mode="json") for event in store.events(record.task_id)
-            ],
+            "events": [event.model_dump(mode="json") for event in events],
             "report": report,
+            "current_evidence": current_evidence,
             "artifacts": artifacts,
             "available_actions": self._available_actions(record),
             "execution_preview": (
@@ -366,9 +409,21 @@ class ApoapsisUIService:
             ),
             "completion_policy": config.execution.completion_policy.value,
             "verification_backend": config.verification.backend.backend.value,
+            # ADR 0059: surfaced on the pre-execution confirmation so an
+            # experimental sandbox run can never start without the operator
+            # having seen that it is experimental and what it may touch.
+            "local_power": _local_power_preview(config),
             "verification_commands": [
                 item.name for item in config.verification.commands
             ],
+            # ADR 0069: what a success from this contract would actually
+            # mean, shown before the model call rather than inferred from an
+            # empty acceptance-coverage table afterwards.
+            "verification_contract": (
+                authorization_package.verification_contract.model_dump(mode="json")
+                if authorization_package.verification_contract is not None
+                else None
+            ),
             "local_model": local_model,
             "frontier_model": (
                 config.models.frontier_coder.model
@@ -483,12 +538,23 @@ class ApoapsisUIService:
         }
 
     def prepare_plan_delivery(self, plan_id: str) -> dict[str, Any]:
+        # Runs the plan's whole-project verification against the integrated
+        # commit before anything is archived (ADR 0074), so this call can
+        # take as long as the configured commands do and can refuse a plan
+        # whose slices are all COMPLETE. `SlicePackagingError` carries the
+        # reason to the browser unchanged.
+        config = self._config()
+        if config is None:
+            raise TaskStoreError(
+                "Apoapsis is not initialized; run 'apoapsis init' first"
+            )
         delivery = prepare_plan_delivery(
             self.project_root,
             self._require_plan_store(),
             self._plan_slice_store(),
             self._require_store(),
             plan_id,
+            verification_config=config.verification,
         )
         return delivery.model_dump(mode="json")
 
@@ -657,6 +723,7 @@ class ApoapsisUIService:
             record.plan,
             configured_verification_commands=configured_names,
             ceilings=config.architect.ceilings,
+            configured_commands=config.verification.commands,
         )
         result = PlanValidationResult(
             plan_id=plan_id,
@@ -1154,6 +1221,31 @@ class ApoapsisUIService:
             mode="json"
         )
 
+    def set_local_power_enabled(self, *, enabled: bool) -> dict[str, Any]:
+        """Toggle only the ADR 0059 local-power config fields.
+
+        This is deliberately a server-side config edit, not browser-authored
+        TOML. Enabling also sets the required execution mode to ``agent`` and
+        moves an incompatible ``frontier_only`` route back to ``auto`` so the
+        resulting configuration validates before it is kept.
+        """
+
+        path = self.metadata_root / "config.toml"
+        if not path.is_file():
+            raise TaskStoreError("Apoapsis is not initialized; run 'apoapsis init' first")
+        original = path.read_text(encoding="utf-8")
+        updated = _set_local_power_config_text(original, enabled=enabled)
+        path.write_text(updated, encoding="utf-8", newline="\n")
+        try:
+            config = ApoapsisConfig.from_toml(path)
+        except Exception:
+            path.write_text(original, encoding="utf-8", newline="\n")
+            raise
+        return {
+            "execution": self._execution(config),
+            "local_power": _local_power_preview(config),
+        }
+
     def evaluations(self) -> dict[str, Any]:
         evaluation_root = self.project_root / ".apoapsis-eval"
         runs: list[dict[str, Any]] = []
@@ -1232,7 +1324,14 @@ class ApoapsisUIService:
         return []
 
     def _task_summary(self, record: TaskRecord) -> dict[str, Any]:
-        report = self._report(record.task_id)
+        # The overview list labels every task with an outcome, so it is one
+        # of the surfaces ADR 0072 requires to read the current projection
+        # rather than `report.json`. Before this, a slice repaired to
+        # COMPLETE still listed as `human_review_required` here.
+        store = self._require_store()
+        evidence = project_current_task_evidence(
+            self.project_root, store, record.task_id, record=record
+        )
         return {
             "task_id": record.task_id,
             "objective": record.specification.objective.text,
@@ -1241,7 +1340,16 @@ class ApoapsisUIService:
             "updated_at": record.updated_at.isoformat(),
             "constraint_count": len(record.specification.active_hard_constraints),
             "acceptance_count": len(record.specification.acceptance_criteria),
-            "outcome": None if report is None else report.get("outcome"),
+            "outcome": (
+                evidence.outcome.value if evidence.outcome is not None else None
+            ),
+            "original_report_outcome": (
+                evidence.original_report_outcome.value
+                if evidence.original_report_outcome is not None
+                else None
+            ),
+            "evidence_generation": evidence.evidence_generation.value,
+            "evidence_integrity": evidence.evidence_integrity.value,
         }
 
     def _report(self, task_id: str) -> dict[str, Any] | None:
@@ -1287,6 +1395,7 @@ class ApoapsisUIService:
             "mode": config.execution.mode.value,
             "route": config.execution.route.value,
             "completion_policy": config.execution.completion_policy.value,
+            "local_power": _local_power_preview(config),
             "verification_backend": config.verification.backend.backend.value,
             "max_turns": config.execution.agent.max_turns,
             "max_patch_attempts": config.execution.agent.max_patch_attempts,
@@ -1313,3 +1422,67 @@ class ApoapsisUIService:
 
 
 __all__ = ["ApoapsisUIService", "UIActionError", "TaskNotFoundError"]
+
+
+def _set_local_power_config_text(text: str, *, enabled: bool) -> str:
+    lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    if lines and lines[-1] == "":
+        lines = lines[:-1]
+    lines = _set_table_value(lines, "execution", "mode", '"agent"')
+    if enabled:
+        lines = _replace_table_value_if_equal(
+            lines, "execution", "route", '"frontier_only"', '"auto"'
+        )
+    lines = _set_table_value(
+        lines, "execution.local_power", "enabled", "true" if enabled else "false"
+    )
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _table_bounds(lines: list[str], table: str) -> tuple[int | None, int]:
+    header = f"[{table}]"
+    start: int | None = None
+    end = len(lines)
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            if stripped == header:
+                start = index
+                continue
+            if start is not None:
+                end = index
+                break
+    return start, end
+
+
+def _set_table_value(lines: list[str], table: str, key: str, value: str) -> list[str]:
+    start, end = _table_bounds(lines, table)
+    if start is None:
+        prefix = [] if not lines else [""] if lines[-1].strip() else []
+        return [*lines, *prefix, f"[{table}]", f"{key} = {value}"]
+    key_prefix = f"{key} "
+    for index in range(start + 1, end):
+        stripped = lines[index].lstrip()
+        if stripped.startswith(key_prefix) or stripped.startswith(f"{key}="):
+            indent = lines[index][: len(lines[index]) - len(stripped)]
+            lines[index] = f"{indent}{key} = {value}"
+            return lines
+    return [*lines[:end], f"{key} = {value}", *lines[end:]]
+
+
+def _replace_table_value_if_equal(
+    lines: list[str], table: str, key: str, old_value: str, new_value: str
+) -> list[str]:
+    start, end = _table_bounds(lines, table)
+    if start is None:
+        return lines
+    key_prefix = f"{key} "
+    for index in range(start + 1, end):
+        stripped = lines[index].lstrip()
+        if stripped.startswith(key_prefix) or stripped.startswith(f"{key}="):
+            _, _, value = stripped.partition("=")
+            if value.strip() == old_value:
+                indent = lines[index][: len(lines[index]) - len(stripped)]
+                lines[index] = f"{indent}{key} = {new_value}"
+            return lines
+    return lines

@@ -10,6 +10,7 @@ from apoapsis.models.base import ConstraintCoverage
 from apoapsis.models.telemetry import ProviderCallTelemetry
 from apoapsis.research.schemas import ResearchMode, ResearchTelemetry
 from apoapsis.specification.schema import StrictModel
+from apoapsis.verification.contract import VerificationContractAssessment
 from apoapsis.verification.results import VerificationResult
 from apoapsis.workflow.acceptance import AcceptanceCoverage
 
@@ -79,6 +80,10 @@ class FinalTaskReport(StrictModel):
     context_attribution: ContextAttribution | None = None
     completion_policy: CompletionPolicy = CompletionPolicy.BASELINE
     acceptance_coverage: list[AcceptanceCoverage] = Field(default_factory=list)
+    # ADR 0069: how much the configured contract could prove, recorded
+    # alongside the outcome it qualifies. Optional so that reports written
+    # before this field existed still validate.
+    verification_contract: VerificationContractAssessment | None = None
     local_agent_budget: AgentLoopConfig | None = None
     frontier_agent_budget: AgentLoopConfig | None = None
     frontier_available: bool = False

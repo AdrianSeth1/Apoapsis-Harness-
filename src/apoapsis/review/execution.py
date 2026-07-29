@@ -4,6 +4,7 @@ import uuid
 from datetime import timedelta
 from pathlib import Path
 
+from apoapsis.agent.power_session import LocalPowerSession
 from apoapsis.agent.session import (
     AgentSessionOutcome,
     AgentSessionResult,
@@ -13,6 +14,7 @@ from apoapsis.architect.slice_package import enrich_specification_with_slice_pac
 from apoapsis.architect.slice_schema import PlanSliceExecutionPackage
 from apoapsis.audit.store import TaskAuditStore
 from apoapsis.config import (
+    AgentLoopConfig,
     AgentRoute,
     ApoapsisConfig,
     CompletionPolicy,
@@ -49,6 +51,9 @@ from apoapsis.review.case import (
     build_review_case,
     continuation_additional_turns,
     read_agent_session,
+    read_local_power_review_package,
+    read_local_power_session,
+    read_local_stage_session,
     task_slug,
 )
 from apoapsis.review.errors import (
@@ -81,6 +86,10 @@ from apoapsis.workflow.states import WorkflowState
 _CONTINUATION_ACTIONS = frozenset(
     {ReviewActionKind.LOCAL_CONTINUATION, ReviewActionKind.FRONTIER_CONTINUATION}
 )
+# Mirrors `LocalPowerConfig.max_turns`'s schema bound. A continuation
+# authorization larger than the remaining headroom saturates here rather
+# than raising a validation error from deep inside config construction.
+_LOCAL_POWER_MAX_TURNS_CEILING = 40
 _WORKTREE_CHECKED_ACTIONS = frozenset(
     {
         ReviewActionKind.VERIFICATION_ONLY_RETRY,
@@ -809,6 +818,16 @@ def _execute_continuation(
 
     task_directory = root / ".apoapsis" / "tasks" / task_id
     prior_session = read_agent_session(task_directory, prefix)
+    # A local stage may have run under either local loop. The sandbox loop
+    # persists `local-power-session.json` and cannot be resumed by
+    # `BoundedAgentSession` (it has no patch-application seam), so which
+    # loop produced the prior stage decides which session type resumes it.
+    # Reading only the strict loop's filename is what previously made a
+    # perfectly resumable sandbox stage report as no session at all.
+    resume_local_power = False
+    if prior_session is None and not is_frontier:
+        prior_session = read_local_power_session(task_directory)
+        resume_local_power = prior_session is not None
     if prior_session is None:
         raise ReviewError(
             f"no prior {'frontier' if is_frontier else 'local'} agent session "
@@ -827,13 +846,44 @@ def _execute_continuation(
     )
     past_additional = continuation_additional_turns(events, started_event_type)
     delta = past_additional + budget.additional_turns
-    effective_config = base_agent_config.model_copy(
-        update={
-            "max_turns": base_agent_config.max_turns + delta,
-            "max_patch_attempts": base_agent_config.max_patch_attempts + delta,
-            "max_verification_runs": base_agent_config.max_verification_runs + delta,
-        }
-    )
+
+    # The sandbox loop is bounded by `LocalPowerConfig`, which has turns but
+    # no patch/verification counters -- it applies no patches and owns no
+    # verification-run ceiling. Its ceiling is also hard-capped by schema
+    # (`max_turns <= 40`), so a large authorization saturates rather than
+    # silently constructing an invalid config.
+    local_power_config = None
+    if resume_local_power:
+        base_power = config.execution.local_power
+        power_turns = min(
+            base_power.max_turns + delta,
+            _LOCAL_POWER_MAX_TURNS_CEILING,
+        )
+        local_power_config = base_power.model_copy(
+            update={"max_turns": power_turns}
+        )
+        # A record for the continuation package only: the package's schema
+        # describes the strict loop's budget shape, and the counters the
+        # sandbox does not have are reported at their already-consumed
+        # values rather than invented.
+        effective_config = AgentLoopConfig(
+            max_turns=power_turns,
+            max_patch_attempts=max(1, prior_session.patch_attempts),
+            max_verification_runs=max(1, prior_session.verification_runs),
+            max_search_results=base_power.max_search_results,
+            max_read_lines=base_power.max_read_lines,
+            max_observation_chars=base_power.max_observation_chars,
+        )
+    else:
+        effective_config = base_agent_config.model_copy(
+            update={
+                "max_turns": base_agent_config.max_turns + delta,
+                "max_patch_attempts": base_agent_config.max_patch_attempts + delta,
+                "max_verification_runs": (
+                    base_agent_config.max_verification_runs + delta
+                ),
+            }
+        )
 
     audit = TaskAuditStore(root, task_id)
     package = build_continuation_package(
@@ -853,24 +903,42 @@ def _execute_continuation(
     model_call = _ContinuationModelCaller(
         audit, provider, provider_config, start_call_number=existing_calls + 1
     )
-    apply_patch = _make_apply_patch(audit, config, review_case.worktree_path, prefix)
-
-    session = BoundedAgentSession.resume(
-        specification=specification,
-        worktree=review_case.worktree_path,
-        initial_context=context,
-        context_compiler=context_compiler,
-        config=effective_config,
-        verification_config=config.verification,
-        audit=audit,
-        model_call=model_call,
-        apply_patch=apply_patch,
-        prior_result=prior_session,
-        model_role=role,
-        audit_prefix=prefix,
-        completion_policy=config.execution.completion_policy,
-        patch_policy=config.patch,
-    )
+    session: BoundedAgentSession | LocalPowerSession
+    if resume_local_power:
+        assert local_power_config is not None
+        session = LocalPowerSession.resume(
+            specification=specification,
+            worktree=review_case.worktree_path,
+            initial_context=context,
+            config=local_power_config,
+            verification_config=config.verification,
+            audit=audit,
+            model_call=model_call,
+            prior_result=prior_session,
+            prior_review_package=read_local_power_review_package(task_directory),
+            model_role=role,
+            completion_policy=config.execution.completion_policy,
+        )
+    else:
+        apply_patch = _make_apply_patch(
+            audit, config, review_case.worktree_path, prefix
+        )
+        session = BoundedAgentSession.resume(
+            specification=specification,
+            worktree=review_case.worktree_path,
+            initial_context=context,
+            context_compiler=context_compiler,
+            config=effective_config,
+            verification_config=config.verification,
+            audit=audit,
+            model_call=model_call,
+            apply_patch=apply_patch,
+            prior_result=prior_session,
+            model_role=role,
+            audit_prefix=prefix,
+            completion_policy=config.execution.completion_policy,
+            patch_policy=config.patch,
+        )
 
     started_event = f"review_{'frontier' if is_frontier else 'local'}_continuation_started"
     started = task_store.transition(
@@ -969,7 +1037,10 @@ def _execute_authorize_local_stage(
             "Run locally is only valid before any task worktree exists"
         )
     task_directory = root / ".apoapsis" / "tasks" / review_case.task_id
-    if read_agent_session(task_directory, "") is not None:
+    # Either local loop's stage counts. Checking only the strict loop's
+    # filename made this guard blind to sandbox stages, so "Run locally"
+    # would happily start a second local stage over an existing one.
+    if read_local_stage_session(task_directory)[0] is not None:
         raise ReviewError(
             "Run locally cannot start over an existing local agent session; "
             "use Repair and verify instead"
@@ -1040,9 +1111,10 @@ def _execute_authorize_frontier_run(
     if review_case.worktree_exists or review_case.worktree_path is not None:
         raise ReviewError("Run with frontier is only valid before a worktree exists")
     task_directory = root / ".apoapsis" / "tasks" / review_case.task_id
-    if read_agent_session(task_directory, "") is not None or read_agent_session(
-        task_directory, "frontier-"
-    ) is not None:
+    if (
+        read_local_stage_session(task_directory)[0] is not None
+        or read_agent_session(task_directory, "frontier-") is not None
+    ):
         raise ReviewError(
             "Run with frontier cannot start over an existing agent session"
         )
@@ -1119,7 +1191,10 @@ def _execute_authorize_frontier_stage(
     task_id = review_case.task_id
     task_directory = root / ".apoapsis" / "tasks" / task_id
 
-    local_session = read_agent_session(task_directory, "")
+    # A sandbox stage is just as escalatable as a strict-loop one: the
+    # escalation package is built from the session result, which both loops
+    # write in the same shape.
+    local_session, _ = read_local_stage_session(task_directory)
     if local_session is None:
         raise ReviewError(
             "no local agent session exists for this task to escalate from"

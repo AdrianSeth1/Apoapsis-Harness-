@@ -9,6 +9,7 @@ from pathlib import Path
 
 from apoapsis.operator_lifecycle import (
     ModelLifecycleError,
+    configured_openai_compatible_local_targets,
     configured_ollama_targets,
     start_local_models,
     stop_local_models,
@@ -67,6 +68,67 @@ class _FakeOllamaServer:
         self.thread.join(timeout=2)
 
 
+class _FakeOpenAIServer:
+    def __init__(self, models: list[str]) -> None:
+        self.models = models
+        self.chat_payloads: list[dict[str, object]] = []
+
+    def __enter__(self) -> str:
+        owner = self
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self) -> None:  # noqa: N802
+                if self.path != "/v1/models":
+                    self.send_error(404)
+                    return
+                body = json.dumps(
+                    {"data": [{"id": item, "object": "model"} for item in owner.models]}
+                ).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def do_POST(self) -> None:  # noqa: N802
+                if self.path != "/v1/chat/completions":
+                    self.send_error(404)
+                    return
+                length = int(self.headers.get("Content-Length") or 0)
+                payload = json.loads(self.rfile.read(length).decode("utf-8"))
+                owner.chat_payloads.append(payload)
+                body = json.dumps(
+                    {
+                        "id": "chatcmpl-test",
+                        "model": payload["model"],
+                        "choices": [
+                            {
+                                "message": {"role": "assistant", "content": ""},
+                                "finish_reason": "stop",
+                            }
+                        ],
+                    }
+                ).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, format: str, *args: object) -> None:
+                return
+
+        self.server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+        return f"http://127.0.0.1:{self.server.server_port}/v1"
+
+    def __exit__(self, *args: object) -> None:
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(timeout=2)
+
+
 class OperatorLifecycleTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary_directory = tempfile.TemporaryDirectory()
@@ -100,6 +162,32 @@ provider = "ollama"
 base_url = "{base_url}"
 model = "research:27b"
 context_window_tokens = 32768
+""".strip()
+            + "\n",
+            encoding="utf-8",
+        )
+
+    def _write_openai_config(self, base_url: str) -> None:
+        config = self.root / ".apoapsis" / "config.toml"
+        config.parent.mkdir(parents=True)
+        config.write_text(
+            f"""
+[models.frontier]
+provider = "openai_compatible"
+base_url = "{base_url}"
+model = "Laguna-S-2.1-UD-Q4_K_S"
+context_window_tokens = 32768
+
+[models.local_coder]
+provider = "openai_compatible"
+base_url = "{base_url}"
+model = "Laguna-S-2.1-UD-Q4_K_S"
+context_window_tokens = 32768
+
+[models.frontier_coder]
+provider = "openai_compatible"
+base_url = "https://hosted.example/v1"
+model = "hosted-coder"
 """.strip()
             + "\n",
             encoding="utf-8",
@@ -177,3 +265,34 @@ context_window_tokens = 32768
 
         with self.assertRaisesRegex(ModelLifecycleError, "keep_alive"):
             start_local_models(self.root, keep_alive="forever")
+
+    def test_loopback_openai_compatible_coding_target_is_started(self) -> None:
+        fake = _FakeOpenAIServer(["Laguna-S-2.1-UD-Q4_K_S"])
+        with fake as base_url:
+            self._write_openai_config(base_url)
+
+            result = start_local_models(self.root, launch_service=False)
+
+        targets = configured_openai_compatible_local_targets(self.root)
+        self.assertEqual(len(targets), 1)
+        self.assertEqual(targets[0].roles, ("frontier", "local_coder"))
+        self.assertFalse(result["service_launched"])
+        self.assertEqual(len(result["models"]), 1)
+        self.assertEqual(result["models"][0]["provider"], "openai_compatible")
+        self.assertEqual(fake.chat_payloads[0]["model"], "Laguna-S-2.1-UD-Q4_K_S")
+        self.assertEqual(fake.chat_payloads[0]["max_tokens"], 1)
+
+    def test_hosted_openai_compatible_endpoint_is_not_lifecycle_managed(self) -> None:
+        self._write_openai_config("https://hosted.example/v1")
+
+        self.assertEqual(configured_openai_compatible_local_targets(self.root), [])
+        with self.assertRaisesRegex(ModelLifecycleError, "no configured loopback"):
+            start_local_models(self.root, launch_service=False)
+
+    def test_unavailable_llama_server_reports_operator_launch_command(self) -> None:
+        self._write_openai_config("http://127.0.0.1:9/v1")
+
+        with self.assertRaisesRegex(
+            ModelLifecycleError, "APOAPSIS_LLAMA_SERVER_COMMAND"
+        ):
+            start_local_models(self.root, service_wait_seconds=0.01)

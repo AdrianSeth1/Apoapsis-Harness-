@@ -92,6 +92,39 @@ class AgentActionTests(unittest.TestCase):
                 action("inspect_diff", shell_command="pytest -q")
             )
 
+    def test_parser_recovers_llama_cpp_tool_noise_on_create_file(self) -> None:
+        parsed = parse_agent_action(
+            json.dumps(
+                {
+                    "action": "create_file",
+                    "path": "src/config.py",
+                    "content": (
+                        "VALUE = 1\n"
+                        "</arg_value></tool_call><tool_call>create_file"
+                    ),
+                    "command_name": "unit-tests",
+                    "reason": "placeholder",
+                }
+            )
+        )
+
+        self.assertEqual(parsed.action, "create_file")
+        self.assertEqual(parsed.path, "src/config.py")
+        self.assertEqual(parsed.content, "VALUE = 1")
+        self.assertNotIn("</tool_call>", parsed.content)
+
+        with self.assertRaises(AgentActionError):
+            parse_agent_action(
+                json.dumps(
+                    {
+                        "action": "create_file",
+                        "path": "src/config.py",
+                        "content": "VALUE = 1\n",
+                        "shell_command": "pytest -q",
+                    }
+                )
+            )
+
     def test_prompt_prefix_is_byte_stable_across_agent_turns(self) -> None:
         specification = make_specification()
         context = ContextPackage.specification_only(specification, "deadbeef")
@@ -877,6 +910,170 @@ class BoundedAgentIntegrationTests(unittest.TestCase):
         self.assertTrue(globbed)
         self.assertTrue(all(item.path.startswith("src/") for item in globbed))
 
+    # ADR 0057 / Test Project 3 audit: a local coder repeatedly emitted a
+    # malformed new-file unified diff missing `+` markers on continuation
+    # lines (`UnifiedDiffError: patch contains non-diff content inside a
+    # hunk`), burning the entire patch-attempt/turn budget one identical
+    # failure at a time. This reproduces that exact parser error and asserts
+    # the harness now (a) blocks a third consecutive propose_patch outright
+    # without spending a patch attempt, and (b) stops the session instead of
+    # draining the rest of the turn budget once the model resends it a third
+    # time despite being blocked.
+    _MALFORMED_NEW_FILE_DIFF = (
+        "diff --git a/src/download_service/broken.py "
+        "b/src/download_service/broken.py\n"
+        "new file mode 100644\n"
+        "--- /dev/null\n"
+        "+++ b/src/download_service/broken.py\n"
+        "@@ -0,0 +1,2 @@\n"
+        "+def broken():\n"
+        "return 1\n"
+        "@@ -0,0 +3,2 @@\n"
+        "+def also_broken():\n"
+        "+    return 2\n"
+    )
+
+    def test_repeated_malformed_new_file_diffs_are_blocked_then_stopped(self) -> None:
+        fake = FakeModelProvider(
+            [
+                specification_response(),
+                action("propose_patch", unified_diff=self._MALFORMED_NEW_FILE_DIFF),
+                action("propose_patch", unified_diff=self._MALFORMED_NEW_FILE_DIFF),
+                action("propose_patch", unified_diff=self._MALFORMED_NEW_FILE_DIFF),
+            ]
+        )
+        self._inject_task_id(fake)
+
+        report = VerticalSliceRunner(
+            self.root,
+            self.store,
+            InstrumentedModelProvider(fake),
+            self._config(),
+        ).run(REQUEST, approve=lambda specification: True)
+
+        self.assertEqual(report.outcome, TaskOutcome.HUMAN_REVIEW_REQUIRED)
+        self.assertIn(
+            "malformed unified diff three times without switching",
+            report.error or "",
+        )
+        # Two real parse failures consumed the patch-attempt budget; the
+        # third, pre-emptively blocked attempt did not spend one.
+        self.assertEqual(report.agent_patch_attempts, 2)
+        self.assertEqual(report.agent_turns, 3)
+
+        task_directory = self.root / ".apoapsis" / "tasks" / report.task_id
+        first_turn = json.loads(
+            (task_directory / "agent-turn-001.json").read_text(encoding="utf-8")
+        )
+        second_turn = json.loads(
+            (task_directory / "agent-turn-002.json").read_text(encoding="utf-8")
+        )
+        third_turn = json.loads(
+            (task_directory / "agent-turn-003.json").read_text(encoding="utf-8")
+        )
+        self.assertFalse(first_turn["accepted"])
+        self.assertIn("UnifiedDiffError", first_turn["summary"])
+        self.assertFalse(second_turn["accepted"])
+        self.assertIn("UnifiedDiffError", second_turn["summary"])
+        self.assertFalse(third_turn["accepted"])
+        self.assertIn("previous two propose_patch attempts", third_turn["summary"])
+        self.assertIn("create_file", third_turn["summary"])
+
+        # The prompt for the second model call (after the first failure)
+        # must already redirect the model toward create_file/replace_text,
+        # before the hard block on the third attempt.
+        second_prompt = fake.invocations[2].prompt
+        self.assertIn("create_file", second_prompt)
+        self.assertIn("failed to parse as a well-formed", second_prompt)
+
+    def test_create_file_creates_a_new_file_without_hand_authored_diff_syntax(
+        self,
+    ) -> None:
+        # A trivially-passing "sanity" command, independent of the
+        # download-service example's actual (intentionally still-broken)
+        # baseline test suite -- this test only exercises create_file/
+        # completion wiring, not the example's unrelated download bug.
+        config = self._config().model_copy(
+            update={
+                "verification": VerificationConfig(
+                    commands=[
+                        VerificationCommand(
+                            name="sanity",
+                            category="sanity",
+                            argv=[sys.executable, "-c", "pass"],
+                            timeout_seconds=30,
+                        )
+                    ]
+                )
+            }
+        )
+        fake = FakeModelProvider(
+            [
+                specification_response(),
+                action(
+                    "create_file",
+                    path="src/download_service/version.py",
+                    content='VERSION = "1.0.0"\n',
+                ),
+                action("run_check", command_name="sanity"),
+            ]
+        )
+        self._inject_task_id(fake)
+
+        report = VerticalSliceRunner(
+            self.root,
+            self.store,
+            InstrumentedModelProvider(fake),
+            config,
+        ).run(REQUEST, approve=lambda specification: True)
+
+        self.assertEqual(report.outcome, TaskOutcome.COMPLETE)
+        self.assertEqual(report.agent_patch_attempts, 1)
+        self.assertIn(
+            "src/download_service/version.py", report.files_changed
+        )
+        created = Path(
+            report.worktree_path, "src", "download_service", "version.py"
+        ).read_text(encoding="utf-8")
+        self.assertEqual(created, 'VERSION = "1.0.0"\n')
+
+    def test_create_file_rejects_a_path_that_already_exists(self) -> None:
+        inspector = RepositoryInspector(
+            self.root,
+            max_search_results=5,
+            max_read_lines=50,
+            max_chars=5_000,
+        )
+        with self.assertRaisesRegex(
+            AgentInspectionError, "create_file target already exists"
+        ):
+            inspector.new_file_patch(
+                "src/download_service/downloader.py", "replacement content\n"
+            )
+
+    def test_create_file_builds_a_well_formed_new_file_diff(self) -> None:
+        from apoapsis.patches.parser import UnifiedDiffParser
+
+        inspector = RepositoryInspector(
+            self.root,
+            max_search_results=5,
+            max_read_lines=50,
+            max_chars=5_000,
+        )
+        patch = inspector.new_file_patch(
+            "src/download_service/version.py",
+            'VERSION = "1.0.0"\n\ndef get_version():\n    return VERSION\n',
+        )
+        self.assertTrue(patch.startswith("diff --git"))
+        self.assertIn("new file mode 100644", patch)
+        self.assertIn("--- /dev/null", patch)
+        self.assertIn("+VERSION = \"1.0.0\"", patch)
+        # Must be a well-formed diff the same parser used for propose_patch
+        # accepts without any repair pass -- this is the entire point of the
+        # action: the harness, not the model, authors the diff syntax.
+        parsed = UnifiedDiffParser().parse(patch)
+        self.assertEqual(parsed.paths, {"src/download_service/version.py"})
+
     def test_replace_text_requires_one_exact_match_and_generates_diff(self) -> None:
         inspector = RepositoryInspector(
             self.root,
@@ -907,6 +1104,268 @@ class BoundedAgentIntegrationTests(unittest.TestCase):
                 "        downloaded = 0",
                 "        downloaded = 0",
             )
+
+    # -- ADR 0063: patch-loop and reviewer-facing change surface ------------
+
+    def _inspector(self) -> RepositoryInspector:
+        return RepositoryInspector(
+            self.root,
+            max_search_results=5,
+            max_read_lines=50,
+            max_chars=5_000,
+        )
+
+    def _apply_generated_patch(self, patch: str) -> list[str]:
+        """Apply through the same applier the agent loop uses, so the check
+        exercises the real path (including its line-ending normalization)
+        rather than a bare `git apply` that would fail on Windows checkouts
+        for unrelated CRLF reasons."""
+
+        from apoapsis.patches.apply import GitPatchApplier
+        from apoapsis.patches.parser import UnifiedDiffParser
+
+        return GitPatchApplier().apply(UnifiedDiffParser().parse(patch), self.root)
+
+    def test_replace_text_normalizes_a_blank_line_added_at_end_of_file(self) -> None:
+        """Reproduces live task TASK-EF33C00E5BD4 (2026-07-26).
+
+        The model sent one `replace_text` whose `new_text` ended with an extra
+        blank line. Apoapsis synthesized the diff, `git apply --check`
+        rejected it with `new blank line at EOF`, and because the request was
+        structured rather than hand-authored, resending it produced the
+        byte-identical patch -- eleven times.
+        """
+
+        target = self.root / "tests" / "test_downloads.py"
+        original = target.read_text(encoding="utf-8")
+        self.assertTrue(original.endswith("\n"))
+        self.assertFalse(original.endswith("\n\n"))
+        tail = original.rstrip("\n").rsplit("\n", 1)[-1]
+
+        inspector = self._inspector()
+        patch = inspector.replacement_patch(
+            "tests/test_downloads.py",
+            tail,
+            f"{tail}\n\n    def test_added(self):\n        pass\n",
+        )
+        # Before ADR 0063 this patch ended with an added blank line and
+        # `git apply --check` rejected it with `new blank line at EOF`.
+        self.assertIn("tests/test_downloads.py", self._apply_generated_patch(patch))
+        # Normalization is confined to end-of-file: the interior blank line
+        # the model asked for is still part of the edit.
+        self.assertIn("+\n", patch)
+        self.assertTrue(
+            target.read_text(encoding="utf-8").endswith("        pass\n")
+        )
+
+    def test_replace_text_that_only_adds_eof_blank_content_is_refused(self) -> None:
+        inspector = self._inspector()
+        target = self.root / "tests" / "test_downloads.py"
+        tail = target.read_text(encoding="utf-8").rstrip("\n").rsplit("\n", 1)[-1]
+        with self.assertRaisesRegex(
+            AgentInspectionError, "no change after end-of-file normalization"
+        ):
+            inspector.replacement_patch(
+                "tests/test_downloads.py", tail, f"{tail}\n\n"
+            )
+
+    def test_create_file_content_is_canonical_at_end_of_file(self) -> None:
+        inspector = self._inspector()
+        patch = inspector.new_file_patch(
+            "src/download_service/version.py", 'VERSION = "1.0.0"\n\n\n'
+        )
+        self.assertTrue(patch.rstrip("\n").endswith('+VERSION = "1.0.0"'))
+        self._apply_generated_patch(patch)
+        self.assertEqual(
+            (self.root / "src" / "download_service" / "version.py").read_text(
+                encoding="utf-8"
+            ),
+            'VERSION = "1.0.0"\n',
+        )
+
+    def _drop_python_cache_ignores(self) -> None:
+        """Reproduce the live scratch repository's condition: no useful ignore
+        rules. Reviewer output must be correct against repositories Apoapsis
+        did not initialize, so nothing here may depend on `.gitignore`."""
+
+        (self.root / ".gitignore").write_text(
+            ".apoapsis/\n.sol/\n", encoding="utf-8"
+        )
+        self._git("add", ".gitignore")
+        self._git("commit", "-m", "drop python cache ignores")
+
+    def test_changed_paths_separate_generated_byproducts_from_authored_work(
+        self,
+    ) -> None:
+        self._drop_python_cache_ignores()
+        (self.root / "src" / "download_service" / "downloader.py").write_text(
+            "# model edit\n", encoding="utf-8"
+        )
+        cache = self.root / "src" / "download_service" / "__pycache__"
+        cache.mkdir()
+        (cache / "downloader.cpython-314.pyc").write_bytes(b"\x00fake bytecode")
+        (self.root / ".pytest_cache").mkdir()
+        (self.root / ".pytest_cache" / "CACHEDIR.TAG").write_text(
+            "Signature\n", encoding="utf-8"
+        )
+
+        inspector = self._inspector()
+        raw = inspector.changed_paths()
+        classification = inspector.classified_changed_paths()
+
+        # The raw audit view still shows that running tools mutated the tree.
+        self.assertIn(
+            "src/download_service/__pycache__/downloader.cpython-314.pyc", raw
+        )
+        # The reviewer-facing view answers only "what did the model change?".
+        self.assertEqual(
+            classification.reviewable, ["src/download_service/downloader.py"]
+        )
+        self.assertIn(
+            "src/download_service/__pycache__/downloader.cpython-314.pyc",
+            classification.generated_byproducts,
+        )
+        self.assertIn(
+            ".pytest_cache/CACHEDIR.TAG", classification.generated_byproducts
+        )
+
+    def test_tracked_generated_looking_files_stay_in_the_review_surface(
+        self,
+    ) -> None:
+        """A file somebody deliberately committed is the model's work when it
+        changes, even if its name matches a generated pattern. Hiding it would
+        be the mirror-image defect of reporting real bytecode as task output."""
+
+        self._drop_python_cache_ignores()
+        vendored = self.root / "vendor" / "node_modules"
+        vendored.mkdir(parents=True)
+        (vendored / "pinned.js").write_text("module.exports = 1;\n", encoding="utf-8")
+        self._git("add", "-f", "vendor/node_modules/pinned.js")
+        self._git("commit", "-m", "vendor a pinned artifact deliberately")
+        (vendored / "pinned.js").write_text("module.exports = 2;\n", encoding="utf-8")
+
+        classification = self._inspector().classified_changed_paths()
+        self.assertIn("vendor/node_modules/pinned.js", classification.reviewable)
+        self.assertEqual(classification.generated_byproducts, [])
+
+    def test_verification_bytecode_is_excluded_from_the_reported_change_surface(
+        self,
+    ) -> None:
+        """End-to-end: a local agent run whose verification executes Python
+        must not report `__pycache__` entries as files the model changed."""
+
+        self._drop_python_cache_ignores()
+        config = self._config().model_copy(
+            update={
+                "verification": VerificationConfig(
+                    commands=[
+                        VerificationCommand(
+                            name="sanity",
+                            category="sanity",
+                            argv=[
+                                sys.executable,
+                                "-c",
+                                (
+                                    "import pathlib;"
+                                    "p=pathlib.Path('src/download_service/"
+                                    "__pycache__');"
+                                    "p.mkdir(parents=True, exist_ok=True);"
+                                    "(p/'downloader.cpython-314.pyc')"
+                                    ".write_bytes(b'\\x00stale')"
+                                ),
+                            ],
+                            timeout_seconds=30,
+                        )
+                    ]
+                )
+            }
+        )
+        fake = FakeModelProvider(
+            [
+                specification_response(),
+                action(
+                    "create_file",
+                    path="src/download_service/version.py",
+                    content='VERSION = "1.0.0"\n',
+                ),
+                action("run_check", command_name="sanity"),
+            ]
+        )
+        self._inject_task_id(fake)
+
+        report = VerticalSliceRunner(
+            self.root,
+            self.store,
+            InstrumentedModelProvider(fake),
+            config,
+        ).run(REQUEST, approve=lambda specification: True)
+
+        self.assertIn("src/download_service/version.py", report.files_changed)
+        self.assertFalse(
+            [item for item in report.files_changed if "__pycache__" in item],
+            msg=f"generated clutter leaked into files_changed: {report.files_changed}",
+        )
+
+    def test_repeated_replace_text_whitespace_rejection_stops_early(self) -> None:
+        """ADR 0063: the no-progress guard used to recognize only repeated
+        `propose_patch`. The live Laguna loop was `replace_text`, so it never
+        fired and the run spent its whole patch budget on one rejected patch.
+
+        The specific rejection reproduced here is `space before tab in
+        indent`: the EOF class from the live run is now normalized away
+        upstream, but every other Git whitespace class still reaches
+        `git apply` through the structured `replace_text` path, and the guard
+        must recognize all of them regardless of which action produced the
+        patch.
+        """
+
+        config = self._config().model_copy(
+            update={
+                "execution": self._config().execution.model_copy(
+                    update={
+                        "agent": AgentLoopConfig(
+                            max_turns=10,
+                            max_patch_attempts=9,
+                            max_verification_runs=3,
+                            max_search_results=10,
+                            max_read_lines=120,
+                            max_observation_chars=20_000,
+                        )
+                    }
+                )
+            }
+        )
+        repeated = action(
+            "replace_text",
+            path="src/download_service/downloader.py",
+            old_text="        downloaded = 0",
+            new_text="        downloaded = 0\n \t     print(downloaded)",
+        )
+        fake = FakeModelProvider([specification_response(), *([repeated] * 6)])
+        self._inject_task_id(fake)
+
+        report = VerticalSliceRunner(
+            self.root,
+            self.store,
+            InstrumentedModelProvider(fake),
+            config,
+        ).run(REQUEST, approve=lambda specification: True)
+
+        self.assertEqual(report.outcome, TaskOutcome.HUMAN_REVIEW_REQUIRED)
+        self.assertIn(
+            "whitespace check three times without switching approach",
+            report.error or "",
+        )
+        # Stopped after three same-class failures rather than spending all
+        # nine authorized patch attempts.
+        self.assertEqual(report.agent_patch_attempts, 3)
+        self.assertEqual(report.agent_turns, 3)
+
+        # The guidance the model saw must describe the action it actually
+        # took, not a propose_patch it never sent.
+        second_prompt = fake.invocations[2].prompt
+        self.assertIn("git apply's whitespace policy", second_prompt)
+        self.assertNotIn("Your last propose_patch was rejected", second_prompt)
 
 
 if __name__ == "__main__":

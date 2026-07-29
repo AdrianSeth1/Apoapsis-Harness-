@@ -50,6 +50,95 @@ class VerificationRunnerTests(unittest.TestCase):
         self.assertEqual(result.commands[1].exit_code, 7)
         self.assertIn("broken", result.commands[1].stderr)
 
+    def test_python_bytecode_writing_is_disabled_by_default(self) -> None:
+        """ADR 0063: a verification run must not mutate the worktree it is
+        measuring. Live task TASK-EF33C00E5BD4 reported two `.pyc` files the
+        harness's own unittest run wrote as files the model had changed."""
+
+        package = self.root / "pkg"
+        package.mkdir()
+        (package / "__init__.py").write_text("", encoding="utf-8")
+        (package / "unit.py").write_text("VALUE = 1\n", encoding="utf-8")
+        config = VerificationConfig(
+            commands=[
+                VerificationCommand(
+                    name="import-check",
+                    category="tests",
+                    argv=[sys.executable, "-c", "import pkg.unit"],
+                )
+            ]
+        )
+
+        result = VerificationRunner(config).run("TASK-VERIFY-BYTECODE", self.root)
+
+        self.assertEqual(result.status, VerificationStatus.PASSED)
+        self.assertEqual(list(self.root.rglob("__pycache__")), [])
+        self.assertEqual(list(self.root.rglob("*.pyc")), [])
+
+    def test_configured_command_environment_can_override_harness_defaults(
+        self,
+    ) -> None:
+        """The override path is the existing per-command `environment`
+        mechanism and nothing else -- an explicitly configured verification
+        command stays authoritative over harness defaults."""
+
+        from apoapsis.verification.runner import HARNESS_VERIFICATION_ENVIRONMENT
+
+        self.assertEqual(
+            HARNESS_VERIFICATION_ENVIRONMENT["PYTHONDONTWRITEBYTECODE"], "1"
+        )
+        recorded: list[dict[str, str]] = []
+
+        class RecordingBackend:
+            backend_name = "host"
+
+            def prepare(self, project_root, task_id, attempt):
+                return ExecutionContext(
+                    root=project_root,
+                    display_root=str(project_root),
+                    extra={},
+                )
+
+            def run_command(self, context, command, *, environment):
+                recorded.append(dict(environment))
+                now = datetime.now(timezone.utc)
+                return RawCommandOutcome(
+                    exit_code=0,
+                    stdout="",
+                    stderr="",
+                    status=VerificationStatus.PASSED,
+                    started_at=now,
+                    finished_at=now,
+                    duration_seconds=0,
+                    backend="host",
+                    backend_metadata={"sandboxed": False},
+                )
+
+            def finalize(self, context):
+                return []
+
+        config = VerificationConfig(
+            commands=[
+                VerificationCommand(
+                    name="default",
+                    category="tests",
+                    argv=[sys.executable, "-c", "pass"],
+                ),
+                VerificationCommand(
+                    name="override",
+                    category="tests",
+                    argv=[sys.executable, "-c", "pass"],
+                    environment={"PYTHONDONTWRITEBYTECODE": "0"},
+                ),
+            ]
+        )
+        VerificationRunner(config, backend=RecordingBackend()).run(
+            "TASK-VERIFY-ENV", self.root
+        )
+
+        self.assertEqual(recorded[0]["PYTHONDONTWRITEBYTECODE"], "1")
+        self.assertEqual(recorded[1]["PYTHONDONTWRITEBYTECODE"], "0")
+
     def test_declared_dependencies_are_installed_before_verification(self) -> None:
         (self.root / "requirements.txt").write_text("example-sdk==1.2.3\n", encoding="utf-8")
 

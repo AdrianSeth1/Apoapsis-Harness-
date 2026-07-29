@@ -792,26 +792,28 @@ class TavilySearchProviderTests(unittest.TestCase):
 
     def test_parses_tavily_response_and_never_leaks_the_credential(self) -> None:
         os.environ["FAKE_TAVILY_KEY"] = "s3cr3t-test-token"
+        body = json.dumps(
+            {
+                "results": [
+                    {
+                        "title": "Gmail API scopes",
+                        "url": "https://developers.google.com/gmail/api/auth/scopes",
+                        "content": "Authorized scopes for Gmail.",
+                    },
+                    {
+                        "title": "Missing url, should be skipped",
+                    },
+                ]
+            }
+        )
         fetcher = self._FakeFetcher(
             FetchResponse(
                 requested_url="https://api.tavily.com/search",
                 final_url="https://api.tavily.com/search",
                 status=200,
                 content_type="application/json",
-                body=json.dumps(
-                    {
-                        "results": [
-                            {
-                                "title": "Gmail API scopes",
-                                "url": "https://developers.google.com/gmail/api/auth/scopes",
-                                "content": "Authorized scopes for Gmail.",
-                            },
-                            {
-                                "title": "Missing url, should be skipped",
-                            },
-                        ]
-                    }
-                ),
+                body=body,
+                byte_count=len(body),
             )
         )
         provider = TavilyOfficialDocumentSearchProvider(fetcher, "FAKE_TAVILY_KEY")
@@ -840,28 +842,30 @@ class TavilySearchProviderTests(unittest.TestCase):
 
     def test_results_are_still_filtered_to_the_official_docs_allowlist(self) -> None:
         os.environ["FAKE_TAVILY_KEY"] = "s3cr3t-test-token"
+        body = json.dumps(
+            {
+                "results": [
+                    {
+                        "title": "Gmail API scopes",
+                        "url": "https://developers.google.com/gmail/api/auth/scopes",
+                        "content": "Authorized scopes for Gmail.",
+                    },
+                    {
+                        "title": "Off-allowlist result",
+                        "url": "https://example-forum.invalid/thread/1",
+                        "content": "Not authoritative.",
+                    },
+                ]
+            }
+        )
         fetcher = self._FakeFetcher(
             FetchResponse(
                 requested_url="https://api.tavily.com/search",
                 final_url="https://api.tavily.com/search",
                 status=200,
                 content_type="application/json",
-                body=json.dumps(
-                    {
-                        "results": [
-                            {
-                                "title": "Gmail API scopes",
-                                "url": "https://developers.google.com/gmail/api/auth/scopes",
-                                "content": "Authorized scopes for Gmail.",
-                            },
-                            {
-                                "title": "Off-allowlist result",
-                                "url": "https://example-forum.invalid/thread/1",
-                                "content": "Not authoritative.",
-                            },
-                        ]
-                    }
-                ),
+                body=body,
+                byte_count=len(body),
             )
         )
         source = OfficialDocumentationSource(

@@ -26,6 +26,7 @@ from apoapsis.architect.store import SQLitePlanStore
 from apoapsis.config import ApoapsisConfig
 from apoapsis.execution.operation_service import execute_execution_operation
 from apoapsis.execution.operation_store import ExecutionOperationStore
+from apoapsis.reporting.current_state import project_current_task_evidence
 from apoapsis.workflow.engine import SQLiteTaskStore
 from apoapsis.workflow.events import WorkflowActor
 from apoapsis.workflow.states import WorkflowState
@@ -321,12 +322,21 @@ def project_slice_status(
         status = SliceExecutionStatus.APPROVED
     else:
         status = _TASK_STATE_TO_SLICE_STATUS.get(task.state, SliceExecutionStatus.RUNNING)
+    # `status`/`task_state` above were already computed from live workflow
+    # state, never from `report.json`. `current_evidence` adds the matching
+    # projection of *why* -- outcome, deciding stage, evidence integrity --
+    # so the plan surface and the delivery record cannot disagree about a
+    # slice that was repaired after its first stop (ADR 0072).
+    evidence = project_current_task_evidence(
+        project_root, task_store, record.task_id, record=task
+    )
     return {
         "plan_id": plan_id,
         "slice_id": slice_id,
         "status": status.value,
         "record": record.model_dump(mode="json"),
         "task_state": task.state.value,
+        "current_evidence": evidence.model_dump(mode="json"),
     }
 
 
