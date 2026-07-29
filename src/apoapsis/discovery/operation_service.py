@@ -23,6 +23,7 @@ from apoapsis.discovery.service import (
 )
 from apoapsis.discovery.store import SQLiteDiscoveryStore
 from apoapsis.models.telemetry import InstrumentedModelProvider
+from apoapsis.repository.git import GitRepository
 from apoapsis.operations.lease import (
     DEFAULT_HEARTBEAT_INTERVAL,
     DEFAULT_LEASE_DURATION,
@@ -90,6 +91,18 @@ def prepare_discovery_operation(
     if session.version != expected_version:
         raise StaleSessionError(
             f"expected session version {expected_version}, found {session.version}"
+        )
+    # Fail fast and legibly rather than deep inside the worker. Research and
+    # planning both compile repository context, which is anchored to a base
+    # commit; in a repository with no commits that surfaced as a raw
+    # `git rev-parse HEAD: ambiguous argument 'HEAD'` recorded as a failed
+    # operation, which says nothing about what the operator should do.
+    if not GitRepository(root).has_commits():
+        raise DiscoveryError(
+            f"repository {Path(root).resolve()} has no commits yet, so there "
+            "is no base commit to anchor planning to. Make one commit (for "
+            "example `git add -A` then `git commit -m \"initial commit\"`) "
+            "and retry."
         )
     package_id: str | None = None
     research_mode = research_mode_for_action(action)

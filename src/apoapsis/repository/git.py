@@ -19,6 +19,33 @@ class GitCommandError(RuntimeError):
         )
 
 
+class RepositoryHasNoCommitsError(RuntimeError):
+    """Raised when an operation needs a resolvable `HEAD` but the repository
+    has no commits yet (an "unborn" branch).
+
+    Almost everything Apoapsis does is anchored to a base commit: context
+    compilation, worktree isolation, fingerprints, planning packages, and
+    every audit record that names the code a decision was made against.
+    `git rev-parse HEAD` fails with an `ambiguous argument 'HEAD'` message
+    that says nothing about the actual problem, so this error is raised
+    instead, naming the fix.
+    """
+
+    def __init__(self, root: str | Path) -> None:
+        self.root = str(root)
+        super().__init__(
+            f"repository {self.root} has no commits yet, so there is no base "
+            "commit to anchor this work to. Make one commit first (for "
+            "example `git add -A` then `git commit -m \"initial commit\"`) "
+            "and retry."
+        )
+
+
+def _is_unborn_head_error(error: GitCommandError) -> bool:
+    stderr = error.stderr.lower()
+    return "ambiguous argument 'head'" in stderr or "unknown revision" in stderr
+
+
 class RepositorySnapshot(StrictModel):
     root: str
     head_commit: str
@@ -63,8 +90,26 @@ class GitRepository:
             raise GitCommandError(args, completed.returncode, completed.stderr)
         return completed
 
+    def has_commits(self) -> bool:
+        """True when `HEAD` resolves to a commit. Never raises for the
+        ordinary "no commits yet" case, so callers can check cheaply before
+        starting work."""
+
+        return self.run(["rev-parse", "--verify", "--quiet", "HEAD"], check=False).returncode == 0
+
+    def head_commit(self) -> str:
+        """The current `HEAD` commit, or a legible error explaining that the
+        repository has no commits yet."""
+
+        try:
+            return self.run(["rev-parse", "HEAD"]).stdout.strip()
+        except GitCommandError as exc:
+            if _is_unborn_head_error(exc):
+                raise RepositoryHasNoCommitsError(self.root) from exc
+            raise
+
     def snapshot(self) -> RepositorySnapshot:
-        head = self.run(["rev-parse", "HEAD"]).stdout.strip()
+        head = self.head_commit()
         branch_result = self.run(
             ["symbolic-ref", "--quiet", "--short", "HEAD"], check=False
         )

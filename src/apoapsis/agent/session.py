@@ -8,6 +8,7 @@ from pydantic import Field
 
 from apoapsis.agent.actions import (
     AgentActionError,
+    CreateFileAction,
     InspectDiffAction,
     ProposePatchAction,
     ReadFileAction,
@@ -49,6 +50,13 @@ from apoapsis.workflow.acceptance import (
     acceptance_coverage_satisfied,
     compute_acceptance_coverage,
 )
+
+
+# Every action that results in Apoapsis applying a patch, whether the model
+# hand-authored the diff (`propose_patch`) or Apoapsis synthesized it from a
+# structured request (`replace_text`, `create_file`). Failure classes rooted
+# in `git apply` apply equally to all of them (ADR 0063).
+_EDIT_ACTIONS = frozenset({"propose_patch", "replace_text", "create_file"})
 
 
 _NOT_PASSED_EXECUTION_STATUSES = frozenset(
@@ -101,6 +109,33 @@ def _is_whitespace_patch_rejection(summary: str) -> bool:
     return any(marker in summary for marker in _WHITESPACE_PATCH_REJECTION_SUBSTRINGS)
 
 
+# ADR 0057: a local coder model unreliably hand-authors the `+`-prefixed body
+# and `@@ -0,0 +N,M @@` hunk header a new-file `propose_patch` diff requires --
+# observed directly in a Test Project 3 audit repeatedly emitting
+# `UnifiedDiffError: patch contains non-diff content inside a hunk` (missing
+# `+` markers) and, separately, a second `diff --git` header nested inside a
+# still-open hunk while attempting to create a second new file in the same
+# patch. Both are structural diff-syntax failures a smaller model is
+# unlikely to self-correct by resending diff variations; `create_file` (see
+# `apoapsis.agent.actions.CreateFileAction`) exists specifically so the model
+# never has to hand-author this syntax for a from-scratch file. The second
+# marker below also matches the guidance text `_apply_patch_action`'s
+# pre-emptive block (`BoundedAgentSession._repeated_malformed_diff_block`)
+# writes as a turn summary, so a model that keeps sending propose_patch after
+# being blocked is still recognized as the same failure class by
+# `_repeated_no_progress_stop_reason` below.
+_MALFORMED_DIFF_REJECTION_SUBSTRINGS = (
+    "UnifiedDiffError:",
+    "the previous two propose_patch attempts",
+)
+
+
+def _is_malformed_diff_rejection(summary: str) -> bool:
+    return any(
+        marker in summary for marker in _MALFORMED_DIFF_REJECTION_SUBSTRINGS
+    )
+
+
 class AgentSessionOutcome(StrEnum):
     COMPLETE = "complete"
     ESCALATION_REQUIRED = "escalation_required"
@@ -127,6 +162,7 @@ class AgentSessionResult(StrictModel):
     patch_attempts: int = Field(ge=0)
     verification_runs: int = Field(ge=0)
     changed_files: list[str] = Field(default_factory=list)
+    generated_byproducts: list[str] = Field(default_factory=list)
     turn_records: list[AgentTurnRecord] = Field(default_factory=list)
     verification_results: list[VerificationResult] = Field(default_factory=list)
     acceptance_coverage: list[AcceptanceCoverage] = Field(default_factory=list)
@@ -489,21 +525,44 @@ class BoundedAgentSession:
         if self.records and (
             not self.records[-1].accepted
             and self.records[-1].action == "propose_patch"
-            and _is_whitespace_patch_rejection(self.records[-1].summary)
+            and _is_malformed_diff_rejection(self.records[-1].summary)
         ):
             requirements.append(
-                "Your last propose_patch was rejected by git apply's "
-                "whitespace check (for example 'new blank line at EOF', "
-                "'trailing whitespace', or 'space before tab'). This means "
-                "your diff's hunk header line count does not match its "
-                "actual added/context lines, usually because of one extra "
-                "or missing blank '+' line at the end of the hunk, or a "
-                "stray trailing newline. Resending the identical diff will "
-                "fail the same way again. Switch to replace_text for this "
-                "edit instead of propose_patch -- read_file the exact "
-                "current content first, then submit old_text/new_text "
-                "without hand-writing a diff hunk, which avoids this class "
-                "of error entirely."
+                "Your last propose_patch failed to parse as a well-formed "
+                "unified diff (for example a missing '+' marker on an added "
+                "line, or a second 'diff --git' header appearing inside a "
+                "still-open hunk). Resending diff syntax variations rarely "
+                "converges. For a brand-new file, use create_file with "
+                "path/content instead -- Apoapsis builds the diff for you, "
+                "so there is no diff syntax to get wrong. For an existing "
+                "file, use replace_text after read_file to see its exact "
+                "current content. Two more malformed propose_patch attempts "
+                "in a row will be refused outright without spending a patch "
+                "attempt."
+            )
+        if self.records and (
+            not self.records[-1].accepted
+            and self.records[-1].action in _EDIT_ACTIONS
+            and _is_whitespace_patch_rejection(self.records[-1].summary)
+        ):
+            # ADR 0063: this guidance must stay action-neutral. The live
+            # Laguna failure came through `replace_text`, where Apoapsis --
+            # not the model -- synthesized the diff, so telling the model its
+            # "propose_patch" was malformed described an action it never took
+            # and gave it no correct next move.
+            requirements.append(
+                "The patch generated from your last edit was rejected by "
+                "git apply's whitespace policy (for example 'new blank line "
+                "at EOF', 'trailing whitespace', or 'space before tab'). "
+                "Sending the same edit again will produce the byte-identical "
+                "patch and be rejected identically -- it can never succeed. "
+                "The offending content is blank or whitespace-only text at "
+                "the end of your replacement, or a trailing blank line at "
+                "end of file. Submit a narrower edit whose new content ends "
+                "immediately after the last real line of code, with no "
+                "trailing blank line and no trailing spaces or tabs. If you "
+                "hand-authored a unified diff, prefer replace_text after "
+                "read_file so you never write hunk headers yourself."
             )
         latest_edit = next(
             (
@@ -520,6 +579,24 @@ class BoundedAgentSession:
                 "diff markers were the problem."
             )
         return requirements
+
+    def _repeated_malformed_diff_block(self) -> bool:
+        """ADR 0057: refuse a third consecutive propose_patch outright once
+        the previous two both failed to parse as a well-formed unified diff,
+        instead of letting the model keep re-authoring diff syntax one
+        malformed `max_patch_attempts`-consuming attempt at a time. This is a
+        pre-emptive redirection, not a real apply attempt -- callers must
+        raise before incrementing `patch_attempts`, matching how
+        `replacement_patch` rejects an identical old_text/new_text without
+        spending a patch attempt either."""
+
+        tail = self.records[-2:]
+        return len(tail) == 2 and all(
+            not item.accepted
+            and item.action == "propose_patch"
+            and _is_malformed_diff_rejection(item.summary)
+            for item in tail
+        )
 
     def _repeated_no_progress_stop_reason(self) -> str | None:
         tail = self.records[-3:]
@@ -555,21 +632,44 @@ class BoundedAgentSession:
                 "coding model repeated a rejected no-op or duplicate edit "
                 "three times without making progress"
             )
-        # Same failure class again: three consecutive propose_patch calls
-        # rejected by git apply's whitespace strictness check. The guidance
-        # in _next_action_requirements tells the model to switch to
-        # replace_text after the first one; if it instead keeps resending
-        # diff hunks with the same malformed trailing content three times
-        # running, it is not converging and should stop burning budget.
+        # Same failure class again: three consecutive edit actions whose
+        # generated patch was rejected by git apply's whitespace strictness
+        # check. ADR 0063 widened this from propose_patch to every edit
+        # action. In live task TASK-EF33C00E5BD4 the model sent the same
+        # `replace_text` eleven times; Apoapsis synthesized the same
+        # `new blank line at EOF` patch each time (identical SHA-256), and
+        # the propose_patch-only guard never fired, so the run consumed its
+        # whole patch and turn budget while reaching verification once.
         if len(tail) == 3 and all(
             not item.accepted
-            and item.action == "propose_patch"
+            and item.action in _EDIT_ACTIONS
             and _is_whitespace_patch_rejection(item.summary)
             for item in tail
         ):
             return (
-                "coding model repeated a patch rejected by git apply's "
-                "whitespace check three times without switching approach"
+                "coding model repeated an edit whose generated patch was "
+                "rejected by git apply's whitespace check three times "
+                "without switching approach"
+            )
+        # ADR 0057: three consecutive rejected propose_patch attempts that
+        # are each a malformed-unified-diff parse failure (or the pre-emptive
+        # block `_repeated_malformed_diff_block` raises after the first two).
+        # `_next_action_requirements` already tells the model to switch to
+        # create_file/replace_text after the first failure, and
+        # `_repeated_malformed_diff_block` refuses a third real attempt
+        # outright; if the model still resends propose_patch a third time in
+        # a row despite the block, it is not converging and the session
+        # should stop rather than burn the remaining turn/patch budget one
+        # malformed diff at a time (the exact Test Project 3 failure mode).
+        if len(tail) == 3 and all(
+            not item.accepted
+            and item.action == "propose_patch"
+            and _is_malformed_diff_rejection(item.summary)
+            for item in tail
+        ):
+            return (
+                "coding model repeated a malformed unified diff three times "
+                "without switching to a safer action"
             )
         return None
 
@@ -705,6 +805,16 @@ class BoundedAgentSession:
             return False
 
         if isinstance(action, ProposePatchAction):
+            if self._repeated_malformed_diff_block():
+                raise AgentInspectionError(
+                    "propose_patch rejected: the previous two propose_patch "
+                    "attempts both failed to parse as a well-formed unified "
+                    "diff. Do not retry propose_patch for this edit. For a "
+                    "brand-new file, use create_file with path/content "
+                    "instead of hand-authoring a new-file diff. For an "
+                    "existing file, use replace_text after read_file to see "
+                    "its exact current content."
+                )
             return self._apply_patch_action(
                 turn, action.action, action.unified_diff
             )
@@ -713,6 +823,10 @@ class BoundedAgentSession:
             patch = self.inspector.replacement_patch(
                 action.path, action.old_text, action.new_text
             )
+            return self._apply_patch_action(turn, action.action, patch)
+
+        if isinstance(action, CreateFileAction):
+            patch = self.inspector.new_file_patch(action.path, action.content)
             return self._apply_patch_action(turn, action.action, patch)
 
         if isinstance(action, RunCheckAction):
@@ -861,7 +975,7 @@ class BoundedAgentSession:
                 self.specification,
                 self.worktree,
                 extra_queries=[failure.root_error, failure.relevant_error],
-                preferred_paths=self.inspector.changed_paths(),
+                preferred_paths=self.inspector.reviewable_changed_paths(),
                 preferred_line_anchors={
                     location.path: location.line for location in failure.locations
                 },
@@ -1137,13 +1251,19 @@ class BoundedAgentSession:
     def _result(
         self, outcome: AgentSessionOutcome, stop_reason: str
     ) -> AgentSessionResult:
+        # ADR 0063: `changed_files` is the reviewer-facing change surface and
+        # must contain only model-authored work. Byproducts written by the
+        # harness's own verification run are reported separately rather than
+        # erased, so audit evidence still shows the worktree was mutated.
+        classification = self.inspector.classified_changed_paths()
         result = AgentSessionResult(
             outcome=outcome,
             stop_reason=stop_reason,
             turns=len(self.records),
             patch_attempts=self.patch_attempts,
             verification_runs=self.verification_runs,
-            changed_files=self.inspector.changed_paths(),
+            changed_files=classification.reviewable,
+            generated_byproducts=classification.generated_byproducts,
             turn_records=self.records,
             verification_results=self.verification_results,
             acceptance_coverage=self.last_acceptance_coverage,

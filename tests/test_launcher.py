@@ -7,6 +7,7 @@ import unittest
 from pathlib import Path
 
 LAUNCHER = Path(__file__).resolve().parents[1] / "OPEN_APOAPSIS.cmd"
+START_LAUNCHER = Path(__file__).resolve().parents[1] / "START_APOAPSIS.cmd"
 
 _FORBIDDEN_SNIPPETS = (
     "pip install",
@@ -95,8 +96,48 @@ class LauncherStaticContentTests(unittest.TestCase):
         self,
     ) -> None:
         self.assertIn("APOAPSIS_NO_PAUSE", self.source)
-        start_script = LAUNCHER.parent / "START_APOAPSIS.cmd"
-        self.assertIn("APOAPSIS_NO_PAUSE", start_script.read_text(encoding="utf-8"))
+        self.assertIn("APOAPSIS_NO_PAUSE", START_LAUNCHER.read_text(encoding="utf-8"))
+
+
+class StartLauncherStaticContentTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.source = START_LAUNCHER.read_text(encoding="utf-8")
+
+    def test_start_launcher_file_exists(self) -> None:
+        self.assertTrue(START_LAUNCHER.is_file())
+
+    def test_selects_project_when_no_project_argument_is_supplied(self) -> None:
+        self.assertIn("FolderBrowserDialog", self.source)
+        self.assertIn("Select the Git project", self.source)
+
+    def test_starts_configured_local_service_for_selected_project(self) -> None:
+        self.assertIn("apoapsis.operator_lifecycle start", self.source)
+        self.assertIn('--project-root "%APOAPSIS_PROJECT%"', self.source)
+        self.assertIn("APOAPSIS_LLAMA_SERVER_COMMAND", self.source)
+
+    def test_opens_ui_after_lifecycle_start(self) -> None:
+        lifecycle_index = self.source.find("apoapsis.operator_lifecycle start")
+        ui_index = self.source.find("apoapsis.cli.app")
+        self.assertGreater(lifecycle_index, -1)
+        self.assertGreater(ui_index, -1)
+        self.assertLess(lifecycle_index, ui_index)
+
+    def test_validates_project_before_launching(self) -> None:
+        git_index = self.source.find(".git")
+        config_index = self.source.find(".apoapsis\\config.toml")
+        lifecycle_index = self.source.find("apoapsis.operator_lifecycle start")
+        self.assertGreater(git_index, -1)
+        self.assertGreater(config_index, -1)
+        self.assertLess(git_index, lifecycle_index)
+        self.assertLess(config_index, lifecycle_index)
+
+    def test_does_not_install_download_or_initialize(self) -> None:
+        for snippet in _FORBIDDEN_SNIPPETS:
+            self.assertNotIn(snippet, self.source)
+        self.assertNotIn(
+            '-m apoapsis.cli.app --project-root "%APOAPSIS_PROJECT%" init',
+            self.source,
+        )
 
 
 @unittest.skipUnless(sys.platform == "win32", "OPEN_APOAPSIS.cmd is a Windows batch file")

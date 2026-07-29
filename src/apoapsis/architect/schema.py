@@ -42,6 +42,29 @@ class ArchitectureComponent(StrictModel):
     dependencies: list[str] = Field(default_factory=list)
 
 
+class RuntimeBoundary(StrEnum):
+    """How a producer and consumer actually communicate at runtime.
+
+    Added by ADR 0074 so plan validation can detect a contradiction
+    structurally instead of reading `interface`/`data_flow` prose. Crisis
+    Atlas required a browser-to-local-API integration while configuring a
+    check that forbade the mechanism; nothing noticed, because the only
+    statement of the mechanism was in free text.
+
+    ``UNSPECIFIED`` is the default and produces no finding: a planner that
+    does not fill this in is not asserting anything, and inventing a
+    boundary for it would be exactly the inference this field exists to
+    replace.
+    """
+
+    UNSPECIFIED = "unspecified"
+    IN_PROCESS = "in_process"
+    SAME_ORIGIN_HTTP = "same_origin_http"
+    CROSS_ORIGIN_HTTP = "cross_origin_http"
+    FILESYSTEM = "filesystem"
+    SUBPROCESS = "subprocess"
+
+
 class IntegrationContract(StrictModel):
     """One producer/consumer boundary between components (schema 1.1)."""
 
@@ -52,6 +75,7 @@ class IntegrationContract(StrictModel):
     data_flow: str = Field(min_length=1)
     error_behavior: str = Field(min_length=1)
     verification_obligation: str = Field(min_length=1)
+    runtime_boundary: RuntimeBoundary = RuntimeBoundary.UNSPECIFIED
 
 
 class AnticipatedHardProblem(StrictModel):
@@ -109,12 +133,21 @@ class ImplementationSlice(StrictModel):
 
 
 class PlanDeliveryContract(StrictModel):
-    """How the finished project is installed, launched, and proven ready
-    (schema 1.1). Purely descriptive -- Apoapsis never executes any of
-    these instructions itself; they document what a human operator does
-    after the plan's slices are delivered. Every field defaults empty so
-    an ``ArchitecturePlan`` always carries one populated or not, never
-    ``None`` -- the planner fills in what it knows."""
+    """How the finished project is installed, launched, and proven ready.
+
+    The prose fields are descriptive: Apoapsis never executes them, and it
+    never will -- executing planner-authored prose would hand a model shell
+    authority through the back door. They document what a human operator
+    does after delivery.
+
+    ADR 0076 adds the two structured fields that make the launch claim
+    *checkable*. Crisis Atlas named a launch command in prose and nothing
+    proved it worked; the delivered product returned 404 at `/` and the
+    generated usage guide could only suggest reading a README that was
+    still the seed. A deliverable application must either have one
+    canonical launch path expressed as an owner-approved verification
+    command, or an explicit owner-written reason it cannot be exercised.
+    """
 
     project_kind: str = ""
     primary_documentation_path: str = ""
@@ -124,6 +157,13 @@ class PlanDeliveryContract(StrictModel):
     readiness_checks: list[str] = Field(default_factory=list)
     required_artifacts: list[str] = Field(default_factory=list)
     credential_setup_instructions: str = ""
+    # ADR 0076. Exactly one of these two must be set for a valid plan, and
+    # validation says which. `launch_verification_command` names a
+    # configured verification command -- never a shell string -- so the
+    # canonical launch path stays an owner-approved structured command that
+    # the harness already knows how to execute safely.
+    launch_verification_command: str = ""
+    launch_not_runnable_reason: str = ""
 
 
 class RuntimeDesign(StrictModel):

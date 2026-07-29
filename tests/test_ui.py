@@ -12,6 +12,7 @@ from pathlib import Path
 from apoapsis.architect.schema import PlanValidationResult
 from apoapsis.architect.store import SQLitePlanStore
 from apoapsis.cli.app import _init, build_parser
+from apoapsis.config import ApoapsisConfig
 from apoapsis.specification.schema import (
     AcceptanceCriterion,
     HardConstraint,
@@ -139,6 +140,28 @@ class UIServiceTests(unittest.TestCase):
         )
         self.assertEqual(detail["available_actions"], ["approve_specification"])
         self.assertEqual(detail["events"][-1]["actor"], "system")
+
+    def test_local_power_toggle_updates_only_validated_config(self) -> None:
+        service = ApoapsisUIService(self.root)
+        config_path = self.root / ".apoapsis" / "config.toml"
+        original = config_path.read_text(encoding="utf-8")
+        config_path.write_text(
+            original.replace('route = "auto"', 'route = "frontier_only"'),
+            encoding="utf-8",
+            newline="\n",
+        )
+
+        enabled = service.set_local_power_enabled(enabled=True)
+        config = ApoapsisConfig.from_toml(config_path)
+        self.assertTrue(config.execution.local_power.enabled)
+        self.assertEqual(config.execution.mode.value, "agent")
+        self.assertEqual(config.execution.route.value, "auto")
+        self.assertTrue(enabled["local_power"]["enabled"])
+
+        disabled = service.set_local_power_enabled(enabled=False)
+        config = ApoapsisConfig.from_toml(config_path)
+        self.assertFalse(config.execution.local_power.enabled)
+        self.assertFalse(disabled["local_power"]["enabled"])
 
     def test_ui_cli_arguments_are_explicit_and_loopback_scoped(self) -> None:
         arguments = build_parser().parse_args(["ui", "--port", "8123", "--no-open"])
@@ -326,6 +349,35 @@ class UIServerTests(UIServiceTests):
             self.assertIsNone(response.headers.get("Access-Control-Allow-Origin"))
         self.assertEqual(payload["tasks"][0]["task_id"], self.task_id)
 
+    def test_http_local_power_toggle_updates_overview(self) -> None:
+        with self.request(
+            "/api/config/local-power",
+            method="POST",
+            payload={"enabled": True},
+            token=self.token,
+        ) as response:
+            payload = json.load(response)
+        self.assertTrue(payload["local_power"]["enabled"])
+
+        with self.request("/api/overview", token=self.token) as response:
+            overview = json.load(response)
+        self.assertTrue(overview["execution"]["local_power"]["enabled"])
+
+        with self.request(
+            "/api/config/local-power",
+            method="POST",
+            payload={"enabled": False},
+            token=self.token,
+        ) as response:
+            payload = json.load(response)
+        self.assertFalse(payload["local_power"]["enabled"])
+
+    def test_static_shell_contains_local_power_toggle_action(self) -> None:
+        with self.request("/app.js") as response:
+            script = response.read().decode("utf-8")
+        self.assertIn("Turn on Local Power", script)
+        self.assertIn('data-action="local-power-confirm"', script)
+
     def test_server_refuses_non_loopback_binding(self) -> None:
         with self.assertRaisesRegex(ValueError, "loopback"):
             create_ui_server(self.root, host="0.0.0.0", port=0)
@@ -394,6 +446,152 @@ class UIServerTests(UIServiceTests):
             )
         self.assertEqual(conflict.exception.code, 409)
         conflict.exception.close()
+
+    def test_oversized_control_request_names_both_sizes(self) -> None:
+        with self.assertRaises(urllib.error.HTTPError) as failure:
+            self.request(
+                "/api/config/local-power",
+                method="POST",
+                payload={"enabled": True, "padding": "x" * (80 * 1024)},
+                token=self.token,
+            )
+        self.assertEqual(failure.exception.code, 400)
+        message = json.load(failure.exception)["error"]
+        failure.exception.close()
+        self.assertIn("bytes; this endpoint accepts at most", message)
+        self.assertIn(str(64 * 1024), message)
+
+    def test_a_pasted_frontier_plan_larger_than_the_control_cap_is_accepted(
+        self,
+    ) -> None:
+        """ADR 0065: the paste routes must be able to reach the domain
+        ceiling the configuration actually sets.
+
+        A real frontier plan for a ten-component architecture exceeded the
+        64 KB control-request cap and was refused by the transport with
+        "request body size is invalid", roughly thirty times below the 2 MB
+        `discovery.max_response_bytes` the harness said it would accept.
+
+        This request is deliberately far past 64 KB. It must fail for a
+        *domain* reason (no such session or package), never for size.
+        """
+
+        oversized = json.dumps({"kind": "plan", "filler": "y" * (300 * 1024)})
+        self.assertGreater(len(oversized), 64 * 1024)
+        with self.assertRaises(urllib.error.HTTPError) as failure:
+            self.request(
+                "/api/discovery/sessions/DISC-NOPE/import-manual-response",
+                method="POST",
+                payload={
+                    "package_id": "FPKG-NOPE",
+                    "declared_model_name": "operator-declared",
+                    "response_text": oversized,
+                },
+                token=self.token,
+            )
+        message = json.load(failure.exception)["error"]
+        failure.exception.close()
+        self.assertNotIn("accepts at most", message)
+        self.assertNotIn("body size is invalid", message)
+        # A domain rejection (unknown session/package), never a transport one.
+        self.assertIn(failure.exception.code, {404, 409})
+
+    def test_an_unhandled_handler_error_returns_500_not_a_dropped_connection(
+        self,
+    ) -> None:
+        """A handler that raises something no route anticipated must still
+        produce a readable response.
+
+        When the exception escaped into `socketserver`, the connection closed
+        with no response and the browser's `fetch` rejected with the bare
+        string "Failed to fetch" -- the operator got a dead-end screen with a
+        server that was still running and nothing to act on.
+        """
+
+        def explode(*_args: object, **_kwargs: object) -> dict[str, object]:
+            raise KeyError("something no route lists in its except clause")
+
+        self.server.service.overview = explode  # type: ignore[method-assign]
+
+        with self.assertRaises(urllib.error.HTTPError) as failure:
+            self.request("/api/overview", token=self.token)
+        self.assertEqual(failure.exception.code, 500)
+        payload = json.load(failure.exception)
+        failure.exception.close()
+        self.assertIn("unhandled KeyError", payload["error"])
+        # The real cause is retained for the operator rather than discarded.
+        self.assertTrue(self.server.service_error_log)
+        self.assertIn("KeyError", self.server.service_error_log[-1])
+
+
+class RepositoryWithoutCommitsTests(unittest.TestCase):
+    """A repository with no commits has no base commit to anchor work to.
+
+    Reproduced live on 2026-07-26: discovery in an initialized-but-never-
+    committed project failed with a raw
+    `git rev-parse HEAD: ambiguous argument 'HEAD'`, and the export path
+    dropped the connection entirely.
+    """
+
+    def setUp(self) -> None:
+        self.temporary_directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary_directory.cleanup)
+        self.root = Path(self.temporary_directory.name)
+        subprocess.run(
+            ["git", "init", "-b", "main"],
+            cwd=self.root,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+    def test_has_commits_is_false_without_raising(self) -> None:
+        from apoapsis.repository.git import GitRepository
+
+        self.assertFalse(GitRepository(self.root).has_commits())
+
+    def test_head_commit_names_the_problem_and_the_fix(self) -> None:
+        from apoapsis.repository.git import (
+            GitRepository,
+            RepositoryHasNoCommitsError,
+        )
+
+        repository = GitRepository(self.root)
+        with self.assertRaises(RepositoryHasNoCommitsError) as raised:
+            repository.head_commit()
+        message = str(raised.exception)
+        self.assertIn("no commits yet", message)
+        self.assertIn("git commit", message)
+        self.assertNotIn("ambiguous argument", message)
+
+        with self.assertRaises(RepositoryHasNoCommitsError):
+            repository.snapshot()
+
+    def test_a_first_commit_restores_normal_behaviour(self) -> None:
+        from apoapsis.repository.git import GitRepository
+
+        (self.root / "README.md").write_text("fixture\n", encoding="utf-8")
+        subprocess.run(
+            ["git", "add", "README.md"], cwd=self.root, check=True, capture_output=True
+        )
+        subprocess.run(
+            [
+                "git",
+                "-c",
+                "user.name=Apoapsis Tests",
+                "-c",
+                "user.email=tests@apoapsis.invalid",
+                "commit",
+                "-m",
+                "initial commit",
+            ],
+            cwd=self.root,
+            check=True,
+            capture_output=True,
+        )
+        repository = GitRepository(self.root)
+        self.assertTrue(repository.has_commits())
+        self.assertEqual(len(repository.head_commit()), 40)
 
 
 if __name__ == "__main__":

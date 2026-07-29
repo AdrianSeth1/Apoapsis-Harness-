@@ -66,6 +66,8 @@ def _slice_contract_facts(
     stop_conditions: list[str],
     suggested_paths: list[str],
     suggested_symbols: list[str],
+    test_obligations: list[str] | None = None,
+    failure_cases: list[str] | None = None,
 ) -> list[TraceableStatement]:
     """Preserve the approved execution contract in the derived task.
 
@@ -88,6 +90,22 @@ def _slice_contract_facts(
     ]
     grouped = (
         ("interface-contracts", "Required interface contracts", interface_contracts),
+        # Carried through deliberately: the approved slice states which
+        # behaviours it must leave tests behind for, and which failures it
+        # must handle. Dropping these silently produced slices whose agent
+        # was never told to write a test at all, then failed the configured
+        # test command for want of a test directory.
+        (
+            "test-obligations",
+            "Approved test obligations (this slice must leave tests behind "
+            "covering each of these)",
+            list(test_obligations or []),
+        ),
+        (
+            "failure-cases",
+            "Approved failure cases this slice must handle",
+            list(failure_cases or []),
+        ),
         ("exclusions", "Explicit slice exclusions", exclusions),
         (
             "integration-assumptions",
@@ -135,6 +153,8 @@ def enrich_specification_with_slice_package(
         stop_conditions=package.stop_conditions,
         suggested_paths=package.advisory_suggested_paths,
         suggested_symbols=package.advisory_suggested_symbols,
+        test_obligations=list(package.test_obligations),
+        failure_cases=list(package.failure_cases),
     )
     existing = {
         (item.source_reference, item.text) for item in specification.known_facts
@@ -291,9 +311,15 @@ def checkpoint_completed_prior_slices(
         ):
             candidates.append(candidate)
     if not candidates:
+        diverged = ", ".join(
+            f"{slice_id}@{commit[:12]}" for slice_id, commit in inherited
+        )
         raise SlicePackagingError(
-            "completed slice branches diverge; Apoapsis will not guess an "
-            "integration order or merge conflicts automatically"
+            f"plan {plan_id}: completed slice branches diverge -- no single "
+            f"commit is a descendant of every completed slice's branch tip "
+            f"({diverged}); Apoapsis will not guess an integration order or "
+            "merge conflicts automatically. Manually reconcile (e.g. rebase "
+            "or merge) the diverging task branches before delivery."
         )
     latest_commit = candidates[0]
     return latest_commit, [slice_id for slice_id, _commit in inherited]
@@ -530,6 +556,7 @@ def build_plan_slice_execution_package(
         record.plan,
         configured_verification_commands=configured_names,
         ceilings=config.architect.ceilings,
+        configured_commands=config.verification.commands,
     )
     if any(item.severity.value == "error" for item in findings):
         raise SlicePackagingError(
@@ -582,6 +609,8 @@ def build_plan_slice_execution_package(
             stop_conditions=list(slice_obj.stop_conditions),
             suggested_paths=list(slice_obj.suggested_paths),
             suggested_symbols=list(slice_obj.suggested_symbols),
+            test_obligations=list(slice_obj.test_obligations),
+            failure_cases=list(slice_obj.failure_cases),
         ),
         verification_requirements=list(slice_obj.verification_commands),
         risk_level=slice_obj.risk_level,
@@ -603,6 +632,8 @@ def build_plan_slice_execution_package(
         inherited_hard_constraints=inherited_constraints,
         acceptance_criteria=inherited_criteria,
         verification_commands=list(slice_obj.verification_commands),
+        test_obligations=list(slice_obj.test_obligations),
+        failure_cases=list(slice_obj.failure_cases),
         dependency_evidence=dependency_evidence,
         integration_assumptions=list(slice_obj.integration_assumptions),
         risk_level=slice_obj.risk_level,

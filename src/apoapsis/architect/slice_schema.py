@@ -84,6 +84,11 @@ class PlanSliceExecutionPackage(StrictModel):
     inherited_hard_constraints: list[HardConstraint] = Field(default_factory=list)
     acceptance_criteria: list[AcceptanceCriterion] = Field(default_factory=list)
     verification_commands: list[str] = Field(default_factory=list)
+    # Copied verbatim from the approved slice. Default-empty so packages
+    # written before this field remain readable; newly built packages
+    # always populate both.
+    test_obligations: list[str] = Field(default_factory=list)
+    failure_cases: list[str] = Field(default_factory=list)
     dependency_evidence: list[DependencyEvidence] = Field(default_factory=list)
     integration_assumptions: list[str] = Field(default_factory=list)
     risk_level: RiskLevel = RiskLevel.UNCLASSIFIED

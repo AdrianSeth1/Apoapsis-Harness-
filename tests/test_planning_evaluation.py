@@ -6,7 +6,11 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from apoapsis.architect.schema import ArchitecturePlan, ImplementationSlice
+from apoapsis.architect.schema import (
+    ArchitecturePlan,
+    ImplementationSlice,
+    VerificationStrategy,
+)
 from apoapsis.architect.store import SQLitePlanStore
 from apoapsis.architect.slice_store import PlanSliceExecutionStore
 from apoapsis.config import (
@@ -369,6 +373,14 @@ def _v2_plan(*, downloader_dependency_breaks_c: bool = False) -> ArchitecturePla
                 verification_method="v2-service-tests",
             ),
         ],
+        # ADR 0074: a plan that names no whole-project verification command
+        # is invalid, because nothing would ever run against the combined
+        # result. `v2-service-tests` is the right one here -- AC-SVC is
+        # explicitly about the *integrated* service, which is exactly the
+        # claim per-slice verification cannot support.
+        verification_strategy=VerificationStrategy(
+            whole_project_verification_commands=["v2-service-tests"],
+        ),
     )
 
 
