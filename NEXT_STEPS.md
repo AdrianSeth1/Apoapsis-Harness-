@@ -64,9 +64,11 @@ priorities only. Current architecture is in `HANDOFF.md`, decision history is in
 - ADR 0073's evidence-count and ceiling output has been exercised by hand
   against two constructed products, not against a real project run. Record a
   live result the next time a browser product goes through the harness.
-- Verify ADR 0077's paired scorer, ceiling classification, and frozen Crisis
-  Atlas facts; `tests/test_paired_scoring.py` was added but intentionally not
-  run at the owner's request.
+- ADR 0077's paired scorer, ceiling classification, and frozen Crisis Atlas
+  facts are verified: `tests/test_paired_scoring.py` 47/47 and
+  `tests/test_workcell.py` 48/48 pass, with `compileall` clean. Both runs used
+  a sandbox-local 3.10 shim for `StrEnum`/`tomllib`/`datetime.UTC`; re-run on
+  the real 3.12 interpreter. The full deterministic suite is still outstanding.
 - Run focused tests, the full deterministic suite, compileall, and diff check.
 - Do not make a live network, local-model, hosted-model, Docker, or browser claim
   unless that exact path is separately exercised and recorded.
@@ -100,10 +102,27 @@ Follow
 2. **Done (handoff slice 1).** ADR 0077 sets the boundary: ephemeral capability
    inside a disposable workcell, durable authority outside it. It supersedes the
    execution boundary of ADRs 0059 and 0071 without editing either.
-3. **Next.** Run the default Qwen CLI or a conformance-tested equivalent in that
-   workcell. Do not add acceptance repair yet; exit when no useful control
-   capability is missing and containment tests show host paths, network,
-   credentials, and controller sockets are unreachable;
+3. **Implemented, live evidence outstanding (handoff slice 2).** The
+   `apoapsis.workcell` package provides the pinned identity
+   (`pins.py`, every field required and folded into one digest), the hardened
+   container lifecycle (`controller.py`, one persistent container per session,
+   `--network none` with a controller-owned Unix socket as the only egress),
+   22 containment probes across 7 categories (`containment.py`), nine
+   provider/tool-template/stop-reason conformance checks (`conformance.py`), a
+   one-way `stream-json` adapter over Qwen's native loop with no second
+   scheduler (`events.py`), and the capability spike scored against the frozen
+   control (`spike.py`). `apoapsis workcell-preflight` validates pins and the
+   runtime without starting a model. 48 deterministic tests pass.
+
+   **Nothing live has run.** No container was started, no CLI executed, no
+   probe or conformance check ran against a real namespace or template. See
+   `docs/evaluation/slice-2-workcell-conformance-spike-2026-07-30.md` for the
+   five steps that produce the missing evidence.
+
+   **Slice 3 is blocked** until the spike returns `CAPABILITY_PRESERVED` with
+   both `contained` and `conformant` true. Do not begin candidate delta
+   admission, and do not jump ahead to slice-readiness contracts, on the
+   strength of deterministic coverage alone;
 4. admit and verify the complete candidate delta outside the model's trust
    boundary;
 5. replace green-test termination with strict slice-readiness contracts and

@@ -107,9 +107,30 @@ inside a disposable workcell:
 This does **not** authorize a model shell on the Windows host, network or
 credential access by prompt instruction, model-selected verification or
 acceptance policy, or model-owned completion, Git promotion, plan approval, or
-delivery. The decision is recorded; the workcell itself is handoff slice 2 and
-is not built. Until it is qualified, the typed Local Power path below remains
-the only local execution mode.
+delivery.
+
+The `apoapsis.workcell` package now implements that boundary, and **nothing
+live has been run through it**: no container started, no Qwen CLI executed, no
+containment probe or conformance check run against a real namespace or chat
+template. Until the capability spike returns `CAPABILITY_PRESERVED` with both
+`contained` and `conformant` true, the typed Local Power path below remains the
+only local execution mode, and the Capability Sandbox must not be described as
+working execution. See
+`docs/evaluation/slice-2-workcell-conformance-spike-2026-07-30.md`.
+
+| Layer | Module | Enforced by |
+| --- | --- | --- |
+| Pinned identity | `workcell/pins.py` | Every field required; one manifest digest per experiment |
+| Container lifecycle | `workcell/controller.py` | One persistent container per session; run-id label ownership; fail-closed teardown |
+| Containment | `workcell/containment.py` | 22 probes over host filesystem, credentials, network, container control, controller authority, privilege, and ceilings |
+| Provider conformance | `workcell/conformance.py` | Nine checks; a malformed tool envelope is an adapter defect until they pass |
+| Native loop | `workcell/events.py` | One-way `stream-json` adapter; no second model-action scheduler |
+| Capability spike | `workcell/spike.py` | Observed behaviour vs the frozen control; no acceptance repair |
+
+The container runs `--network none`. The model endpoint is reached only through
+a Unix domain socket the controller creates, owns, meters, and deletes, exposed
+inside the namespace on a loopback port. There is no default route and no DNS,
+so egress is a boundary rather than a policy.
 
 ### Local Power Sandbox (ADR 0059, experimental, disabled by default)
 
@@ -763,6 +784,9 @@ criteria only when their pass genuinely proves the criterion.
 - ADR 0077 paired scorer and frozen Crisis Atlas facts (deterministic rescore of
   the two records above; no new inference):
   `docs/evaluation/adr-0077-paired-scorer-and-frozen-arms-2026-07-30.md`
+- Slice 2 Capability Sandbox workcell (deterministic only; **no container
+  started, no CLI run, no probe or conformance check executed live**):
+  `docs/evaluation/slice-2-workcell-conformance-spike-2026-07-30.md`
 - Earlier local smoke records: remaining files in `docs/evaluation/`
 
 Use these dated records for exact setups and observed results. Keep new live

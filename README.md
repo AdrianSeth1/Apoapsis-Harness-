@@ -1208,6 +1208,62 @@ Context and output ceilings are classified as first-class conditions
 separately from model reasoning failures, so a response that filled the context
 window is never counted as the model failing to reason.
 
+## Capability Sandbox workcell (ADR 0077, implemented, not yet exercised)
+
+The workcell runs the real Qwen coding CLI's own native loop inside a
+disposable, hardened container. Apoapsis keeps every durable authority —
+admission, verification, checkpointing, promotion, delivery — outside it.
+
+**No live run has happened yet.** No container has been started, no CLI
+executed, and no containment probe or conformance check run against a real
+namespace or chat template. Treat this section as describing implemented code,
+not demonstrated execution.
+
+Validate a pinned configuration without starting a model:
+
+```bash
+apoapsis workcell-preflight workcell.json
+```
+
+The configuration must pin *everything* that could change a result — CLI
+version and bundle hash, model file hash and quantization, server version and
+flag hash, chat template hash, the CLI's own system prompt and tool-schema
+hashes, and the container image digest. There are no optional identity fields;
+a partially specified file is refused rather than producing an unidentifiable
+run. All of it folds into one manifest digest that travels into every evidence
+record.
+
+Containment is enforced by the runtime, not the prompt: `--network none`,
+`--cap-drop ALL`, `no-new-privileges`, non-root, pinned image by digest with
+`--pull=never`, and process, memory, CPU, disk, and wall-clock ceilings. The
+only mounts are the disposable clone (read-write, at `/workspace`) and the
+approved task document (read-only, at `/task/task.md`, deliberately outside the
+project tree so it can never be edited or committed as delivered content).
+
+The model endpoint is reached through a Unix domain socket the controller
+creates, owns, meters, and deletes, exposed inside the namespace on a loopback
+port. With no default route and no DNS, egress is a boundary rather than a
+policy — and every model request crosses something the controller can count and
+stop.
+
+Before any quality is measured, two suites must pass and both fail closed:
+
+- **22 containment probes** across host filesystem, credentials, network,
+  container control, controller authority, privilege, and resource ceilings. A
+  probe that did not run, or that failed for an unrelated reason, is *not* a
+  pass — "it errored, so we must be safe" is how a hole stays open.
+- **Nine conformance checks** on role round-trip, single and parallel tool
+  calls, multiline Unicode integrity, thinking-block idempotence, stop-reason
+  fidelity, usage accounting, replay protection, and declared-versus-actual
+  limits. A malformed tool envelope is an adapter defect until these pass.
+
+The capability spike then compares observed behaviour against the frozen
+unrestricted control. Capability is derived from what the session actually did,
+never from configuration: a workcell allowed a shell that never ran one records
+`unproven`, and unproven counts as lost. The spike performs no acceptance
+repair — that is a later slice, and changing the interface and the acceptance
+rules at once would make the result unreadable.
+
 ## Local Power Sandbox (ADR 0059, experimental)
 
 An opt-in second execution path for **local models only**. It exists to test one

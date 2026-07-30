@@ -1235,6 +1235,19 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         help="directory for paired.json and paired.md",
     )
+
+    workcell = subparsers.add_parser(
+        "workcell-preflight",
+        help=(
+            "validate a pinned Capability Sandbox workcell configuration and "
+            "check the container runtime, without starting a model"
+        ),
+    )
+    workcell.add_argument(
+        "config",
+        type=Path,
+        help="JSON file containing a fully pinned WorkcellConfig",
+    )
     return parser
 
 
@@ -1308,6 +1321,8 @@ def _dispatch(args: argparse.Namespace) -> dict[str, object] | None:
         )
     if args.command == "eval-aggregate":
         return _aggregate_eval_reports(root, args.comparisons, args.output_dir)
+    if args.command == "workcell-preflight":
+        return _workcell_preflight_command(args.config)
     if args.command == "eval-paired":
         return _score_paired_corpus_command(
             root, args.records, args.output_dir, args.candidate_arm
@@ -2940,6 +2955,49 @@ def _score_paired_corpus_command(
     )
     write_paired_corpus(resolved_output, report)
     return report.model_dump(mode="json")
+
+
+def _workcell_preflight_command(config_path: Path) -> dict[str, object]:
+    """Validate the pins and the runtime. Never starts a model.
+
+    Preflight is separated from the spike on purpose: the most common way to
+    waste a live local run is to discover after the model is warm that the
+    image digest is wrong or a pin is missing.
+    """
+
+    from apoapsis.execution.backend import SandboxUnavailableError
+    from apoapsis.workcell.containment import DEFAULT_CONTAINMENT_PROBES
+    from apoapsis.workcell.controller import WorkcellController, load_workcell_config
+
+    resolved = config_path.resolve()
+    if not resolved.is_file():
+        raise TaskStoreError(f"workcell configuration not found: {resolved}")
+    try:
+        config = load_workcell_config(resolved)
+    except SandboxUnavailableError as exc:
+        raise TaskStoreError(str(exc)) from exc
+
+    controller = WorkcellController(config)
+    payload: dict[str, object] = {
+        "workcell_manifest_digest": config.pin.manifest_digest(),
+        "image_reference": controller.image_reference,
+        "create_argv": controller.build_create_argv(),
+        "containment_probe_count": len(DEFAULT_CONTAINMENT_PROBES),
+        "network": config.network,
+        "model_egress": config.egress.base_url,
+        "runtime_available": False,
+        "runtime_error": None,
+    }
+    try:
+        controller.preflight()
+    except SandboxUnavailableError as exc:
+        # Reported rather than raised: the pins are still worth validating on a
+        # machine with no container runtime, and an honest "not available" is
+        # more useful than an exception that hides the digest.
+        payload["runtime_error"] = str(exc)
+        return payload
+    payload["runtime_available"] = True
+    return payload
 
 
 def _build_research_engine(
