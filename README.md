@@ -1405,8 +1405,29 @@ Budgets are wall time, in-workcell process time, tokens, and no-progress
 detection — not turn counts. Progress means a changed worktree fingerprint, not
 that a turn happened. The call ceiling remains only as a high emergency stop.
 
-This is machinery, not yet behaviour: no session loop builds a kernel,
-maintains a capsule, compacts, or enforces a budget.
+A session coordinator owns all of this and drives the checkpoint loop. It
+evaluates the budget *before* each model call, records every ending as a state
+transition with one of seven named outcomes, and stops rather than continuing
+over a context it knows is too full. An agent that falls silent without
+requesting a checkpoint ends as `agent_stopped`, never as complete.
+
+Two things governing that loop rest on provenance rather than appearance. The
+kernel is rendered once and read back from disk on every call, so a value that
+would have changed cannot — a fixed UUID or historical timestamp in the
+objective is fine, and an edit to the artifact mid-session is named rather than
+absorbed. And compaction and the token ceilings read only the provider's own
+usage accounting; the controller's estimate is kept for diagnosis and is not
+allowed to compact or stop anything. Missing telemetry leaves those ceilings
+reported as unenforced, not as passing.
+
+Progress means the worktree changed, an obligation was newly discharged, or the
+controller produced a new evidence artifact. A debugging turn that edits nothing
+and produces a new diagnosis counts. What the model says about its own turn does
+not.
+
+**No live session has run through this yet.** Whether a real model continues
+working from the capsule after compaction, and whether the stable prefix
+actually earns cache hits, are both unmeasured.
 
 ## Local Power Sandbox (ADR 0059, experimental)
 

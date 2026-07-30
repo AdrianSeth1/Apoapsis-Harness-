@@ -803,6 +803,9 @@ criteria only when their pass genuinely proves the criterion.
   `docs/evaluation/adr-0077-paired-scorer-and-frozen-arms-2026-07-30.md`
 - Slice 2 Capability Sandbox workcell (deterministic implementation record):
   `docs/evaluation/slice-2-workcell-conformance-spike-2026-07-30.md`
+- Slice 5B session coordinator and the three corrections of authority
+  (deterministic only; two of seven exit criteria unmet, both live):
+  `docs/evaluation/slice-5b-session-coordinator-2026-07-30.md`
 - Slice 5 task kernel, state capsule, two-tier compaction, and budgets
   (deterministic only; not wired into a session loop):
   `docs/evaluation/slice-5-context-compaction-and-budgets-2026-07-30.md`
@@ -1501,6 +1504,35 @@ occurring and not the model's account of itself.
 Nothing is dropped irreversibly: the capsule is never compacted away, output
 with nowhere to spill is kept rather than discarded, and a truncated
 observation that names no artifact is rejected at construction.
+
+Handoff slice 5B (ADR 0080) supplies the caller and corrects three places
+where slice 5 claimed authority it had not earned. `workcell/session.py` holds
+`SessionCoordinator`, the only place the kernel artifact, capsule, budget,
+compaction policy and checkpoint loop meet.
+
+Prompt stability is now **provenance, not lexical shape**: the kernel is
+rendered once, written, hashed, and read back for every call, and
+`KernelDriftError` names an edit rather than absorbing it. A fixed upstream
+UUID in an objective is legitimate and no longer refused.
+
+Compaction and the token ceilings read **provider-reported usage only**. The
+controller's estimate is retained for diagnosis and barred from both gates,
+because an estimate reading high compacts a session that did not need it and an
+estimate reading low is how a run reaches 64,409 tokens with no compaction
+event. A missing ledger leaves the ceilings `unenforced`, not passing.
+
+Progress is **authoritative state advancement** — a changed worktree, a newly
+discharged obligation, or a new controller-produced evidence artifact. A
+debugging turn that edits nothing and yields a new diagnosis counts. Model
+narration never does; `TurnObservation` has no field for it.
+
+Every ending is a recorded `SessionTransition` with one of seven
+`SessionOutcome` values, and the budget is checked before the call rather than
+after.
+
+**No live session has run through the coordinator.** Post-compaction
+continuation and cache telemetry are both unmeasured, so neither the
+context-safety nor the efficiency claim exists yet.
 
 Read the relevant ADR completely before altering its area. Preserve old ADRs as
 history; supersede them with a new ADR rather than rewriting the old decision.

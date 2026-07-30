@@ -103,6 +103,27 @@ class CompactionDecision(StrictModel):
         return max(0, self.tokens_before - self.tokens_after)
 
 
+class ContextReading(StrictModel):
+    """How full the context is, and on whose authority.
+
+    `provider_reported` is the whole point. Compaction changes what the model
+    can see, so the decision to compact must rest on the provider's own usage
+    accounting rather than on the controller's token estimate.
+    """
+
+    input_tokens: int = Field(ge=0)
+    provider_reported: bool
+    estimated_tokens: int = Field(default=0, ge=0)
+
+    @classmethod
+    def from_ledger(cls, ledger) -> ContextReading:
+        return cls(
+            input_tokens=ledger.input_tokens,
+            provider_reported=ledger.reported,
+            estimated_tokens=ledger.estimated_input_tokens,
+        )
+
+
 class CompactionPolicy(StrictModel):
     """When to compact and how much history to keep verbatim."""
 
@@ -130,7 +151,28 @@ class CompactionPolicy(StrictModel):
         return tokens / self.context_limit_tokens
 
     def should_compact(self, tokens: int) -> bool:
+        """Threshold test on a token count, without asking where it came from.
+
+        Kept for arithmetic and for replay of recorded usage. A live session
+        must use `should_compact_reading`, which refuses an estimate.
+        """
+
         return self.utilisation(tokens) >= self.threshold
+
+    def should_compact_reading(self, reading: ContextReading) -> bool:
+        """The live trigger. Only provider-reported usage may fire it.
+
+        An estimate that reads high compacts a session that did not need it,
+        and an estimate that reads low is how a run reaches 64,409 tokens
+        against a 65,536 window with no compaction event -- which is the
+        recorded Crisis Atlas control. Neither failure should be attributable
+        to the controller's own arithmetic, so the estimate does not get a
+        vote.
+        """
+
+        if not reading.provider_reported:
+            return False
+        return self.should_compact(reading.input_tokens)
 
 
 def spill_artifact(directory: Path, segment: HistorySegment) -> str:

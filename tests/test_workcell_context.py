@@ -7,9 +7,12 @@ from pathlib import Path
 from apoapsis.workcell.budgets import (
     BudgetKind,
     BudgetUsage,
+    ProgressKind,
     ProgressTracker,
     SessionBudget,
     SessionClock,
+    TokenLedger,
+    TurnObservation,
     evaluate_budget,
 )
 from apoapsis.workcell.compaction import (
@@ -61,19 +64,27 @@ class TaskKernelTests(unittest.TestCase):
     def test_changing_the_task_does_change_the_digest(self) -> None:
         self.assertNotEqual(_kernel().digest(), _kernel(objective="Something else").digest())
 
-    def test_a_volatile_value_in_the_kernel_is_refused(self) -> None:
-        # Each of these changes between otherwise identical calls, and would
-        # silently zero the prefix cache while looking harmless.
-        for field, value in (
-            ("objective", "Started at 2026-07-30T12:00 and continue"),
-            ("checkpoint_instructions", "Run MRQ-ABC123 then checkpoint"),
+    def test_a_volatile_looking_value_is_reported_and_not_refused(self) -> None:
+        # Slice 5 refused these at construction. That was the wrong test: a
+        # legitimate objective may quote a fixed upstream UUID or a historical
+        # incident timestamp, and neither changes between calls. Volatility is
+        # a provenance property, enforced by KernelArtifact reuse; the shape
+        # scan is a hint for the owner to confirm.
+        for field, value, label in (
+            ("objective", "Reproduce the 2026-07-30T12:00 outage", "timestamp"),
+            ("checkpoint_instructions", "Close MRQ-ABC123 then checkpoint", "request id"),
             (
                 "objective",
-                "Resume session 3f2b1c4d-5e6f-7a8b-9c0d-1e2f3a4b5c6d",
+                "Fix tenant 3f2b1c4d-5e6f-7a8b-9c0d-1e2f3a4b5c6d",
+                "uuid",
             ),
         ):
-            with self.assertRaises(ValueError, msg=f"{field}={value}"):
-                _kernel(**{field: value})
+            kernel = _kernel(**{field: value})
+            hints = kernel.volatility_hints()
+            self.assertIn(label, {item.label for item in hints}, msg=value)
+
+    def test_a_clean_kernel_reports_no_hints(self) -> None:
+        self.assertEqual(_kernel().volatility_hints(), [])
 
     def test_the_kernel_states_that_a_checkpoint_is_not_completion(self) -> None:
         rendered = _kernel().render()
@@ -368,7 +379,10 @@ class BudgetTests(unittest.TestCase):
     def test_every_exhausted_ceiling_is_reported_not_just_the_first(self) -> None:
         verdict = evaluate_budget(
             SessionBudget(wall_clock_seconds=10, max_input_tokens=1_000),
-            BudgetUsage(wall_clock_seconds=20, input_tokens=5_000),
+            BudgetUsage(
+                wall_clock_seconds=20,
+                tokens=TokenLedger(reported=True, input_tokens=5_000),
+            ),
         )
         kinds = {item.kind for item in verdict.breaches}
         self.assertIn(BudgetKind.WALL_CLOCK, kinds)
@@ -416,36 +430,97 @@ class BudgetTests(unittest.TestCase):
 
 
 class ProgressTrackerTests(unittest.TestCase):
-    def test_progress_is_a_changed_fingerprint_not_a_turn_occurring(self) -> None:
+    def test_a_changed_worktree_is_progress(self) -> None:
         tracker = ProgressTracker()
-        self.assertTrue(tracker.record_turn(fingerprint=_FP, action_signature="edit"))
-        self.assertFalse(tracker.record_turn(fingerprint=_FP, action_signature="read"))
+        self.assertTrue(
+            tracker.record_turn(
+                TurnObservation(action_signature="edit", worktree_fingerprint=_FP)
+            ).made_progress
+        )
+        self.assertFalse(
+            tracker.record_turn(
+                TurnObservation(action_signature="read", worktree_fingerprint=_FP)
+            ).made_progress
+        )
         self.assertEqual(tracker.consecutive_no_progress, 1)
         self.assertTrue(
-            tracker.record_turn(fingerprint=_OTHER_FP, action_signature="edit")
+            tracker.record_turn(
+                TurnObservation(action_signature="edit", worktree_fingerprint=_OTHER_FP)
+            ).made_progress
         )
         self.assertEqual(tracker.consecutive_no_progress, 0)
+
+    def test_a_diagnosis_that_edits_nothing_is_still_progress(self) -> None:
+        # A turn that runs a failing test and yields a new coverage artifact
+        # has advanced the session's knowledge. Counting it as no-progress
+        # would punish the debugging behaviour the unrestricted control did
+        # well -- it repaired its own tests across several such turns.
+        tracker = ProgressTracker()
+        tracker.record_turn(
+            TurnObservation(action_signature="edit", worktree_fingerprint=_FP)
+        )
+        result = tracker.record_turn(
+            TurnObservation(
+                action_signature="pytest",
+                worktree_fingerprint=_FP,
+                evidence_artifacts=["witness-coverage-1"],
+            )
+        )
+        self.assertTrue(result.made_progress)
+        self.assertIn(ProgressKind.EVIDENCE, result.kinds)
+
+    def test_a_newly_discharged_obligation_is_progress(self) -> None:
+        tracker = ProgressTracker()
+        result = tracker.record_turn(
+            TurnObservation(
+                action_signature="checkpoint",
+                worktree_fingerprint=None,
+                discharged_obligations=["SLICE-services-criterion-AC-1"],
+            )
+        )
+        self.assertTrue(result.made_progress)
+        self.assertIn(ProgressKind.OBLIGATION, result.kinds)
+
+    def test_the_same_obligation_twice_is_progress_only_once(self) -> None:
+        # Otherwise a stalled session could report progress forever by
+        # re-reporting a discharge it made three turns ago.
+        tracker = ProgressTracker()
+        observation = TurnObservation(
+            action_signature="checkpoint", discharged_obligations=["ob-1"]
+        )
+        self.assertTrue(tracker.record_turn(observation).made_progress)
+        self.assertFalse(tracker.record_turn(observation).made_progress)
+
+    def test_narration_alone_is_not_progress(self) -> None:
+        # There is no field for the model's account of its own turn, which is
+        # the point: every input here is controller-observed.
+        tracker = ProgressTracker()
+        result = tracker.record_turn(
+            TurnObservation(action_signature="I have now finished the service")
+        )
+        self.assertFalse(result.made_progress)
+        self.assertEqual(result.kinds, [ProgressKind.NONE])
 
     def test_identical_actions_are_counted(self) -> None:
         tracker = ProgressTracker()
         for _ in range(9):
-            tracker.record_turn(fingerprint=_FP, action_signature="skill('qc-helper')")
+            tracker.record_turn(
+                TurnObservation(
+                    action_signature="skill('qc-helper')", worktree_fingerprint=_FP
+                )
+            )
         self.assertEqual(tracker.max_identical_run, 9)
         self.assertIn("skill('qc-helper')", tracker.no_progress_actions)
-
-    def test_a_missing_fingerprint_is_not_progress(self) -> None:
-        tracker = ProgressTracker()
-        self.assertFalse(tracker.record_turn(fingerprint=None, action_signature="x"))
 
     def test_the_clock_separates_wall_time_from_process_time(self) -> None:
         # "The session took 30 minutes" and "25 of those were the test suite"
         # call for different fixes.
         clock = SessionClock()
         clock.add_process_time(12.5)
-        usage = clock.usage(input_tokens=100)
+        usage = clock.usage(tokens=TokenLedger(reported=True, input_tokens=100))
         self.assertEqual(usage.process_seconds, 12.5)
         self.assertGreaterEqual(usage.wall_clock_seconds, 0.0)
-        self.assertEqual(usage.input_tokens, 100)
+        self.assertEqual(usage.tokens.input_tokens, 100)
 
 
 if __name__ == "__main__":

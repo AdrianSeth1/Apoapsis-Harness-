@@ -212,14 +212,30 @@ Follow
    tokens (88.6% of the window), which fired nothing at the time. That is a
    statement about the policy, not about what the model would then have done.
 
-   **Outstanding:** nothing is wired in -- `run_checkpoint` does not build a
-   kernel, maintain a capsule, compact, or enforce a budget; the near-boundary
-   rerun that would satisfy the slice's own exit criterion is still owed; token
-   counts are caller-supplied estimates rather than provider-reported usage;
-   there is no prompt-evaluation or cache telemetry, so the stable prefix is
-   proven stable but not proven to help; and semantic compaction is requested,
-   not implemented. See
-   `docs/evaluation/slice-5-context-compaction-and-budgets-2026-07-30.md`;
+   See `docs/evaluation/slice-5-context-compaction-and-budgets-2026-07-30.md`.
+
+7. **Done in code (handoff slice 5B, ADR 0080), unproven live.**
+   `workcell/session.py` supplies the caller slice 5 lacked and corrects three
+   authority defects. Prompt stability is provenance, not lexical shape: the
+   kernel is written once and read back, so a fixed UUID in an objective is
+   legitimate and a mid-session edit raises `KernelDriftError`. Compaction and
+   the token ceilings read provider-reported usage only; the estimate is kept
+   for diagnosis and barred from both gates, and a missing ledger leaves the
+   ceilings `unenforced` rather than passing. Progress is a changed worktree, a
+   newly discharged obligation, **or** a new controller-produced evidence
+   artifact -- a debugging turn that edits nothing still counts -- while model
+   narration never does.
+
+   **Outstanding, and these are the claims the slice exists for.** Two of the
+   seven exit criteria are unmet, both live: whether a real Qwen retains the
+   capsule and keeps editing and testing after compaction, and whether the
+   stable prefix actually earns cached input against this provider. The prefix
+   is proven *stable*; it is not proven to *help*, so the efficiency claim does
+   not exist. Semantic compaction is a callable with no production
+   implementation, so today every over-threshold session mechanical compaction
+   cannot rescue stops rather than summarising.
+   `TurnResult.observation` is not yet routed through `bound_observation`. See
+   `docs/evaluation/slice-5b-session-coordinator-2026-07-30.md`;
 7. benchmark safe LSP feedback, adaptive verification, task-routed reasoning,
    read-only parallelism, and the local `llama-server` profile without lowering
    any paired quality result;

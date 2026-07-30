@@ -76,13 +76,63 @@ class SessionBudget(StrictModel):
         return self
 
 
+class TokenLedger(StrictModel):
+    """Token counts, with authority attached.
+
+    Two numbers, and only one of them may stop a session. `input_tokens` and
+    `output_tokens` come from the provider's own `usage` events, lifted by
+    `WorkcellEventAdapter` -- the same telemetry that classified the Crisis
+    Atlas ceiling stops. `estimated_*` are the controller's local guesses, kept
+    because they are useful for noticing that the estimator is wrong, and
+    barred from every gate because an estimate that stops a session is a
+    session stopped by a bug in the estimator.
+
+    `reported` is false until at least one usage event arrives. A ledger with
+    no telemetry does not read as zero spend: it reads as unmeasured, and the
+    token ceilings say so rather than silently passing.
+    """
+
+    reported: bool = False
+    input_tokens: int = Field(default=0, ge=0)
+    output_tokens: int = Field(default=0, ge=0)
+    cached_input_tokens: int = Field(default=0, ge=0)
+    #: Diagnostic only. Never compared against a ceiling, never used to trigger
+    #: compaction. See the class docstring.
+    estimated_input_tokens: int = Field(default=0, ge=0)
+    estimated_output_tokens: int = Field(default=0, ge=0)
+
+    @classmethod
+    def from_trace(cls, trace, **estimates) -> TokenLedger:
+        """Build from a `WorkcellSessionTrace`'s provider-reported usage."""
+
+        reported = bool(
+            trace.input_tokens or trace.output_tokens or trace.cached_input_tokens
+        )
+        return cls(
+            reported=reported,
+            input_tokens=trace.input_tokens,
+            output_tokens=trace.output_tokens,
+            cached_input_tokens=trace.cached_input_tokens,
+            **estimates,
+        )
+
+    @property
+    def estimate_error(self) -> int | None:
+        """Signed difference between the estimate and the truth, when known."""
+
+        if not self.reported or not self.estimated_input_tokens:
+            return None
+        return self.estimated_input_tokens - self.input_tokens
+
+
 class BudgetUsage(StrictModel):
     """What has been spent so far."""
 
     wall_clock_seconds: float = Field(default=0.0, ge=0)
     process_seconds: float = Field(default=0.0, ge=0)
-    input_tokens: int = Field(default=0, ge=0)
-    output_tokens: int = Field(default=0, ge=0)
+    #: Provider-reported only. An unreported ledger leaves the token ceilings
+    #: unenforced and says so in the verdict, rather than reading as zero.
+    tokens: TokenLedger = Field(default_factory=TokenLedger)
     model_calls: int = Field(default=0, ge=0)
     destructive_actions: int = Field(default=0, ge=0)
     consecutive_no_progress_turns: int = Field(default=0, ge=0)
@@ -100,6 +150,10 @@ class BudgetBreach(StrictModel):
 class BudgetVerdict(StrictModel):
     within_budget: bool
     breaches: list[BudgetBreach] = Field(default_factory=list)
+    #: Ceilings that could not be checked. Non-empty means the verdict is
+    #: partial, and `within_budget=True` means "nothing measurable was
+    #: exceeded" rather than "the session is within budget".
+    unenforced: list[BudgetKind] = Field(default_factory=list)
     #: Fraction of the tightest budget consumed, for reporting pressure before
     #: it becomes a stop.
     pressure: float = Field(default=0.0, ge=0)
@@ -116,6 +170,7 @@ def evaluate_budget(budget: SessionBudget, usage: BudgetUsage) -> BudgetVerdict:
 
     breaches: list[BudgetBreach] = []
     ratios: list[float] = []
+    unenforced: list[BudgetKind] = []
 
     def check(
         kind: BudgetKind, used: float, limit: float, detail: str, guidance: str = ""
@@ -138,20 +193,27 @@ def evaluate_budget(budget: SessionBudget, usage: BudgetUsage) -> BudgetVerdict:
         f"in-workcell process time {usage.process_seconds:.0f}s reached the "
         f"{budget.process_seconds:.0f}s ceiling",
     )
-    check(
-        BudgetKind.INPUT_TOKENS,
-        usage.input_tokens,
-        budget.max_input_tokens,
-        f"input tokens {usage.input_tokens:,} reached the "
-        f"{budget.max_input_tokens:,} ceiling",
-    )
-    check(
-        BudgetKind.OUTPUT_TOKENS,
-        usage.output_tokens,
-        budget.max_output_tokens,
-        f"output tokens {usage.output_tokens:,} reached the "
-        f"{budget.max_output_tokens:,} ceiling",
-    )
+    if usage.tokens.reported:
+        check(
+            BudgetKind.INPUT_TOKENS,
+            usage.tokens.input_tokens,
+            budget.max_input_tokens,
+            f"input tokens {usage.tokens.input_tokens:,} reached the "
+            f"{budget.max_input_tokens:,} ceiling",
+        )
+        check(
+            BudgetKind.OUTPUT_TOKENS,
+            usage.tokens.output_tokens,
+            budget.max_output_tokens,
+            f"output tokens {usage.tokens.output_tokens:,} reached the "
+            f"{budget.max_output_tokens:,} ceiling",
+        )
+    else:
+        # No provider usage event has arrived. The estimates are present and
+        # are deliberately not substituted: a session stopped on an estimate is
+        # a session stopped by the estimator's error, and a token ceiling that
+        # silently passes on missing data is worse than one that abstains.
+        unenforced.extend([BudgetKind.INPUT_TOKENS, BudgetKind.OUTPUT_TOKENS])
     check(
         BudgetKind.NO_PROGRESS,
         usage.consecutive_no_progress_turns,
@@ -196,30 +258,86 @@ def evaluate_budget(budget: SessionBudget, usage: BudgetUsage) -> BudgetVerdict:
         )
 
     pressure = max(ratios) if ratios else 0.0
+    unmeasured_note = (
+        ""
+        if not unenforced
+        else (
+            "; token ceilings UNENFORCED -- no provider usage event has been "
+            "reported, and the local estimate is not permitted to stop a session"
+        )
+    )
     if breaches:
         return BudgetVerdict(
             within_budget=False,
             breaches=breaches,
+            unenforced=unenforced,
             pressure=pressure,
             detail=(
                 f"{len(breaches)} budget(s) exhausted: "
                 + "; ".join(item.detail for item in breaches)
+                + unmeasured_note
             ),
         )
     return BudgetVerdict(
         within_budget=True,
+        unenforced=unenforced,
         pressure=pressure,
-        detail=f"within budget; tightest ceiling is {pressure:.0%} consumed",
+        detail=(
+            f"no measurable ceiling exceeded; tightest is {pressure:.0%} consumed"
+            + unmeasured_note
+        ),
     )
 
 
-class ProgressTracker:
-    """Detects a session that is spending without moving.
+class ProgressKind(StrEnum):
+    """The three ways a turn can advance authoritative state."""
 
-    Progress is a change in the worktree fingerprint. Not the model saying it
-    made progress, and not a turn having occurred: Crisis Atlas Slice 2's
-    single turn produced a file, and the sandbox arm's nine identical calls
-    produced nothing while looking busy.
+    WORKTREE = "worktree_changed"
+    OBLIGATION = "obligation_discharged"
+    EVIDENCE = "evidence_produced"
+    NONE = "none"
+
+
+class TurnObservation(StrictModel):
+    """What the controller observed about one turn.
+
+    Every field is controller-owned. The model's account of the turn is
+    deliberately not among them.
+    """
+
+    action_signature: str = Field(min_length=1)
+    worktree_fingerprint: str | None = None
+    #: Obligation ids the readiness evaluator now considers discharged that it
+    #: did not before.
+    discharged_obligations: list[str] = Field(default_factory=list)
+    #: Witness ids or artifact hashes the controller produced this turn. A
+    #: debugging turn that edits nothing but yields a new coverage artifact or
+    #: a new failure diagnosis has advanced the session's knowledge, and
+    #: counting it as no-progress would punish exactly the behaviour the
+    #: unrestricted control did well.
+    evidence_artifacts: list[str] = Field(default_factory=list)
+
+
+class TurnProgress(StrictModel):
+    made_progress: bool
+    kinds: list[ProgressKind] = Field(default_factory=list)
+    detail: str = Field(min_length=1)
+
+
+class ProgressTracker:
+    """Detects a session that is spending without advancing state.
+
+    Progress is **authoritative state advancement**: a changed worktree
+    fingerprint, an obligation the readiness evaluator newly considers
+    discharged, or a new controller-observed evidence artifact. Any one of the
+    three counts.
+
+    Model narration alone is never progress. That is the distinction the Slice
+    2C sandbox arm's nine identical calls turned on -- they read as productive
+    and changed nothing observable -- and it is also why the definition is not
+    just "the worktree changed": a turn that runs a failing test and produces a
+    coverage artifact naming the failure has moved the session forward without
+    touching a file.
     """
 
     def __init__(self) -> None:
@@ -229,26 +347,68 @@ class ProgressTracker:
         self._identical_run = 0
         self.max_identical_run = 0
         self.no_progress_actions: list[str] = []
+        self._seen_obligations: set[str] = set()
+        self._seen_artifacts: set[str] = set()
 
-    def record_turn(self, *, fingerprint: str | None, action_signature: str) -> bool:
-        """Record one turn. Returns whether it made progress."""
+    def record_turn(self, observation: TurnObservation) -> TurnProgress:
+        """Record one turn and say whether -- and how -- it advanced state."""
 
-        if self._last_action == action_signature:
+        if self._last_action == observation.action_signature:
             self._identical_run += 1
         else:
             self._identical_run = 1
-            self._last_action = action_signature
+            self._last_action = observation.action_signature
         self.max_identical_run = max(self.max_identical_run, self._identical_run)
 
-        moved = fingerprint is not None and fingerprint != self.last_fingerprint
-        if moved:
+        kinds: list[ProgressKind] = []
+
+        fingerprint = observation.worktree_fingerprint
+        if fingerprint is not None and fingerprint != self.last_fingerprint:
             self.last_fingerprint = fingerprint
+            kinds.append(ProgressKind.WORKTREE)
+
+        # "Newly" discharged, not "currently" discharged: an obligation that
+        # was already satisfied three turns ago is not this turn's work.
+        fresh_obligations = set(observation.discharged_obligations) - self._seen_obligations
+        if fresh_obligations:
+            self._seen_obligations |= fresh_obligations
+            kinds.append(ProgressKind.OBLIGATION)
+
+        fresh_artifacts = set(observation.evidence_artifacts) - self._seen_artifacts
+        if fresh_artifacts:
+            self._seen_artifacts |= fresh_artifacts
+            kinds.append(ProgressKind.EVIDENCE)
+
+        if kinds:
             self.consecutive_no_progress = 0
-        else:
-            self.consecutive_no_progress += 1
-            if action_signature not in self.no_progress_actions:
-                self.no_progress_actions.append(action_signature)
-        return moved
+            return TurnProgress(
+                made_progress=True,
+                kinds=kinds,
+                detail="; ".join(
+                    {
+                        ProgressKind.WORKTREE: "the worktree changed",
+                        ProgressKind.OBLIGATION: (
+                            f"{len(fresh_obligations)} obligation(s) newly discharged"
+                        ),
+                        ProgressKind.EVIDENCE: (
+                            f"{len(fresh_artifacts)} new evidence artifact(s)"
+                        ),
+                    }[kind]
+                    for kind in kinds
+                ),
+            )
+
+        self.consecutive_no_progress += 1
+        if observation.action_signature not in self.no_progress_actions:
+            self.no_progress_actions.append(observation.action_signature)
+        return TurnProgress(
+            made_progress=False,
+            kinds=[ProgressKind.NONE],
+            detail=(
+                "the worktree is unchanged, no obligation was newly discharged, "
+                "and no new evidence artifact was produced"
+            ),
+        )
 
 
 class SessionClock:
