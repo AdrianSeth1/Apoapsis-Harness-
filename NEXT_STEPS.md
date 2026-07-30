@@ -111,98 +111,31 @@ Follow
 2. **Done (handoff slice 1).** ADR 0077 sets the boundary: ephemeral capability
    inside a disposable workcell, durable authority outside it. It supersedes the
    execution boundary of ADRs 0059 and 0071 without editing either.
-3. **Implemented in part; live gate blocked at conformance (handoff slice 2).** The
-   `apoapsis.workcell` package provides the pinned identity
-   (`pins.py`, every field required and folded into one digest), the hardened
-   container lifecycle (`controller.py`, one persistent container per session,
-   `--network none` with a controller-owned Unix socket as the only egress),
-   22 containment probes across 7 categories (`containment.py`), nine
-   provider/tool-template/stop-reason conformance checks (`conformance.py`), a
-   one-way `stream-json` adapter over Qwen's native loop with no second
-   scheduler (`events.py`), and the capability spike scored against the frozen
-   control (`spike.py`). `apoapsis workcell-preflight` validates pins and the
-   runtime without starting a model. 48 deterministic tests pass.
+3. **Done (handoff slice 2, through slices 2A-2D).** The `apoapsis.workcell`
+   package provides the pinned identity, the hardened container lifecycle
+   (`--network none`, controller-owned Unix-socket relay as the only egress),
+   22 containment probes, nine provider-protocol conformance checks, a one-way
+   `stream-json` adapter over Qwen's native loop, an execution-profile identity
+   gate, a capability-readiness exercise, and the paired capability spike.
 
-   Slice 2A adds the egress path Slice 2 only specified: a controller-owned
-   Unix-socket relay that forwards to one fixed configured upstream
-   (`relay.py`, `relay_policy.py`), a policy-free read-only in-container
-   forwarder (`forwarder.py`), portability refusal for Windows-host and DrvFs
-   socket paths (`platform_support.py`), and an end-to-end one-token readiness
-   check that cross-checks the relay's own request counter
-   (`relay_preflight.py`). 54 further deterministic tests pass.
+   **Live, 2026-07-30:** containment 22/22, relay readiness passed,
+   provider-protocol conformance 9/9, both arms running genuine
+   `@qwen-code/qwen-code@0.21.1` at `permission_mode=yolo` with 26 tools and no
+   `computer_use__*`, capability readiness ready on both, agent profiles
+   identical, both tiny matched tasks passed, spike verdict
+   **`CAPABILITY_PRESERVED`**, and `slice3-gate.json` records `allowed: true`.
+   See `docs/evaluation/slice-2d-execution-profile-identity-2026-07-30.md`.
 
-   A 2026-07-30 owner-machine run passed 22/22 containment probes after
-   sanitizing the sacrificial clone and image, then passed the complete relay
-   path through health, model listing, and a one-token local Qwen generation.
-   The run fixed a stale relay-counter API and Unix-socket group assignment.
-   It stopped before either quality task because no code drove the nine live
-   conformance observations. See
-   `docs/evaluation/slice-2-workcell-conformance-spike-2026-07-30.md` and
-   `docs/evaluation/slice-2-live-gate-2026-07-30.md`.
+   Slice 2C's two arms remain `NOT_MEASURABLE` and their ~940,000 input tokens
+   are excluded from model-quality and efficiency scoring: they measured
+   genuine Qwen Code launched as a read-only planner, which is an
+   execution-profile identity failure, not a capability result.
 
-   **Slice 2B closed those three gaps and ran the gate live.**
-   `conformance_driver.py` drives all nine checks through the real relay path
-   and `apoapsis workcell-conformance` runs the ordered gate;
-   `pin_capture.py` captures the system-prompt, tool-schema, and chat-template
-   hashes from the CLI's own wire traffic and the server's `/props`, replacing
-   the provisional installed-bundle stand-ins; `clone.py` builds and audits the
-   sanitized disposable clone, which the containment probes then accepted 22/22.
+   Standing caveats: one tiny task at one seed promotes nothing; no compaction
+   event fired, so the CLI limit mismatch stays *causally consistent* with the
+   Crisis Atlas rollover rather than proven; and `relay.py` still cannot be
+   imported on Windows.
 
-   The live result is a **failure, and a useful one**: seven of nine checks
-   passed, but the CLI declares a **1,000,000-token context window** for a model
-   the server serves at **65,536** — the unexplained Crisis Atlas failure mode,
-   now named. `multiline_unicode_integrity` also failed, but on the model
-   retyping curly quotes rather than on transport corruption; the check was left
-   failing rather than loosened. No paired task was run, no acceptance repair was
-   performed, and the spike verdict is `NOT_MEASURABLE`. See
-   `docs/evaluation/slice-2b-live-conformance-and-pins-2026-07-30.md`.
-
-   **Slice 2C closed both of those and ran the paired arms.** The declared
-   limits are reconciled by a `generationConfig` override on the selected
-   `modelProviders` entry (65,536 / 16,384) rather than by patching Qwen's
-   bundled table, which is deliberately left reporting 1,000,000 / 64,000; what
-   the CLI *resolves* is read back from its own `loadSettings` /
-   `resolveCliGenerationConfig`, and the whole effective config is hashed into
-   the run manifest digest. ADR 0078 re-bases `multiline_unicode_integrity` on
-   a deterministic echo provider reached through the real relay path, comparing
-   captured request bytes to parsed response bytes, and moves model
-   transcription accuracy to a non-gating metric. The relay refuses (never
-   clamps) an output budget above the pinned ceiling. **Conformance is 9/9
-   live.**
-
-   The paired arms then ran with no acceptance repair and returned
-   `CAPABILITY_REGRESSED`, but the measurement is **not valid** as a capability
-   comparison: the agent CLI in the workcell image exposes no `write_file`,
-   `edit`, or `run_shell_command`, contradicting the pin's 13 wire-captured
-   tool names, so neither arm could edit a file. See
-   `docs/evaluation/slice-2c-limits-envelope-and-paired-arms-2026-07-30.md`.
-
-   **The next blocking question is the workcell image's agent toolset.** Find
-   out why the installed CLI offers 57 tools (mostly `computer_use__*`, plus
-   `cron_*`, `create_sub_session`, `enter_worktree`) and no editing or shell
-   tool, and why that disagrees with the pinned tool names captured off the
-   wire in 2B. Until an arm can actually edit a file, no paired capability
-   result means anything. Consider whether conformance should gain a tenth
-   check asserting that the CLI's installed toolset matches
-   `AgentCliPin.tool_names` — the nine current checks all passed against a CLI
-   that could not write a file, which is the coverage gap that let this
-   through.
-
-   Also still owed: a near-boundary run in which compaction actually **fires**.
-   Slice 2C reached 88.6% of the 65,536-token window with no rollover *and no
-   compaction event*, so the limit mismatch is only **causally consistent**
-   with the Crisis Atlas rollover — not proven, and not to be described as the
-   root cause.
-
-   Run the live evidence in this order, and stop at the first failure:
-   containment probes with no model spend; relay readiness through the real
-   container; the nine conformance checks; one tiny baseline-Qwen task; the
-   matched Capability Sandbox task; then cold/warm timing and cleanup.
-
-   **Slice 3 is blocked** until the spike returns `CAPABILITY_PRESERVED` with
-   both `contained` and `conformant` true. Do not begin candidate delta
-   admission, and do not jump ahead to slice-readiness contracts, on the
-   strength of deterministic coverage alone;
 4. admit and verify the complete candidate delta outside the model's trust
    boundary;
 5. replace green-test termination with strict slice-readiness contracts and

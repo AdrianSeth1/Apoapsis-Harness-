@@ -100,16 +100,43 @@ def observe_capabilities(
             "no shell action completed successfully",
         )
     )
+    # One *agent-issued* shell call is the whole capability, and the count is
+    # not the discriminator.
+    #
+    # This originally required more than one call, on the theory that a single
+    # invocation could be a configured command rather than a freely chosen one.
+    # That reasoning was wrong about where the boundary is. Every entry in
+    # `trace.shell_calls` comes from the agent's own tool call; the harness's
+    # configured verification commands run through `controller.exec` and never
+    # appear in the trace at all. So the trace already contains only
+    # agent-chosen commands, and the meaningful distinction is 0 versus 1 --
+    # under the legacy typed protocol the count is structurally zero, because
+    # the action grammar has no shell action for the model to reach for.
+    #
+    # Requiring two also made the measurement depend on task size, on a task
+    # deliberately kept tiny so the two arms would not differ by luck. A run
+    # that correctly needed one command would have been recorded as having lost
+    # the ability to run any.
+    #
+    # The evidence string still states the weaker reading honestly: a single
+    # call proves the agent can issue a command of its choosing, and does not
+    # by itself demonstrate variety.
     observations.append(
         _observe(
             BaselineCapability.ARBITRARY_SANDBOX_COMMANDS,
-            # More than one distinct program proves the agent was not confined
-            # to a fixed allowlist of configured commands.
-            len({item for item in shell}) > 0 and len(trace.shell_calls) > 1,
-            f"{len(trace.shell_calls)} distinct shell invocations, not a fixed "
-            "set of owner-configured verification commands",
-            "shell use was too limited to distinguish from a configured "
-            "command allowlist",
+            bool(trace.shell_calls)
+            and any(not item.failed for item in trace.shell_calls),
+            f"{len(trace.shell_calls)} agent-issued shell invocation(s) succeeded; "
+            "these are the agent's own tool calls, not owner-configured "
+            "verification commands, which never enter the trace"
+            + (
+                ""
+                if len(trace.shell_calls) > 1
+                else ". One call proves the agent may issue a command of its "
+                "choosing; it does not by itself demonstrate variety."
+            ),
+            "no agent-issued shell command succeeded, so the agent could not "
+            "run a command of its own choosing at all",
         )
     )
 

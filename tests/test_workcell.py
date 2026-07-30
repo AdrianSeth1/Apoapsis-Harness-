@@ -700,6 +700,57 @@ class SpikeTests(unittest.TestCase):
             report.lost_capabilities,
         )
 
+    def test_one_agent_issued_shell_call_proves_arbitrary_commands(self) -> None:
+        # Slice 2D correction. This check originally required more than one
+        # shell call, which made the measurement depend on task size: a run
+        # that correctly needed exactly one command was recorded as having lost
+        # the ability to run any. The trace only ever contains the agent's own
+        # tool calls -- the harness's configured verification commands go
+        # through `controller.exec` and never appear -- so the real boundary is
+        # zero versus one, which is also where the legacy typed protocol sits.
+        events = [
+            {"type": "tool.call", "call_id": "c1", "name": "write_file"},
+            {"type": "tool.result", "call_id": "c1", "output": "", "exit_code": 0},
+            {"type": "tool.call", "call_id": "c2", "name": "run_shell_command"},
+            {"type": "tool.result", "call_id": "c2", "output": "OK", "exit_code": 0},
+        ]
+        observed = {
+            item.capability: item
+            for item in observe_capabilities(_trace_from(events), run=_run_record())
+        }
+        entry = observed[BaselineCapability.ARBITRARY_SANDBOX_COMMANDS]
+        self.assertEqual(entry.status, CapabilityStatus.PROVIDED)
+        # ...while still saying plainly what one call does not establish.
+        self.assertIn("does not by itself demonstrate variety", entry.evidence)
+
+    def test_no_shell_call_still_means_no_arbitrary_commands(self) -> None:
+        events = [
+            {"type": "tool.call", "call_id": "c1", "name": "write_file"},
+            {"type": "tool.result", "call_id": "c1", "output": "", "exit_code": 0},
+        ]
+        observed = {
+            item.capability: item.status
+            for item in observe_capabilities(_trace_from(events), run=_run_record())
+        }
+        self.assertEqual(
+            observed[BaselineCapability.ARBITRARY_SANDBOX_COMMANDS],
+            CapabilityStatus.UNPROVEN,
+        )
+
+    def test_a_failed_shell_call_does_not_prove_the_capability(self) -> None:
+        events = [
+            {"type": "tool.call", "call_id": "c1", "name": "run_shell_command"},
+            {"type": "tool.result", "call_id": "c1", "exit_code": 127},
+        ]
+        observed = {
+            item.capability: item.status
+            for item in observe_capabilities(_trace_from(events), run=_run_record())
+        }
+        self.assertEqual(
+            observed[BaselineCapability.ARBITRARY_SANDBOX_COMMANDS],
+            CapabilityStatus.UNPROVEN,
+        )
+
     def test_missing_prerequisites_are_not_measurable_not_a_regression(self) -> None:
         # The Slice 2C correction. That run measured genuine Qwen Code launched
         # as a read-only planner: no write_file, no edit, no run_shell_command.
