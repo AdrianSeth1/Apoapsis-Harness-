@@ -28,7 +28,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 from pydantic import Field
 
@@ -427,7 +427,7 @@ def check_relay_readiness(
     controller: "WorkcellController",
     *,
     relay_requests_before: int,
-    relay_requests_after: int,
+    relay_request_count: Callable[[], int],
 ) -> "RelayReadinessReport":
     """Run the three readiness probes inside the started container.
 
@@ -477,7 +477,9 @@ def check_relay_readiness(
             break
     return evaluate_readiness(
         results,
-        relay_requests_observed=max(0, relay_requests_after - relay_requests_before),
+        relay_requests_observed=max(
+            0, relay_request_count() - relay_requests_before
+        ),
     )
 
 

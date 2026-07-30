@@ -13,6 +13,7 @@ operational truth and the documentation must be corrected in the same change.
 
 | Item | Current value |
 | --- | --- |
+| ADR 0077 Slice 2 live gate | **Partially proven, blocked at conformance, 2026-07-30.** A native-ext4 Docker workcell passed all 22 containment probes after the sacrificial clone and image were sanitized. The complete relay path then passed health, model listing, and a one-token Qwen3.6-27B completion, with exactly three relay-observed requests and clean teardown. The run found and fixed a stale relay-counter API and Unix-socket group assignment. Linux CPython 3.12 focused coverage passed 156/156, compileall and diff check passed; the owner stopped the full suite to run separately, so no full-suite result is claimed. The live sequence stopped before either quality task because no driver exists for the nine conformance classifiers; all nine correctly remain `NOT_RUN`. Prompt/tool/template pin provenance and automatic clone sanitization are also missing. Slice 2 and Slice 3 remain blocked. Details: `docs/evaluation/slice-2-live-gate-2026-07-30.md`. |
 | Crisis Atlas unrestricted Qwen CLI control | **Live local evidence, 2026-07-30.** The same Qwen3.6-27B Q4_K_M received the complete approved plan and an arbitrary Bash shell confined to a disposable offline Docker container whose only host mount was the fresh Crisis Atlas seed clone. After one 64K context rollover it built the full stack, added and repaired tests, and stopped normally with 88/88 self-authored tests passing. Independent unit, behavioral, launch, compile, and diff checks passed, but the configured strict web-product gate failed with 10 warnings and browser inspection found a real AC-005 defect: status filtering sent query parameters that the server discarded, so `Closed` still displayed an `investigating` incident. Create/select/status/timeline/action/reload worked. Across 62 successful calls (63 attempted): 2,080,801 input, 35,787 output tokens, 1,052.3 seconds provider latency. This is about 8x the sliced Qwen input, so it did not save input tokens; it did expose substantially better proposal quality than the bounded sliced protocol while reproducing false-success risk. Details: `docs/evaluation/crisis-atlas-qwen-cli-control-2026-07-30.md`. |
 | Qwen baseline-preserving superiority handoff | **Design assignment, not implemented, 2026-07-30.** The unrestricted control changes the next architecture target: the primary local path should preserve a normal Qwen coding CLI's persistent shell/file/test loop inside a disposable workcell, while Apoapsis retains durable authority over admission, verification, checkpoints, state transitions, promotion, and delivery. The trace proves the Slice 2 Local Power session was terminated by the harness after its first incomplete file because inherited checks passed; it was not allowed to finish its own stated work. The new handoff requires strict slice-readiness contracts, structured witnesses, independent negative controls, real context compaction, a genuinely stronger frontier role, authoritative human/frontier repair checkpoints, separate proposal/detection scorecards, and paired per-case non-inferiority before rollout. Its performance plan also covers native Qwen headless events, bounded recoverable tool observations, stable-prefix/local prompt caching, two-tier compaction, safe LSP diagnostics, adaptive verification, task-routed reasoning effort, read-only parallelism, warm-process/fresh-workcell reuse, and quality-gated `llama-server` tuning. ADR 0071 atomic change sets remain a compatibility experiment, not the target capability surface. Details: `docs/handoff-2026-07-30-qwen-baseline-preserving-superiority.md`. |
 | Crisis Atlas 64K Codex-frontier trial | **Live local evidence, 2026-07-29–30.** Qwen3.6-27B Q4_K_M attempted four dependency-ordered slices at 65,536 context; Codex inspected/repaired each checkpoint before the next slice. Final product commit `0d591d7bbf9eebd276df0bc6677f24d19f505f5e` passed 57 unit tests, 8 configured behavioral tests, the real one-process launch smoke, web-product integrity, compileall, diff check, and an interactive browser lifecycle. A deliberate `localStorage` negative control failed the required unit gate. Across 19 Qwen calls: 258,632 input and 55,364 output tokens. The 16,384 output cap mattered (Slice 4 call 1 used 8,213 tokens); maximum input was only 24,583, so 64K was not stressed and no default context change is justified. This checkpoint protocol did not create authoritative plan delivery state: regression point 11 was not run, and the inspected ZIP is a candidate `git archive`, not a harness delivery. Details: `docs/evaluation/crisis-atlas-64k-codex-frontier-trial-2026-07-30.md`. |
@@ -109,14 +110,16 @@ credential access by prompt instruction, model-selected verification or
 acceptance policy, or model-owned completion, Git promotion, plan approval, or
 delivery.
 
-The `apoapsis.workcell` package now implements that boundary, and **nothing
-live has been run through it**: no container started, no Qwen CLI executed, no
-containment probe or conformance check run against a real namespace or chat
-template. Until the capability spike returns `CAPABILITY_PRESERVED` with both
+The `apoapsis.workcell` package implements part of that boundary. A live
+native-ext4 workcell has passed all 22 containment probes and the complete
+relay path has passed through a one-token local-model generation. The real
+Qwen CLI and the nine-check conformance suite have **not** run: the repository
+contains conformance classifiers but no driver that produces their live
+observations. Until the capability spike returns `CAPABILITY_PRESERVED` with both
 `contained` and `conformant` true, the typed Local Power path below remains the
 only local execution mode, and the Capability Sandbox must not be described as
 working execution. See
-`docs/evaluation/slice-2-workcell-conformance-spike-2026-07-30.md`.
+`docs/evaluation/slice-2-live-gate-2026-07-30.md`.
 
 | Layer | Module | Enforced by |
 | --- | --- | --- |
@@ -797,13 +800,16 @@ criteria only when their pass genuinely proves the criterion.
 - ADR 0077 paired scorer and frozen Crisis Atlas facts (deterministic rescore of
   the two records above; no new inference):
   `docs/evaluation/adr-0077-paired-scorer-and-frozen-arms-2026-07-30.md`
-- Slice 2 Capability Sandbox workcell (deterministic only; **no container
-  started, no CLI run, no probe or conformance check executed live**):
+- Slice 2 Capability Sandbox workcell (deterministic implementation record):
   `docs/evaluation/slice-2-workcell-conformance-spike-2026-07-30.md`
 - Slice 2A model relay and forwarder (relay exercised end to end over real Unix
   sockets against a fake upstream; **no container, no live model**), including
   the full-suite baseline of 12 pre-existing failures:
   `docs/evaluation/slice-2a-model-relay-2026-07-30.md`
+- Slice 2 live gate (22/22 containment and one-token relay readiness passed;
+  stopped with all nine conformance checks `NOT_RUN` because their live driver
+  is absent):
+  `docs/evaluation/slice-2-live-gate-2026-07-30.md`
 - Earlier local smoke records: remaining files in `docs/evaluation/`
 
 Use these dated records for exact setups and observed results. Keep new live
@@ -1404,8 +1410,10 @@ from the pair. Slice 2 is permanently labelled *both* a proposal miss (a partial
 service at the wrong package path, no export service, no tests) and a detection
 miss (the harness applied it, saw inherited green, and said `COMPLETE`).
 
-The workcell itself does not exist. Do not describe ADR 0077 as implemented
-execution.
+The workcell lifecycle and relay exist and have live containment/readiness
+evidence. The real CLI conformance driver, pin-capture provenance, paired
+quality run, candidate admission, and later authority layers do not. Do not
+describe ADR 0077 as qualified execution.
 
 Read the relevant ADR completely before altering its area. Preserve old ADRs as
 history; supersede them with a new ADR rather than rewriting the old decision.

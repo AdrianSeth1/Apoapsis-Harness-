@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import os
 import platform
+import stat
 import sys
 from enum import StrEnum
 from pathlib import Path
@@ -174,7 +175,12 @@ def prepare_socket_directory(socket_path: str) -> Path:
     if path.exists():
         path.unlink()
     try:
-        os.chmod(directory, 0o770)
+        # A controller may set setgid on this dedicated directory so the
+        # socket inherits the non-root workcell's numeric group. Do not erase
+        # that bit: doing so makes the first relay connection fail with EACCES.
+        current_mode = directory.stat().st_mode
+        mode = 0o2770 if current_mode & stat.S_ISGID else 0o770
+        os.chmod(directory, mode)
     except OSError:
         # Best effort: on some filesystems this is not settable, and the
         # dedicated-directory check above is the load-bearing control.

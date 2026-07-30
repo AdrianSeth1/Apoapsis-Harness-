@@ -3,14 +3,18 @@ from __future__ import annotations
 import hashlib
 import http.client
 import json
+import os
 import socket
+import stat
 import tempfile
 import threading
 import time
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from types import SimpleNamespace
 
+from apoapsis.workcell.controller import WorkcellExecResult, check_relay_readiness
 from apoapsis.workcell.platform_support import (
     HostPlatform,
     SocketSupport,
@@ -278,6 +282,15 @@ class PlatformSupportTests(unittest.TestCase):
             prepare_socket_directory(str(path))
             self.assertFalse(path.exists())
 
+    @unittest.skipUnless(os.name == "posix", "requires POSIX mode bits")
+    def test_socket_directory_preserves_setgid_for_workcell_group(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp) / "run"
+            directory.mkdir()
+            directory.chmod(0o2770)
+            prepare_socket_directory(str(directory / "model.sock"))
+            self.assertTrue(directory.stat().st_mode & stat.S_ISGID)
+
 
 class _FakeUpstream:
     """A minimal OpenAI-shaped model server for the end-to-end relay tests."""
@@ -427,6 +440,17 @@ class RelayEndToEndTests(unittest.TestCase):
         self.assertIn(b"qwen", body)
         self.assertEqual(relay.stats.requests_served, 1)
         self.assertEqual(self.upstream.requests[0][1], "/v1/models")
+
+    @unittest.skipUnless(
+        hasattr(os, "geteuid") and os.geteuid() == 0,
+        "changing the dedicated test directory group requires root",
+    )
+    def test_socket_inherits_the_workcell_directory_group_explicitly(self) -> None:
+        directory = Path(self.socket_path).parent
+        directory.mkdir()
+        os.chown(directory, -1, 65532)
+        self._relay()
+        self.assertEqual(Path(self.socket_path).stat().st_gid, 65532)
 
     def test_a_one_token_completion_round_trips(self) -> None:
         relay = self._relay()
@@ -638,6 +662,39 @@ class RelayReadinessTests(unittest.TestCase):
             relay_requests_observed=3,
         )
         self.assertTrue(report.ready)
+
+    def test_controller_reads_relay_counter_after_running_probes(self) -> None:
+        class FakeController:
+            def __init__(self) -> None:
+                self.requests = 10
+                self.config = SimpleNamespace(
+                    egress=SimpleNamespace(loopback_port=8080),
+                    pin=SimpleNamespace(
+                        model=SimpleNamespace(model_name="qwen3.6-27b")
+                    ),
+                )
+
+            def exec(self, argv, *, timeout_seconds):
+                self.requests += 1
+                body = (
+                    json.dumps({"choices": [{"message": {"content": "p"}}]})
+                    if "/v1/chat/completions" in argv[-3]
+                    else "{}"
+                )
+                return WorkcellExecResult(
+                    argv=argv,
+                    exit_code=0,
+                    stdout=json.dumps({"status": 200, "body": body}),
+                )
+
+        controller = FakeController()
+        report = check_relay_readiness(
+            controller,  # type: ignore[arg-type]
+            relay_requests_before=controller.requests,
+            relay_request_count=lambda: controller.requests,
+        )
+        self.assertTrue(report.ready)
+        self.assertEqual(report.relay_requests_observed, 3)
 
     def test_success_with_no_relay_traffic_is_a_containment_failure(self) -> None:
         # The container reached a model by some path other than the socket.
