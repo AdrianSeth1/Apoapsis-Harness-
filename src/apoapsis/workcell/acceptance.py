@@ -43,6 +43,7 @@ from enum import StrEnum
 from pydantic import Field, model_validator
 
 from apoapsis.specification.schema import StrictModel
+from apoapsis.workcell.behaviour import BehaviourKind, BehaviourUnit
 from apoapsis.workcell.delta import CandidateDelta, ChangeKind, PathClass
 from apoapsis.workcell.witness import (
     EvidenceClass,
@@ -157,8 +158,11 @@ class ObligationResult(StrictModel):
 class ReadinessBlock(StrEnum):
     OBLIGATION_UNPROVED = "obligation_unproved"
     INTENTIONALLY_UNMEASURED = "intentionally_unmeasured"
-    #: A new production component with nothing proving it is reached.
-    NEW_COMPONENT_UNEXERCISED = "new_component_unexercised"
+    #: An addition -- a new file, a new symbol inside a modified file, or a
+    #: new route -- with nothing proving it is reached. Slice 4 checked added
+    #: files only; Crisis Atlas Slice 3's unreachable export routes lived in a
+    #: *modified* file, which a file-level rule cannot see.
+    CHANGED_BEHAVIOUR_UNEXERCISED = "changed_behaviour_unexercised"
     MISSING_REQUIRED_ARTIFACT = "missing_required_artifact"
     REQUIRED_COMMAND_NOT_PASSED = "required_command_not_passed"
     NO_USABLE_WITNESS = "no_usable_witness"
@@ -181,8 +185,10 @@ class SliceReadinessReport(StrictModel):
     rejected_witnesses: list[WitnessRejection] = Field(default_factory=list)
     #: New production components this candidate introduced, and whether each is
     #: reached by current-state evidence.
-    new_components: list[str] = Field(default_factory=list)
-    unexercised_new_components: list[str] = Field(default_factory=list)
+    #: Every addition this candidate made, at file, symbol, and route level.
+    behaviour_units: list[BehaviourUnit] = Field(default_factory=list)
+    #: `unit_id`s that no current-state witness reaches.
+    unexercised_behaviour: list[str] = Field(default_factory=list)
     detail: str = Field(min_length=1)
 
 
@@ -213,6 +219,29 @@ def _exercised_paths(witnesses: list[StructuredWitness]) -> set[str]:
     return reached
 
 
+def _reaches(witnesses: list[StructuredWitness], unit: BehaviourUnit) -> bool:
+    """Did any passing witness actually reach this addition?
+
+    Line granularity where the coverage report has it, path granularity where
+    it does not, and route matching for a launch or behavioural witness that
+    called the route itself. A route is reached by being *called*, which no
+    coverage tool reports.
+    """
+
+    for witness in witnesses:
+        if not witness.passed:
+            continue
+        if unit.kind == BehaviourKind.NEW_ROUTE and any(
+            exchange.route == unit.name for exchange in witness.exchanges
+        ):
+            return True
+        if witness.coverage is not None and witness.coverage.covers(
+            unit.path, unit.start_line, unit.end_line
+        ):
+            return True
+    return False
+
+
 def evaluate_slice_readiness(
     contract: SliceAcceptanceContract,
     delta: CandidateDelta,
@@ -220,6 +249,7 @@ def evaluate_slice_readiness(
     *,
     candidate_paths: set[str] | None = None,
     passed_commands: set[str] | None = None,
+    behaviour_units: list[BehaviourUnit] | None = None,
 ) -> SliceReadinessReport:
     """Decide whether the slice is done. Green commands are one input, not the answer.
 
@@ -338,19 +368,42 @@ def evaluate_slice_readiness(
                 )
             )
 
-    # The new-component rule, applied to the delta rather than to the contract,
-    # so a component the contract forgot to mention is still caught.
-    components = new_production_components(delta)
-    unexercised_components = [item for item in components if item not in reached]
-    for path in unexercised_components:
+    # The changed-behaviour rule, applied to the delta rather than to the
+    # contract, so an addition the contract forgot to mention is still caught.
+    #
+    # `behaviour_units` is supplied by the checkpoint loop, which has both
+    # trees and can parse them. Without it this falls back to added production
+    # files, which is Slice 4's original rule and strictly weaker.
+    units = behaviour_units
+    if units is None:
+        units = [
+            BehaviourUnit(
+                kind=BehaviourKind.NEW_FILE,
+                path=path,
+                name=path,
+                start_line=1,
+                end_line=1,
+            )
+            for path in new_production_components(delta)
+        ]
+    unexercised_units = [item for item in units if not _reaches(usable, item)]
+    for unit in unexercised_units:
         findings.append(
             ReadinessFinding(
-                block=ReadinessBlock.NEW_COMPONENT_UNEXERCISED,
-                path=path,
+                block=ReadinessBlock.CHANGED_BEHAVIOUR_UNEXERCISED,
+                path=unit.path,
                 detail=(
-                    f"{path} is a new production component and no current-state "
-                    "witness proves it is reached. Inherited tests staying green "
-                    "is not evidence: they stay green because they never import it."
+                    f"{unit.unit_id} ({unit.kind.value}) is new in this candidate "
+                    "and no current-state witness proves it is reached. Inherited "
+                    "tests staying green is not evidence: they stay green because "
+                    "they never reach it."
+                    + (
+                        " This route was found by a heuristic; if it is not a real "
+                        "route, remove it from the contract rather than widening "
+                        "what counts as covered."
+                        if unit.heuristic
+                        else ""
+                    )
                 ),
             )
         )
@@ -380,7 +433,7 @@ def evaluate_slice_readiness(
         detail = (
             f"slice {contract.slice_id} is ready: all "
             f"{len(contract.obligations)} obligation(s) discharged by current-state "
-            f"evidence, and {len(components)} new component(s) are exercised"
+            f"evidence, and {len(units)} behaviour unit(s) are exercised"
         )
     else:
         detail = (
@@ -396,8 +449,8 @@ def evaluate_slice_readiness(
         obligations=results,
         findings=findings,
         rejected_witnesses=rejected,
-        new_components=components,
-        unexercised_new_components=unexercised_components,
+        behaviour_units=units,
+        unexercised_behaviour=[item.unit_id for item in unexercised_units],
         detail=detail,
     )
 

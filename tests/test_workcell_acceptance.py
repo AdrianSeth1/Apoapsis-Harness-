@@ -274,9 +274,10 @@ class CrisisAtlasSlice2Tests(unittest.TestCase):
         # The export service was never created at all.
         self.assertIn(ReadinessBlock.OBLIGATION_UNPROVED, blocks)
         # And the file that *was* written is reached by nothing.
-        self.assertIn(ReadinessBlock.NEW_COMPONENT_UNEXERCISED, blocks)
+        self.assertIn(ReadinessBlock.CHANGED_BEHAVIOUR_UNEXERCISED, blocks)
         self.assertEqual(
-            report.unexercised_new_components, ["services/incident_service.py"]
+            report.unexercised_behaviour,
+            ["services/incident_service.py::services/incident_service.py"],
         )
 
         with self.assertRaises(SliceNotReady):
@@ -352,7 +353,7 @@ class CrisisAtlasSlice2Tests(unittest.TestCase):
             passed_commands={"unit-tests"},
         )
         self.assertTrue(report.ready, report.detail)
-        self.assertEqual(report.unexercised_new_components, [])
+        self.assertEqual(report.unexercised_behaviour, [])
 
 
 class NewComponentRuleTests(unittest.TestCase):
@@ -414,7 +415,9 @@ class NewComponentRuleTests(unittest.TestCase):
             candidate_paths={"app/service.py", "tests/test_service.py"},
         )
         self.assertFalse(report.ready)
-        self.assertIn("app/service.py", report.unexercised_new_components)
+        self.assertIn(
+            "app/service.py::app/service.py", report.unexercised_behaviour
+        )
 
     def test_a_behavioural_witness_through_the_product_boundary_counts(self) -> None:
         delta = _delta(_added("app/service.py"))
@@ -601,7 +604,7 @@ class CheckpointTests(unittest.TestCase):
         elif not ready:
             findings.append(
                 ReadinessFinding(
-                    block=ReadinessBlock.NEW_COMPONENT_UNEXERCISED,
+                    block=ReadinessBlock.CHANGED_BEHAVIOUR_UNEXERCISED,
                     path="app/service.py",
                     detail="nothing reaches app/service.py",
                 )

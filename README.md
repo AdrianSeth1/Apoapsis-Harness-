@@ -1334,6 +1334,44 @@ never from configuration: a workcell allowed a shell that never ran one records
 repair — that is a later slice, and changing the interface and the acceptance
 rules at once would make the result unreadable.
 
+## Slice readiness and structured witnesses (ADR 0079)
+
+Under the Capability Sandbox, a slice is **not** complete because its
+configured commands went green. Crisis Atlas Slice 2 completed that way: one
+partial file at the wrong package path, no export service, no tests, and an
+inherited suite that stayed green *because it never imported the new file*.
+
+Completion is now readiness against a `SliceAcceptanceContract`, compiled from
+the approved plan **before the first model call** — from the slice's declared
+paths, declared symbols, acceptance criteria, integration contracts, and
+verification commands. A slice naming no acceptance criteria will not compile a
+contract, and a contract whose criterion no obligation could prove is refused
+at construction.
+
+A verification command's *name* is not evidence. Each run is wrapped into a
+versioned `StructuredWitness` recording the process launched, its readiness
+condition, the address it actually bound, the routes exercised with methods and
+assertions, mutations and the reads that followed them, cleanup, coverage, and
+artifact hashes. A witness is refused if it carries only a name and an exit
+code, if its worktree fingerprint is stale, if a launched process was not
+cleaned up, or if a mutation was never read back.
+
+**Coverage comes from an artifact Apoapsis produced and hashed**, never from a
+model's description of what it ran. The controller deletes the artifact, tells
+the command where to write it, then reads and hashes that file itself. A run
+that produces no artifact yields no witness at all.
+
+The rule covers changed *behaviour*, not changed files: a whole added
+production file, a new top-level symbol inside a modified file, or a new route
+— each checked against line-level coverage. Routes may also be satisfied by a
+witness that actually called them.
+
+At a checkpoint the loop freezes the workcell, admits the delta atomically,
+emits witnesses against the admitted snapshot, and decides one of four
+outcomes. **`CONTINUE`** is the important one: the work was admitted,
+obligations remain, and the agent gets another turn to finish its own stated
+plan rather than the harness declaring the slice done on its behalf.
+
 ## Local Power Sandbox (ADR 0059, experimental)
 
 An opt-in second execution path for **local models only**. It exists to test one

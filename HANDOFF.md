@@ -803,6 +803,14 @@ criteria only when their pass genuinely proves the criterion.
   `docs/evaluation/adr-0077-paired-scorer-and-frozen-arms-2026-07-30.md`
 - Slice 2 Capability Sandbox workcell (deterministic implementation record):
   `docs/evaluation/slice-2-workcell-conformance-spike-2026-07-30.md`
+- Slice 4/4B readiness, structured witnesses, and the checkpoint loop
+  (deterministic only; the two-turn CONTINUE-then-COMPLETE integration runs
+  through `run_checkpoint`):
+  `docs/evaluation/slice-4-slice-readiness-and-witnesses-2026-07-30.md` and
+  `docs/evaluation/slice-4b-witness-emitters-and-checkpoint-loop-2026-07-30.md`
+- Slice 3 candidate delta admission (deterministic plus a live demonstration
+  against the real Slice 2D clones):
+  `docs/evaluation/slice-3-candidate-delta-admission-2026-07-30.md`
 - Slice 2A model relay and forwarder (relay exercised end to end over real Unix
   sockets against a fake upstream; **no container, no live model**), including
   the full-suite baseline of 12 pre-existing failures:
@@ -1426,6 +1434,40 @@ The workcell lifecycle and relay exist and have live containment/readiness
 evidence. The real CLI conformance driver, pin-capture provenance, paired
 quality run, candidate admission, and later authority layers do not. Do not
 describe ADR 0077 as qualified execution.
+
+ADR 0079 (2026-07-30) supersedes the *completion rule* of ADR 0069 without
+editing it. That ADR ended a session once every configured command had passed
+for the current fingerprint; Crisis Atlas Slice 2 showed why that is not a
+definition of done. The inherited tests stayed green precisely because they
+never imported the new file, so greenness was evidence that nothing had changed
+and was read as evidence that everything had.
+
+Completion is now readiness against a `SliceAcceptanceContract` compiled from
+the approved plan **before the first model call**. `evaluate_checkpoint` takes
+an admission result and a readiness report and **no command results at all** --
+a test asserts its signature -- so greenness cannot reach a completion decision
+except through readiness, weighed against obligations. Its `CONTINUE` outcome
+is the one that did not exist: admitted work, obligations outstanding, and the
+agent gets another turn to finish its own stated plan.
+
+Evidence is a `StructuredWitness` the *controller* produces. Coverage is parsed
+from an artifact the controller deleted, requested, read, and hashed itself;
+`source_artifact_sha256` records which file the numbers came from. A coverage
+claim arriving as text is never accepted, because a claim cannot be
+distinguished from a mistake, a stale run, or a different tree. Emitters fail
+closed: a run that produced no artifact yields no witness rather than one with
+an empty section.
+
+The rule is about changed *behaviour*, not changed files. Crisis Atlas Slice
+3's unreachable export routes lived in a modified file, which a file-level rule
+cannot see. A `BehaviourUnit` is a whole added production file, a new top-level
+symbol inside a modified one, or a new route literal, each checked against
+line-level coverage; routes are additionally satisfied by a witness that called
+them.
+
+`run_checkpoint` is the caller: freeze, admit atomically, emit witnesses
+against the *admitted snapshot* so no command is observed running over a
+refused file, evaluate readiness, decide.
 
 Read the relevant ADR completely before altering its area. Preserve old ADRs as
 history; supersede them with a new ADR rather than rewriting the old decision.

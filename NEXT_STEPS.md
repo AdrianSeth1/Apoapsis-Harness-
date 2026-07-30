@@ -157,28 +157,33 @@ Follow
    rather than in a separate pinned verifier workcell (ADR 0077 Layer 4), and
    the admitted snapshot is not yet bound into the plan graph as an
    authoritative `PlanCheckpoint` (slice 6);
-5. **Done (handoff slice 4), unwired.** `apoapsis/workcell/witness.py` defines
-   versioned `StructuredWitness` records — process, bound address, routes,
-   methods, assertions, mutations, cleanup, coverage, artifact hashes, criteria
-   proved — and refuses eight ways a witness can fail to be evidence, including
-   a command name with an exit code and nothing else, a stale worktree
-   fingerprint, and a mutation nothing read back.
-   `apoapsis/workcell/acceptance.py` compiles a `SliceAcceptanceContract`,
-   applies the new-component rule, and replaces ADR 0069's green-test
-   termination with `evaluate_checkpoint`, which takes no command results at
-   all and whose `CONTINUE` outcome is the turn Crisis Atlas Slice 2 was never
-   given.
+5. **Done (handoff slices 4 and 4B).** `workcell/witness.py` defines versioned
+   `StructuredWitness` records and refuses eight ways a witness can fail to be
+   evidence; `workcell/acceptance.py` compiles readiness against a
+   `SliceAcceptanceContract` and replaces ADR 0069's green-test termination
+   with `evaluate_checkpoint`, which takes no command results at all.
 
-   The exit criterion is met as a test: the exact Slice 2 proposal — one
-   partial file at the wrong package path, no export service, no tests,
-   inherited suite green — evaluates **not ready** on three independent blocks,
-   while the required command passed. 24 tests; focused set 187 passing.
+   Slice 4B closed the operational gap a review found: `contract_compiler.py`
+   compiles contracts from the approved plan before spend;
+   `emitters.py` produces witnesses from artifacts **the controller deletes,
+   requests, reads, and hashes**, never from a model's coverage claim;
+   `behaviour.py` generalises the rule from added files to changed behaviour,
+   including new symbols and routes inside modified files; and
+   `checkpoint.py::run_checkpoint` is the caller, emitting witnesses against
+   the admitted snapshot rather than the workcell.
 
-   **Outstanding, and it matters:** nothing emits these witnesses yet, there is
-   no contract compiler from an approved plan slice, coverage is taken on trust
-   from the witness, and no live path calls `evaluate_checkpoint`. The rule is
-   enforceable in principle and unenforced in practice. See
-   `docs/evaluation/slice-4-slice-readiness-and-witnesses-2026-07-30.md`;
+   The integration test the gap demanded exists: the partial Crisis Atlas Slice
+   2 proposal receives `CONTINUE`, the next turn finishes it, and only then
+   `COMPLETE` — through the real loop. ADR 0079 records the decision;
+   `HANDOFF.md` and `README.md` are updated. 20 new tests, focused set 207.
+
+   **Outstanding:** no live run — every test uses temp trees and a fake runner
+   writing a real coverage artifact; coverage is not independently re-derived,
+   which needs ADR 0077's Layer 4 verifier workcell; the route heuristic is
+   Python/Flask-shaped and symbol extraction is Python-only; and interface and
+   integration obligations compile as intentionally unmeasured, so a slice with
+   declared symbols cannot reach automatic `COMPLETE` yet. See
+   `docs/evaluation/slice-4b-witness-emitters-and-checkpoint-loop-2026-07-30.md`;
 6. add bounded recoverable tool output, two-tier compaction, stable-prefix
    prompt caching, persistent state capsules, adaptive budgets, and explicit
    context/output truncation outcomes;

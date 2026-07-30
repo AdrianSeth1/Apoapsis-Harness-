@@ -112,11 +112,30 @@ class CoverageObservation(StrictModel):
 
     #: Repository-relative paths executed during the run.
     executed_paths: list[str] = Field(default_factory=list)
+    #: Executed line numbers per path. Path granularity cannot answer the
+    #: question a *modified* file raises: the file was already covered, and the
+    #: new function inside it may not be. Crisis Atlas Slice 3's unreachable
+    #: export routes lived in a modified file for exactly this reason.
+    executed_lines: dict[str, list[int]] = Field(default_factory=dict)
     #: Modules imported, for languages where import is the meaningful signal.
     imported_modules: list[str] = Field(default_factory=list)
     #: How the coverage was collected. `None` means it was asserted rather
     #: than measured, which `require_witness` refuses.
     collection_method: str | None = None
+    #: SHA-256 of the raw artifact the coverage was parsed out of. Present
+    #: only when the controller produced and read that file itself; a witness
+    #: without it is a coverage *claim*, which the emitters never make.
+    source_artifact_sha256: str | None = Field(default=None, pattern=_SHA256_HEX)
+
+    def covers(self, path: str, start_line: int, end_line: int) -> bool:
+        """True when any line in `[start_line, end_line]` was executed."""
+
+        executed = set(self.executed_lines.get(path, ()))
+        if executed:
+            return any(line in executed for line in range(start_line, end_line + 1))
+        # No line data for this path: fall back to path granularity, which is
+        # all a coverage tool without line reporting can offer.
+        return path in set(self.executed_paths)
 
 
 class StructuredWitness(StrictModel):
