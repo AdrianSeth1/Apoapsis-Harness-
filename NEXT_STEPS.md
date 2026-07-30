@@ -64,11 +64,20 @@ priorities only. Current architecture is in `HANDOFF.md`, decision history is in
 - ADR 0073's evidence-count and ceiling output has been exercised by hand
   against two constructed products, not against a real project run. Record a
   live result the next time a browser product goes through the harness.
-- ADR 0077's paired scorer, ceiling classification, and frozen Crisis Atlas
-  facts are verified: `tests/test_paired_scoring.py` 47/47 and
-  `tests/test_workcell.py` 48/48 pass, with `compileall` clean. Both runs used
-  a sandbox-local 3.10 shim for `StrEnum`/`tomllib`/`datetime.UTC`; re-run on
-  the real 3.12 interpreter. The full deterministic suite is still outstanding.
+- ADR 0077's paired scorer, ceiling classification, frozen Crisis Atlas facts,
+  workcell, and model relay are verified: `compileall` clean,
+  `test_paired_scoring` 47, `test_workcell` 53, `test_workcell_relay` 54, and
+  the **full deterministic suite run across all 65 modules**. It has 12
+  failures — `test_acceptance_coverage` 2, `test_desktop_import` 3,
+  `test_diagnostic_probe` 2, `test_doctor` 2, `test_planning_evaluation` 3 —
+  and **all 12 reproduce identically at commit `0fb4e39`**, before this work,
+  verified in a detached worktree. Treat them as the standing baseline, not as
+  new breakage.
+- Every run used a sandbox-local 3.10 shim for
+  `StrEnum`/`tomllib`/`datetime.UTC` because no 3.11+ interpreter was
+  installable there. **Re-run on the real 3.12 interpreter**, including those
+  12 baseline failures: some may be artefacts of the shim or of running a
+  Windows-targeted suite on Linux.
 - Run focused tests, the full deterministic suite, compileall, and diff check.
 - Do not make a live network, local-model, hosted-model, Docker, or browser claim
   unless that exact path is separately exercised and recorded.
@@ -114,10 +123,26 @@ Follow
    control (`spike.py`). `apoapsis workcell-preflight` validates pins and the
    runtime without starting a model. 48 deterministic tests pass.
 
+   Slice 2A adds the egress path Slice 2 only specified: a controller-owned
+   Unix-socket relay that forwards to one fixed configured upstream
+   (`relay.py`, `relay_policy.py`), a policy-free read-only in-container
+   forwarder (`forwarder.py`), portability refusal for Windows-host and DrvFs
+   socket paths (`platform_support.py`), and an end-to-end one-token readiness
+   check that cross-checks the relay's own request counter
+   (`relay_preflight.py`). 54 further deterministic tests pass.
+
    **Nothing live has run.** No container was started, no CLI executed, no
-   probe or conformance check ran against a real namespace or template. See
-   `docs/evaluation/slice-2-workcell-conformance-spike-2026-07-30.md` for the
-   five steps that produce the missing evidence.
+   probe or conformance check ran against a real namespace or template, and no
+   model was reached. The evaluation environment has no container runtime, GPU,
+   model weights, or `llama-server`; the live sequence needs the owner's
+   machine. See
+   `docs/evaluation/slice-2-workcell-conformance-spike-2026-07-30.md` and
+   `docs/evaluation/slice-2a-model-relay-2026-07-30.md`.
+
+   Run the live evidence in this order, and stop at the first failure:
+   containment probes with no model spend; relay readiness through the real
+   container; the nine conformance checks; one tiny baseline-Qwen task; the
+   matched Capability Sandbox task; then cold/warm timing and cleanup.
 
    **Slice 3 is blocked** until the spike returns `CAPABILITY_PRESERVED` with
    both `contained` and `conformant` true. Do not begin candidate delta

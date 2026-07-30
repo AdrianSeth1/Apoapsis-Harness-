@@ -40,9 +40,11 @@ from apoapsis.workcell.pins import (
     ContainerPin,
     EgressPolicy,
     ModelPin,
+    RelayPin,
     WorkcellConfig,
     WorkcellPin,
 )
+from apoapsis.workcell.relay_policy import ALLOWED_ROUTES, ModelRelayConfig
 from apoapsis.workcell.spike import (
     SpikeVerdict,
     build_spike_report,
@@ -83,12 +85,34 @@ def _pin(**overrides) -> WorkcellPin:
             image_digest=_DIGEST,
             runtime_version="27.0.3",
         ),
+        "relay": RelayPin(
+            relay_version="1.0",
+            forwarder_version="1.0",
+            forwarder_sha256=_SHA,
+            allowed_routes=sorted(
+                f"{method} {path}" for method, path in ALLOWED_ROUTES
+            ),
+            upstream_base_url="http://127.0.0.1:8080",
+        ),
         "seed_commit": "1" * 40,
         "task_artifact_sha256": _SHA,
         "verifier_version": "v1",
     }
     payload.update(overrides)
     return WorkcellPin(**payload)
+
+
+def _egress(tmp: Path) -> EgressPolicy:
+    forwarder = tmp / "tooling" / "forwarder.py"
+    forwarder.parent.mkdir(parents=True, exist_ok=True)
+    forwarder.write_text("# forwarder", encoding="utf-8")
+    return EgressPolicy(
+        relay=ModelRelayConfig(
+            upstream_base_url="http://127.0.0.1:8080",
+            socket_path=str(tmp / "run" / "model.sock"),
+        ),
+        forwarder_host_path=str(forwarder),
+    )
 
 
 def _config(tmp: Path, **overrides) -> WorkcellConfig:
@@ -101,7 +125,7 @@ def _config(tmp: Path, **overrides) -> WorkcellConfig:
         "pin": _pin(),
         "workspace_host_path": str(workspace),
         "task_artifact_host_path": str(artifact),
-        "egress": EgressPolicy(model_socket_host_path=str(tmp / "model.sock")),
+        "egress": _egress(tmp),
     }
     payload.update(overrides)
     return WorkcellConfig(**payload)
@@ -157,7 +181,7 @@ class PinTests(unittest.TestCase):
                     pin=_pin(),
                     workspace_host_path=str(workspace),
                     task_artifact_host_path=str(inside),
-                    egress=EgressPolicy(model_socket_host_path=str(root / "m.sock")),
+                    egress=_egress(root),
                 )
 
     def test_every_identity_field_is_required(self) -> None:
@@ -737,11 +761,54 @@ class ControllerTests(unittest.TestCase):
             self.assertIn("--network", argv)
             self.assertEqual(argv[argv.index("--network") + 1], "none")
             self.assertTrue(
-                any(config.egress.model_socket_container_path in item for item in argv)
+                any(config.egress.socket_container_directory in item for item in argv)
             )
             self.assertTrue(
                 any(item == f"OPENAI_BASE_URL={config.egress.base_url}" for item in argv)
             )
+
+    def test_only_the_dedicated_socket_directory_is_mounted(self) -> None:
+        # Never a broad writable host path: that would be a channel the relay
+        # does not mediate.
+        with tempfile.TemporaryDirectory() as tmp:
+            config = _config(Path(tmp))
+            argv = WorkcellController(config).build_create_argv()
+            mounts = [argv[i + 1] for i, item in enumerate(argv) if item == "-v"]
+            socket_mount = next(
+                item
+                for item in mounts
+                if config.egress.socket_container_directory in item
+            )
+            self.assertTrue(socket_mount.startswith(config.egress.socket_host_directory))
+            self.assertNotIn(str(Path(tmp)) + ":", socket_mount)
+
+    def test_the_forwarder_is_mounted_read_only_outside_the_worktree(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config = _config(Path(tmp))
+            argv = WorkcellController(config).build_create_argv()
+            mounts = [argv[i + 1] for i, item in enumerate(argv) if item == "-v"]
+            forwarder = next(item for item in mounts if "forwarder.py" in item)
+            self.assertTrue(forwarder.endswith(":ro"))
+            self.assertNotIn(":/workspace", forwarder)
+
+    def test_tooling_inside_the_worktree_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            egress = _egress(root)
+            payload = egress.model_dump(mode="json")
+            payload["forwarder_container_path"] = "/workspace/forwarder.py"
+            with self.assertRaises(ValueError):
+                EgressPolicy.model_validate(payload)
+
+    def test_preflight_refuses_a_forwarder_whose_hash_is_not_pinned(self) -> None:
+        from apoapsis.execution.backend import SandboxUnavailableError
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = _config(root, runtime_executable="true")
+            # The pin declares a different hash than the file on disk.
+            with self.assertRaises(SandboxUnavailableError):
+                WorkcellController(config).preflight()
 
     def test_the_container_is_a_persistent_shell_host(self) -> None:
         # One container for the whole session, not one per command.

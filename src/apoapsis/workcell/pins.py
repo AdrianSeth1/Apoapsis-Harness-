@@ -23,6 +23,7 @@ from typing import Literal
 from pydantic import Field, model_validator
 
 from apoapsis.specification.schema import StrictModel
+from apoapsis.workcell.relay_policy import ModelRelayConfig
 
 _SHA256_HEX = r"^[0-9a-f]{64}$"
 _IMAGE_DIGEST = r"^sha256:[0-9a-f]{64}$"
@@ -117,6 +118,40 @@ class ContainerPin(StrictModel):
     dependency_layer_digest: str | None = Field(default=None, pattern=_IMAGE_DIGEST)
 
 
+class RelayPin(StrictModel):
+    """The egress path's identity.
+
+    The relay and the forwarder are as much a part of the experiment as the
+    model: a change to either alters what the agent can reach, how large a
+    response can be, and how a cancelled stream behaves. Binding them here means
+    a run cannot be compared against one that used different egress code.
+    """
+
+    relay_version: str = Field(min_length=1)
+    forwarder_version: str = Field(min_length=1)
+    #: Hash of the exact forwarder bytes mounted into the container.
+    forwarder_sha256: str = Field(pattern=_SHA256_HEX)
+    #: Read-only mount point, deliberately outside `/workspace`.
+    forwarder_container_path: str = Field(
+        default="/opt/apoapsis/forwarder.py", min_length=1
+    )
+    #: Sorted "METHOD PATH" strings actually permitted for this run.
+    allowed_routes: list[str] = Field(min_length=1)
+    #: The one upstream the relay will forward to.
+    upstream_base_url: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_routes_sorted(self) -> RelayPin:
+        if list(self.allowed_routes) != sorted(self.allowed_routes):
+            raise ValueError("allowed_routes must be sorted for a stable digest")
+        if self.forwarder_container_path.startswith("/workspace"):
+            raise ValueError(
+                "the forwarder is controller tooling and must be mounted "
+                "outside the project worktree"
+            )
+        return self
+
+
 class WorkcellPin(StrictModel):
     """The complete, required identity of one workcell run."""
 
@@ -124,6 +159,7 @@ class WorkcellPin(StrictModel):
     model: ModelPin
     agent_cli: AgentCliPin
     container: ContainerPin
+    relay: RelayPin
     #: Commit the disposable clone was made from.
     seed_commit: str = Field(pattern=r"^[0-9a-f]{40}$")
     #: Hash of the read-only task artifact mounted outside the project tree.
@@ -210,22 +246,53 @@ class EgressPolicy(StrictModel):
     reconfigure by prompt — the netns simply has no route.
     """
 
-    #: Host path of the controller-owned socket, bind-mounted into the
-    #: container. The controller creates and deletes it.
-    model_socket_host_path: str = Field(min_length=1)
-    #: Where the socket appears inside the container.
-    model_socket_container_path: str = Field(
-        default="/run/apoapsis/model.sock", min_length=1
+    #: Controller-side forwarding rule. Names the one upstream, the socket, and
+    #: every limit the relay enforces.
+    relay: ModelRelayConfig
+    #: Host path of the forwarder script, mounted read-only. Immutable
+    #: controller tooling: the agent cannot edit it and it is not in the
+    #: worktree, so it never enters the computed delta.
+    forwarder_host_path: str = Field(min_length=1)
+    forwarder_container_path: str = Field(
+        default="/opt/apoapsis/forwarder.py", min_length=1
     )
+    #: Where the socket's *directory* appears inside the container. Only the
+    #: dedicated directory is mounted, never a broad writable host path.
+    socket_container_directory: str = Field(default="/run/apoapsis", min_length=1)
     #: Loopback port the in-container forwarder listens on. Inside a
     #: `--network none` namespace this reaches nothing but the forwarder.
     loopback_port: int = Field(default=8080, ge=1, le=65_535)
-    #: Hard ceiling on model requests for the session, enforced at the socket.
-    max_model_requests: int = Field(default=400, ge=1, le=10_000)
+
+    @property
+    def model_socket_host_path(self) -> str:
+        return self.relay.socket_path
+
+    @property
+    def socket_host_directory(self) -> str:
+        return self.relay.socket_directory
+
+    @property
+    def model_socket_container_path(self) -> str:
+        name = self.relay.socket_path.replace("\\", "/").rsplit("/", 1)[-1]
+        return f"{self.socket_container_directory.rstrip('/')}/{name}"
 
     @property
     def base_url(self) -> str:
         return f"http://127.0.0.1:{self.loopback_port}/v1"
+
+    @property
+    def max_model_requests(self) -> int:
+        return self.relay.max_total_requests
+
+    @model_validator(mode="after")
+    def validate_tooling_outside_worktree(self) -> EgressPolicy:
+        for path in (self.forwarder_container_path, self.socket_container_directory):
+            if path.startswith("/workspace"):
+                raise ValueError(
+                    f"{path!r} is inside the project worktree; controller "
+                    "tooling and the relay socket must live outside it"
+                )
+        return self
 
 
 WorkcellConfig.model_rebuild()

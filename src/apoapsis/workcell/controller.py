@@ -20,6 +20,7 @@ and "the image was already warm" are different claims.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
 import subprocess
@@ -27,11 +28,16 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from pydantic import Field
 
+if TYPE_CHECKING:
+    from apoapsis.workcell.relay_preflight import RelayReadinessReport
+
 from apoapsis.execution.backend import SandboxUnavailableError
 from apoapsis.specification.schema import StrictModel, utc_now
+from apoapsis.workcell.platform_support import assess_socket_support
 from apoapsis.workcell.pins import WorkcellConfig
 
 _RUNTIME_CALL_TIMEOUT_SECONDS = 30.0
@@ -147,6 +153,29 @@ class WorkcellController:
             raise SandboxUnavailableError(
                 f"the read-only task artifact {artifact} does not exist"
             )
+        forwarder = Path(self.config.egress.forwarder_host_path)
+        if not forwarder.is_file():
+            raise SandboxUnavailableError(
+                f"the forwarder tooling {forwarder} does not exist"
+            )
+        expected = self.config.pin.relay.forwarder_sha256
+        actual = _file_sha256(forwarder)
+        if actual != expected:
+            raise SandboxUnavailableError(
+                f"the forwarder at {forwarder} hashes to {actual}, but the run "
+                f"manifest pins {expected}. The egress code is part of the "
+                "experiment's identity; refusing to run a different one."
+            )
+        assessment = assess_socket_support(self.config.egress.model_socket_host_path)
+        if not assessment.usable:
+            raise SandboxUnavailableError(
+                assessment.detail
+                + (
+                    "\n\nTry:\n- " + "\n- ".join(assessment.remedies)
+                    if assessment.remedies
+                    else ""
+                )
+            )
 
     @property
     def image_reference(self) -> str:
@@ -200,10 +229,15 @@ class WorkcellController:
             # task can never be rewritten or committed as project content.
             "-v",
             f"{self.config.task_artifact_host_path}:/task/task.md:ro",
-            # The only egress. The controller creates, owns, meters, and
-            # deletes this socket.
+            # The only egress. A *dedicated* directory containing nothing but
+            # the socket -- mounting a broad writable host path would hand the
+            # workcell a channel the relay does not mediate.
             "-v",
-            f"{egress.model_socket_host_path}:{egress.model_socket_container_path}:rw",
+            f"{egress.socket_host_directory}:{egress.socket_container_directory}:rw",
+            # Immutable controller tooling, read-only and outside /workspace so
+            # the agent cannot edit it and it never enters the computed delta.
+            "-v",
+            f"{egress.forwarder_host_path}:{egress.forwarder_container_path}:ro",
             "-e",
             f"OPENAI_BASE_URL={egress.base_url}",
             "-e",
@@ -389,6 +423,64 @@ class WorkcellController:
             ) from exc
 
 
+def check_relay_readiness(
+    controller: "WorkcellController",
+    *,
+    relay_requests_before: int,
+    relay_requests_after: int,
+) -> "RelayReadinessReport":
+    """Run the three readiness probes inside the started container.
+
+    Separated from `WorkcellController` so it can be exercised against a fake
+    exec function: the classification logic is worth testing without Docker,
+    and the Docker part is a thin loop over `controller.exec`.
+    """
+
+    from apoapsis.workcell.relay_preflight import (
+        ReadinessStep,
+        build_probe_argv,
+        classify_probe_output,
+        evaluate_readiness,
+        one_token_payload,
+    )
+
+    egress = controller.config.egress
+    base = f"http://127.0.0.1:{egress.loopback_port}"
+    plan = [
+        (ReadinessStep.FORWARDER_LISTENING, "GET", f"{base}/health", ""),
+        (ReadinessStep.HEALTH_ROUND_TRIP, "GET", f"{base}/v1/models", ""),
+        (
+            ReadinessStep.ONE_TOKEN_COMPLETION,
+            "POST",
+            f"{base}/v1/chat/completions",
+            one_token_payload(controller.config.pin.model.model_name),
+        ),
+    ]
+    results = []
+    for step, method, url, payload in plan:
+        outcome = controller.exec(
+            build_probe_argv(
+                method=method, url=url, payload=payload, timeout_seconds=60.0
+            ),
+            timeout_seconds=90.0,
+        )
+        result = classify_probe_output(
+            step,
+            stdout=outcome.stdout,
+            exit_code=outcome.exit_code,
+            duration=outcome.duration_seconds,
+        )
+        results.append(result)
+        if result.status.value == "failed":
+            # Stop at the first failure. Running the token-spending step after
+            # the health route already failed spends a request to learn nothing.
+            break
+    return evaluate_readiness(
+        results,
+        relay_requests_observed=max(0, relay_requests_after - relay_requests_before),
+    )
+
+
 def _worktree_fingerprint(root: Path) -> str | None:
     """SHA-256 over the sorted relative paths and content digests.
 
@@ -419,6 +511,10 @@ def _worktree_fingerprint(root: Path) -> str | None:
         digest.update(content.encode("ascii"))
         digest.update(b"\n")
     return digest.hexdigest()
+
+
+def _file_sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def _to_text(value: str | bytes | None) -> str:
