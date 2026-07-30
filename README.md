@@ -1221,10 +1221,24 @@ container → loopback forwarder → Unix socket → controller relay → local
 with three requests observed by the relay and clean teardown.
 
 The mode is still blocked: the real Qwen CLI has not run in this workcell, and
-the repository has no driver that produces the nine live conformance
-observations. All nine therefore remain `NOT_RUN`; no baseline or matched
-quality claim is permitted. See
-`docs/evaluation/slice-2-live-gate-2026-07-30.md`.
+the nine live conformance observations are now produced by
+`workcell/conformance_driver.py`, driven through the real relay path by
+`apoapsis workcell-conformance`. In the 2026-07-30 Slice 2B live run,
+containment held 22/22 and seven of the nine checks passed, but
+`declared_limits_match_server` failed: the CLI believes this model has a
+1,000,000-token context window while the server reports 65,536.
+`multiline_unicode_integrity` also failed, on model transcription rather than
+transport corruption. Conformance therefore fails closed, the capability spike
+is `NOT_MEASURABLE`, and no baseline or matched quality claim is permitted. See
+`docs/evaluation/slice-2b-live-conformance-and-pins-2026-07-30.md`.
+
+Run the ordered live gate, and decide whether Slice 3 may begin:
+
+```bash
+apoapsis workcell-conformance workcell.json \
+  --evidence-dir evidence/ --server-max-output-tokens 16384
+apoapsis slice3-gate evidence/spike-report.json
+```
 
 Validate a pinned configuration without starting a model:
 

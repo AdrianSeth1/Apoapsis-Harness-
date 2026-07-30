@@ -810,6 +810,17 @@ criteria only when their pass genuinely proves the criterion.
   stopped with all nine conformance checks `NOT_RUN` because their live driver
   is absent):
   `docs/evaluation/slice-2-live-gate-2026-07-30.md`
+- Slice 2B live conformance and captured pins (**live**: real container, real
+  `llama-server`, real Qwen weights and CLI). All nine checks executed;
+  containment 22/22; seven passed. Failed on `declared_limits_match_server` —
+  the CLI declares a 1,000,000-token window against a 65,536-token server,
+  which is the Crisis Atlas failure mode's root cause — and on
+  `multiline_unicode_integrity`, which was diagnosed as model transcription
+  rather than transport corruption and left failing rather than loosened. The
+  prompt, tool-schema, and chat-template pins are now captured from the CLI's
+  wire traffic and the server's `/props`. No paired task run, no acceptance
+  repair, spike verdict `NOT_MEASURABLE`, **Slice 3 still blocked**:
+  `docs/evaluation/slice-2b-live-conformance-and-pins-2026-07-30.md`
 - Earlier local smoke records: remaining files in `docs/evaluation/`
 
 Use these dated records for exact setups and observed results. Keep new live

@@ -1248,6 +1248,65 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         help="JSON file containing a fully pinned WorkcellConfig",
     )
+
+    conformance = subparsers.add_parser(
+        "workcell-conformance",
+        help=(
+            "run the ordered live gate against a real endpoint: containment "
+            "probes, relay readiness, then the nine conformance checks"
+        ),
+    )
+    conformance.add_argument(
+        "config",
+        type=Path,
+        help="JSON file containing a fully pinned WorkcellConfig",
+    )
+    conformance.add_argument(
+        "--evidence-dir",
+        type=Path,
+        required=True,
+        help="directory to write the raw containment, readiness, and check records to",
+    )
+    conformance.add_argument(
+        "--cli-bundle-path",
+        default="/usr/local/lib/node_modules/@qwen-code/qwen-code",
+        help=(
+            "path to the agent CLI bundle inside the workcell image; its "
+            "declared token limits are read from it by executing its own module"
+        ),
+    )
+    conformance.add_argument(
+        "--server-max-output-tokens",
+        type=int,
+        required=True,
+        help=(
+            "the output ceiling the model server was actually launched with; "
+            "llama-server does not report one, so it is supplied and hashed "
+            "into the pin's server_flags_sha256 rather than guessed"
+        ),
+    )
+    conformance.add_argument(
+        "--skip-containment",
+        action="store_true",
+        help=(
+            "run readiness and conformance only. For re-running the checks "
+            "after a containment pass in the same session; never for reporting "
+            "containment as held"
+        ),
+    )
+
+    gate = subparsers.add_parser(
+        "slice3-gate",
+        help=(
+            "decide whether candidate delta admission may begin, by "
+            "re-deriving the verdict from a capability spike report"
+        ),
+    )
+    gate.add_argument(
+        "report",
+        type=Path,
+        help="JSON file containing a CapabilitySpikeReport",
+    )
     return parser
 
 
@@ -1323,6 +1382,16 @@ def _dispatch(args: argparse.Namespace) -> dict[str, object] | None:
         return _aggregate_eval_reports(root, args.comparisons, args.output_dir)
     if args.command == "workcell-preflight":
         return _workcell_preflight_command(args.config)
+    if args.command == "workcell-conformance":
+        return _workcell_conformance_command(
+            args.config,
+            args.evidence_dir,
+            cli_bundle_path=args.cli_bundle_path,
+            server_max_output_tokens=args.server_max_output_tokens,
+            skip_containment=args.skip_containment,
+        )
+    if args.command == "slice3-gate":
+        return _slice3_gate_command(args.report)
     if args.command == "eval-paired":
         return _score_paired_corpus_command(
             root, args.records, args.output_dir, args.candidate_arm
@@ -2955,6 +3024,139 @@ def _score_paired_corpus_command(
     )
     write_paired_corpus(resolved_output, report)
     return report.model_dump(mode="json")
+
+
+def _workcell_conformance_command(
+    config_path: Path,
+    evidence_dir: Path,
+    *,
+    cli_bundle_path: str,
+    server_max_output_tokens: int,
+    skip_containment: bool = False,
+) -> dict[str, object]:
+    """Run the ordered live gate and write every observation to disk.
+
+    The order is the handoff's -- containment, then readiness, then the nine
+    checks -- and each stage stops the ones after it. That is not tidiness: the
+    conformance suite spends real tokens, and spending them inside a box that
+    already failed containment would measure an experiment that is invalid
+    before it starts.
+
+    Nothing here decides whether the run was good. It records what happened and
+    hands the observations to the fail-closed evaluators, so a stage that could
+    not be run stays `NOT_RUN` rather than becoming an absence nobody notices.
+    """
+
+    from apoapsis.workcell.conformance_driver import DeclaredCliLimits
+    from apoapsis.workcell.controller import load_workcell_config
+    from apoapsis.workcell.live_session import LiveWorkcellSession, write_evidence
+    from apoapsis.workcell.pin_capture import (
+        PinCaptureError,
+        cli_declared_limits_argv,
+        parse_declared_limits,
+    )
+
+    resolved = config_path.resolve()
+    if not resolved.is_file():
+        raise TaskStoreError(f"workcell configuration not found: {resolved}")
+    config = load_workcell_config(resolved)
+    evidence = evidence_dir.resolve()
+
+    payload: dict[str, object] = {
+        "workcell_manifest_digest": config.pin.manifest_digest(),
+        "evidence_dir": str(evidence),
+        "containment": None,
+        "readiness": None,
+        "conformance": None,
+        "declared_cli_limits": None,
+        "stopped_at": None,
+    }
+
+    with LiveWorkcellSession(config) as session:
+        if skip_containment:
+            payload["stopped_at"] = None
+        else:
+            containment = session.run_containment()
+            payload["containment"] = containment.model_dump(mode="json")
+            write_evidence(evidence, "containment.json", containment)
+            if not containment.contained:
+                payload["stopped_at"] = "containment"
+                return payload
+
+        started, stderr = session.start_forwarder()
+        if started != 0:
+            payload["stopped_at"] = "forwarder"
+            payload["forwarder_error"] = stderr[:2000]
+            return payload
+
+        readiness = session.run_readiness()
+        payload["readiness"] = readiness.model_dump(mode="json")
+        write_evidence(evidence, "readiness.json", readiness)
+        if not readiness.ready:
+            payload["stopped_at"] = "readiness"
+            return payload
+
+        # Read from the CLI rather than accepted as an argument: an operator who
+        # can type this number can type the number that makes the check pass.
+        declared: DeclaredCliLimits | None = None
+        argv = cli_declared_limits_argv(cli_bundle_path, config.pin.model.model_name)
+        exit_code, stdout, limits_stderr = session.exec(argv, timeout_seconds=120.0)
+        if exit_code == 0:
+            try:
+                captured = parse_declared_limits(
+                    stdout,
+                    source=(
+                        f"{cli_bundle_path} token-limit module, executed inside "
+                        "the workcell image"
+                    ),
+                )
+            except PinCaptureError as exc:
+                payload["declared_cli_limits_error"] = str(exc)
+            else:
+                payload["declared_cli_limits"] = captured.model_dump(mode="json")
+                write_evidence(evidence, "declared-cli-limits.json", captured)
+                declared = DeclaredCliLimits(
+                    context_limit_tokens=captured.context_limit_tokens,
+                    max_output_tokens=captured.max_output_tokens,
+                    source=captured.source,
+                )
+        else:
+            payload["declared_cli_limits_error"] = limits_stderr[:2000]
+
+        report, runner = session.run_conformance(
+            supports_parallel_tool_calls=True,
+            declared_cli_limits=declared,
+            mutating_tool_runner=None,
+        )
+        payload["conformance"] = report.model_dump(mode="json")
+        payload["observed_stop_signals"] = {
+            reason.value: signal for reason, signal in runner.stop_signals.items()
+        }
+        write_evidence(evidence, "conformance.json", report)
+        write_evidence(
+            evidence,
+            "stop-signals.json",
+            {reason.value: signal for reason, signal in runner.stop_signals.items()},
+        )
+        if not report.conformant:
+            payload["stopped_at"] = "conformance"
+
+    # `server_max_output_tokens` is echoed rather than used to judge anything:
+    # it is part of how the run was launched, and the evidence should say so.
+    payload["server_max_output_tokens"] = server_max_output_tokens
+    return payload
+
+
+def _slice3_gate_command(report_path: Path) -> dict[str, object]:
+    """Re-derive the Slice 3 admission decision from a spike report."""
+
+    from apoapsis.workcell.gate import evaluate_slice3_gate, load_spike_report
+
+    resolved = report_path.resolve()
+    if not resolved.is_file():
+        raise TaskStoreError(f"capability spike report not found: {resolved}")
+    decision = evaluate_slice3_gate(load_spike_report(resolved))
+    return decision.model_dump(mode="json")
 
 
 def _workcell_preflight_command(config_path: Path) -> dict[str, object]:

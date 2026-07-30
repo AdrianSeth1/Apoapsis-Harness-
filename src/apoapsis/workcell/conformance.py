@@ -334,6 +334,309 @@ def check_replay_non_idempotence_guard(
     )
 
 
+class ObservedToolCall(StrictModel):
+    """One tool call as it came back off the wire.
+
+    `arguments` is kept as the raw string the provider emitted *and* as the
+    parsed object, because the two failure modes are different: a provider that
+    returns valid JSON with the wrong values is a template bug, and one that
+    returns unparseable text is a tool-parser bug. Collapsing them into a single
+    "arguments" field would make the distinction unreportable.
+    """
+
+    call_id: str = ""
+    name: str = Field(min_length=1)
+    raw_arguments: str = ""
+    arguments: dict | None = None
+    parse_error: str | None = None
+
+
+def check_role_round_trip(
+    *, roles_sent: list[str], status: int, assistant_text: str
+) -> CheckResult:
+    """Every role the CLI uses must survive the template without an error.
+
+    The check is deliberately weak about *content* and strict about
+    *acceptance*: a template that cannot render a `tool` role at all fails with
+    a 4xx or 5xx, and that is the defect worth catching here. Judging the
+    assistant's prose would be measuring the model, which this suite must not do.
+    """
+
+    required = ["system", "user", "assistant", "tool"]
+    missing = [role for role in required if role not in roles_sent]
+    if missing:
+        return CheckResult(
+            check=ConformanceCheck.ROLE_ROUND_TRIP,
+            status=ConformanceStatus.NOT_RUN,
+            detail=(
+                "the exchange did not include every role the CLI uses; missing: "
+                + ", ".join(missing)
+            ),
+        )
+    if status != 200:
+        return CheckResult(
+            check=ConformanceCheck.ROLE_ROUND_TRIP,
+            status=ConformanceStatus.FAILED,
+            detail=(
+                f"a system/user/assistant/tool-call/tool-result exchange was "
+                f"rejected with HTTP {status}; the chat template cannot render "
+                "the roles the CLI actually sends"
+            ),
+        )
+    if not assistant_text.strip():
+        return CheckResult(
+            check=ConformanceCheck.ROLE_ROUND_TRIP,
+            status=ConformanceStatus.INCONCLUSIVE,
+            detail=(
+                "the exchange was accepted but the assistant turn was empty, so "
+                "nothing establishes that the tool result was actually read"
+            ),
+        )
+    return CheckResult(
+        check=ConformanceCheck.ROLE_ROUND_TRIP,
+        status=ConformanceStatus.PASSED,
+        detail=(
+            "system, user, assistant, tool-call, and tool-result roles were "
+            f"accepted and continued ({len(assistant_text)} characters)"
+        ),
+    )
+
+
+def check_single_tool_call(
+    *,
+    expected_name: str,
+    expected_arguments: dict,
+    observed: list[ObservedToolCall],
+) -> CheckResult:
+    """One tool call must preserve its name and its JSON arguments exactly."""
+
+    if not observed:
+        return CheckResult(
+            check=ConformanceCheck.SINGLE_TOOL_CALL,
+            status=ConformanceStatus.INCONCLUSIVE,
+            detail=(
+                "the model returned no tool call, so the envelope was never "
+                "exercised; this measures the model, not the adapter"
+            ),
+        )
+    call = observed[0]
+    if call.parse_error is not None:
+        return CheckResult(
+            check=ConformanceCheck.SINGLE_TOOL_CALL,
+            status=ConformanceStatus.FAILED,
+            detail=(
+                f"tool call arguments did not parse as JSON ({call.parse_error}); "
+                "a malformed tool envelope is an adapter defect"
+            ),
+        )
+    if call.name != expected_name:
+        return CheckResult(
+            check=ConformanceCheck.SINGLE_TOOL_CALL,
+            status=ConformanceStatus.FAILED,
+            detail=(
+                f"the tool name did not survive: sent schema {expected_name!r}, "
+                f"received {call.name!r}"
+            ),
+        )
+    arguments = call.arguments or {}
+    wrong = {
+        key: (value, arguments.get(key))
+        for key, value in expected_arguments.items()
+        if arguments.get(key) != value
+    }
+    if wrong:
+        return CheckResult(
+            check=ConformanceCheck.SINGLE_TOOL_CALL,
+            status=ConformanceStatus.FAILED,
+            detail=(
+                "argument values did not round-trip: "
+                + "; ".join(
+                    f"{key}: expected {want!r}, received {got!r}"
+                    for key, (want, got) in sorted(wrong.items())
+                )
+            ),
+        )
+    return CheckResult(
+        check=ConformanceCheck.SINGLE_TOOL_CALL,
+        status=ConformanceStatus.PASSED,
+        detail=(
+            f"tool {expected_name!r} round-tripped with "
+            f"{len(expected_arguments)} argument(s) intact"
+        ),
+    )
+
+
+def check_parallel_tool_calls(
+    *,
+    expected: list[tuple[str, dict]],
+    observed: list[ObservedToolCall],
+    server_declares_support: bool = True,
+) -> CheckResult:
+    """Parallel calls must preserve every name and argument object, in order.
+
+    Order is part of the property because a tool loop that reorders calls will
+    execute a write before the read it depended on.
+    """
+
+    if not server_declares_support:
+        return CheckResult(
+            check=ConformanceCheck.PARALLEL_TOOL_CALLS,
+            status=ConformanceStatus.FAILED,
+            detail=(
+                "the chat template does not declare parallel tool-call support, "
+                "so the CLI's batched read/search calls cannot round-trip"
+            ),
+        )
+    if len(observed) < 2:
+        return CheckResult(
+            check=ConformanceCheck.PARALLEL_TOOL_CALLS,
+            status=ConformanceStatus.INCONCLUSIVE,
+            detail=(
+                f"only {len(observed)} tool call(s) came back, so parallel "
+                "dispatch was never exercised"
+            ),
+        )
+    broken = [call.name for call in observed if call.parse_error is not None]
+    if broken:
+        return CheckResult(
+            check=ConformanceCheck.PARALLEL_TOOL_CALLS,
+            status=ConformanceStatus.FAILED,
+            detail=(
+                "these parallel calls had unparseable arguments: "
+                + ", ".join(sorted(broken))
+            ),
+        )
+    observed_names = [call.name for call in observed]
+    expected_names = [name for name, _arguments in expected]
+    # Compared as an ordered prefix: the model may add calls we did not ask for,
+    # but the ones we asked for must arrive, in the order they were requested.
+    if observed_names[: len(expected_names)] != expected_names:
+        return CheckResult(
+            check=ConformanceCheck.PARALLEL_TOOL_CALLS,
+            status=ConformanceStatus.FAILED,
+            detail=(
+                f"parallel call order or naming changed: expected "
+                f"{expected_names}, received {observed_names}"
+            ),
+        )
+    ids = [call.call_id for call in observed if call.call_id]
+    if len(set(ids)) != len(ids):
+        return CheckResult(
+            check=ConformanceCheck.PARALLEL_TOOL_CALLS,
+            status=ConformanceStatus.FAILED,
+            detail=(
+                "two parallel calls share a call id, so their results cannot be "
+                "matched back to the call that produced them"
+            ),
+        )
+    for index, (name, arguments) in enumerate(expected):
+        received = observed[index].arguments or {}
+        wrong = {
+            key: (value, received.get(key))
+            for key, value in arguments.items()
+            if received.get(key) != value
+        }
+        if wrong:
+            return CheckResult(
+                check=ConformanceCheck.PARALLEL_TOOL_CALLS,
+                status=ConformanceStatus.FAILED,
+                detail=(
+                    f"call {index} ({name}) lost argument values: "
+                    + "; ".join(
+                        f"{key}: expected {want!r}, received {got!r}"
+                        for key, (want, got) in sorted(wrong.items())
+                    )
+                ),
+            )
+    return CheckResult(
+        check=ConformanceCheck.PARALLEL_TOOL_CALLS,
+        status=ConformanceStatus.PASSED,
+        detail=(
+            f"{len(observed)} parallel call(s) preserved every name, argument "
+            "object, and distinct call id, in order"
+        ),
+    )
+
+
+def check_usage_accounting(
+    *,
+    requested_max_output: int,
+    usage: dict | None,
+    finish_reason: str | None,
+) -> CheckResult:
+    """Usage counts must be reported, and the output cap must be obeyed.
+
+    Both halves matter. Missing usage means the efficiency gate is measuring
+    nothing, and an output cap the server silently ignores means the harness
+    cannot tell a truncation from a completion.
+    """
+
+    if not usage:
+        return CheckResult(
+            check=ConformanceCheck.USAGE_ACCOUNTING,
+            status=ConformanceStatus.FAILED,
+            detail=(
+                "the response carried no usage object; token accounting and the "
+                "efficiency gate would both be unmeasurable"
+            ),
+        )
+    prompt_tokens = usage.get("prompt_tokens")
+    completion_tokens = usage.get("completion_tokens")
+    missing = [
+        name
+        for name, value in (
+            ("prompt_tokens", prompt_tokens),
+            ("completion_tokens", completion_tokens),
+        )
+        if not isinstance(value, int)
+    ]
+    if missing:
+        return CheckResult(
+            check=ConformanceCheck.USAGE_ACCOUNTING,
+            status=ConformanceStatus.FAILED,
+            detail="usage is missing integer field(s): " + ", ".join(missing),
+        )
+    assert isinstance(prompt_tokens, int) and isinstance(completion_tokens, int)
+    if prompt_tokens <= 0:
+        return CheckResult(
+            check=ConformanceCheck.USAGE_ACCOUNTING,
+            status=ConformanceStatus.FAILED,
+            detail=(
+                f"the server reported {prompt_tokens} prompt tokens for a "
+                "non-empty prompt, so input accounting is not trustworthy"
+            ),
+        )
+    if completion_tokens > requested_max_output:
+        return CheckResult(
+            check=ConformanceCheck.USAGE_ACCOUNTING,
+            status=ConformanceStatus.FAILED,
+            detail=(
+                f"the response generated {completion_tokens} tokens against a "
+                f"requested cap of {requested_max_output}; the maximum-output "
+                "setting did not survive the round trip"
+            ),
+        )
+    if completion_tokens == requested_max_output and finish_reason != "length":
+        return CheckResult(
+            check=ConformanceCheck.USAGE_ACCOUNTING,
+            status=ConformanceStatus.FAILED,
+            detail=(
+                f"generation stopped exactly at the {requested_max_output}-token "
+                f"cap but reported finish reason {finish_reason!r} rather than "
+                "'length', so a truncation would be recorded as a completion"
+            ),
+        )
+    return CheckResult(
+        check=ConformanceCheck.USAGE_ACCOUNTING,
+        status=ConformanceStatus.PASSED,
+        detail=(
+            f"{prompt_tokens} prompt and {completion_tokens} completion token(s) "
+            f"were reported against a {requested_max_output}-token cap, and the "
+            f"finish reason {finish_reason!r} is consistent with them"
+        ),
+    )
+
+
 def evaluate_conformance(
     results: list[CheckResult], *, workcell_manifest_digest: str
 ) -> ConformanceReport:

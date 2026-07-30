@@ -135,11 +135,30 @@ Follow
    sanitizing the sacrificial clone and image, then passed the complete relay
    path through health, model listing, and a one-token local Qwen generation.
    The run fixed a stale relay-counter API and Unix-socket group assignment.
-   It stopped before either quality task because no code drives the nine live
-   conformance observations; all nine remain `NOT_RUN`. Automatic clone
-   sanitization and prompt/tool/template pin provenance are also missing. See
+   It stopped before either quality task because no code drove the nine live
+   conformance observations. See
    `docs/evaluation/slice-2-workcell-conformance-spike-2026-07-30.md` and
    `docs/evaluation/slice-2-live-gate-2026-07-30.md`.
+
+   **Slice 2B closed those three gaps and ran the gate live.**
+   `conformance_driver.py` drives all nine checks through the real relay path
+   and `apoapsis workcell-conformance` runs the ordered gate;
+   `pin_capture.py` captures the system-prompt, tool-schema, and chat-template
+   hashes from the CLI's own wire traffic and the server's `/props`, replacing
+   the provisional installed-bundle stand-ins; `clone.py` builds and audits the
+   sanitized disposable clone, which the containment probes then accepted 22/22.
+
+   The live result is a **failure, and a useful one**: seven of nine checks
+   passed, but the CLI declares a **1,000,000-token context window** for a model
+   the server serves at **65,536** — the unexplained Crisis Atlas failure mode,
+   now named. `multiline_unicode_integrity` also failed, but on the model
+   retyping curly quotes rather than on transport corruption; the check was left
+   failing rather than loosened. No paired task was run, no acceptance repair was
+   performed, and the spike verdict is `NOT_MEASURABLE`. See
+   `docs/evaluation/slice-2b-live-conformance-and-pins-2026-07-30.md`.
+
+   Before any paired measurement: reconcile the declared limits, and decide what
+   `multiline_unicode_integrity` should actually compare.
 
    Run the live evidence in this order, and stop at the first failure:
    containment probes with no model spend; relay readiness through the real
