@@ -100,6 +100,19 @@ class CheckResult(StrictModel):
 
 class ConformanceReport(StrictModel):
     schema_version: str = "1.0"
+    #: What passing this suite actually establishes.
+    #:
+    #: Named explicitly after Slice 2C, where a 9/9 result was read as "the
+    #: agent works". It was not. Every check here exercises the relay, the
+    #: OpenAI-compatible envelope, the chat template, and the provider's stop
+    #: and usage reporting. All nine passed while the process on the other end
+    #: was a read-only planner with no `write_file` and no `run_shell_command`.
+    #:
+    #: Which agent ran, and how it was launched, is `agent_profile`'s question;
+    #: whether its tools work is `capability_readiness`'s. Neither may be
+    #: inferred from this suite, and a green report here must never be
+    #: described as agent readiness.
+    scope: str = "provider_protocol"
     workcell_manifest_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     results: list[CheckResult] = Field(default_factory=list)
     conformant: bool = False
@@ -752,7 +765,11 @@ def evaluate_conformance(
             + ", ".join(item.value for item in unproven)
         )
     else:
-        detail = f"all {len(complete)} conformance checks passed"
+        detail = (
+            f"all {len(complete)} provider-protocol conformance checks passed: "
+            "the relay and the OpenAI envelope are sound. This says nothing "
+            "about which agent process was on the other end."
+        )
 
     return ConformanceReport(
         workcell_manifest_digest=workcell_manifest_digest,

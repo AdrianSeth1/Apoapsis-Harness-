@@ -28,6 +28,8 @@ from apoapsis.evaluation.paired import (
     CapabilityStatus,
 )
 from apoapsis.specification.schema import StrictModel
+from apoapsis.workcell.agent_profile import ProfileGateResult
+from apoapsis.workcell.capability_readiness import CapabilityReadinessReport
 from apoapsis.workcell.conformance import ConformanceReport
 from apoapsis.workcell.containment import ContainmentReport
 from apoapsis.workcell.controller import WorkcellRunRecord
@@ -58,6 +60,13 @@ class CapabilitySpikeReport(StrictModel):
     run: WorkcellRunRecord
     containment: ContainmentReport
     conformance: ConformanceReport
+    #: Whether the agent under test was the coding agent at all. `None` means
+    #: the question was never asked, which is itself disqualifying: Slice 2C
+    #: produced a full `CAPABILITY_REGRESSED` verdict without it.
+    agent_profile: "ProfileGateResult | None" = None
+    #: Whether read, edit, and shell were demonstrated to work, not merely
+    #: registered.
+    capability_readiness: "CapabilityReadinessReport | None" = None
     observations: list[CapabilityObservation] = Field(default_factory=list)
     lost_capabilities: list[BaselineCapability] = Field(default_factory=list)
     gained_capabilities: list[BaselineCapability] = Field(default_factory=list)
@@ -210,13 +219,24 @@ def build_spike_report(
     trace: WorkcellSessionTrace,
     containment: ContainmentReport,
     conformance: ConformanceReport,
+    agent_profile: ProfileGateResult | None = None,
+    capability_readiness: CapabilityReadinessReport | None = None,
 ) -> CapabilitySpikeReport:
     """Compare the workcell's observed capability against the frozen control.
 
-    Containment and conformance are checked *first*. A run that escaped its box
-    or that round-tripped tool calls incorrectly is not a capability
-    measurement at all, and reporting a capability verdict for it would give
-    the run more credit than it earned.
+    Four prerequisites are checked *before* any capability verdict, and any of
+    them failing yields `NOT_MEASURABLE` rather than a regression.
+
+    That ordering is the Slice 2C lesson. The agent under test was genuine Qwen
+    Code launched as a read-only planner: it had no `write_file`, `edit`, or
+    `run_shell_command`, so of course it demonstrated no editing capability.
+    The spike duly reported `CAPABILITY_REGRESSED` — a statement about the
+    harness's effect on a coding agent, derived from a run in which no coding
+    agent participated.
+
+    **Missing prerequisites invalidate an experiment; they do not demonstrate a
+    regression.** A regression verdict says "the harness took something away".
+    It may only be said when the thing was there to take.
     """
 
     observations = observe_capabilities(trace, run=run)
@@ -236,19 +256,40 @@ def build_spike_report(
         and observed.get(capability) == CapabilityStatus.PROVIDED
     ]
 
-    if not containment.contained or not conformance.conformant:
-        blockers = []
-        if not containment.contained:
-            blockers.append(f"containment: {containment.detail}")
-        if not conformance.conformant:
-            blockers.append(f"conformance: {conformance.detail}")
+    blockers = []
+    if not containment.contained:
+        blockers.append(f"containment: {containment.detail}")
+    if not conformance.conformant:
+        blockers.append(f"provider-protocol conformance: {conformance.detail}")
+    if agent_profile is None:
+        blockers.append(
+            "agent profile: the run never established which agent it measured, "
+            "so a capability verdict would be about an unidentified program"
+        )
+    elif not agent_profile.ok:
+        blockers.append(f"agent profile: {agent_profile.detail}")
+    if capability_readiness is None:
+        blockers.append(
+            "capability readiness: read, edit, and shell were never exercised, "
+            "so their absence from the trace cannot be distinguished from the "
+            "model choosing not to use them"
+        )
+    elif not capability_readiness.ready:
+        blockers.append(f"capability readiness: {capability_readiness.detail}")
+
+    if blockers:
         return CapabilitySpikeReport(
             workcell_manifest_digest=pin.manifest_digest(),
             pin=pin,
             run=run,
             containment=containment,
             conformance=conformance,
+            agent_profile=agent_profile,
+            capability_readiness=capability_readiness,
             observations=observations,
+            # Reported for diagnosis, but they are *not* a regression finding:
+            # an unmet prerequisite means these observations describe an
+            # experiment that did not happen.
             lost_capabilities=lost,
             gained_capabilities=gained,
             verdict=SpikeVerdict.NOT_MEASURABLE,
@@ -265,12 +306,15 @@ def build_spike_report(
             run=run,
             containment=containment,
             conformance=conformance,
+            agent_profile=agent_profile,
+            capability_readiness=capability_readiness,
             observations=observations,
             lost_capabilities=lost,
             gained_capabilities=gained,
             verdict=SpikeVerdict.CAPABILITY_REGRESSED,
             detail=(
-                "the box held, but the workcell did not demonstrate "
+                "the agent was the coding agent, its tools were exercised, "
+                "and the box held -- and the workcell still did not demonstrate "
                 f"{len(lost)} capability the unrestricted control had: "
                 + ", ".join(item.value for item in lost)
             ),
@@ -289,6 +333,8 @@ def build_spike_report(
         run=run,
         containment=containment,
         conformance=conformance,
+        agent_profile=agent_profile,
+        capability_readiness=capability_readiness,
         observations=observations,
         lost_capabilities=[],
         gained_capabilities=gained,

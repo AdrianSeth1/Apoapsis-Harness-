@@ -601,6 +601,37 @@ def _run_record() -> WorkcellRunRecord:
 
 
 class SpikeTests(unittest.TestCase):
+    def _prerequisites(self):
+        """An agent profile and readiness that both hold.
+
+        Supplied explicitly because `build_spike_report` now treats their
+        absence as disqualifying: a capability verdict about an unidentified
+        agent whose tools were never exercised is what Slice 2C produced.
+        """
+
+        from apoapsis.workcell.agent_profile import ProfileGateResult
+        from apoapsis.workcell.capability_readiness import (
+            CapabilityReadinessReport,
+            ReadinessOperation,
+            ReadinessOperationResult,
+            ReadinessStatus,
+        )
+
+        return (
+            ProfileGateResult(ok=True, detail="coding profile confirmed"),
+            CapabilityReadinessReport(
+                results=[
+                    ReadinessOperationResult(
+                        operation=operation, status=ReadinessStatus.PASSED
+                    )
+                    for operation in ReadinessOperation
+                ],
+                ready=True,
+                residue_free=True,
+                detail="read, edit, and shell exercised",
+            ),
+        )
+
     def _clean_reports(self):
         containment = evaluate_containment(
             [
@@ -620,12 +651,15 @@ class SpikeTests(unittest.TestCase):
 
     def test_a_capable_session_preserves_every_control_capability(self) -> None:
         containment, conformance = self._clean_reports()
+        profile, readiness = self._prerequisites()
         report = build_spike_report(
             pin=_pin(),
             run=_run_record(),
             trace=_trace_from(_capable_events()),
             containment=containment,
             conformance=conformance,
+            agent_profile=profile,
+            capability_readiness=readiness,
         )
         self.assertEqual(report.verdict, SpikeVerdict.CAPABILITY_PRESERVED)
         self.assertEqual(report.lost_capabilities, [])
@@ -650,12 +684,15 @@ class SpikeTests(unittest.TestCase):
             {"type": "session.end", "reason": "stop"},
         ]
         containment, conformance = self._clean_reports()
+        profile, readiness = self._prerequisites()
         report = build_spike_report(
             pin=_pin(),
             run=_run_record(),
             trace=_trace_from(events),
             containment=containment,
             conformance=conformance,
+            agent_profile=profile,
+            capability_readiness=readiness,
         )
         self.assertEqual(report.verdict, SpikeVerdict.CAPABILITY_REGRESSED)
         self.assertIn(
@@ -663,8 +700,53 @@ class SpikeTests(unittest.TestCase):
             report.lost_capabilities,
         )
 
+    def test_missing_prerequisites_are_not_measurable_not_a_regression(self) -> None:
+        # The Slice 2C correction. That run measured genuine Qwen Code launched
+        # as a read-only planner: no write_file, no edit, no run_shell_command.
+        # It reported CAPABILITY_REGRESSED -- a claim that the harness took a
+        # capability away, derived from a run in which the capability was never
+        # present to take. Missing prerequisites invalidate an experiment; they
+        # do not demonstrate a regression.
+        containment, conformance = self._clean_reports()
+        for profile, readiness in (
+            (None, None),
+            (self._prerequisites()[0], None),
+            (None, self._prerequisites()[1]),
+        ):
+            report = build_spike_report(
+                pin=_pin(),
+                run=_run_record(),
+                trace=_trace_from([]),
+                containment=containment,
+                conformance=conformance,
+                agent_profile=profile,
+                capability_readiness=readiness,
+            )
+            self.assertEqual(report.verdict, SpikeVerdict.NOT_MEASURABLE)
+            self.assertNotEqual(report.verdict, SpikeVerdict.CAPABILITY_REGRESSED)
+
+    def test_a_failed_agent_profile_blocks_the_capability_question(self) -> None:
+        from apoapsis.workcell.agent_profile import ProfileGateResult
+
+        containment, conformance = self._clean_reports()
+        _, readiness = self._prerequisites()
+        report = build_spike_report(
+            pin=_pin(),
+            run=_run_record(),
+            trace=_trace_from(_capable_events()),
+            containment=containment,
+            conformance=conformance,
+            agent_profile=ProfileGateResult(
+                ok=False, detail="approval mode was 'auto', not 'yolo'"
+            ),
+            capability_readiness=readiness,
+        )
+        self.assertEqual(report.verdict, SpikeVerdict.NOT_MEASURABLE)
+        self.assertIn("agent profile", report.detail)
+
     def test_a_breached_run_is_not_measurable_even_if_capable(self) -> None:
         _, conformance = self._clean_reports()
+        profile, readiness = self._prerequisites()
         breached = evaluate_containment(
             [
                 ProbeResult(
@@ -685,12 +767,15 @@ class SpikeTests(unittest.TestCase):
             trace=_trace_from(_capable_events()),
             containment=breached,
             conformance=conformance,
+            agent_profile=profile,
+            capability_readiness=readiness,
         )
         self.assertEqual(report.verdict, SpikeVerdict.NOT_MEASURABLE)
         self.assertIn("not a valid capability experiment", report.detail)
 
     def test_a_non_conformant_run_is_not_measurable(self) -> None:
         containment, _ = self._clean_reports()
+        profile, readiness = self._prerequisites()
         broken = evaluate_conformance([], workcell_manifest_digest=_SHA)
         report = build_spike_report(
             pin=_pin(),
@@ -698,6 +783,8 @@ class SpikeTests(unittest.TestCase):
             trace=_trace_from(_capable_events()),
             containment=containment,
             conformance=broken,
+            agent_profile=profile,
+            capability_readiness=readiness,
         )
         self.assertEqual(report.verdict, SpikeVerdict.NOT_MEASURABLE)
 
