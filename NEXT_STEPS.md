@@ -64,6 +64,9 @@ priorities only. Current architecture is in `HANDOFF.md`, decision history is in
 - ADR 0073's evidence-count and ceiling output has been exercised by hand
   against two constructed products, not against a real project run. Record a
   live result the next time a browser product goes through the harness.
+- Verify ADR 0077's paired scorer, ceiling classification, and frozen Crisis
+  Atlas facts; `tests/test_paired_scoring.py` was added but intentionally not
+  run at the owner's request.
 - Run focused tests, the full deterministic suite, compileall, and diff check.
 - Do not make a live network, local-model, hosted-model, Docker, or browser claim
   unless that exact path is separately exercised and recorded.
@@ -80,11 +83,27 @@ tests, though it still falsely claimed success over a broken status filter.
 Follow
 `docs/handoff-2026-07-30-qwen-baseline-preserving-superiority.md`. In order:
 
-1. build the paired scorer and freeze the current evidence;
-2. write the superseding ADR that permits a real shell only inside a
-   disposable workcell while keeping durable authority outside it;
-3. run the default Qwen CLI or a conformance-tested equivalent in that
-   workcell;
+1. **Done (handoff slice 0).** `apoapsis/evaluation/paired.py` implements the
+   two scorecards, `PairedRunManifest`, and four separately reported release
+   gates with no combined score field; `apoapsis/models/ceilings.py` makes
+   `INPUT_CONTEXT_PRESSURE`, `INPUT_CONTEXT_EXHAUSTED`,
+   `OUTPUT_CEILING_TRUNCATION`, `TOOL_OUTPUT_TRUNCATION`, and
+   `PROVIDER_ERROR_AFTER_ROLLOVER` first-class and keeps them out of the model
+   reasoning failure count; `apoapsis/evaluation/crisis_atlas_facts.py` freezes
+   both arms so they rescore with no provider, with Slice 2 labelled both a
+   proposal miss and a detection miss. `apoapsis eval-paired` with no arguments
+   rescores the frozen arms. **Their verdict is `INCOMPARABLE`** — the sliced
+   arm's seed commit was never recorded and its output cap changed mid-run — so
+   nothing has been shown superior yet. Coverage in
+   `tests/test_paired_scoring.py` was added but intentionally not run at the
+   owner's request.
+2. **Done (handoff slice 1).** ADR 0077 sets the boundary: ephemeral capability
+   inside a disposable workcell, durable authority outside it. It supersedes the
+   execution boundary of ADRs 0059 and 0071 without editing either.
+3. **Next.** Run the default Qwen CLI or a conformance-tested equivalent in that
+   workcell. Do not add acceptance repair yet; exit when no useful control
+   capability is missing and containment tests show host paths, network,
+   credentials, and controller sockets are unreachable;
 4. admit and verify the complete candidate delta outside the model's trust
    boundary;
 5. replace green-test termination with strict slice-readiness contracts and
