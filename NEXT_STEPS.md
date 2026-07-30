@@ -157,8 +157,28 @@ Follow
    rather than in a separate pinned verifier workcell (ADR 0077 Layer 4), and
    the admitted snapshot is not yet bound into the plan graph as an
    authoritative `PlanCheckpoint` (slice 6);
-5. replace green-test termination with strict slice-readiness contracts and
-   structured witnesses;
+5. **Done (handoff slice 4), unwired.** `apoapsis/workcell/witness.py` defines
+   versioned `StructuredWitness` records — process, bound address, routes,
+   methods, assertions, mutations, cleanup, coverage, artifact hashes, criteria
+   proved — and refuses eight ways a witness can fail to be evidence, including
+   a command name with an exit code and nothing else, a stale worktree
+   fingerprint, and a mutation nothing read back.
+   `apoapsis/workcell/acceptance.py` compiles a `SliceAcceptanceContract`,
+   applies the new-component rule, and replaces ADR 0069's green-test
+   termination with `evaluate_checkpoint`, which takes no command results at
+   all and whose `CONTINUE` outcome is the turn Crisis Atlas Slice 2 was never
+   given.
+
+   The exit criterion is met as a test: the exact Slice 2 proposal — one
+   partial file at the wrong package path, no export service, no tests,
+   inherited suite green — evaluates **not ready** on three independent blocks,
+   while the required command passed. 24 tests; focused set 187 passing.
+
+   **Outstanding, and it matters:** nothing emits these witnesses yet, there is
+   no contract compiler from an approved plan slice, coverage is taken on trust
+   from the witness, and no live path calls `evaluate_checkpoint`. The rule is
+   enforceable in principle and unenforced in practice. See
+   `docs/evaluation/slice-4-slice-readiness-and-witnesses-2026-07-30.md`;
 6. add bounded recoverable tool output, two-tier compaction, stable-prefix
    prompt caching, persistent state capsules, adaptive budgets, and explicit
    context/output truncation outcomes;
