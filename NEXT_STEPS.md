@@ -68,7 +68,42 @@ priorities only. Current architecture is in `HANDOFF.md`, decision history is in
 - Do not make a live network, local-model, hosted-model, Docker, or browser claim
   unless that exact path is separately exercised and recorded.
 
-### Priority 2: finish the Crisis Atlas remediation (slices B-E)
+### Priority 2: build a baseline-preserving Qwen Capability Sandbox
+
+The unrestricted Crisis Atlas control falsified the assumption that the current
+typed Local Power loop preserves enough of Qwen's coding ability. The first
+Slice 2 proposal was incomplete, but the harness then stopped the model because
+inherited checks stayed green. The normal Qwen CLI, confined to an offline
+disposable container, built a much more coherent product and repaired its own
+tests, though it still falsely claimed success over a broken status filter.
+
+Follow
+`docs/handoff-2026-07-30-qwen-baseline-preserving-superiority.md`. In order:
+
+1. build the paired scorer and freeze the current evidence;
+2. write the superseding ADR that permits a real shell only inside a
+   disposable workcell while keeping durable authority outside it;
+3. run the default Qwen CLI or a conformance-tested equivalent in that
+   workcell;
+4. admit and verify the complete candidate delta outside the model's trust
+   boundary;
+5. replace green-test termination with strict slice-readiness contracts and
+   structured witnesses;
+6. add compaction, persistent state capsules, adaptive budgets, and explicit
+   context/output truncation outcomes;
+7. make local, genuinely stronger frontier, and human repairs authoritative
+   plan checkpoints; and
+8. run paired qualification plus architectural negative controls before any
+   default changes.
+
+The release rule is per-case, not merely an average: every task passed by
+matched default Qwen must also pass before frontier repair, final verified
+quality must improve on at least one case without regressing another, false
+completion must fall, and median input tokens must be lower. Until those gates
+pass, the Capability Sandbox is experimental and ADR 0071 Local Power remains
+a compatibility arm.
+
+### Priority 3: finish the Crisis Atlas remediation evidence
 
 `docs/handoff-2026-07-29-crisis-atlas-remediation.md` specifies five ordered
 remediation slices. **Slice A (current-evidence projection) is implemented as
@@ -119,15 +154,22 @@ behavior against a contract the earlier ones make coherent:
   window—was the observable benefit. This was not comparable to the autonomous
   32K arm. Authoritative plan delivery/Report agreement remains unrun; see
   `docs/evaluation/crisis-atlas-64k-codex-frontier-trial-2026-07-30.md`.
+  A separate unrestricted-CLI control is now also recorded. The same Qwen model
+  built a near-complete product with 88 passing self-authored tests, but used
+  about eight times the sliced arm's input tokens, failed the strict web gate,
+  and missed a real browser filtering defect. Treat this as action-protocol and
+  independent-verification evidence, not as the missing 32K/64K comparison; see
+  `docs/evaluation/crisis-atlas-qwen-cli-control-2026-07-30.md`.
 
 Then re-run the twelve-point Crisis Atlas regression scenario from a fresh
 committed seed, as specified in that handoff.
 
-### Priority 3: run the three-arm atomic-slice evaluation (ADR 0071)
+### Priority 4: retain ADR 0071 as a legacy comparison arm
 
 ADR 0071 is implemented with fake-provider coverage only and makes no claim
-about whether it helps. The claim has to be measured, and the measurement is
-the whole point of the change.
+about whether it helps. Its original three-arm Focus Orbit comparison remains
+useful, but it is now one fixture inside the broader baseline-preserving
+qualification rather than the target architecture.
 
 Run the **exact** Focus Orbit challenge three times over:
 
@@ -142,9 +184,11 @@ behavior and console errors, a visual-quality review, and which acceptance
 criteria are left unproven. Put it in a dated `docs/evaluation/` file and keep
 live Qwen results separate from the fake-provider evidence.
 
-Success is arm 2 keeping arm 1's repository-contract compliance while
-approaching arm 3's coherence. If it does not, that is a result about the
-model and should be recorded as one rather than met with more harness changes.
+Record whether arm 2 improves over arm 1, but do not call it sufficient merely
+because it approaches arm 3. The unrestricted Crisis Atlas control established
+that the action interface itself can suppress model capability. The new
+Capability Sandbox must preserve the normal CLI surface and then outperform it
+through independent evidence and repair.
 
 Separately, and independently of the above: the `TASK-A0E17C03D69B`
 continuation reached task state `COMPLETE` while `report.json` and the Report
@@ -154,7 +198,7 @@ current-evidence projection now supplies the outcome to every surface that
 labels one. The full deterministic suite has not been run for that change; see
 Priority 1.
 
-### Priority 4: make project verification setup deliberate
+### Priority 5: make project verification setup deliberate
 
 The known impossible unittest case now fails before model spend. The broader
 product problem remains: `apoapsis init` cannot know a blank repository's future
@@ -192,7 +236,7 @@ outstanding. Two follow-ups belong to it:
   project. ADR 0069 deliberately only reports; do not turn that into a block
   without its own ADR, since `apoapsis eval` depends on baseline semantics.
 
-### Priority 5: verify the new Start/Laguna local path live
+### Priority 6: verify the new Start/Laguna local path live
 
 ADR 0062 fixed the deterministic launcher/lifecycle mismatch: Start can now
 select a project, manage loopback OpenAI-compatible `llama-server` targets, and
@@ -211,7 +255,7 @@ Next work:
 
 See `docs/opus-handoff-2026-07-26-startup-and-local-mode.md`.
 
-### Priority 6: measure local slice reliability
+### Priority 7: measure local slice reliability
 
 The 2026-07-20 full comparison was 0/6, while two later same-slice probes both
 completed. The model can solve the slice, but reliability and the cause of the
@@ -263,7 +307,7 @@ An alternate-model probe and a new full comparison still require explicit owner
 authorization because they consume live local resources and change evaluation
 scope.
 
-### Priority 7: improve research retrieval quality
+### Priority 8: improve research retrieval quality
 
 ADR 0036 prevents query starvation and improves empty-evidence diagnostics.
 ADR 0055 fixes the reproduced misleading-provenance-error bug (operation
@@ -292,7 +336,7 @@ establishes live retrieval quality. Next work should:
 Keep network execution inside restricted adapters. Do not give a model a raw
 browser, arbitrary URL fetch, shell, credentials, or direct network access.
 
-### Priority 8: native desktop shell (ADR 0050/0051) -- verify what exists, then wire it up
+### Priority 9: native desktop shell (ADR 0050/0051) -- verify what exists, then wire it up
 
 - Run the still-unexecuted test modules and fold results into `HANDOFF.md`'s
   Snapshot (needs Python 3.11+; this sandbox's default 3.10 cannot even
@@ -348,7 +392,7 @@ browser, arbitrary URL fetch, shell, credentials, or direct network access.
   filesystem API; only the desktop controller may hold user-granted
   filesystem capability, and only within what the user explicitly selected.
 
-### Priority 9: collect missing operational evidence
+### Priority 10: collect missing operational evidence
 
 - Re-run the full deterministic suite cleanly after current changes.
 - Repeat supported Windows Start/Stop lifecycle checks when model use is
