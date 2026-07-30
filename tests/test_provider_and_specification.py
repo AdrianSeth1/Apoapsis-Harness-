@@ -128,6 +128,40 @@ class ProviderTests(unittest.TestCase):
         self.assertEqual(payload["temperature"], 0.0)
         self.assertEqual(payload["max_tokens"], 8192)
 
+    def test_openai_compatible_loopback_endpoint_does_not_require_api_key(self) -> None:
+        config = FrontierProviderConfig(
+            provider="openai_compatible",
+            base_url="http://127.0.0.1:8000/v1",
+            model="local-llama-server",
+            api_key_env="APOAPSIS_TEST_API_KEY",
+        )
+        adapter = OpenAICompatibleFrontierProvider(config)
+        response = _FakeHTTPResponse(
+            {
+                "id": "chat-local-1",
+                "model": "local-llama-server",
+                "choices": [
+                    {"message": {"content": "{}"}, "finish_reason": "stop"}
+                ],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+            }
+        )
+        with patch.dict(os.environ, {}, clear=True):
+            with patch(
+                "urllib.request.urlopen", return_value=response
+            ) as urlopen:
+                output = adapter.complete(
+                    ProviderInvocation(
+                        request_id="MRQ-LOCAL",
+                        operation=ModelOperation.IMPLEMENT_PATCH,
+                        prompt="patch",
+                    )
+                )
+
+        self.assertEqual(output.response_id, "chat-local-1")
+        request = urlopen.call_args.args[0]
+        self.assertNotIn("Authorization", request.headers)
+
     def test_native_ollama_frontier_uses_local_generation_controls(self) -> None:
         class StubOllama(OllamaProvider):
             def __init__(self, config: FrontierProviderConfig) -> None:

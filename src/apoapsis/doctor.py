@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
 import shutil
@@ -9,6 +10,7 @@ import tempfile
 import urllib.error
 import urllib.request
 import uuid
+from urllib.parse import urlparse
 from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
@@ -30,6 +32,10 @@ from apoapsis.models.provider import ModelProvider, ModelRole, ProviderInvocatio
 from apoapsis.models.telemetry import InstrumentedModelProvider, InstrumentedProviderError
 from apoapsis.repository.git import GitCommandError, GitRepository
 from apoapsis.specification.schema import StrictModel, utc_now
+from apoapsis.verification.contract import (
+    ContractFindingSeverity,
+    assess_verification_contract,
+)
 from apoapsis.verification.runner import VerificationCommand
 
 _MODEL_ROLES = ("frontier", "local_coder", "frontier_coder", "local_research")
@@ -102,6 +108,7 @@ def run_doctor(
         checks.extend(_verification_checks(config))
         checks.extend(_verification_backend_checks(config))
         checks.extend(_completion_policy_checks(config))
+        checks.extend(_verification_contract_checks(config))
         if probe_providers:
             checks.extend(_probe_checks(config, provider_overrides))
     return DoctorReport(
@@ -313,30 +320,71 @@ def _context_check(config: ApoapsisConfig) -> DoctorCheck:
     )
 
 
+def _is_loopback_endpoint(base_url: str) -> bool:
+    """True when `base_url` addresses this machine over plain loopback HTTP.
+
+    `provider = "openai_compatible"` covers two very different things: a hosted
+    API behind a paid key, and a local server such as `llama-server` listening
+    on 127.0.0.1. Treating the second like the first is what made `doctor`
+    report a hard error for a keyless local model that was running perfectly.
+    """
+
+    parsed = urlparse((base_url or "").rstrip("/"))
+    if parsed.scheme != "http" or not parsed.hostname:
+        return False
+    hostname = parsed.hostname.lower()
+    if hostname == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(hostname).is_loopback
+    except ValueError:
+        return False
+
+
 def _credential_checks(config: ApoapsisConfig) -> list[DoctorCheck]:
     checks: list[DoctorCheck] = []
     seen_env_vars: set[str] = set()
+    loopback_only: dict[str, bool] = {}
     for role in _MODEL_ROLES:
         model_config = getattr(config.models, role)
         if model_config is None or model_config.provider != "openai_compatible":
             continue
         env_var = model_config.api_key_env
+        is_loopback = _is_loopback_endpoint(model_config.base_url)
+        # A credential is only genuinely required if some role sharing this
+        # variable actually talks to a remote endpoint.
+        loopback_only[env_var] = loopback_only.get(env_var, True) and is_loopback
         if env_var in seen_env_vars:
             continue
         seen_env_vars.add(env_var)
+
+    for env_var in seen_env_vars:
         is_set = bool(os.environ.get(env_var))
+        if is_set:
+            status = DoctorCheckStatus.OK
+            detail = f"{env_var} is set"
+            remediation = None
+        elif loopback_only[env_var]:
+            status = DoctorCheckStatus.OK
+            detail = (
+                f"{env_var} is not set, and is not required: every model using "
+                "it is a loopback endpoint, which serves without a key"
+            )
+            remediation = None
+        else:
+            status = DoctorCheckStatus.ERROR
+            detail = f"{env_var} is not set"
+            remediation = f"set the {env_var} environment variable"
         checks.append(
             DoctorCheck(
                 name=f"credential:{env_var}",
                 category="credentials",
-                status=DoctorCheckStatus.OK if is_set else DoctorCheckStatus.ERROR,
-                detail=f"{env_var} is set" if is_set else f"{env_var} is not set",
-                remediation=(
-                    None if is_set else f"set the {env_var} environment variable"
-                ),
+                status=status,
+                detail=detail,
+                remediation=remediation,
             )
         )
-    return checks
+    return sorted(checks, key=lambda check: check.name)
 
 
 def _hosted_pricing_checks(config: ApoapsisConfig) -> list[DoctorCheck]:
@@ -350,6 +398,11 @@ def _hosted_pricing_checks(config: ApoapsisConfig) -> list[DoctorCheck]:
     for role in _MODEL_ROLES:
         model_config = getattr(config.models, role)
         if model_config is None or model_config.provider != "openai_compatible":
+            continue
+        # A loopback endpoint really does cost $0 per token. Warning that its
+        # zero pricing "silently defeats spend ceilings" is noise that trains
+        # the operator to ignore this whole category.
+        if _is_loopback_endpoint(model_config.base_url):
             continue
         pricing = model_config.pricing
         if (
@@ -595,6 +648,69 @@ def _completion_policy_checks(config: ApoapsisConfig) -> list[DoctorCheck]:
                     "(ADR 0015/0016/0017); apoapsis eval intentionally "
                     "keeps baseline for false-success measurement"
                 ),
+            )
+        )
+    return checks
+
+
+_CONTRACT_SEVERITY_STATUS = {
+    ContractFindingSeverity.INFO: DoctorCheckStatus.OK,
+    ContractFindingSeverity.WARNING: DoctorCheckStatus.WARNING,
+    ContractFindingSeverity.CRITICAL: DoctorCheckStatus.WARNING,
+}
+
+
+def _verification_contract_checks(config: ApoapsisConfig) -> list[DoctorCheck]:
+    """Report how much the configured contract could prove (ADR 0069).
+
+    Reported before model spend, because this is the one failure mode a
+    passing run cannot reveal: on TASK-33E0EB6476C4 every configured check
+    passed against an application that did not run. Doctor cannot know
+    whether a command really exercises a product, and does not pretend to
+    -- it reports the structural facts it can see and leaves the judgement
+    where it belongs.
+
+    A weak contract is never an ERROR here. Errors mean "this cannot work";
+    a development-only contract works exactly as designed, and the point is
+    that the owner should know what its success will and will not mean.
+    A blank repository with no product yet is the normal, legitimate case.
+    """
+
+    assessment = assess_verification_contract(
+        None, list(config.verification.commands), config.execution.completion_policy
+    )
+    checks = [
+        DoctorCheck(
+            name="verification_contract_evidence_level",
+            category="verification",
+            status=(
+                DoctorCheckStatus.OK
+                if assessment.proves_configured_criteria
+                else DoctorCheckStatus.WARNING
+            ),
+            detail=(
+                f"evidence level {assessment.evidence_level.value}: "
+                f"{assessment.qualification}"
+            ),
+            remediation=(
+                None
+                if assessment.proves_configured_criteria
+                else (
+                    "configure a check that actually executes the product and "
+                    "mark it acceptance = true; for a dependency-free browser "
+                    "product, `apoapsis verify-web-product` is one such check"
+                )
+            ),
+        )
+    ]
+    for finding in assessment.findings:
+        checks.append(
+            DoctorCheck(
+                name=f"verification_contract:{finding.code.value}",
+                category="verification",
+                status=_CONTRACT_SEVERITY_STATUS[finding.severity],
+                detail=finding.detail,
+                remediation=finding.remediation,
             )
         )
     return checks

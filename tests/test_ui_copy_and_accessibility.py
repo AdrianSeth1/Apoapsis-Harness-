@@ -82,8 +82,8 @@ class UiCopyStyleTests(unittest.TestCase):
         self.assertIn("Quick change", source)
         self.assertIn("Plan a larger change", source)
         self.assertIn("one Git project", source)
-        self.assertIn("OPEN_APOAPSIS.cmd", source)
-        self.assertIn(r'C:\\path\\to\\project', source)
+        self.assertIn("START_APOAPSIS.cmd", source)
+        self.assertIn("select the project folder", source)
 
     def test_guided_workflows_explain_recovery_and_planning_research(self) -> None:
         source = APP_JS.read_text(encoding="utf-8")

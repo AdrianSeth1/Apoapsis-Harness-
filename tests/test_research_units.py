@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import os
 import tempfile
 import unittest
 import urllib.request
@@ -15,6 +16,7 @@ from apoapsis.config import (
     FrontierProviderConfig,
     GitHubResearchSourceConfig,
     LocalResearchProviderConfig,
+    OfficialDocsResearchSourceConfig,
     ProviderPricing,
     ResearchSecurityConfig,
 )
@@ -48,6 +50,7 @@ from apoapsis.research.schemas import (
     ResearchSourceName,
     ResearchSourceType,
     ResearchSynthesis,
+    SearchResultCandidate,
     SourceBudget,
     SourceCandidate,
     SourceLocator,
@@ -60,6 +63,11 @@ from apoapsis.research.security import (
 from apoapsis.research.sources.github import GitHubSource
 from apoapsis.research.sources.official import OfficialDocumentationSource
 from apoapsis.research.sources.reddit import RedditSource
+from apoapsis.research.sources.search_provider import (
+    OfficialDocumentSearchProvider,
+    SearchProviderError,
+)
+from apoapsis.research.sources.tavily import TavilyOfficialDocumentSearchProvider
 from apoapsis.research.trigger import ResearchTriggerEngine
 from apoapsis.specification.schema import RiskLevel
 from tests.fakes import FakeModelProvider
@@ -638,6 +646,319 @@ class OllamaAndStructuredOutputTests(unittest.TestCase):
         self.assertFalse(client.telemetry[0].structured_output_valid)
         self.assertTrue(client.telemetry[1].structured_output_valid)
         self.assertEqual(client.telemetry[1].retry_count, 1)
+
+
+class OfficialDocsSearchProviderSeamTests(unittest.TestCase):
+    """ADR 0055: real official-document discovery adds a deterministic
+    search-provider seam without granting the local model network access.
+    No concrete vendor ships in this repository; these tests cover the
+    seam itself plus the still-supported direct-URL path."""
+
+    def test_no_urls_and_no_provider_fails_closed_if_search_is_reached(self) -> None:
+        # ResearchEngine._infeasibility_reason is expected to keep this
+        # query out of the search loop entirely (see
+        # test_research_integration's unusable-query coverage); this proves
+        # the adapter itself also fails closed rather than silently
+        # returning no candidates, in case it is ever reached directly.
+        source = OfficialDocumentationSource(object(), ["docs.python.org"])
+        query = ResearchQuery(
+            query_id="QUERY-DOCS",
+            research_question_id="RQ-1",
+            source=ResearchSourceName.OFFICIAL_DOCS,
+            query="Gmail API scopes",
+        )
+        with self.assertRaises(ResearchSecurityError):
+            asyncio.run(source.search(query, SourceBudget(max_candidates=3)))
+
+    def test_direct_url_official_docs_still_works_without_a_search_provider(
+        self,
+    ) -> None:
+        source = OfficialDocumentationSource(object(), ["docs.python.org"])
+        query = ResearchQuery(
+            query_id="QUERY-DOCS",
+            research_question_id="RQ-1",
+            source=ResearchSourceName.OFFICIAL_DOCS,
+            query="Python file handling",
+            urls=["https://docs.python.org/3/library/pathlib.html"],
+        )
+        candidates = asyncio.run(source.search(query, SourceBudget(max_candidates=3)))
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(
+            candidates[0].url, "https://docs.python.org/3/library/pathlib.html"
+        )
+        self.assertFalse(source.search_provider_configured)
+
+    def test_search_provider_results_outside_allowlist_are_dropped(self) -> None:
+        class _FakeSearchProvider:
+            provider_name = "fake-search"
+
+            async def search(self, query, *, max_results):
+                return [
+                    SearchResultCandidate(
+                        title="Gmail API scopes",
+                        url="https://developers.google.com/gmail/api/auth/scopes",
+                        snippet="Authorized scopes for the Gmail API.",
+                    ),
+                    SearchResultCandidate(
+                        title="Unrelated forum post",
+                        url="https://example-forum.invalid/thread/1",
+                        snippet="Not an authoritative source.",
+                    ),
+                ]
+
+        source = OfficialDocumentationSource(
+            object(),
+            ["developers.google.com"],
+            search_provider=_FakeSearchProvider(),
+        )
+        self.assertTrue(source.search_provider_configured)
+        query = ResearchQuery(
+            query_id="QUERY-DOCS",
+            research_question_id="RQ-1",
+            source=ResearchSourceName.OFFICIAL_DOCS,
+            query="Gmail API scopes",
+        )
+        candidates = asyncio.run(source.search(query, SourceBudget(max_candidates=5)))
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(
+            candidates[0].url,
+            "https://developers.google.com/gmail/api/auth/scopes",
+        )
+
+    def test_search_provider_interface_has_no_credential_parameter(self) -> None:
+        # Structural guarantee: the seam cannot forward a credential through
+        # the query path even by accident, because the protocol's search
+        # method has no such parameter. A real provider implementation must
+        # read its own dedicated environment variable directly instead.
+        import inspect
+
+        signature = inspect.signature(OfficialDocumentSearchProvider.search)
+        self.assertEqual(
+            set(signature.parameters) - {"self"}, {"query", "max_results"}
+        )
+
+    def test_official_docs_search_credentials_are_env_var_name_only(self) -> None:
+        config = OfficialDocsResearchSourceConfig(
+            enabled=True, search_credentials_env="FAKE_DOC_SEARCH_KEY"
+        )
+        self.assertEqual(config.search_credentials_env, "FAKE_DOC_SEARCH_KEY")
+        # The lower-level security config feeds retrieved-source cache keys
+        # (see ResearchEngine's "retrieved_source" cache key); it must have
+        # no field that could ever carry a credential value into a cache key
+        # or audit artifact.
+        self.assertNotIn(
+            "search_credentials_env", set(ResearchSecurityConfig.model_fields)
+        )
+
+    def test_no_configured_search_provider_defaults_to_none(self) -> None:
+        config = OfficialDocsResearchSourceConfig(enabled=True)
+        self.assertEqual(config.search_provider, "none")
+        self.assertIsNone(config.search_credentials_env)
+
+
+class TavilySearchProviderTests(unittest.TestCase):
+    """ADR 0056: the one concrete, owner-authorized official-document
+    search provider. All network access here goes through a fake fetcher
+    -- no real HTTP call is made or claimed live."""
+
+    class _FakeFetcher:
+        def __init__(self, response: FetchResponse | None = None, error=None):
+            self.response = response
+            self.error = error
+            self.requests: list[FetchRequest] = []
+
+        async def fetch(self, request: FetchRequest) -> FetchResponse:
+            self.requests.append(request)
+            if self.error is not None:
+                raise self.error
+            assert self.response is not None
+            return self.response
+
+    def setUp(self) -> None:
+        self._env_backup = dict(os.environ)
+
+    def tearDown(self) -> None:
+        os.environ.clear()
+        os.environ.update(self._env_backup)
+
+    def test_missing_credential_env_var_fails_clearly(self) -> None:
+        os.environ.pop("FAKE_TAVILY_KEY", None)
+        provider = TavilyOfficialDocumentSearchProvider(
+            self._FakeFetcher(), "FAKE_TAVILY_KEY"
+        )
+        with self.assertRaises(SearchProviderError) as context:
+            asyncio.run(provider.search("Gmail API scopes", max_results=3))
+        self.assertIn("FAKE_TAVILY_KEY", str(context.exception))
+
+    def test_parses_tavily_response_and_never_leaks_the_credential(self) -> None:
+        os.environ["FAKE_TAVILY_KEY"] = "s3cr3t-test-token"
+        body = json.dumps(
+            {
+                "results": [
+                    {
+                        "title": "Gmail API scopes",
+                        "url": "https://developers.google.com/gmail/api/auth/scopes",
+                        "content": "Authorized scopes for Gmail.",
+                    },
+                    {
+                        "title": "Missing url, should be skipped",
+                    },
+                ]
+            }
+        )
+        fetcher = self._FakeFetcher(
+            FetchResponse(
+                requested_url="https://api.tavily.com/search",
+                final_url="https://api.tavily.com/search",
+                status=200,
+                content_type="application/json",
+                body=body,
+                byte_count=len(body),
+            )
+        )
+        provider = TavilyOfficialDocumentSearchProvider(fetcher, "FAKE_TAVILY_KEY")
+
+        results = asyncio.run(provider.search("Gmail API scopes", max_results=3))
+
+        self.assertEqual(len(results), 1)
+        self.assertEqual(
+            results[0].url, "https://developers.google.com/gmail/api/auth/scopes"
+        )
+        self.assertEqual(len(fetcher.requests), 1)
+        request = fetcher.requests[0]
+        self.assertEqual(
+            request.headers.get("Authorization"), "Bearer s3cr3t-test-token"
+        )
+        # The credential is sent as a header (the fetcher's job to deliver
+        # it) but must never appear in the request URL/body, in any
+        # returned candidate, or anywhere the local model or an audit
+        # artifact could observe it.
+        self.assertNotIn("s3cr3t-test-token", request.url)
+        self.assertNotIn("s3cr3t-test-token", request.body or "")
+        for result in results:
+            self.assertNotIn("s3cr3t-test-token", result.title)
+            self.assertNotIn("s3cr3t-test-token", result.url)
+            self.assertNotIn("s3cr3t-test-token", result.snippet)
+
+    def test_results_are_still_filtered_to_the_official_docs_allowlist(self) -> None:
+        os.environ["FAKE_TAVILY_KEY"] = "s3cr3t-test-token"
+        body = json.dumps(
+            {
+                "results": [
+                    {
+                        "title": "Gmail API scopes",
+                        "url": "https://developers.google.com/gmail/api/auth/scopes",
+                        "content": "Authorized scopes for Gmail.",
+                    },
+                    {
+                        "title": "Off-allowlist result",
+                        "url": "https://example-forum.invalid/thread/1",
+                        "content": "Not authoritative.",
+                    },
+                ]
+            }
+        )
+        fetcher = self._FakeFetcher(
+            FetchResponse(
+                requested_url="https://api.tavily.com/search",
+                final_url="https://api.tavily.com/search",
+                status=200,
+                content_type="application/json",
+                body=body,
+                byte_count=len(body),
+            )
+        )
+        source = OfficialDocumentationSource(
+            object(),
+            ["developers.google.com"],
+            search_provider=TavilyOfficialDocumentSearchProvider(
+                fetcher, "FAKE_TAVILY_KEY"
+            ),
+        )
+        query = ResearchQuery(
+            query_id="QUERY-DOCS",
+            research_question_id="RQ-1",
+            source=ResearchSourceName.OFFICIAL_DOCS,
+            query="Gmail API scopes",
+        )
+
+        candidates = asyncio.run(source.search(query, SourceBudget(max_candidates=5)))
+
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(
+            candidates[0].url, "https://developers.google.com/gmail/api/auth/scopes"
+        )
+
+
+class FairAllocationRankingTests(unittest.TestCase):
+    def test_fair_allocation_across_multiple_research_questions(self) -> None:
+        # Same source (github) for every candidate, so the pre-existing
+        # per-source cap does not by itself guarantee diversity here -- only
+        # the new per-question cap does. Without it, RQ-1's six candidates
+        # would consume the entire fetch budget and RQ-2 would never be
+        # represented at all.
+        candidates = [
+            SourceCandidate(
+                candidate_id=f"CAND-RQ1-{index}",
+                source=ResearchSourceName.GITHUB,
+                source_type=ResearchSourceType.GITHUB_ISSUE,
+                title=f"broad result {index}",
+                url=f"https://github.com/example/repo{index}/issues/1",
+                repository=f"example/repo{index}",
+                deterministic_score=0.9,
+                deduplication_key=f"github:repo{index}",
+                research_question_id="RQ-1",
+            )
+            for index in range(6)
+        ]
+        candidates.extend(
+            SourceCandidate(
+                candidate_id=f"CAND-RQ2-{index}",
+                source=ResearchSourceName.GITHUB,
+                source_type=ResearchSourceType.GITHUB_ISSUE,
+                title=f"specific result {index}",
+                url=f"https://github.com/example/other{index}/issues/1",
+                repository=f"example/other{index}",
+                deterministic_score=0.85,
+                deduplication_key=f"github:other{index}",
+                research_question_id="RQ-2",
+            )
+            for index in range(2)
+        )
+
+        selected, _ = SourceRanker().rank(candidates, [], limit=4)
+
+        represented_questions = {item.research_question_id for item in selected}
+        self.assertIn("RQ-2", represented_questions)
+        self.assertGreaterEqual(
+            sum(1 for item in selected if item.research_question_id == "RQ-2"), 1
+        )
+        self.assertLessEqual(
+            sum(1 for item in selected if item.research_question_id == "RQ-1"), 2
+        )
+
+    def test_single_question_candidates_are_unaffected_by_the_question_cap(
+        self,
+    ) -> None:
+        # Regression guard: candidates predating research_question_id (or a
+        # single-question research task) must select exactly as before this
+        # fairness rule existed.
+        candidates = [
+            SourceCandidate(
+                candidate_id=f"CAND-{index}",
+                source=ResearchSourceName.GITHUB,
+                source_type=ResearchSourceType.GITHUB_FILE,
+                title=f"candidate {index}",
+                url=f"https://github.com/example/repo{index}/blob/main/file.py",
+                repository=f"example/repo{index}",
+                deterministic_score=0.8,
+                deduplication_key=f"github:{index}",
+            )
+            for index in range(5)
+        ]
+        selected, duplicates = SourceRanker().rank(candidates, [], limit=5)
+        self.assertEqual(duplicates, 0)
+        self.assertEqual(len(selected), 5)
 
 
 if __name__ == "__main__":

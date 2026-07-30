@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from enum import StrEnum
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import Field, TypeAdapter, ValidationError
 
@@ -19,6 +19,7 @@ class AgentActionKind(StrEnum):
     INSPECT_DIFF = "inspect_diff"
     PROPOSE_PATCH = "propose_patch"
     REPLACE_TEXT = "replace_text"
+    CREATE_FILE = "create_file"
     RUN_CHECK = "run_check"
     SUBMIT_FOR_VERIFICATION = "submit_for_verification"
     REQUEST_ESCALATION = "request_escalation"
@@ -53,6 +54,12 @@ class ReplaceTextAction(StrictModel):
     new_text: str = Field(max_length=40_000)
 
 
+class CreateFileAction(StrictModel):
+    action: Literal[AgentActionKind.CREATE_FILE]
+    path: str = Field(min_length=1, max_length=500)
+    content: str = Field(min_length=1, max_length=40_000)
+
+
 class RunCheckAction(StrictModel):
     action: Literal[AgentActionKind.RUN_CHECK]
     command_name: str = Field(min_length=1, max_length=200)
@@ -73,6 +80,7 @@ AgentAction = Annotated[
     | InspectDiffAction
     | ProposePatchAction
     | ReplaceTextAction
+    | CreateFileAction
     | RunCheckAction
     | SubmitForVerificationAction
     | RequestEscalationAction,
@@ -80,6 +88,41 @@ AgentAction = Annotated[
 ]
 
 _ACTION_ADAPTER = TypeAdapter(AgentAction)
+_LLAMA_CPP_TOOL_MARKERS = (
+    "</arg_value></tool_call>",
+    "</tool_call>",
+)
+
+
+def _normalize_known_local_tool_noise(raw: object) -> object:
+    """Remove known llama.cpp chat-template residue from a typed action.
+
+    Some local GGUF chat templates can echo tool-call closing tags into a JSON
+    string and attach a field from a different action. The discriminator still
+    has to select a valid Apoapsis action, and unknown authority fields remain
+    forbidden.
+    """
+
+    if not isinstance(raw, dict):
+        return raw
+    action = raw.get("action")
+    if action != AgentActionKind.CREATE_FILE:
+        return raw
+    if not isinstance(raw.get("content"), str):
+        return raw
+    allowed = {"action", "path", "content", "command_name", "reason"}
+    if not set(raw).issubset(allowed):
+        return raw
+    normalized: dict[str, Any] = dict(raw)
+    content = normalized["content"]
+    for marker in _LLAMA_CPP_TOOL_MARKERS:
+        if marker in content:
+            content = content.split(marker, 1)[0]
+            break
+    normalized["content"] = content
+    normalized.pop("command_name", None)
+    normalized.pop("reason", None)
+    return normalized
 
 
 def agent_action_schema() -> dict[str, object]:
@@ -102,6 +145,7 @@ def agent_action_schema() -> dict[str, object]:
             "unified_diff": {"type": "string"},
             "old_text": {"type": "string"},
             "new_text": {"type": "string"},
+            "content": {"type": "string"},
             "command_name": {"type": "string"},
             "reason": {"type": "string"},
         },
@@ -115,6 +159,7 @@ def parse_agent_action(content: str) -> AgentAction:
         raw = json.loads(content)
     except json.JSONDecodeError as exc:
         raise AgentActionError(f"response is not valid JSON: {exc.msg}") from exc
+    raw = _normalize_known_local_tool_noise(raw)
     try:
         return _ACTION_ADAPTER.validate_python(raw)
     except ValidationError as exc:

@@ -123,32 +123,139 @@ class CompletionPolicy(StrEnum):
 
 
 class AgentLoopConfig(StrictModel):
-    max_turns: int = Field(default=12, ge=1, le=50)
-    max_patch_attempts: int = Field(default=8, ge=1, le=20)
-    max_verification_runs: int = Field(default=4, ge=1, le=20)
-    max_search_results: int = Field(default=20, ge=1, le=100)
-    max_read_lines: int = Field(default=240, ge=1, le=2_000)
+    # ADR 0049: coupled to `ArchitectPlanCeilings.max_criteria_per_slice`
+    # rising from 12 to 20 (~1.6-1.75x). These are the local-coder
+    # defaults; `frontier_agent` below explicitly overrides every field it
+    # intentionally keeps at the pre-ADR-0049 value.
+    max_turns: int = Field(default=20, ge=1, le=50)
+    max_patch_attempts: int = Field(default=14, ge=1, le=20)
+    max_verification_runs: int = Field(default=7, ge=1, le=20)
+    max_search_results: int = Field(default=24, ge=1, le=100)
+    max_read_lines: int = Field(default=360, ge=1, le=2_000)
     max_observation_chars: int = Field(
-        default=48_000, ge=1_000, le=1_000_000
+        default=72_000, ge=1_000, le=1_000_000
     )
     max_transmitted_observation_chars: int = Field(
-        default=24_000, ge=1_000, le=1_000_000
+        default=36_000, ge=1_000, le=1_000_000
     )
+
+
+DEFAULT_LOCAL_POWER_FORBIDDEN_PATHS = [
+    ".apoapsis/**",
+    ".sol/**",
+    ".git/**",
+    ".env",
+    ".env.*",
+    "*.pem",
+    "*.key",
+    "*.p12",
+    "*.pfx",
+    "id_rsa",
+    "id_ed25519",
+    "secrets/**",
+]
+
+
+class LocalPowerWorkspace(StrEnum):
+    """Where a Local Power Sandbox session is allowed to run.
+
+    Only one value exists on purpose: the disposable per-task Git worktree
+    the harness already creates. There is deliberately no value that means
+    "the checked-out project" or "the Apoapsis repository".
+    """
+
+    ISOLATED_WORKTREE = "isolated_worktree"
+
+
+class LocalPowerConfig(StrictModel):
+    """ADR 0059: the opt-in, experimental Laguna Power Sandbox execution mode.
+
+    This widens what a *local* coding model may request inside a disposable
+    sandbox derived from the approved task base. It grants no new authority
+    over Apoapsis itself: workflow state, the audit log, Git metadata,
+    credentials, the user's home directory, and completion authority all
+    remain harness-owned exactly as under the strict one-action loop. Every
+    file and shell request is still mediated, budgeted, and audited; the
+    final diff is computed by the harness, and configured verification --
+    never the model's own `finish` claim -- decides the outcome.
+    """
+
+    enabled: bool = False
+    workspace: LocalPowerWorkspace = LocalPowerWorkspace.ISOLATED_WORKTREE
+    allow_shell: bool = True
+    allow_network: bool = False
+    max_turns: int = Field(default=8, ge=1, le=40)
+    max_seconds: float = Field(default=1800.0, gt=0, le=21_600)
+    max_shell_commands: int = Field(default=40, ge=0, le=500)
+    max_shell_seconds: float = Field(default=600.0, gt=0, le=3600)
+    max_changed_files: int = Field(default=100, ge=1, le=1_000)
+    max_changed_lines: int = Field(default=10_000, ge=1, le=200_000)
+    max_file_chars: int = Field(default=400_000, ge=1_000, le=4_000_000)
+    max_shell_output_chars: int = Field(default=40_000, ge=1_000, le=1_000_000)
+    max_observation_chars: int = Field(default=72_000, ge=1_000, le=1_000_000)
+    max_read_lines: int = Field(default=800, ge=1, le=5_000)
+    max_search_results: int = Field(default=40, ge=1, le=200)
+    forbidden_paths: list[str] = Field(
+        default_factory=lambda: list(DEFAULT_LOCAL_POWER_FORBIDDEN_PATHS)
+    )
+    require_final_diff_review: bool = True
+    require_verification: bool = True
+    # ADR 0071. Atomic slice proposals: one turn may propose a coherent
+    # multi-file increment that applies completely or not at all. On by
+    # default *within* an execution mode that is itself off by default, and
+    # switchable to false to reproduce the one-action protocol exactly --
+    # which is what makes the two a real comparison rather than the same
+    # mode with different prompt wording.
+    atomic_change_sets: bool = True
+    # Files one proposal may touch. The effective ceiling is
+    # `min(max_change_set_files, max_changed_files)`, so lowering the session
+    # ceiling always lowers the per-proposal one and the two cannot disagree.
+    max_change_set_files: int = Field(default=20, ge=1, le=200)
+    # Run the required configured commands automatically once a change set
+    # applies. The model asked for a coherent increment; making it spend a
+    # second turn asking for the verification of that increment is the
+    # granularity problem in miniature.
+    verify_after_change_set: bool = True
+
+    @model_validator(mode="after")
+    def keep_secret_paths_forbidden(self) -> LocalPowerConfig:
+        """A local override may widen this list but may never drop the
+        boundary entries that keep Apoapsis internals, Git metadata, and
+        credential material outside the model's reach."""
+
+        required = {".apoapsis/**", ".git/**", ".env", ".env.*"}
+        missing = sorted(required - set(self.forbidden_paths))
+        if missing:
+            raise ValueError(
+                "local power forbidden_paths must retain the non-negotiable "
+                f"boundary entries; missing {missing}"
+            )
+        if self.allow_shell and self.max_shell_commands == 0:
+            raise ValueError(
+                "local power allow_shell requires a non-zero max_shell_commands"
+            )
+        return self
 
 
 class ExecutionConfig(StrictModel):
     mode: ExecutionMode = ExecutionMode.ONE_SHOT
     route: AgentRoute = AgentRoute.AUTO
     completion_policy: CompletionPolicy = CompletionPolicy.BASELINE
+    local_power: LocalPowerConfig = Field(default_factory=LocalPowerConfig)
     agent: AgentLoopConfig = Field(default_factory=AgentLoopConfig)
     frontier_agent: AgentLoopConfig = Field(
         default_factory=lambda: AgentLoopConfig(
-            max_turns=8,
-            max_patch_attempts=5,
-            max_verification_runs=3,
+            # ADR 0049: frontier turns/patch-attempts/verification-runs
+            # rise coupled to the criteria bump, but the frontier coder's
+            # search/read/observation caps are a non-goal for widening and
+            # stay at their pre-ADR-0049 values.
+            max_turns=14,
+            max_patch_attempts=9,
+            max_verification_runs=5,
             max_search_results=20,
             max_read_lines=240,
             max_observation_chars=48_000,
+            max_transmitted_observation_chars=24_000,
         )
     )
 
@@ -213,6 +320,19 @@ class OfficialDocsResearchSourceConfig(ResearchSourceConfig):
     allowed_domains: list[str] = Field(
         default_factory=lambda: ["docs.python.org"]
     )
+    # "none" (default) keeps official_docs a direct-URL-only adapter. ADR
+    # 0056 records the owner's explicit authorization of "tavily" (the
+    # Tavily search API) as the one concrete provider implemented in this
+    # repository (``research/sources/tavily.py``); any other value fails
+    # clearly in ``research/factory.py`` rather than guessing at a vendor
+    # (ADR 0055).
+    search_provider: str = "none"
+    # The one dedicated environment-variable name the configured provider
+    # reads a credential from. The harness/provider reads this variable,
+    # never the model; the variable's value must never enter a prompt, log,
+    # cache key, or audit artifact. Defaults to "TAVILY_API_KEY" when
+    # search_provider = "tavily" and this is left unset.
+    search_credentials_env: str | None = None
 
 
 class GitHubResearchSourceConfig(ResearchSourceConfig):
@@ -302,8 +422,10 @@ class ArchitectPlanCeilings(StrictModel):
     max_slices: int = Field(default=40, ge=1, le=500)
     max_dependency_depth: int = Field(default=15, ge=1, le=100)
     max_suggested_paths_per_slice: int = Field(default=12, ge=1, le=200)
-    max_criteria_per_slice: int = Field(default=12, ge=1, le=200)
-    max_work_brief_chars: int = Field(default=2000, ge=100, le=20_000)
+    # ADR 0049: raised from 12/2000 to 20/3500, coupled to the local/
+    # frontier coder budget bump in `AgentLoopConfig` above.
+    max_criteria_per_slice: int = Field(default=20, ge=1, le=200)
+    max_work_brief_chars: int = Field(default=3500, ge=100, le=20_000)
 
 
 class ArchitectConfig(StrictModel):
@@ -401,6 +523,19 @@ class ApoapsisConfig(StrictModel):
                 f"execution route {self.execution.route.value} requires "
                 "[models.frontier_coder] configuration"
             )
+        if self.execution.local_power.enabled:
+            # ADR 0059: the sandbox is a local-model experiment layered on the
+            # bounded-agent execution spine. It has no one-shot equivalent, and
+            # it is never the frontier coder's execution path.
+            if self.execution.mode != ExecutionMode.AGENT:
+                raise ValueError(
+                    "[execution.local_power] requires execution mode 'agent'"
+                )
+            if self.execution.route == AgentRoute.FRONTIER_ONLY:
+                raise ValueError(
+                    "[execution.local_power] is a local-model mode and cannot "
+                    "be combined with the frontier_only route"
+                )
         return self
 
     @classmethod
