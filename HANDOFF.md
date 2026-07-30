@@ -87,6 +87,30 @@ Models never receive direct shell, filesystem, Git, network, credential,
 workflow-transition, retry-limit, verification, completion, or audit authority.
 Changing this boundary requires an explicit ADR before implementation.
 
+### The boundary is being split in two (ADR 0077, decided, not yet implemented)
+
+The rule above conflates two different things: *ephemeral capability* inside a
+disposable environment, and *durable authority* over the owner's repository,
+network, credentials, workflow, evidence, and delivery. The Crisis Atlas
+unrestricted control showed that denying the first bought no safety the
+container boundary does not already provide, and cost most of the model's
+engineering ability — the same Qwen used eight times *fewer* input tokens
+through the typed loop and produced a materially worse product.
+
+ADR 0077 keeps the second denial exactly as written above and permits the first
+inside a disposable workcell:
+
+> Qwen may act like a normal coding agent inside a disposable workcell.
+> Apoapsis alone decides whether any resulting delta is valid, verified,
+> checkpointed, promoted, or delivered.
+
+This does **not** authorize a model shell on the Windows host, network or
+credential access by prompt instruction, model-selected verification or
+acceptance policy, or model-owned completion, Git promotion, plan approval, or
+delivery. The decision is recorded; the workcell itself is handoff slice 2 and
+is not built. Until it is qualified, the typed Local Power path below remains
+the only local execution mode.
+
 ### Local Power Sandbox (ADR 0059, experimental, disabled by default)
 
 `[execution.local_power]` adds a second, opt-in execution path for *local*
@@ -730,6 +754,15 @@ criteria only when their pass genuinely proves the criterion.
 - ADR 0075/0076 planner handoff and operability contract (deterministic only;
   no live run):
   `docs/evaluation/adr-0075-0076-operability-and-planner-handoff-2026-07-29.md`
+- Crisis Atlas 64K sliced Qwen plus Codex checkpoints (live local inference plus
+  direct Codex inspection):
+  `docs/evaluation/crisis-atlas-64k-codex-frontier-trial-2026-07-30.md`
+- Crisis Atlas unrestricted Qwen CLI control (live local inference plus
+  independent host/browser verification):
+  `docs/evaluation/crisis-atlas-qwen-cli-control-2026-07-30.md`
+- ADR 0077 paired scorer and frozen Crisis Atlas facts (deterministic rescore of
+  the two records above; no new inference):
+  `docs/evaluation/adr-0077-paired-scorer-and-frozen-arms-2026-07-30.md`
 - Earlier local smoke records: remaining files in `docs/evaluation/`
 
 Use these dated records for exact setups and observed results. Keep new live
@@ -1304,6 +1337,34 @@ terminal workflow transition must register its event type in
 `reporting/current_state.py::_DECISIVE_EVENT_GENERATION`; an unregistered
 decisive event deliberately fails closed rather than inheriting the original
 report's outcome.
+
+ADR 0077 (2026-07-30) supersedes the *execution boundary* of ADRs 0059 and
+0071 without editing either. The unrestricted Crisis Atlas control falsified the
+premise that a narrow action grammar is a free safety measure: the same model,
+weights, and plan produced a materially better product through a persistent
+shell in a disposable container while using eight times *more* input tokens, and
+the sliced arm's cheapness had been hiding a capability regression behind a
+single score.
+
+Two things follow. First, ephemeral capability inside a disposable workcell is
+separated from durable authority over the owner's repository, network,
+credentials, workflow, evidence, and delivery; the second denial is unchanged.
+Second, measurement is split so that trade cannot be made silently again:
+`apoapsis/evaluation/paired.py` scores model proposal quality and harness
+defect-detection quality separately and reports four release gates
+independently, with **no** combined score field, and
+`apoapsis/models/ceilings.py` classifies context and output ceiling conditions
+so an interface limit is never charged to the model's reasoning.
+
+`apoapsis/evaluation/crisis_atlas_facts.py` freezes both arms as replayable
+facts. Their honest rescore is `INCOMPARABLE`: the sliced arm's seed commit was
+never recorded and its output cap changed mid-run, so no win or loss can be read
+from the pair. Slice 2 is permanently labelled *both* a proposal miss (a partial
+service at the wrong package path, no export service, no tests) and a detection
+miss (the harness applied it, saw inherited green, and said `COMPLETE`).
+
+The workcell itself does not exist. Do not describe ADR 0077 as implemented
+execution.
 
 Read the relevant ADR completely before altering its area. Preserve old ADRs as
 history; supersede them with a new ADR rather than rewriting the old decision.

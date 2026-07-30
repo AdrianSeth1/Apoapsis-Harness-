@@ -1153,6 +1153,61 @@ metrics. Hosted rescue and savings remain explicitly `unmeasured` unless the
 loaded artifacts contain a paired real hosted-frontier run; fake providers test
 the formulas but never populate real-world hosted results.
 
+### Paired scoring: two scorecards, four gates (ADR 0077)
+
+A single evaluation score can hide a capability regression behind a cheap arm.
+The Crisis Atlas sliced run used about eight times *fewer* input tokens than the
+same model driven by its normal coding CLI, and produced a materially worse
+product. `eval-paired` refuses to let that read as a win:
+
+```bash
+# rescore an explicit corpus of PairedArmRecord files
+apoapsis eval-paired .apoapsis-eval/control.json .apoapsis-eval/sandbox.json \
+  --candidate-arm capability_sandbox \
+  --output-dir .apoapsis-eval/paired
+
+# or rescore the frozen historical Crisis Atlas arms, with no arguments
+apoapsis eval-paired
+```
+
+This writes `paired.json` and `paired.md` containing, kept strictly apart:
+
+- **Model proposal quality** — obligations implemented before any external
+  repair, independent checks passed at the first checkpoint, missing, wrong-path,
+  placeholder, and dead production artifacts, runtime defects, repair distance,
+  model-authored test relevance, ceiling events, calls, tokens, and latency. A
+  frontier or human repair is recorded on the *delivered* result and can never
+  improve this scorecard.
+- **Harness defect-detection quality** — defects detected, negative controls
+  caught, criteria with current-state evidence, structured witness coverage,
+  false completions, weak command-name-only claims refused, stale or inherited
+  evidence rejected, defects caught before delivery, and defects that escaped
+  acceptance.
+- **Four release gates** — capability preservation, proposal non-inferiority,
+  delivered superiority, and efficiency, each reported on its own row.
+
+There is deliberately no overall score. A gate reported `unmeasured` is an
+absence of evidence, never a pass, and `recommended_for_default` requires all
+four to pass independently.
+
+Two arms are only compared when their controlled variables — seed commit,
+worktree fingerprint, task and plan hashes, model file hash, quantization,
+endpoint, sampling seed, temperature, server flags, context and output caps,
+wall-clock ceiling, CPU/GPU allocation, network and mount policy, and verifier
+version — are recorded *and* equal. An unrecorded variable disqualifies the pair
+rather than counting as a match. Prompt hashes, CLI version, and image digest
+are recorded but excluded, because the two arms differ there by construction.
+
+Running it with no arguments rescores the two frozen historical arms and returns
+`incomparable`: the sliced arm's seed commit was never written down and its
+output cap changed mid-run. That is the correct answer, not a bug.
+
+Context and output ceilings are classified as first-class conditions
+(`INPUT_CONTEXT_PRESSURE`, `INPUT_CONTEXT_EXHAUSTED`, `OUTPUT_CEILING_TRUNCATION`,
+`TOOL_OUTPUT_TRUNCATION`, `PROVIDER_ERROR_AFTER_ROLLOVER`) and reported
+separately from model reasoning failures, so a response that filled the context
+window is never counted as the model failing to reason.
+
 ## Local Power Sandbox (ADR 0059, experimental)
 
 An opt-in second execution path for **local models only**. It exists to test one

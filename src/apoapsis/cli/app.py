@@ -107,6 +107,13 @@ from apoapsis.evaluation.planning_schemas import (
     PlannerProvenance,
     PlanningComparisonReport,
 )
+from apoapsis.evaluation.crisis_atlas_facts import crisis_atlas_records
+from apoapsis.evaluation.paired import (
+    PairedArmKind,
+    PairedArmRecord,
+    score_paired_corpus,
+)
+from apoapsis.evaluation.paired_report import write_paired_corpus
 from apoapsis.evaluation.report import write_aggregate, write_comparison
 from apoapsis.evaluation.spend_ceiling import (
     HostedSpendCeilingExceededError,
@@ -1200,6 +1207,34 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         help="directory for aggregate.json and aggregate.md",
     )
+
+    paired = subparsers.add_parser(
+        "eval-paired",
+        help=(
+            "score a paired corpus: two scorecards and four separately reported "
+            "release gates, with no provider calls"
+        ),
+    )
+    paired.add_argument(
+        "records",
+        nargs="*",
+        type=Path,
+        help=(
+            "PairedArmRecord JSON files, or a JSON array of them. Omit to rescore "
+            "the frozen Crisis Atlas arms."
+        ),
+    )
+    paired.add_argument(
+        "--candidate-arm",
+        default=PairedArmKind.CAPABILITY_SANDBOX.value,
+        choices=[item.value for item in PairedArmKind],
+        help="arm compared against the default-Qwen control",
+    )
+    paired.add_argument(
+        "--output-dir",
+        type=Path,
+        help="directory for paired.json and paired.md",
+    )
     return parser
 
 
@@ -1273,6 +1308,10 @@ def _dispatch(args: argparse.Namespace) -> dict[str, object] | None:
         )
     if args.command == "eval-aggregate":
         return _aggregate_eval_reports(root, args.comparisons, args.output_dir)
+    if args.command == "eval-paired":
+        return _score_paired_corpus_command(
+            root, args.records, args.output_dir, args.candidate_arm
+        )
     if args.command == "plan":
         return _plan_command(root, args)
     # Runs before the task store is opened: this check is meant to be
@@ -2847,6 +2886,59 @@ def _aggregate_eval_reports(
         else root / ".apoapsis-eval" / aggregate_id
     )
     write_aggregate(resolved_output, report)
+    return report.model_dump(mode="json")
+
+
+def _score_paired_corpus_command(
+    root: Path,
+    record_paths: list[Path],
+    output_dir: Path | None,
+    candidate_arm: str,
+) -> dict[str, object]:
+    """Rescore a paired corpus. Never calls a provider.
+
+    With no paths, this rescores the frozen Crisis Atlas arms, which is the
+    Slice 0 exit condition: the old arms must be re-evaluable without inference.
+    """
+
+    records: list[PairedArmRecord] = []
+    if record_paths:
+        for path in record_paths:
+            resolved = path.resolve()
+            if not resolved.is_file():
+                raise TaskStoreError(f"paired arm record not found: {resolved}")
+            try:
+                payload = json.loads(resolved.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                raise TaskStoreError(
+                    f"failed to read paired arm record {resolved}: {exc}"
+                ) from exc
+            entries = payload if isinstance(payload, list) else [payload]
+            records.extend(
+                PairedArmRecord.model_validate(entry) for entry in entries
+            )
+    else:
+        records = crisis_atlas_records()
+
+    seen: set[tuple[str, str]] = set()
+    for record in records:
+        key = (record.arm.value, record.case_id)
+        if key in seen:
+            raise TaskStoreError(
+                f"duplicate arm/case pair would double-count results: {key}"
+            )
+        seen.add(key)
+
+    corpus_id = f"EVAL-PAIRED-{uuid.uuid4().hex[:12].upper()}"
+    report = score_paired_corpus(
+        records,
+        corpus_id=corpus_id,
+        candidate_arm=PairedArmKind(candidate_arm),
+    )
+    resolved_output = (
+        output_dir if output_dir is not None else root / ".apoapsis-eval" / corpus_id
+    )
+    write_paired_corpus(resolved_output, report)
     return report.model_dump(mode="json")
 
 
