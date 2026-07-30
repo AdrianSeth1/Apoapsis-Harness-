@@ -89,11 +89,15 @@ Follow
    boundary;
 5. replace green-test termination with strict slice-readiness contracts and
    structured witnesses;
-6. add compaction, persistent state capsules, adaptive budgets, and explicit
+6. add bounded recoverable tool output, two-tier compaction, stable-prefix
+   prompt caching, persistent state capsules, adaptive budgets, and explicit
    context/output truncation outcomes;
-7. make local, genuinely stronger frontier, and human repairs authoritative
+7. benchmark safe LSP feedback, adaptive verification, task-routed reasoning,
+   read-only parallelism, and the local `llama-server` profile without lowering
+   any paired quality result;
+8. make local, genuinely stronger frontier, and human repairs authoritative
    plan checkpoints; and
-8. run paired qualification plus architectural negative controls before any
+9. run paired qualification plus architectural negative controls before any
    default changes.
 
 The release rule is per-case, not merely an average: every task passed by

@@ -394,6 +394,366 @@ The Crisis Atlas evidence supports keeping a 16K-capable output profile for
 coherent multi-file work. It does not support changing the default input
 context solely because 64K fits in memory.
 
+## Performance optimizations that belong in the design
+
+Capability and correctness come first, but the second research pass identified
+additional ways to make the supervised agent faster and more token-efficient
+without narrowing what it can do.
+
+### Use Qwen Code's native loop instead of rebuilding a slower imitation
+
+Pin and record an actual Qwen Code/SDK version for the baseline and Capability
+Sandbox. Prefer its structured headless event stream over scraping terminal
+text. Qwen Code already provides:
+
+- persistent foreground and background shell processes;
+- explicit process IDs and exit information;
+- session resume;
+- file, glob, and ripgrep-backed search tools;
+- context compaction;
+- bounded tool output;
+- output-cap recovery;
+- checkpoint/restore support; and
+- optional LSP navigation and diagnostics.
+
+The official
+[headless-mode documentation](https://qwenlm.github.io/qwen-code-docs/en/users/features/headless/)
+defines line-delimited `stream-json` events, session identity, usage, and
+headless resume. The
+[shell documentation](https://qwenlm.github.io/qwen-code-docs/en/developers/tools/shell/)
+distinguishes foreground tests from persistent background servers and returns
+stdout, stderr, exit code, signals, and background PIDs.
+
+Apoapsis should adapt those events into its audit log and checkpoint protocol,
+not insert a second model-action scheduler in front of them.
+
+### Prove provider and tool-template conformance first
+
+A capable CLI can still perform badly if the OpenAI-compatible adapter,
+`llama-server` chat template, or tool parser subtly disagrees with Qwen Code.
+Before measuring agent quality, run a conformance suite that proves:
+
+- system, user, assistant, tool-call, and tool-result roles round-trip in the
+  intended Qwen chat template;
+- single and parallel tool calls preserve names and JSON arguments;
+- multiline Unicode file content is not escaped, truncated, or double-encoded;
+- thinking blocks are either supported or stripped exactly once;
+- stop reasons distinguish normal completion, tool call, context limit, output
+  limit, cancellation, and provider error;
+- usage counts and maximum-output settings are retained;
+- a replayed or retried response cannot execute the same mutating tool twice;
+  and
+- Qwen Code's declared context/output limits match the actual server profile.
+
+Pin the chat template, tool schemas, CLI version, and server version in every
+evaluation manifest. A malformed tool envelope is an adapter defect until the
+conformance suite proves otherwise.
+
+### Give Qwen efficient edit choices
+
+Do not force every modification to resend a whole file. Preserve the normal
+Qwen tool portfolio:
+
+- whole-file create/write for new or heavily rewritten files;
+- exact replacement for small local changes;
+- patch application for coherent multi-hunk edits;
+- rename/delete;
+- formatter or code action where repository policy permits; and
+- checkpoint restore inside the disposable workcell.
+
+Every edit should return a concise changed-range summary and immediate syntax
+status. Apoapsis still evaluates the complete final delta at admission.
+
+This reduces output tokens while avoiding the old unified-diff-only failure
+mode: Qwen chooses the representation suited to the change, and a malformed
+patch does not consume the whole task.
+
+### Prebuild the environment and reuse only safe caches
+
+Build versioned workcell/verifier images containing the approved language
+runtimes, browsers, linters, language servers, and test tools for the benchmark
+family. Avoid spending agent time discovering that a basic tool is absent or
+reinstalling it on every slice.
+
+Where lockfiles permit it, mount package/download caches read-only or through a
+controller-owned cache proxy. Bind their digest into evidence. Never share:
+
+- writable virtual environments;
+- build outputs;
+- databases;
+- background processes;
+- unreviewed generated source; or
+- dependency state not reproducible from the admitted manifest/lockfile.
+
+Snapshot a prepared dependency layer after owner-approved installation, then
+start coding and verification workcells from that same layer. This makes the
+two environments fast and comparable without letting the coding agent's
+leftovers become verifier evidence.
+
+### Keep observations small, lossless, and recoverable
+
+Use different observation budgets by tool:
+
+- search/glob: path plus compact match summary;
+- file read: requested line window with explicit continuation coordinates;
+- test failure: failing test names, first causal traceback, and short
+  stdout/stderr head and tail;
+- successful test: command, counts, duration, and artifact pointer;
+- long shell output: bounded head and tail in context, full output written to
+  an immutable artifact the model can inspect on demand; and
+- background server: readiness/status deltas, not the whole accumulated log.
+
+Qwen Code exposes configurable tool-output truncation and uses ripgrep by
+default. Its current configuration defaults to a 25,000-character tool-output
+threshold, while recent Qwen Code releases spill oversized output to files
+instead of repeatedly filling context. SWE-agent's ACI work likewise found
+that concise search results and small file windows were less confusing than
+showing every match.
+
+Truncation must be visible and reversible. Never silently discard the only
+error line.
+
+### Preserve prompt-cache locality
+
+Arrange every model request as:
+
+1. stable system prompt;
+2. stable, deterministically sorted tool schemas;
+3. stable task kernel;
+4. compacted history/state capsule; and
+5. latest observation.
+
+Do not inject timestamps, random IDs, reordered schemas, or changing audit
+metadata into the stable prefix. Keep those in tool results or suffix metadata.
+
+Qwen Code documents automatic
+[token caching](https://qwenlm.github.io/qwen-code-docs/en/users/features/token-caching/)
+for compatible OpenAI-style providers. `llama-server` also documents slot
+prompt-cache checkpoints, host-RAM cache, and idle-slot caching in its
+[server reference](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md).
+Measure both rather than assuming the hosted-provider cache behavior applies to
+the local endpoint.
+
+For a single local agent:
+
+- pin the session to one server slot when practical, because cache reuse may be
+  slot-local;
+- keep one warmed model service for all calls in a controlled arm;
+- issue one readiness call before the timed first engineering call;
+- report cold-load time separately from prompt evaluation and generation; and
+- do not run unrelated inference through the same slot during a measurement.
+
+### Compact before the cliff, with two tiers
+
+Use a cheap first tier that removes old reasoning blocks and replaces old tool
+outputs with artifact pointers. Use semantic compaction only when the remaining
+history still approaches the threshold.
+
+Qwen Code's current default auto-compaction threshold is 70% and it provides
+both semantic `/compress` and rule-based `/compress-fast`. Treat 70% as the
+first experiment point, not an unquestioned Apoapsis constant.
+
+Compare at least:
+
+- 60%, 70%, and 80% thresholds;
+- fast cleanup only versus fast cleanup followed by semantic compaction;
+- state-capsule recall after rollover; and
+- tokens saved, prompt-evaluation latency, and post-compaction defect rate.
+
+The winning threshold must preserve architecture decisions, open obligations,
+and failure evidence on the benchmark corpus.
+
+### Add immediate diagnostics without adding premature completion
+
+Provide Qwen with low-latency feedback after edits:
+
+- syntax/parser validation;
+- language-server diagnostics and symbol/reference navigation when the project
+  already has a safe configured language server;
+- changed-file formatter/linter checks;
+- targeted tests selected from repository facts; and
+- import/build checks for newly added components.
+
+Qwen Code's
+[LSP documentation](https://qwenlm.github.io/qwen-code-docs/en/users/features/lsp/)
+supports definitions, references, call hierarchy, workspace symbols,
+diagnostics, and code actions. SWE-agent reports that immediate syntax linting
+at edit time was especially useful.
+
+These are model feedback, not acceptance verdicts. They should help Qwen catch
+Slice 3-style route and type mistakes sooner while the independent verifier
+retains completion authority.
+
+### Provide localhost-only product diagnostics
+
+For browser products, include an offline headless browser in the workcell and
+let Qwen exercise only the workcell's own loopback origin. Block external
+requests at the container boundary and use a fresh profile with no owner
+cookies, extensions, credentials, or browser history.
+
+Useful model-facing observations are:
+
+- DOM/accessibility-tree excerpts;
+- console errors;
+- failed local network requests;
+- rendered viewport dimensions;
+- focus/label/accessibility findings;
+- screenshot artifacts where the configured model supports images; and
+- exact steps from an owner-authored local scenario.
+
+The independent verifier repeats owner-approved browser scenarios in a clean
+profile and emits the authoritative structured witness. Model-driven browsing
+is diagnostic work inside the sacrificial environment, not acceptance or host
+browser authority.
+
+### Use an adaptive verification pyramid
+
+Do not run the slowest full suite after every edit:
+
+1. Qwen runs focused diagnostics and tests while developing.
+2. At checkpoint, Apoapsis runs changed-component and slice-mapped witnesses.
+3. If those pass, it runs required slice acceptance.
+4. At authoritative checkpoint/promotion, it runs the configured broader
+   regression set.
+5. At plan delivery, ADR 0074 final integrated verification runs once against
+   the exact final candidate.
+
+Cache a passing result only for the exact command definition, environment
+digest, worktree fingerprint, and dependency state. A changed production file,
+test, dependency, configuration, or witness wrapper invalidates the relevant
+cache.
+
+This reduces wall time without bringing back ADR 0069's false-completion error.
+
+### Let read-only exploration overlap; serialize mutations
+
+Allow Qwen Code's native parallel read/search calls and background server/test
+monitoring when the underlying tools declare themselves read-only or
+process-isolated. Serialize:
+
+- file writes;
+- dependency installation;
+- database mutation;
+- Git operations that alter state; and
+- checkpoint freeze/admission.
+
+Optional subagents should begin as read-only reconnaissance or independent
+review experiments with separate contexts and explicit token accounting.
+Qwen Code warns that forked agents share a worktree and concurrent edits may
+conflict. Do not enable parallel implementation agents until isolated
+worktrees, merge admission, and a paired quality gain are demonstrated.
+
+### Route reasoning effort by task difficulty
+
+The Crisis Atlas arms ran with reasoning disabled. Qwen's official model
+documentation describes thinking mode as a controllable quality/compute tradeoff
+for harder coding and reasoning tasks, and Qwen Code exposes provider-mapped
+reasoning effort.
+
+Add a controlled profile experiment:
+
+- non-thinking for search, mechanical edits, and routine repair;
+- medium/high thinking for architecture reconciliation, cross-slice
+  integration, unfamiliar failures, and pre-checkpoint self-review; and
+- no silent switch of model, prompt, or effort inside a paired arm.
+
+Record reasoning tokens, tool-call validity, first-checkpoint quality, latency,
+and total repair distance. Reasoning mode becomes a default only if it improves
+independent quality per compute on this exact local model/runtime; it is not
+assumed from another Qwen release.
+
+Also test one read-only fresh-context local review at checkpoint. It is still a
+Qwen continuation, not frontier review, but a clean context focused on the
+admitted diff and open obligations may catch omissions cheaply. Keep it only if
+it reduces downstream repair tokens or defects on held-out cases.
+
+### Adapt output capacity instead of always reserving the maximum
+
+Start ordinary tool-selection turns with a normal output allowance. Before a
+coherent code-generating response, permit a higher declared cap. If the
+provider reports `length`/`MAX_TOKENS`, retry from the same checkpoint with a
+higher cap or ask the agent to use file tools rather than regenerating a giant
+payload.
+
+Qwen Code now documents adaptive output-token escalation because truncated
+file-tool arguments are unusable. Apoapsis should classify and recover from the
+condition, while retaining the owner's hard maximum.
+
+### Tune `llama-server` only behind quality-preserving benchmarks
+
+Create an owner-specific server profile benchmark for:
+
+- GPU layer offload;
+- CPU generation and prompt-processing threads;
+- logical and physical batch sizes;
+- Flash Attention;
+- KV-cache precision and memory use;
+- one slot versus controlled parallel slots;
+- context-checkpoint/host-RAM prompt cache;
+- memory mapping/locking where supported; and
+- optional speculative decoding.
+
+The official `llama-server` reference exposes these controls. Optimize for
+prompt-evaluation tokens/second, generation tokens/second, time to first token,
+and stable long-context operation. Reject a faster profile if it changes tool
+validity, acceptance score, determinism, or long-context recall.
+
+Do not casually quantize the KV cache or add a draft model merely because it
+fits. Those are separate experimental arms with identical output-quality gates.
+
+### Keep the model resident, but clean task state
+
+For a multi-slice plan, reuse the warm model process and immutable tool/runtime
+image. Start each slice from:
+
+- the authoritative prior `PlanCheckpoint`;
+- a fresh coding workcell filesystem built from that checkpoint;
+- the compact architecture/obligation ledger; and
+- no stale background processes, ports, environment mutations, or unreviewed
+  conversation debris from the previous slice.
+
+This preserves model-load and prompt-cache advantages without allowing process
+state to become hidden evidence.
+
+### Measure performance as a decomposition
+
+Per call and per task, record:
+
+- model load/readiness;
+- queued time;
+- prompt-evaluation tokens and milliseconds;
+- cached/reused input tokens where the provider exposes them;
+- generation tokens and milliseconds;
+- time to first token;
+- tool execution time;
+- verifier time;
+- compaction time and tokens;
+- repair/escalation time;
+- peak host RAM, VRAM, and KV-cache allocation; and
+- work completed at first checkpoint.
+
+Report token and latency savings only after final-quality parity. A fast false
+completion is a regression.
+
+### Performance experiment order
+
+Change one variable at a time, in this order:
+
+1. baseline-native Qwen loop versus legacy Local Power;
+2. readiness-based completion versus green-test termination;
+3. bounded tool observations and artifact spill;
+4. fast/semantic compaction thresholds;
+5. stable-prefix and local prompt-cache reuse;
+6. edit-tool portfolio and provider/tool conformance;
+7. LSP, localhost-browser, and immediate diagnostics;
+8. adaptive verification and prepared environment layers;
+9. reasoning effort and clean-context local review;
+10. read-only parallelism; and
+11. server/KV/speculative-decoding tuning.
+
+This order prevents a throughput optimization from hiding a capability or
+acceptance regression.
+
 ## Replace green-test completion with slice readiness
 
 Required commands are necessary evidence. They are not the definition of a
@@ -603,7 +963,12 @@ The Capability Sandbox may become the recommended local mode only if:
 8. context and output truncations are correctly classified;
 9. every frontier/human repair is represented as an authoritative plan
    checkpoint; and
-10. the complete deterministic harness suite has no new failures.
+10. the complete deterministic harness suite has no new failures;
+11. prompt-evaluation, generation, tool, verification, and compaction time are
+    reported separately;
+12. any reasoning, caching, LSP, parallelism, KV-cache, or speculative-decoding
+    optimization passes the same per-case quality floor; and
+13. the selected profile is tested both cold and warm.
 
 If a matched case regresses, keep the mode experimental. Do not explain away a
 regression with a better average.
@@ -698,15 +1063,27 @@ all inherited tests pass, and a real server/routes witness can prove the slice.
 ### Slice 5: context, compaction, and adaptive budgets
 
 Implement the stable task kernel, persistent state capsule, bounded tool
-output, proactive compaction, and explicit ceiling stop reasons.
+output with artifact spill, proactive two-tier compaction, stable prompt-cache
+prefix, and explicit ceiling stop reasons.
 
 Replace tiny fixed turn counts with owner ceilings primarily expressed as wall
 time, process time, token budget, no-progress detection, and destructive-action
 policy. Retain a high emergency call ceiling.
 
 Exit: a 64K rollover continues coherently; an output-cap hit is diagnosed; old
-raw logs are not replayed; and the model can still retrieve any repository
-artifact on demand.
+raw logs are not replayed; the model can still retrieve any repository artifact
+on demand; and prompt-evaluation/cache telemetry proves whether the stable
+prefix helped.
+
+### Slice 5A: diagnostics and runtime performance profile
+
+Add safe LSP/syntax feedback, the adaptive verification pyramid, read-only tool
+parallelism, reasoning-effort experiments, and a hardware-specific
+`llama-server` benchmark.
+
+Exit: the chosen profile improves latency or token use without lowering any
+paired proposal-quality or acceptance result; rejected optimizations remain
+recorded as negative results rather than silently entering the default.
 
 ### Slice 6: authoritative repair checkpoints
 
