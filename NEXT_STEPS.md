@@ -113,7 +113,12 @@ behavior against a contract the earlier ones make coherent:
 - **Slice E — controlled 32K vs 64K context experiment.** Run only after B-D,
   or it measures behavior against a known contradiction. Keep model-context
   capacity separate from `max_output_tokens` and record results as live local
-  evidence.
+  evidence. **Partial evidence recorded 2026-07-30:** the Codex-assisted 64K
+  checkpoint protocol delivered a verified product candidate, but maximum
+  actual input was only 24,583 tokens and the raised output cap—not the context
+  window—was the observable benefit. This was not comparable to the autonomous
+  32K arm. Authoritative plan delivery/Report agreement remains unrun; see
+  `docs/evaluation/crisis-atlas-64k-codex-frontier-trial-2026-07-30.md`.
 
 Then re-run the twelve-point Crisis Atlas regression scenario from a fresh
 committed seed, as specified in that handoff.
