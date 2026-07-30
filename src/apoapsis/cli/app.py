@@ -2968,6 +2968,7 @@ def _workcell_preflight_command(config_path: Path) -> dict[str, object]:
     from apoapsis.execution.backend import SandboxUnavailableError
     from apoapsis.workcell.containment import DEFAULT_CONTAINMENT_PROBES
     from apoapsis.workcell.controller import WorkcellController, load_workcell_config
+    from apoapsis.workcell.platform_support import assess_socket_support
 
     resolved = config_path.resolve()
     if not resolved.is_file():
@@ -2978,6 +2979,10 @@ def _workcell_preflight_command(config_path: Path) -> dict[str, object]:
         raise TaskStoreError(str(exc)) from exc
 
     controller = WorkcellController(config)
+    # Reported even when the runtime is missing: a Windows host can never mount
+    # the relay socket, and the owner should learn that from preflight rather
+    # than from a confusing connection refusal at the first model request.
+    platform = assess_socket_support(config.egress.model_socket_host_path)
     payload: dict[str, object] = {
         "workcell_manifest_digest": config.pin.manifest_digest(),
         "image_reference": controller.image_reference,
@@ -2985,6 +2990,12 @@ def _workcell_preflight_command(config_path: Path) -> dict[str, object]:
         "containment_probe_count": len(DEFAULT_CONTAINMENT_PROBES),
         "network": config.network,
         "model_egress": config.egress.base_url,
+        "relay_upstream": config.egress.relay.upstream_base_url,
+        "relay_allowed_routes": sorted(config.pin.relay.allowed_routes),
+        "socket_platform": platform.host_platform.value,
+        "socket_support": platform.support.value,
+        "socket_detail": platform.detail,
+        "socket_remedies": platform.remedies,
         "runtime_available": False,
         "runtime_error": None,
     }

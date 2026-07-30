@@ -1242,9 +1242,37 @@ project tree so it can never be edited or committed as delivered content).
 
 The model endpoint is reached through a Unix domain socket the controller
 creates, owns, meters, and deletes, exposed inside the namespace on a loopback
-port. With no default route and no DNS, egress is a boundary rather than a
-policy — and every model request crosses something the controller can count and
-stop.
+port by a read-only forwarder mounted outside the worktree. With no default
+route and no DNS, egress is a boundary rather than a policy — and every model
+request crosses something the controller can count and stop.
+
+The relay is **not a proxy**: it forwards to one configured upstream and
+ignores anything the client says about routing. `CONNECT`, absolute-form
+request URIs (`GET http://elsewhere/...`), unexpected methods, non-allowlisted
+paths, and redirects to any other origin are all refused. The permitted routes
+— `POST /v1/chat/completions`, `POST /v1/completions`, `GET /v1/models`,
+`GET /health` — are a module constant that configuration may narrow and can
+never widen. Request and response sizes, concurrency, idle time, streaming
+write deadlines, and a total session request budget are all capped, and a
+cancelled stream closes the upstream connection so the model server's slot is
+freed rather than left generating for nobody.
+
+**Platform note.** A Unix socket created on a *Windows host* cannot be
+bind-mounted into a Docker Desktop Linux container — `bind()` succeeds and the
+mount looks fine, but the shared filesystem does not carry socket inodes and
+the container's `connect()` fails at the first model request. Apoapsis detects
+this in preflight and refuses, rather than letting it surface as a confusing
+connection error. Run the controller inside WSL2 with the socket on the
+distribution's own filesystem (not under `/mnt/c`, which is the same Windows
+filesystem again), or on a Linux host. Do not substitute a TCP port: that would
+require giving the workcell a network route.
+
+Readiness is checked end to end, never in pieces: a one-token completion
+travels container → loopback forwarder → Unix socket → controller → model, and
+the result is cross-checked against the relay's own request counter. If every
+step passes but the relay saw no traffic, the workcell reached a model by some
+other path, and that is reported as a containment failure rather than as
+readiness.
 
 Before any quality is measured, two suites must pass and both fail closed:
 

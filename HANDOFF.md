@@ -129,8 +129,21 @@ working execution. See
 
 The container runs `--network none`. The model endpoint is reached only through
 a Unix domain socket the controller creates, owns, meters, and deletes, exposed
-inside the namespace on a loopback port. There is no default route and no DNS,
-so egress is a boundary rather than a policy.
+inside the namespace on a loopback port by a read-only forwarder mounted
+outside `/workspace`. There is no default route and no DNS, so egress is a
+boundary rather than a policy.
+
+| Egress layer | Module | Property |
+| --- | --- | --- |
+| Forwarding policy | `workcell/relay_policy.py` | Not a proxy: the upstream comes from configuration, never from the client. `CONNECT`, absolute-form URIs, and cross-origin redirects are refused; routes are a constant config can narrow but never widen. |
+| Relay server | `workcell/relay.py` | Unix socket, streaming forwarded not buffered, cancellation propagated upstream, request/response ceilings, concurrency and session budgets, refusals always recorded. |
+| Forwarder | `workcell/forwarder.py` | Read-only, outside the worktree, hashed into the manifest, and deliberately policy-free. |
+| Portability | `workcell/platform_support.py` | Refuses a Windows-host or DrvFs socket path up front: Docker Desktop cannot carry a socket inode from a Windows filesystem into the Linux VM. |
+| Readiness | `workcell/relay_preflight.py` | One-token request through the whole path, cross-checked against the relay's own counter — steps passing with zero relay traffic is a containment failure, not readiness. |
+
+`Host` and `X-Forwarded-*` are stripped rather than refused: `Host` is
+mandatory in HTTP/1.1, and the safety property is that the relay never consults
+it, not that the client omitted it.
 
 ### Local Power Sandbox (ADR 0059, experimental, disabled by default)
 
@@ -787,6 +800,10 @@ criteria only when their pass genuinely proves the criterion.
 - Slice 2 Capability Sandbox workcell (deterministic only; **no container
   started, no CLI run, no probe or conformance check executed live**):
   `docs/evaluation/slice-2-workcell-conformance-spike-2026-07-30.md`
+- Slice 2A model relay and forwarder (relay exercised end to end over real Unix
+  sockets against a fake upstream; **no container, no live model**), including
+  the full-suite baseline of 12 pre-existing failures:
+  `docs/evaluation/slice-2a-model-relay-2026-07-30.md`
 - Earlier local smoke records: remaining files in `docs/evaluation/`
 
 Use these dated records for exact setups and observed results. Keep new live
