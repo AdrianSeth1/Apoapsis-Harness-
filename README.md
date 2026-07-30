@@ -1379,6 +1379,35 @@ outcomes. **`CONTINUE`** is the important one: the work was admitted,
 obligations remain, and the agent gets another turn to finish its own stated
 plan rather than the harness declaring the slice done on its behalf.
 
+## Context, compaction, and budgets (handoff slice 5, not yet wired)
+
+The agent's prompt is assembled in a fixed order — system prompt, sorted tool
+schemas, task kernel, compacted history, latest observation — so the first
+three are byte-identical between calls and the provider's prefix cache can hit.
+The task kernel **refuses** to contain a timestamp, a UUID, or a request id:
+those change between otherwise identical calls, and the resulting cost is
+invisible because the run still works and every answer is still correct.
+
+Compaction is proactive and two-tier. It begins at a configurable fraction of
+the context window (default 0.70, matching Qwen Code and treated as a first
+experiment point rather than a fixed truth), drops old reasoning and spills old
+tool output to retrievable artifacts, and only asks for semantic summarisation
+if that was not enough. The state capsule — outstanding obligations, interface
+ledger, changed paths, witnesses already observed, latest failures, refused and
+no-progress actions — is never compacted away, and the model's own notes in it
+are rendered as advisory.
+
+Nothing is dropped irreversibly. Truncation keeps the head and the tail, names
+the artifact holding the rest, and is refused outright if there is nowhere to
+spill.
+
+Budgets are wall time, in-workcell process time, tokens, and no-progress
+detection — not turn counts. Progress means a changed worktree fingerprint, not
+that a turn happened. The call ceiling remains only as a high emergency stop.
+
+This is machinery, not yet behaviour: no session loop builds a kernel,
+maintains a capsule, compacts, or enforces a budget.
+
 ## Local Power Sandbox (ADR 0059, experimental)
 
 An opt-in second execution path for **local models only**. It exists to test one

@@ -196,9 +196,30 @@ Follow
    Python/Flask-shaped with symbol extraction Python-only. See
    `docs/evaluation/slice-4b-witness-emitters-and-checkpoint-loop-2026-07-30.md`
    and `docs/evaluation/slice-4c-advisory-metadata-and-derived-command-success-2026-07-30.md`;
-6. add bounded recoverable tool output, two-tier compaction, stable-prefix
-   prompt caching, persistent state capsules, adaptive budgets, and explicit
-   context/output truncation outcomes;
+6. **Done (handoff slice 5), unwired.** `workcell/context.py` gives the stable
+   `TaskKernel` -- which *refuses* a timestamp, UUID, or request id at
+   construction, because a volatile prefix silently zeroes the cache while
+   looking harmless -- the `StateCapsule` that survives compaction, and the
+   fixed prompt layout with `check_prefix_stability`.
+   `workcell/compaction.py` adds proactive two-tier compaction (mechanical,
+   then semantic only if still over target), per-tool output budgets, and
+   head-and-tail truncation that refuses to be irreversible.
+   `workcell/budgets.py` replaces turn counts with wall time, process time,
+   tokens, and no-progress detection keyed on the worktree fingerprint; the
+   call ceiling survives as an emergency stop and refuses to be set low.
+
+   The default 0.70 threshold would have fired at Slice 2D's observed 58,038
+   tokens (88.6% of the window), which fired nothing at the time. That is a
+   statement about the policy, not about what the model would then have done.
+
+   **Outstanding:** nothing is wired in -- `run_checkpoint` does not build a
+   kernel, maintain a capsule, compact, or enforce a budget; the near-boundary
+   rerun that would satisfy the slice's own exit criterion is still owed; token
+   counts are caller-supplied estimates rather than provider-reported usage;
+   there is no prompt-evaluation or cache telemetry, so the stable prefix is
+   proven stable but not proven to help; and semantic compaction is requested,
+   not implemented. See
+   `docs/evaluation/slice-5-context-compaction-and-budgets-2026-07-30.md`;
 7. benchmark safe LSP feedback, adaptive verification, task-routed reasoning,
    read-only parallelism, and the local `llama-server` profile without lowering
    any paired quality result;

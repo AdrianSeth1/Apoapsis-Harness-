@@ -803,6 +803,9 @@ criteria only when their pass genuinely proves the criterion.
   `docs/evaluation/adr-0077-paired-scorer-and-frozen-arms-2026-07-30.md`
 - Slice 2 Capability Sandbox workcell (deterministic implementation record):
   `docs/evaluation/slice-2-workcell-conformance-spike-2026-07-30.md`
+- Slice 5 task kernel, state capsule, two-tier compaction, and budgets
+  (deterministic only; not wired into a session loop):
+  `docs/evaluation/slice-5-context-compaction-and-budgets-2026-07-30.md`
 - Slice 4/4B readiness, structured witnesses, and the checkpoint loop
   (deterministic only; the two-turn CONTINUE-then-COMPLETE integration runs
   through `run_checkpoint`):
@@ -1479,6 +1482,25 @@ discharged by observed symbols and by routes a witness actually called. And
 witnesses**, never supplied alongside them -- a caller-provided set could
 describe a different tree or an earlier turn, which is the stale-evidence
 problem refused everywhere else.
+
+Handoff slice 5 (2026-07-30) adds the context machinery, and it is **not wired
+into any session loop yet**. `workcell/context.py` holds the stable `TaskKernel`
+and the `StateCapsule` that survives compaction; `workcell/compaction.py` the
+two-tier compaction and bounded tool output; `workcell/budgets.py` the ceilings
+that replace turn counts.
+
+Three properties are load-bearing. The kernel **refuses** a timestamp, UUID, or
+request id at construction, because a volatile prompt prefix zeroes the
+provider's cache while the run still works and every answer is still right --
+a cost the efficiency gate would then report as a property of the harness.
+Compaction is **proactive**: the default 0.70 threshold would have fired at
+Slice 2D's observed 58,038 tokens, 88.6% of the window, which fired nothing at
+the time. And progress is **a changed worktree fingerprint**, not a turn
+occurring and not the model's account of itself.
+
+Nothing is dropped irreversibly: the capsule is never compacted away, output
+with nowhere to spill is kept rather than discarded, and a truncated
+observation that names no artifact is rejected at construction.
 
 Read the relevant ADR completely before altering its area. Preserve old ADRs as
 history; supersede them with a new ADR rather than rewriting the old decision.
