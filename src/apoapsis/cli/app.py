@@ -6,6 +6,7 @@ import json
 import sys
 import uuid
 from pathlib import Path
+from urllib.parse import urlparse
 
 from pydantic import ValidationError
 
@@ -65,6 +66,7 @@ from apoapsis.manual_frontier.package import (
     write_handoff_artifacts,
 )
 from apoapsis.manual_frontier.store import ManualFrontierPreviewStore
+from apoapsis.reporting.current_state import project_current_task_evidence
 from apoapsis.review.case import build_review_case
 from apoapsis.review.errors import ReviewError
 from apoapsis.review.execution import execute_review_action, run_review_operation
@@ -105,6 +107,13 @@ from apoapsis.evaluation.planning_schemas import (
     PlannerProvenance,
     PlanningComparisonReport,
 )
+from apoapsis.evaluation.crisis_atlas_facts import crisis_atlas_records
+from apoapsis.evaluation.paired import (
+    PairedArmKind,
+    PairedArmRecord,
+    score_paired_corpus,
+)
+from apoapsis.evaluation.paired_report import write_paired_corpus
 from apoapsis.evaluation.report import write_aggregate, write_comparison
 from apoapsis.evaluation.spend_ceiling import (
     HostedSpendCeilingExceededError,
@@ -157,13 +166,14 @@ DEFAULT_CONFIG = """# Apoapsis Harness project configuration
 language = "python"
 
 [models.frontier]
-provider = "ollama"
-base_url = "http://127.0.0.1:11434"
-model = "qwen3-coder-next:q4_K_M"
+provider = "openai_compatible"
+base_url = "http://127.0.0.1:8000/v1"
+model = "Laguna-S-2.1-UD-Q4_K_S"
+api_key_env = "APOAPSIS_LOCAL_CODER_API_KEY"
 timeout_seconds = 900
 max_output_tokens = 8192
 temperature = 0.0
-context_window_tokens = 65536
+context_window_tokens = 32768
 think = false
 specification_think = false
 
@@ -173,14 +183,14 @@ output_per_million_usd = 0
 cached_input_per_million_usd = 0
 
 [models.local_coder]
-provider = "ollama"
-base_url = "http://127.0.0.1:11434"
-model = "qwen3-coder-next:q4_K_M"
+provider = "openai_compatible"
+base_url = "http://127.0.0.1:8000/v1"
+model = "Laguna-S-2.1-UD-Q4_K_S"
 api_key_env = "APOAPSIS_LOCAL_CODER_API_KEY"
 timeout_seconds = 900
 max_output_tokens = 8192
 temperature = 0.0
-context_window_tokens = 65536
+context_window_tokens = 32768
 think = false
 specification_think = false
 
@@ -271,7 +281,19 @@ max_seconds = 300
 [research.sources.official_docs]
 enabled = true
 priority = 1
+# Official documentation research is impossible for a vendor/domain that is
+# not listed here -- add every ecosystem this project actually needs before
+# relying on official-doc research (ADR 0055). Examples:
+#   Google/Gmail API docs:  "developers.google.com"
+#   Twilio docs:            "www.twilio.com"
+#   Vonage docs:            "developer.vonage.com"
 allowed_domains = ["docs.python.org"]
+# No search provider ships in this repository yet (ADR 0055): with no
+# provider configured, official_docs can only use URLs the local model
+# names explicitly, and every one of those still has to pass
+# allowed_domains above. Research questions needing discovery of a URL you
+# have not listed here will be reported as unusable, not silently dropped.
+search_provider = "none"
 
 [research.sources.github]
 enabled = true
@@ -288,6 +310,12 @@ user_agent = "apoapsis-harness-research/1.0"
 purposes = ["user_pain_points", "product_expectations", "failure_discovery"]
 
 [research.security]
+# This is the lower-level network allowlist every research fetch is checked
+# against, in addition to (not instead of) [research.sources.official_docs]
+# allowed_domains above -- a domain must be present in BOTH lists for
+# official-doc research to reach it (ADR 0055). Add any domain you add above
+# to this list too, e.g. "developers.google.com", "www.twilio.com",
+# "developer.vonage.com".
 allow_domains = [
   "docs.python.org", "github.com", "api.github.com", "reddit.com",
   "www.reddit.com", "oauth.reddit.com"
@@ -334,6 +362,31 @@ required = true
 # this command is strong enough product proof, then map each criterion's
 # verification_method to "unit-tests" (or another acceptance command).
 acceptance = false
+
+# For a dependency-free browser product, uncomment this. Tests that assert
+# fragments exist in index.html, styles.css, and app.js can all pass while
+# the three files describe different applications -- a script wired to ids
+# the markup never defines, styles aimed at classes nothing carries. This
+# command cross-references them against each other and fails when they
+# disagree. See ADR 0069.
+#
+# [[verification.commands]]
+# name = "web-product-integrity"
+# category = "acceptance"
+# description = "Cross-references the product's HTML, CSS, and JavaScript."
+# argv = ["python", "-m", "apoapsis", "verify-web-product",
+#         "--forbid-external-resources", "--treat-warnings-as-errors"]
+# timeout_seconds = 60
+# required = true
+# acceptance = true
+#
+# ADR 0073: --forbid-external-resources bans third-party origins only. A
+# product that talks to its own backend with fetch('/incidents') passes it.
+# Add --forbid-runtime-network-apis only for a product that must make no
+# runtime request of any kind. This check is a static cross-reference and
+# prints the evidence it examined; when a criterion is about persistence,
+# browser/API integration, or interaction behavior, configure a
+# project-specific acceptance command as well.
 
 [architect.ceilings]
 max_slices = 40
@@ -465,6 +518,77 @@ def build_parser() -> argparse.ArgumentParser:
     verify = subparsers.add_parser("verify", help="run configured checks")
     verify.add_argument("task_id")
     verify.add_argument("--path", type=Path)
+
+    # ADR 0069. Deliberately a plain subcommand rather than something the
+    # harness configures for a project on its own: what proves a product is
+    # an owner decision, and this is a check an owner can choose to require,
+    # not one Apoapsis silently imposes.
+    verify_web = subparsers.add_parser(
+        "verify-web-product",
+        help=(
+            "cross-reference a dependency-free browser product's HTML, CSS, "
+            "and JavaScript against each other"
+        ),
+    )
+    verify_web.add_argument(
+        "--root",
+        type=Path,
+        default=None,
+        help="product directory (defaults to the current directory)",
+    )
+    verify_web.add_argument(
+        "--entry", default="index.html", help="the document the product opens from"
+    )
+    verify_web.add_argument(
+        "--optional-element",
+        action="append",
+        default=[],
+        metavar="NAME",
+        help=(
+            "an id or class the product creates at runtime; repeatable, and "
+            "an explicit owner statement rather than an inferred exception"
+        ),
+    )
+    # ADR 0073 narrowed this flag and added the one below it. Before 0073
+    # this single flag also failed on `fetch('/incidents')`, which made a
+    # product forbidden to depend on a CDN equally forbidden to talk to its
+    # own backend.
+    verify_web.add_argument(
+        "--forbid-external-resources",
+        action="store_true",
+        help=(
+            "fail on third-party origins: cross-origin and protocol-relative "
+            "URLs, WebSockets, absolute loopback URLs, and external assets. "
+            "Same-origin requests such as fetch('/incidents') are allowed "
+            "and reported; use --forbid-runtime-network-apis to ban those too"
+        ),
+    )
+    verify_web.add_argument(
+        "--forbid-runtime-network-apis",
+        action="store_true",
+        help=(
+            "fail on any runtime request API at all, same-origin included "
+            "(fetch, XMLHttpRequest, WebSocket, EventSource, sendBeacon); "
+            "this is the pre-ADR-0073 meaning of "
+            "--forbid-external-resources"
+        ),
+    )
+    verify_web.add_argument(
+        "--treat-warnings-as-errors",
+        action="store_true",
+        help="fail on dead style rules as well as unresolved references",
+    )
+    verify_web.add_argument(
+        "--behavior",
+        action="store_true",
+        help=(
+            "additionally require real in-browser behavioral verification; "
+            "fails until a browser probe provider exists"
+        ),
+    )
+    verify_web.add_argument(
+        "--json", action="store_true", help="emit the full report as JSON"
+    )
 
     rollback = subparsers.add_parser(
         "rollback", help="remove a task worktree and mark it rolled back"
@@ -1083,6 +1207,47 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         help="directory for aggregate.json and aggregate.md",
     )
+
+    paired = subparsers.add_parser(
+        "eval-paired",
+        help=(
+            "score a paired corpus: two scorecards and four separately reported "
+            "release gates, with no provider calls"
+        ),
+    )
+    paired.add_argument(
+        "records",
+        nargs="*",
+        type=Path,
+        help=(
+            "PairedArmRecord JSON files, or a JSON array of them. Omit to rescore "
+            "the frozen Crisis Atlas arms."
+        ),
+    )
+    paired.add_argument(
+        "--candidate-arm",
+        default=PairedArmKind.CAPABILITY_SANDBOX.value,
+        choices=[item.value for item in PairedArmKind],
+        help="arm compared against the default-Qwen control",
+    )
+    paired.add_argument(
+        "--output-dir",
+        type=Path,
+        help="directory for paired.json and paired.md",
+    )
+
+    workcell = subparsers.add_parser(
+        "workcell-preflight",
+        help=(
+            "validate a pinned Capability Sandbox workcell configuration and "
+            "check the container runtime, without starting a model"
+        ),
+    )
+    workcell.add_argument(
+        "config",
+        type=Path,
+        help="JSON file containing a fully pinned WorkcellConfig",
+    )
     return parser
 
 
@@ -1156,8 +1321,19 @@ def _dispatch(args: argparse.Namespace) -> dict[str, object] | None:
         )
     if args.command == "eval-aggregate":
         return _aggregate_eval_reports(root, args.comparisons, args.output_dir)
+    if args.command == "workcell-preflight":
+        return _workcell_preflight_command(args.config)
+    if args.command == "eval-paired":
+        return _score_paired_corpus_command(
+            root, args.records, args.output_dir, args.candidate_arm
+        )
     if args.command == "plan":
         return _plan_command(root, args)
+    # Runs before the task store is opened: this check is meant to be
+    # configured as a verification command and executed inside a disposable
+    # worktree, where no Apoapsis database exists and none should be needed.
+    if args.command == "verify-web-product":
+        return _verify_web_product(root, args)
     if args.command == "discover":
         return _discover_command(root, args)
     store = _store(root)
@@ -1194,9 +1370,16 @@ def _dispatch(args: argparse.Namespace) -> dict[str, object] | None:
         return _manual_frontier_command(root, store, args)
     if args.command == "inspect":
         record = store.get_task(args.task_id)
+        events = store.events(args.task_id)
         result: dict[str, object] = {
             "task": record.model_dump(mode="json"),
-            "events": [event.model_dump(mode="json") for event in store.events(args.task_id)],
+            "events": [event.model_dump(mode="json") for event in events],
+            # The original-stop snapshot below is preserved verbatim; this
+            # is the current projection that labels the task's outcome
+            # (ADR 0072). Both are emitted, distinctly named.
+            "current_evidence": project_current_task_evidence(
+                root, store, args.task_id, record=record, events=events
+            ).model_dump(mode="json"),
         }
         report_path = root / ".apoapsis" / "tasks" / args.task_id / "report.json"
         if report_path.is_file():
@@ -1223,6 +1406,28 @@ def _dispatch(args: argparse.Namespace) -> dict[str, object] | None:
     raise AssertionError(f"unhandled command: {args.command}")
 
 
+# Entries `apoapsis init` ensures a project ignores, each paired with the
+# spellings that already cover it.
+#
+# The Python cache entries are ergonomics only (ADR 0063). Reviewer-facing
+# changed-file output is made correct by `repository.changed_paths`'
+# classifier, which does not consult `.gitignore` at all -- existing projects
+# cannot be assumed to have been initialized with this template, and the
+# harness must report the right thing for them too.
+_GITIGNORE_ENTRIES: tuple[tuple[str, frozenset[str]], ...] = (
+    (
+        ".apoapsis/",
+        frozenset({".apoapsis", ".apoapsis/", "/.apoapsis", "/.apoapsis/"}),
+    ),
+    (
+        "__pycache__/",
+        frozenset({"__pycache__", "__pycache__/", "/__pycache__", "/__pycache__/"}),
+    ),
+    ("*.py[cod]", frozenset({"*.py[cod]", "*.pyc", "*.pyo", "*.pyd"})),
+    (".pytest_cache/", frozenset({".pytest_cache", ".pytest_cache/"})),
+)
+
+
 def _ensure_apoapsis_gitignored(root: Path) -> bool:
     """Ensures ``.apoapsis/`` (Apoapsis's own runtime state -- task, plan,
     and discovery databases, caches, and audit artifacts, never project
@@ -1235,19 +1440,28 @@ def _ensure_apoapsis_gitignored(root: Path) -> bool:
     real uncommitted change to the user's project, so it refuses either
     way. Idempotent: returns ``False`` and leaves the file untouched if an
     existing ``.gitignore`` already has an entry covering ``.apoapsis/``,
-    in whichever of its common spellings."""
+    in whichever of its common spellings. The same idempotent treatment is
+    applied to the Python cache entries in ``_GITIGNORE_ENTRIES``, so a
+    freshly initialized project does not present verification byproducts as
+    working-tree changes at all."""
 
     gitignore = root / ".gitignore"
-    entry = ".apoapsis/"
-    already_covered = {".apoapsis", ".apoapsis/", "/.apoapsis", "/.apoapsis/"}
-    if gitignore.is_file():
-        existing = gitignore.read_text(encoding="utf-8")
-        if any(line.strip() in already_covered for line in existing.splitlines()):
-            return False
-        separator = "" if existing == "" or existing.endswith("\n") else "\n"
-        gitignore.write_text(f"{existing}{separator}{entry}\n", encoding="utf-8")
-        return True
-    gitignore.write_text(f"{entry}\n", encoding="utf-8")
+    existing = (
+        gitignore.read_text(encoding="utf-8") if gitignore.is_file() else ""
+    )
+    present = {line.strip() for line in existing.splitlines()}
+    missing = [
+        entry
+        for entry, covered in _GITIGNORE_ENTRIES
+        if not (present & covered)
+    ]
+    if not missing:
+        return False
+    separator = "" if existing == "" or existing.endswith("\n") else "\n"
+    gitignore.write_text(
+        existing + separator + "".join(f"{entry}\n" for entry in missing),
+        encoding="utf-8",
+    )
     return True
 
 
@@ -1341,6 +1555,7 @@ def _plan_validate(
         record.plan,
         configured_verification_commands=configured_names,
         ceilings=config.architect.ceilings,
+        configured_commands=config.verification.commands,
     )
     result = PlanValidationResult(
         plan_id=plan_id,
@@ -2053,16 +2268,20 @@ def _apply_context_profile(config: ApoapsisConfig, profile_name: str) -> Apoapsi
     """Apply a deterministic coding-context profile without mutating config files."""
 
     coding = config.models.local_coder or config.models.frontier
-    if coding.provider != "ollama":
+    if coding.provider == "openai_compatible" and not _is_loopback_endpoint(
+        coding.base_url
+    ):
         raise TaskStoreError(
-            "context profiles require the native Ollama local coding provider"
+            "context profiles require a loopback local coding provider"
         )
     try:
         profile = _CONTEXT_PROFILES[profile_name]
     except KeyError as exc:
         raise TaskStoreError(f"unsupported context profile: {profile_name}") from exc
     model_updates = {}
-    if config.models.frontier.provider == "ollama":
+    if config.models.frontier.provider == "ollama" or _is_loopback_endpoint(
+        config.models.frontier.base_url
+    ):
         model_updates["frontier"] = config.models.frontier.model_copy(
             update={"context_window_tokens": profile["context_window_tokens"]}
         )
@@ -2079,6 +2298,12 @@ def _apply_context_profile(config: ApoapsisConfig, profile_name: str) -> Apoapsi
         }
     )
     return config.model_copy(update={"models": models, "context": context})
+
+
+def _is_loopback_endpoint(value: str) -> bool:
+    parsed = urlparse(value)
+    hostname = (parsed.hostname or "").lower()
+    return hostname in {"127.0.0.1", "::1", "localhost"}
 
 
 def _build_frontier_adapter(config: FrontierProviderConfig) -> ModelProvider:
@@ -2679,6 +2904,113 @@ def _aggregate_eval_reports(
     return report.model_dump(mode="json")
 
 
+def _score_paired_corpus_command(
+    root: Path,
+    record_paths: list[Path],
+    output_dir: Path | None,
+    candidate_arm: str,
+) -> dict[str, object]:
+    """Rescore a paired corpus. Never calls a provider.
+
+    With no paths, this rescores the frozen Crisis Atlas arms, which is the
+    Slice 0 exit condition: the old arms must be re-evaluable without inference.
+    """
+
+    records: list[PairedArmRecord] = []
+    if record_paths:
+        for path in record_paths:
+            resolved = path.resolve()
+            if not resolved.is_file():
+                raise TaskStoreError(f"paired arm record not found: {resolved}")
+            try:
+                payload = json.loads(resolved.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                raise TaskStoreError(
+                    f"failed to read paired arm record {resolved}: {exc}"
+                ) from exc
+            entries = payload if isinstance(payload, list) else [payload]
+            records.extend(
+                PairedArmRecord.model_validate(entry) for entry in entries
+            )
+    else:
+        records = crisis_atlas_records()
+
+    seen: set[tuple[str, str]] = set()
+    for record in records:
+        key = (record.arm.value, record.case_id)
+        if key in seen:
+            raise TaskStoreError(
+                f"duplicate arm/case pair would double-count results: {key}"
+            )
+        seen.add(key)
+
+    corpus_id = f"EVAL-PAIRED-{uuid.uuid4().hex[:12].upper()}"
+    report = score_paired_corpus(
+        records,
+        corpus_id=corpus_id,
+        candidate_arm=PairedArmKind(candidate_arm),
+    )
+    resolved_output = (
+        output_dir if output_dir is not None else root / ".apoapsis-eval" / corpus_id
+    )
+    write_paired_corpus(resolved_output, report)
+    return report.model_dump(mode="json")
+
+
+def _workcell_preflight_command(config_path: Path) -> dict[str, object]:
+    """Validate the pins and the runtime. Never starts a model.
+
+    Preflight is separated from the spike on purpose: the most common way to
+    waste a live local run is to discover after the model is warm that the
+    image digest is wrong or a pin is missing.
+    """
+
+    from apoapsis.execution.backend import SandboxUnavailableError
+    from apoapsis.workcell.containment import DEFAULT_CONTAINMENT_PROBES
+    from apoapsis.workcell.controller import WorkcellController, load_workcell_config
+    from apoapsis.workcell.platform_support import assess_socket_support
+
+    resolved = config_path.resolve()
+    if not resolved.is_file():
+        raise TaskStoreError(f"workcell configuration not found: {resolved}")
+    try:
+        config = load_workcell_config(resolved)
+    except SandboxUnavailableError as exc:
+        raise TaskStoreError(str(exc)) from exc
+
+    controller = WorkcellController(config)
+    # Reported even when the runtime is missing: a Windows host can never mount
+    # the relay socket, and the owner should learn that from preflight rather
+    # than from a confusing connection refusal at the first model request.
+    platform = assess_socket_support(config.egress.model_socket_host_path)
+    payload: dict[str, object] = {
+        "workcell_manifest_digest": config.pin.manifest_digest(),
+        "image_reference": controller.image_reference,
+        "create_argv": controller.build_create_argv(),
+        "containment_probe_count": len(DEFAULT_CONTAINMENT_PROBES),
+        "network": config.network,
+        "model_egress": config.egress.base_url,
+        "relay_upstream": config.egress.relay.upstream_base_url,
+        "relay_allowed_routes": sorted(config.pin.relay.allowed_routes),
+        "socket_platform": platform.host_platform.value,
+        "socket_support": platform.support.value,
+        "socket_detail": platform.detail,
+        "socket_remedies": platform.remedies,
+        "runtime_available": False,
+        "runtime_error": None,
+    }
+    try:
+        controller.preflight()
+    except SandboxUnavailableError as exc:
+        # Reported rather than raised: the pins are still worth validating on a
+        # machine with no container runtime, and an honest "not available" is
+        # more useful than an exception that hides the digest.
+        payload["runtime_error"] = str(exc)
+        return payload
+    payload["runtime_available"] = True
+    return payload
+
+
 def _build_research_engine(
     root: Path, config: ApoapsisConfig
 ) -> tuple[ResearchEngine, ResearchFetchProcess]:
@@ -2769,6 +3101,102 @@ def _research_command(
     finally:
         fetch_process.close()
     return execution.model_dump(mode="json")
+
+
+def _verify_web_product(root: Path, args: argparse.Namespace) -> dict[str, object] | None:
+    """Run the static cross-reference check and exit non-zero on failure.
+
+    Exits rather than returning a payload for the failing case because the
+    intended caller is `VerificationRunner`, which reads an exit code and
+    captured output -- a check that reported failure in JSON while exiting
+    zero would be worse than no check at all.
+    """
+
+    from apoapsis.verification.web_product import (
+        BrowserProbeUnavailableError,
+        WebProductFindingSeverity,
+        run_behavioral_probe,
+        verify_web_product,
+    )
+
+    product_root = (args.root or root).resolve()
+    report = verify_web_product(
+        product_root,
+        entry=args.entry,
+        optional_elements=set(args.optional_element),
+        forbid_external_resources=args.forbid_external_resources,
+        forbid_runtime_network_apis=args.forbid_runtime_network_apis,
+    )
+    behavioral_error: str | None = None
+    if args.behavior:
+        try:
+            run_behavioral_probe(product_root, entry=args.entry)
+        except BrowserProbeUnavailableError as exc:
+            behavioral_error = str(exc)
+    report = report.model_copy(
+        update={
+            "behavioral_probe": (
+                "not requested"
+                if not args.behavior
+                else (behavioral_error or "passed")
+            )
+        }
+    )
+    passed = report.passed(
+        treat_warnings_as_errors=args.treat_warnings_as_errors
+    ) and behavioral_error is None
+
+    if args.json:
+        print(json.dumps(report.model_dump(mode="json"), indent=2, sort_keys=True))
+    else:
+        evidence = report.evidence
+        print(
+            f"web product check: {len(report.documents)} document(s), "
+            f"{len(report.scripts)} script(s), {len(report.stylesheets)} "
+            f"stylesheet(s), {report.checked_references} element reference(s) "
+            "cross-checked"
+        )
+        # ADR 0073: the counts and the ceiling are printed on every run,
+        # pass or fail. A green line with no statement of what was examined
+        # is precisely how a check that cross-referenced nothing came to
+        # look equivalent to one that verified a whole UI.
+        print(
+            f"  evidence: {evidence.element_references_checked} element "
+            f"reference(s), {evidence.css_selectors_checked} CSS selector(s), "
+            f"{evidence.local_assets_resolved} local asset(s) resolved, "
+            f"{evidence.same_origin_api_references} same-origin API "
+            f"reference(s), {evidence.cross_origin_api_references} "
+            f"cross-origin API reference(s), "
+            f"{evidence.dynamic_references_unproven} reference(s) unproven"
+        )
+        print(f"  ceiling: {evidence.ceiling_statement()}")
+        for finding in report.findings:
+            if (
+                finding.severity == WebProductFindingSeverity.INFO
+                and not args.treat_warnings_as_errors
+            ):
+                continue
+            label = finding.severity.value.upper()
+            symbol = f" [{finding.symbol}]" if finding.symbol else ""
+            print(f"{label} {finding.path}{symbol}: {finding.detail}")
+            print(f"      fix: {finding.remediation}")
+        if behavioral_error:
+            print(f"ERROR behavioral: {behavioral_error}")
+        # The closing line is written for `FailureNormalizer` as much as for
+        # a human (ADR 0070): it looks for `FAILED` to pick a root error out
+        # of captured output, and a bare "FAIL" gave it nothing to find.
+        if passed:
+            print("PASSED: the product's files agree with each other")
+        else:
+            counts = (
+                f"{len(report.errors)} error finding(s), "
+                f"{len(report.warnings)} warning(s)"
+            )
+            print(f"FAILED: web product integrity check -- {counts}")
+
+    if not passed:
+        raise SystemExit(1)
+    return None
 
 
 def _verify(

@@ -142,7 +142,13 @@ FRONTIER_PLANNING_QUALITY_REQUIREMENTS: tuple[str, ...] = (
     "dependencies, and the runtime path through the assembled system.",
     "Define every cross-component integration contract with producer, "
     "consumers, data flow, error behavior, and a concrete verification "
-    "obligation.",
+    "obligation. Set `runtime_boundary` on every contract to how the "
+    "producer and consumer actually communicate at runtime -- "
+    "`in_process`, `same_origin_http`, `cross_origin_http`, `filesystem`, "
+    "or `subprocess`. Leave it `unspecified` only when you genuinely do "
+    "not know: Apoapsis uses this field to detect a plan that requires a "
+    "mechanism its own verification commands forbid, and `unspecified` "
+    "asserts nothing and so disables that check for the contract.",
     "Perform an architectural pre-mortem before slicing. Identify likely "
     "hard problems, explain why each is difficult, name affected "
     "components and failure risks, propose a concrete solution, compare "
@@ -168,6 +174,21 @@ FRONTIER_PLANNING_QUALITY_REQUIREMENTS: tuple[str, ...] = (
     "Ask clarification questions instead of inventing material product, "
     "deployment, credential, or verification decisions when the supplied "
     "evidence is insufficient.",
+    "Size every slice to what LOCAL_CODER_BUDGET shown below can actually "
+    "finish: a bounded number of turns, patch attempts, and verification "
+    "runs against a small local model, not a frontier model. As a rule of "
+    "thumb, a slice should introduce at most two to three new substantial "
+    "modules/files and one clear layer of responsibility (for example: "
+    "schemas and data models are one slice; the storage/persistence layer "
+    "that uses them is a separate slice; a service or worker layer that "
+    "uses that storage is another). If a slice's own work_brief would not "
+    "plausibly fit in LOCAL_CODER_BUDGET's max_turns and "
+    "max_patch_attempts for a model of that size, split it into two or "
+    "more narrower, single-responsibility slices with an explicit "
+    "dependency between them instead of shrinking the guidance, acceptance "
+    "criteria, or test obligations you would otherwise give it -- move "
+    "that same depth of detail into the narrower slice it now belongs to. "
+    "Prefer more, smaller slices over fewer, larger ones.",
 )
 
 
@@ -200,6 +221,7 @@ class FrontierPlanningRequestPackage(StrictModel):
     active_hard_constraints: list[HardConstraint] = Field(default_factory=list)
     verification_catalog: list[VerificationCatalogEntry] = Field(default_factory=list)
     architect_ceilings: dict[str, Any]
+    local_coder_budget: dict[str, Any]
     plan_json_schema: dict[str, Any]
     response_json_schema: dict[str, Any]
     authority_rules: list[str] = Field(

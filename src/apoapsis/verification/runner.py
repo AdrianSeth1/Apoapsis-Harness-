@@ -39,6 +39,24 @@ DEFAULT_ENVIRONMENT_ALLOWLIST = [
 ]
 
 
+# Environment Apoapsis imposes on every verification command it owns, before
+# the allowlisted host environment and any explicitly configured per-command
+# environment are layered on top.
+#
+# `PYTHONDONTWRITEBYTECODE=1` stops a Python verification run from writing
+# `__pycache__/*.pyc` into the task worktree. Without it the harness's own
+# check mutates the tree it is measuring: live task TASK-EF33C00E5BD4
+# (2026-07-26) reported two `.pyc` files as changed alongside the single
+# source file the model edited. The Local Power sandbox already set this for
+# model-requested shell commands; ordinary configured verification did not.
+# This is prevention, not concealment -- ADR 0063's changed-path classifier
+# still keeps reviewer output correct for repositories where byproducts are
+# produced some other way.
+HARNESS_VERIFICATION_ENVIRONMENT = {
+    "PYTHONDONTWRITEBYTECODE": "1",
+}
+
+
 class VerificationCommand(StrictModel):
     name: str = Field(min_length=1)
     category: str = Field(min_length=1)
@@ -115,11 +133,14 @@ class VerificationRunner:
         results: list[VerificationCommandResult] = []
         integrity_violations: list[str] = []
         try:
-            environment = {
-                key: os.environ[key]
-                for key in self.config.environment_allowlist
-                if key in os.environ
-            }
+            environment = dict(HARNESS_VERIFICATION_ENVIRONMENT)
+            environment.update(
+                {
+                    key: os.environ[key]
+                    for key in self.config.environment_allowlist
+                    if key in os.environ
+                }
+            )
             dependency_command, dependency_environment = self._dependency_install(
                 Path(project_root), task_id
             )

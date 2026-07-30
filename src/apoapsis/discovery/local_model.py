@@ -40,6 +40,13 @@ def build_local_provider(provider_config: FrontierProviderConfig) -> Instrumente
 
 def _parse_json_object(content: str) -> dict[str, object]:
     candidate = content.strip()
+    # Some local reasoning models put an empty or non-authoritative reasoning
+    # block in the assistant content before the requested JSON. Treat this as
+    # a transport wrapper only; JSON parsing and schema validation remain
+    # mandatory and no prose or brace-scanning fallback is allowed.
+    think_match = re.match(r"<think>.*?</think>\s*", candidate, re.DOTALL | re.IGNORECASE)
+    if think_match:
+        candidate = candidate[think_match.end():].lstrip()
     fence = re.fullmatch(r"```(?:json)?\s*(.*?)\s*```", candidate, re.DOTALL)
     if fence:
         candidate = fence.group(1)

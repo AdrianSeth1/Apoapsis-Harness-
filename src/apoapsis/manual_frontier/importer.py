@@ -20,6 +20,7 @@ from apoapsis.manual_frontier.errors import (
     WorktreeFingerprintMismatchError,
 )
 from apoapsis.manual_frontier.package import load_package
+from apoapsis.specification.pasted_json import PastedJsonError, parse_pasted_json
 from apoapsis.manual_frontier.schema import (
     ManualFrontierPreviewRecord,
     ManualFrontierPreviewStatus,
@@ -126,9 +127,9 @@ def import_manual_frontier_response(
     except UnicodeDecodeError as exc:
         raise MalformedResponseError(f"response is not valid UTF-8: {exc}") from exc
     try:
-        raw_payload = json.loads(raw_text)
-    except json.JSONDecodeError as exc:
-        raise MalformedResponseError(f"response is not valid JSON: {exc}") from exc
+        raw_payload = parse_pasted_json(raw_text, what="response")
+    except PastedJsonError as exc:
+        raise MalformedResponseError(str(exc)) from exc
     if not isinstance(raw_payload, dict):
         raise MalformedResponseError("response must be a single JSON object")
     try:

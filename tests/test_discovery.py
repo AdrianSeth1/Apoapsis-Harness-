@@ -183,6 +183,15 @@ class LocalModelTests(DiscoveryTestsBase):
         )
         self.assertEqual(len(questions), 5)
 
+    def test_reasoning_wrapper_around_json_is_accepted(self) -> None:
+        fake = FakeModelProvider(["<think>\n\n</think>\n\n" + _questions_json(2)])
+        provider = InstrumentedModelProvider(fake, ProviderPricing())
+        audit = DiscoveryAuditStore(self.root, "DISC-TEST")
+        questions = propose_clarification_questions(
+            provider, self._config().models.frontier, audit, IDEA_TEXT, max_questions=5
+        )
+        self.assertEqual(len(questions), 2)
+
     def test_one_bounded_correction_attempt_recovers(self) -> None:
         fake = FakeModelProvider(["not json at all", _questions_json(3)])
         provider = InstrumentedModelProvider(fake, ProviderPricing())
@@ -502,6 +511,51 @@ class FullFlowTests(DiscoveryTestsBase):
         self.assertTrue((self.root / markdown_path).is_file())
         markdown = (self.root / markdown_path).read_text(encoding="utf-8")
         self.assertIn(package.package_id, markdown)
+
+        # ADR 0066: the handoff must state every nested object's keys
+        # literally, not only behind `$ref` indirection in the JSON Schema.
+        # A live frontier model invented plausible-but-wrong keys for exactly
+        # the two sections that appeared nowhere else in the document.
+        self.assertIn("The exact shape to copy", markdown)
+        for key in (
+            "project_kind",
+            "primary_documentation_path",
+            "install_instructions",
+            "launch_or_usage_instructions",
+            "test_instructions",
+            "readiness_checks",
+            "required_artifacts",
+            "credential_setup_instructions",
+            "whole_project_verification_commands",
+            "slice_test_strategy",
+            "cross_slice_integration_strategy",
+            "acceptance_proof_obligations",
+            "end_to_end_scenarios",
+        ):
+            self.assertIn(f'"{key}"', markdown, msg=f"{key} missing from handoff")
+
+        # ADR 0075: `runtime_boundary` is the one field whose *value* decides
+        # whether ADR 0074's contradiction check runs at all, so the handoff
+        # must ask for it by name, enumerate every permitted value, and say
+        # what leaving it `unspecified` costs. A planner that never sees the
+        # field silently opts out of the check.
+        self.assertIn('"runtime_boundary"', markdown)
+        self.assertIn("### `runtime_boundary` on every integration contract", markdown)
+        for value in (
+            "in_process",
+            "same_origin_http",
+            "cross_origin_http",
+            "filesystem",
+            "subprocess",
+            "unspecified",
+        ):
+            self.assertIn(f"`{value}`", markdown, msg=f"{value} not documented")
+        self.assertIn("--forbid-runtime-network-apis", markdown)
+        self.assertIn("rejects the plan", markdown)
+        self.assertIn("do not use it to avoid deciding", markdown)
+        # The binding quality requirement must carry it too, since that list
+        # is what the prose calls "binding".
+        self.assertIn("Set `runtime_boundary` on every contract", markdown)
 
         plan = make_plan()
         envelope = {

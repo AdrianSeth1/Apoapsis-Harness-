@@ -1,0 +1,38 @@
+[package]
+name = "apoapsis-native-shell-spike"
+version = "0.0.0"
+description = "Disposable ADR 0050 Phase 1 spike -- not a shipped artifact"
+edition = "2021"
+publish = false
+
+# NOTE: this crate has never been built in the environment that authored it
+# (no Rust toolchain, no display server, no network access to crates.io was
+# available). It is a carefully written specification for the next
+# environment with a real Tauri 2 toolchain and a Windows display to compile
+# and run, per ADR 0050. Do not assume version numbers below are the exact
+# latest patch releases -- pin and verify them at build time.
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rand = "0.8"
+# ADR 0053 (Phase 6): a small blocking HTTP client for the privileged
+# desktop IPC channel `spawn_backend` also starts. Deliberately the
+# blocking variant, not async -- every call here is a short, local,
+# loopback-only request from a synchronous menu-event handler, not
+# something that benefits from an async runtime.
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json"] }
+# ADR 0054 (native picker): the operator's only source of a real
+# filesystem path in this whole architecture. Never given to the model or
+# to browser JavaScript -- only this Rust host ever calls it, and only its
+# resulting canonical path (never a raw handle) is passed to the desktop
+# IPC channel above.
+tauri-plugin-dialog = "2"
+
+[[bin]]
+name = "apoapsis-native-shell-spike"
+path = "src/main.rs"

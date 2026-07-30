@@ -3,19 +3,19 @@ from __future__ import annotations
 from pathlib import Path
 
 from apoapsis.agent.inspection import RepositoryInspector
+from apoapsis.agent.power_session import LocalPowerReviewPackage
 from apoapsis.agent.session import AgentSessionResult
 from apoapsis.config import ApoapsisConfig, effective_config_for_specification
 from apoapsis.execution.worktree import WorktreeError, WorktreeManager
 from apoapsis.repository.fingerprint import compute_worktree_fingerprint
+from apoapsis.reporting.current_state import project_current_task_evidence
 from apoapsis.reporting.report import FinalTaskReport
 from apoapsis.review.classify import classify_stop_reason, eligible_actions_for
 from apoapsis.review.errors import ReviewCaseError
 from apoapsis.review.schema import ReviewCase
 from apoapsis.verification.failures import FailureNormalizer, NormalizedFailure
 from apoapsis.verification.results import VerificationResult, VerificationStatus
-from apoapsis.workflow.acceptance import AcceptanceCoverage
 from apoapsis.workflow.engine import SQLiteTaskStore
-from apoapsis.workflow.events import WorkflowEvent
 from apoapsis.workflow.states import WorkflowState
 
 LOCAL_CONTINUATION_STARTED = "review_local_continuation_started"
@@ -27,15 +27,12 @@ FRONTIER_CONTINUATION_STARTED = "review_frontier_continuation_started"
 # and there is nothing left to repair.
 MANUAL_FRONTIER_ROUND_CONSUMED_EVENT = "manual_frontier_apply_verification_failed"
 
-_VERIFICATION_RETRY_EVENT_TYPES = frozenset(
-    {"review_verification_retry_incomplete", "review_verification_retry_failed"}
-)
-_LOCAL_SESSION_EVENT_TYPES = frozenset(
-    {"frontier_escalation_not_configured", "review_local_continuation_requires_human"}
-)
-_FRONTIER_SESSION_EVENT_TYPES = frozenset(
-    {"bounded_frontier_requires_human", "review_frontier_continuation_requires_human"}
-)
+
+# Which stop event corresponds to which evidence artifact is no longer
+# decided here. `reporting.current_state` owns that mapping for every
+# consumer that labels a task outcome (ADR 0072), so the Report page,
+# review case, delivery record, and frontier handoff cannot drift apart
+# by each maintaining its own private table.
 
 
 def task_slug(task_id: str) -> str:
@@ -49,6 +46,61 @@ def read_agent_session(
     if not path.is_file():
         return None
     return AgentSessionResult.model_validate_json(path.read_text(encoding="utf-8"))
+
+
+def read_local_power_session(task_directory: Path) -> AgentSessionResult | None:
+    """Read a Local Power Sandbox stage's session result (ADR 0059).
+
+    The sandbox loop writes ``local-power-session.json``, not the strict
+    loop's ``{prefix}agent-session.json``, so ``read_agent_session`` cannot
+    see it. Both persist the same ``AgentSessionResult``; only the filename
+    differs. Callers deciding whether a task has a prior local stage at all
+    must consult both -- a task executed under local power has no
+    ``agent-session.json``, and treating that absence as "no session ever
+    ran" is how a resumable stage came to look like a nonexistent one.
+    """
+
+    path = task_directory / "local-power-session.json"
+    if not path.is_file():
+        return None
+    return AgentSessionResult.model_validate_json(path.read_text(encoding="utf-8"))
+
+
+def read_local_stage_session(
+    task_directory: Path,
+) -> tuple[AgentSessionResult | None, bool]:
+    """Return ``(session, is_local_power)`` for whichever local stage ran.
+
+    The single question most callers actually want answered is "did a local
+    coding stage already run against this task", and the answer must not
+    depend on which local loop the project happened to be configured for.
+    Prefers the strict loop's record when both somehow exist, since only
+    that one can be resumed by ``BoundedAgentSession``.
+    """
+
+    strict = read_agent_session(task_directory, "")
+    if strict is not None:
+        return strict, False
+    return read_local_power_session(task_directory), True
+
+
+def read_local_power_review_package(
+    task_directory: Path,
+) -> LocalPowerReviewPackage | None:
+    """Read the sandbox stage's review package, if the stage wrote one.
+
+    Carries the shell-command and rejection records an
+    ``AgentSessionResult`` does not, which a resumed sandbox session needs
+    in order to continue spending the same shell budget rather than a
+    fresh one.
+    """
+
+    path = task_directory / "local-power-review-package.json"
+    if not path.is_file():
+        return None
+    return LocalPowerReviewPackage.model_validate_json(
+        path.read_text(encoding="utf-8")
+    )
 
 
 def _normalized_failures(
@@ -80,87 +132,6 @@ def continuation_additional_turns(events, event_type: str) -> int:
         if isinstance(budget, dict):
             total += int(budget.get("additional_turns", 0))
     return total
-
-
-def _event_reason_text(event: WorkflowEvent | None) -> str:
-    if event is None:
-        return "no recognized stop reason was found in the task's event history"
-    reason = event.payload.get("reason") if isinstance(event.payload, dict) else None
-    return reason if isinstance(reason, str) and reason else event.event_type
-
-
-def _fresh_evidence(
-    task_directory: Path,
-    stop_event: WorkflowEvent | None,
-    *,
-    report_verification_results: list[VerificationResult],
-    report_acceptance_coverage: list[AcceptanceCoverage],
-    local_session: AgentSessionResult | None,
-    frontier_session: AgentSessionResult | None,
-) -> tuple[list[VerificationResult], list[AcceptanceCoverage]]:
-    """Prefer the evidence behind the task's *current* stop over the
-    original ``report.json`` snapshot, once a retry or continuation has
-    actually produced newer evidence (ADR 0021) -- the report is only ever
-    written once, at the first stop, and never updated afterward.
-
-    Which source is authoritative is decided by the same newest-event
-    classification `classify_stop_reason` already computed, so this stays
-    consistent with `stop_reason_kind`/`stop_reason_text` rather than
-    guessing independently at "freshness".
-    """
-
-    if stop_event is None:
-        return report_verification_results, report_acceptance_coverage
-    payload = stop_event.payload if isinstance(stop_event.payload, dict) else {}
-    event_type = stop_event.event_type
-
-    if event_type in _VERIFICATION_RETRY_EVENT_TYPES:
-        verification_results = report_verification_results
-        operation_id = payload.get("operation_id")
-        if isinstance(operation_id, str):
-            retry_path = task_directory / f"review-verification-retry-{operation_id}.json"
-            if retry_path.is_file():
-                verification_results = [
-                    VerificationResult.model_validate_json(
-                        retry_path.read_text(encoding="utf-8")
-                    )
-                ]
-        coverage_payload = payload.get("coverage")
-        acceptance_coverage = (
-            [AcceptanceCoverage.model_validate(item) for item in coverage_payload]
-            if isinstance(coverage_payload, list)
-            else []
-        )
-        return verification_results, acceptance_coverage
-
-    if event_type == MANUAL_FRONTIER_ROUND_CONSUMED_EVENT:
-        verification_results = report_verification_results
-        operation_id = payload.get("operation_id")
-        if isinstance(operation_id, str):
-            manual_frontier_path = (
-                task_directory / f"manual-frontier-verification-{operation_id}.json"
-            )
-            if manual_frontier_path.is_file():
-                verification_results = [
-                    VerificationResult.model_validate_json(
-                        manual_frontier_path.read_text(encoding="utf-8")
-                    )
-                ]
-        coverage_payload = payload.get("coverage")
-        acceptance_coverage = (
-            [AcceptanceCoverage.model_validate(item) for item in coverage_payload]
-            if isinstance(coverage_payload, list)
-            else []
-        )
-        return verification_results, acceptance_coverage
-
-    if event_type in _LOCAL_SESSION_EVENT_TYPES and local_session is not None:
-        return local_session.verification_results, local_session.acceptance_coverage
-
-    if event_type in _FRONTIER_SESSION_EVENT_TYPES and frontier_session is not None:
-        return frontier_session.verification_results, frontier_session.acceptance_coverage
-
-    return report_verification_results, report_acceptance_coverage
 
 
 def build_review_case(
@@ -204,24 +175,6 @@ def build_review_case(
         report = FinalTaskReport.model_validate_json(
             report_path.read_text(encoding="utf-8")
         )
-    # `report.json` is a snapshot of the *original* stop only -- once a
-    # continuation, retry, or manual-frontier apply round (ADR 0031) has
-    # run, the newest event's own payload (always including a "reason") is
-    # the accurate, current text; the original report's error would
-    # otherwise describe a stop reason that no longer applies. A live
-    # browser pass first caught this for manual-frontier repair rounds: a
-    # failed apply correctly reclassified `stop_reason_kind` to
-    # `VERIFICATION_FAILED`, but `stop_reason_text` still showed the
-    # original escalation message, since only local/frontier continuation
-    # events were ever counted here.
-    state_advanced_since_report = continuations_used > 0 or any(
-        event.event_type == "manual_frontier_apply_started" for event in events
-    )
-    if not state_advanced_since_report and report and report.error:
-        stop_reason_text = report.error
-    else:
-        stop_reason_text = _event_reason_text(stop_event)
-
     worktree_path: str | None = None
     worktree_exists = False
     worktree_fingerprint: str | None = None
@@ -250,17 +203,29 @@ def build_review_case(
     except WorktreeError:
         pass
 
-    local_session = read_agent_session(task_directory, "")
+    local_session, _ = read_local_stage_session(task_directory)
     frontier_session = read_agent_session(task_directory, "frontier-")
 
-    verification_results, acceptance_coverage = _fresh_evidence(
-        task_directory,
-        stop_event,
-        report_verification_results=report.verification_results if report else [],
-        report_acceptance_coverage=report.acceptance_coverage if report else [],
-        local_session=local_session,
-        frontier_session=frontier_session,
+    # One shared projection, not a locally reimplemented notion of
+    # "freshness" (ADR 0072). `record`/`events` are handed over rather than
+    # re-read so this case and its evidence describe the same instant; the
+    # projection's own `task_version` is asserted below to keep that
+    # promise checkable rather than assumed.
+    evidence = project_current_task_evidence(
+        root, store, task_id, record=record, events=events
     )
+    assert evidence.task_version == record.version
+    verification_results = evidence.verification_results
+    acceptance_coverage = evidence.acceptance_coverage
+    # The projection resolves the current stop text the same way it
+    # resolves the current evidence: `report.error` while the original stop
+    # still stands, the deciding event's own reason once a retry,
+    # continuation, or manual-frontier round (ADR 0031) has superseded it.
+    # A live browser pass first caught the old divergence here: a failed
+    # manual-frontier apply correctly reclassified `stop_reason_kind` to
+    # `VERIFICATION_FAILED` while `stop_reason_text` still showed the
+    # original escalation message.
+    stop_reason_text = evidence.reason
     normalized_failures = _normalized_failures(verification_results, worktree_path)
     models_used = (
         [f"{item.provider}/{item.model}" for item in report.models_used]
@@ -382,6 +347,9 @@ __all__ = [
     "build_review_case",
     "task_slug",
     "read_agent_session",
+    "read_local_power_session",
+    "read_local_power_review_package",
+    "read_local_stage_session",
     "continuation_additional_turns",
     "LOCAL_CONTINUATION_STARTED",
     "FRONTIER_CONTINUATION_STARTED",

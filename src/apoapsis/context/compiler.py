@@ -154,7 +154,7 @@ class ContextCompiler:
     ) -> ContextPackage:
         repository = GitRepository(repository_root)
         root = repository.root
-        head = repository.run(["rev-parse", "HEAD"]).stdout.strip()
+        head = repository.head_commit()
         files = self._repository_files(repository)
         text_cache: dict[str, str] = {}
         reasons: dict[str, set[str]] = defaultdict(set)
