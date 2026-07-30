@@ -73,6 +73,11 @@ def parse_coverage_json(
     Crisis Atlas Slice 3.
     """
 
+    # `observed_symbols` is read from the same artifact as the line data, so an
+    # interface obligation is discharged by measurement rather than by the
+    # planner's suggestion that a symbol ought to exist. `coverage.py` does not
+    # emit it natively; a wrapper that can report executed function names puts
+    # them here, and one that cannot leaves it empty rather than guessing.
     files = payload.get("files")
     if not isinstance(files, dict) or not files:
         raise EmitterError(
@@ -80,6 +85,7 @@ def parse_coverage_json(
             "nothing is not evidence that nothing needed measuring"
         )
     executed_lines: dict[str, list[int]] = {}
+    observed_symbols: set[str] = set()
     for raw_path, record in files.items():
         if not isinstance(record, dict):
             continue
@@ -90,6 +96,12 @@ def parse_coverage_json(
         executed_lines[normalised] = sorted(
             int(item) for item in lines if isinstance(item, int)
         )
+        for key in ("executed_functions", "executed_classes"):
+            reported = record.get(key)
+            if isinstance(reported, list):
+                observed_symbols.update(
+                    str(item) for item in reported if isinstance(item, str)
+                )
     if not executed_lines:
         raise EmitterError(
             "the coverage report contained no executed lines for any file"
@@ -97,6 +109,7 @@ def parse_coverage_json(
     return CoverageObservation(
         executed_paths=sorted(executed_lines),
         executed_lines=executed_lines,
+        observed_symbols=sorted(observed_symbols),
         collection_method=collection_method,
         source_artifact_sha256=source_sha256,
     )

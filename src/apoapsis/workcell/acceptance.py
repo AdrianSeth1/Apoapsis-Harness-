@@ -97,6 +97,14 @@ class AcceptanceObligation(StrictModel):
     must_be_exercised: list[str] = Field(default_factory=list)
     #: Criterion identifiers a witness must claim to have proved.
     criteria: list[str] = Field(default_factory=list)
+    #: Symbols that must be *observed* to be exercised, from the coverage
+    #: artifact's own symbol data. Only ever populated from an owner-approved
+    #: `required_interfaces`, never from the planner's advisory
+    #: `suggested_symbols`: advice is not a completion gate.
+    required_symbols: list[str] = Field(default_factory=list)
+    #: Routes that must have been *called*. A route is exercised by being
+    #: requested, which only a launch or behavioural witness can observe.
+    required_routes: list[str] = Field(default_factory=list)
     #: Only an independent witness may discharge this obligation. Used where
     #: model-authored tests would be marking their own homework.
     requires_independent_evidence: bool = False
@@ -108,7 +116,13 @@ class AcceptanceObligation(StrictModel):
     def validate_dischargeable(self) -> AcceptanceObligation:
         if self.unmeasured_reason:
             return self
-        if not (self.required_paths or self.must_be_exercised or self.criteria):
+        if not (
+            self.required_paths
+            or self.must_be_exercised
+            or self.criteria
+            or self.required_symbols
+            or self.required_routes
+        ):
             raise ValueError(
                 f"obligation {self.obligation_id!r} names nothing that could "
                 "discharge it, so it could never be proved or disproved"
@@ -126,6 +140,11 @@ class SliceAcceptanceContract(StrictModel):
     criteria: list[str] = Field(min_length=1)
     obligations: list[AcceptanceObligation] = Field(min_length=1)
     #: Commands whose passing is necessary but, by itself, never sufficient.
+    #:
+    #: Whether one passed is derived from the witnesses, not supplied
+    #: alongside them: a caller-provided set could describe a different tree,
+    #: an earlier turn, or a run nobody bound to a fingerprint -- which is the
+    #: stale-evidence problem the whole design refuses everywhere else.
     required_commands: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
@@ -248,7 +267,6 @@ def evaluate_slice_readiness(
     witnesses: list[StructuredWitness],
     *,
     candidate_paths: set[str] | None = None,
-    passed_commands: set[str] | None = None,
     behaviour_units: list[BehaviourUnit] | None = None,
 ) -> SliceReadinessReport:
     """Decide whether the slice is done. Green commands are one input, not the answer.
@@ -262,8 +280,16 @@ def evaluate_slice_readiness(
         witnesses, current_fingerprint=delta.candidate_fingerprint
     )
     present = candidate_paths if candidate_paths is not None else set(delta.paths)
-    passed_commands = passed_commands or set()
     reached = _exercised_paths(usable)
+    # Derived, never supplied. A command counts as passed only if a *usable*
+    # witness -- current, fingerprint-bound, substantive -- says it passed.
+    passed_commands = {item.command_name for item in usable if item.passed}
+    observed_symbols: set[str] = set()
+    observed_routes: set[str] = set()
+    for witness in usable:
+        if witness.passed:
+            observed_symbols |= witness.exercised_symbols
+            observed_routes |= witness.exercised_routes
 
     findings: list[ReadinessFinding] = []
     results: list[ObligationResult] = []
@@ -293,6 +319,12 @@ def evaluate_slice_readiness(
 
         missing_paths = [item for item in obligation.required_paths if item not in present]
         unexercised = [item for item in obligation.must_be_exercised if item not in reached]
+        missing_symbols = [
+            item for item in obligation.required_symbols if item not in observed_symbols
+        ]
+        missing_routes = [
+            item for item in obligation.required_routes if item not in observed_routes
+        ]
         supporting = [
             witness.witness_id
             for witness in usable
@@ -300,6 +332,8 @@ def evaluate_slice_readiness(
             and (
                 set(obligation.criteria) & set(witness.criteria_proved)
                 or set(obligation.must_be_exercised) & witness.exercised_paths
+                or set(obligation.required_symbols) & witness.exercised_symbols
+                or set(obligation.required_routes) & witness.exercised_routes
             )
             and (
                 not obligation.requires_independent_evidence
@@ -337,6 +371,15 @@ def evaluate_slice_readiness(
                 )
         if unexercised:
             problems.append("never exercised: " + ", ".join(unexercised))
+        if missing_symbols:
+            problems.append(
+                "interface(s) never observed being exercised: "
+                + ", ".join(missing_symbols)
+            )
+        if missing_routes:
+            problems.append(
+                "route(s) never called by any witness: " + ", ".join(missing_routes)
+            )
         if unproved_criteria:
             problems.append("unproved criteria: " + ", ".join(unproved_criteria))
 
@@ -413,7 +456,10 @@ def evaluate_slice_readiness(
             findings.append(
                 ReadinessFinding(
                     block=ReadinessBlock.REQUIRED_COMMAND_NOT_PASSED,
-                    detail=f"required command {command!r} has not passed for this state",
+                    detail=(
+                f"required command {command!r} has no current, usable, "
+                "fingerprint-bound witness reporting that it passed"
+            ),
                 )
             )
 

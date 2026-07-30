@@ -177,13 +177,25 @@ Follow
    `COMPLETE` — through the real loop. ADR 0079 records the decision;
    `HANDOFF.md` and `README.md` are updated. 20 new tests, focused set 207.
 
+   Slice 4C closed two authority defects review found. The compiler no longer
+   promotes the planner's **advisory** `suggested_symbols` and
+   `integration_contract_ids` into mandatory obligations marked intentionally
+   unmeasured — which had made a suggestion into a gate no evidence could open;
+   interface and integration obligations now come only from owner-approved
+   `required_interfaces` and `required_integration_routes`, discharged by
+   observed symbols and by routes a witness actually called. And required-command
+   success is **derived from usable, fingerprint-bound witnesses** rather than a
+   caller-supplied set, so a stale witness cannot open the gate. 217 focused
+   tests.
+
    **Outstanding:** no live run — every test uses temp trees and a fake runner
    writing a real coverage artifact; coverage is not independently re-derived,
-   which needs ADR 0077's Layer 4 verifier workcell; the route heuristic is
-   Python/Flask-shaped and symbol extraction is Python-only; and interface and
-   integration obligations compile as intentionally unmeasured, so a slice with
-   declared symbols cannot reach automatic `COMPLETE` yet. See
-   `docs/evaluation/slice-4b-witness-emitters-and-checkpoint-loop-2026-07-30.md`;
+   which needs ADR 0077's Layer 4 verifier workcell; `observed_symbols` needs a
+   wrapper that reports executed symbol names, so interface obligations are
+   expressible but not yet dischargeable in practice; and the route heuristic is
+   Python/Flask-shaped with symbol extraction Python-only. See
+   `docs/evaluation/slice-4b-witness-emitters-and-checkpoint-loop-2026-07-30.md`
+   and `docs/evaluation/slice-4c-advisory-metadata-and-derived-command-success-2026-07-30.md`;
 6. add bounded recoverable tool output, two-tier compaction, stable-prefix
    prompt caching, persistent state capsules, adaptive budgets, and explicit
    context/output truncation outcomes;

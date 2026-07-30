@@ -164,6 +164,31 @@ slice whose actual behaviour is proven.
 that could switch off the new-component rule would make it advisory, and
 advisory is what ADR 0069 already was.
 
+## Amendment, 2026-07-30 (Slice 4C)
+
+Two authority defects in the first integration, both corrected before Slice 5.
+
+**Advisory plan metadata must not become a completion gate.**
+`ImplementationSlice` documents its own cross-references as "advisory proposals
+from the planner". The compiler read `suggested_symbols` and
+`integration_contract_ids` and made each a mandatory obligation marked
+intentionally unmeasured — turning a suggestion into a gate no evidence could
+open, and routing every slice declaring a symbol to permanent human review.
+The compiler now ignores both. Interface and integration obligations exist only
+from the owner-approved `required_interfaces` and
+`required_integration_routes`.
+
+**Required-command success is derived, never supplied.** `passed_commands` was
+a caller parameter, which could describe a different tree or an earlier turn —
+the stale-evidence problem this ADR refuses everywhere else. It is removed from
+`evaluate_slice_readiness` and `run_checkpoint`; a command counts as passed only
+when a *usable* witness reports it, so a stale witness cannot open the gate.
+
+To keep real interface obligations expressible, `AcceptanceObligation` gains
+`required_symbols` and `required_routes`, discharged from
+`CoverageObservation.observed_symbols` and from a witness's actual HTTP
+exchanges respectively — observation, not assertion.
+
 ## Verification
 
 `tests/test_workcell_acceptance.py` — the decision kernel: witness validation

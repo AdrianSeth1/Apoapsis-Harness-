@@ -458,8 +458,15 @@ class ContractCompilerTests(unittest.TestCase):
             ],
             "verification_commands": ["unit-tests"],
         }
+        # `suggested_symbols` is not exposed by the shared helper; set it on
+        # the constructed slice rather than widening a helper other tests use.
+        symbols = payload.pop("suggested_symbols", None)
         payload.update(slice_overrides)
-        return make_plan(slices=[make_slice(**payload)])
+        symbols = payload.pop("suggested_symbols", symbols)
+        built = make_slice(**payload)
+        if symbols:
+            built.suggested_symbols = list(symbols)
+        return make_plan(slices=[built])
 
     def test_declared_paths_become_artifact_obligations(self) -> None:
         from apoapsis.workcell.contract_compiler import compile_slice_contract
@@ -515,6 +522,127 @@ class ContractCompilerTests(unittest.TestCase):
 
         with self.assertRaises(ContractCompilationError):
             compile_slice_contract(self._plan(), "SLICE-nope")
+
+    def test_advisory_suggested_symbols_never_become_a_gate(self) -> None:
+        # Slice 4C. `ImplementationSlice` says in its own docstring that every
+        # cross-reference on it is an advisory planner proposal. The first
+        # compiler promoted `suggested_symbols` into mandatory obligations it
+        # then marked intentionally-unmeasured, which silently turned advice
+        # into a completion gate no evidence could open.
+        from apoapsis.workcell.acceptance import ObligationKind
+        from apoapsis.workcell.contract_compiler import compile_slice_contract
+
+        contract = compile_slice_contract(
+            self._plan(suggested_symbols=["IncidentService", "ExportService"]),
+            "SLICE-services",
+        )
+        interfaces = [
+            item
+            for item in contract.obligations
+            if item.kind == ObligationKind.INTERFACE
+        ]
+        self.assertEqual(interfaces, [])
+        self.assertTrue(
+            all(not item.unmeasured_reason for item in contract.obligations),
+            "no obligation should be born intentionally unmeasured",
+        )
+
+    def test_advisory_integration_ids_never_become_a_gate(self) -> None:
+        from apoapsis.workcell.acceptance import ObligationKind
+        from apoapsis.workcell.contract_compiler import compile_slice_contract
+
+        contract = compile_slice_contract(
+            self._plan(integration_contract_ids=["INT-dashboard-api"]),
+            "SLICE-services",
+        )
+        edges = [
+            item
+            for item in contract.obligations
+            if item.kind == ObligationKind.INTEGRATION_EDGE
+        ]
+        self.assertEqual(edges, [])
+
+    def test_an_owner_approved_interface_becomes_a_real_obligation(self) -> None:
+        from apoapsis.workcell.acceptance import ObligationKind
+        from apoapsis.workcell.contract_compiler import compile_slice_contract
+
+        contract = compile_slice_contract(
+            self._plan(),
+            "SLICE-services",
+            required_interfaces={
+                "incident-service": ["incident.services.IncidentService"]
+            },
+            required_integration_routes={"INT-dashboard-api": ["/api/incidents"]},
+        )
+        interface = next(
+            item
+            for item in contract.obligations
+            if item.kind == ObligationKind.INTERFACE
+        )
+        self.assertEqual(
+            interface.required_symbols, ["incident.services.IncidentService"]
+        )
+        # Dischargeable by observation, not marked unmeasured.
+        self.assertFalse(interface.unmeasured_reason)
+        edge = next(
+            item
+            for item in contract.obligations
+            if item.kind == ObligationKind.INTEGRATION_EDGE
+        )
+        self.assertEqual(edge.required_routes, ["/api/incidents"])
+
+    def test_a_compiled_contract_can_reach_complete_without_a_human(self) -> None:
+        # The practical consequence: a plan with real interface obligations
+        # now completes automatically when the evidence is there, instead of
+        # being routed to review by an obligation nothing could discharge.
+        from apoapsis.workcell.acceptance import evaluate_slice_readiness
+        from apoapsis.workcell.contract_compiler import compile_slice_contract
+        from apoapsis.workcell.delta import CandidateDelta
+        from apoapsis.workcell.witness import (
+            CoverageObservation,
+            EvidenceClass as EC,
+            StructuredWitness as SW,
+            WitnessKind as WK,
+        )
+
+        contract = compile_slice_contract(
+            self._plan(suggested_symbols=["IncidentService"]),
+            "SLICE-services",
+            required_interfaces={
+                "incident-service": ["incident.services.IncidentService"]
+            },
+        )
+        fingerprint = "a" * 64
+        witness = SW(
+            witness_id="w",
+            kind=WK.TEST_SUITE,
+            evidence_class=EC.INDEPENDENT,
+            command_name="unit-tests",
+            command_version="1",
+            command_argv=["pytest"],
+            worktree_fingerprint=fingerprint,
+            passed=True,
+            coverage=CoverageObservation(
+                executed_paths=[
+                    "incident/services/incident_service.py",
+                    "incident/services/export_service.py",
+                ],
+                observed_symbols=["incident.services.IncidentService"],
+                collection_method="coverage.py",
+            ),
+            criteria_proved=["AC-INCIDENT", "AC-EXPORT"],
+        )
+        report = evaluate_slice_readiness(
+            contract,
+            CandidateDelta(candidate_fingerprint=fingerprint),
+            [witness],
+            candidate_paths={
+                "incident/services/incident_service.py",
+                "incident/services/export_service.py",
+                "README.md",
+            },
+        )
+        self.assertTrue(report.ready, report.detail)
 
     def test_an_owner_reason_blocks_completion_rather_than_satisfying_it(self) -> None:
         from apoapsis.workcell.acceptance import ObligationStatus

@@ -264,7 +264,6 @@ class CrisisAtlasSlice2Tests(unittest.TestCase):
             delta,
             [self._inherited_green()],
             candidate_paths={"services/incident_service.py"},
-            passed_commands={"unit-tests"},
         )
         self.assertFalse(report.ready)
 
@@ -292,7 +291,6 @@ class CrisisAtlasSlice2Tests(unittest.TestCase):
             delta,
             [self._inherited_green()],
             candidate_paths={"services/incident_service.py"},
-            passed_commands={"unit-tests"},
         )
         self.assertNotIn(
             ReadinessBlock.REQUIRED_COMMAND_NOT_PASSED,
@@ -308,8 +306,7 @@ class CrisisAtlasSlice2Tests(unittest.TestCase):
                 delta,
                 [self._inherited_green()],
                 candidate_paths={"services/incident_service.py"},
-                passed_commands={"unit-tests"},
-            )
+                )
         )
         self.assertIn("incident/services/incident_service.py", packet)
         self.assertIn("incident/services/export_service.py", packet)
@@ -350,7 +347,6 @@ class CrisisAtlasSlice2Tests(unittest.TestCase):
                 "incident/services/export_service.py",
                 "tests/test_services.py",
             },
-            passed_commands={"unit-tests"},
         )
         self.assertTrue(report.ready, report.detail)
         self.assertEqual(report.unexercised_behaviour, [])
@@ -546,7 +542,11 @@ class ContractTests(unittest.TestCase):
             {item.block for item in report.findings},
         )
 
-    def test_a_required_command_that_never_passed_blocks(self) -> None:
+    def test_a_required_command_is_derived_from_witnesses_not_supplied(self) -> None:
+        # Slice 4C. `passed_commands` used to be a caller-supplied set, which
+        # could describe a different tree, an earlier turn, or a run nobody
+        # bound to a fingerprint. It is now derived: a command counts as passed
+        # only if a *usable* witness says so.
         contract = SliceAcceptanceContract(
             slice_id="s1",
             criteria=["C1"],
@@ -562,6 +562,180 @@ class ContractTests(unittest.TestCase):
             required_commands=["unit-tests"],
         )
         witness = _witness(
+            criteria_proved=["C1"],
+            coverage=CoverageObservation(
+                executed_paths=["a.py"], collection_method="coverage.py"
+            ),
+        )
+        ready = evaluate_slice_readiness(
+            contract, _delta(), [witness], candidate_paths={"a.py"}
+        )
+        self.assertTrue(ready.ready, ready.detail)
+
+    def test_a_stale_witness_cannot_make_a_required_command_pass(self) -> None:
+        # The whole point of deriving it. A stale witness is not usable, so
+        # the command it reports has no current evidence behind it.
+        contract = SliceAcceptanceContract(
+            slice_id="s1",
+            criteria=["C1"],
+            obligations=[
+                AcceptanceObligation(
+                    obligation_id="o1",
+                    kind=ObligationKind.PRODUCTION_ARTIFACT,
+                    description="x",
+                    required_paths=["a.py"],
+                    criteria=["C1"],
+                )
+            ],
+            required_commands=["unit-tests"],
+        )
+        stale = _witness(worktree_fingerprint=_OTHER_FP, criteria_proved=["C1"])
+        report = evaluate_slice_readiness(
+            contract, _delta(), [stale], candidate_paths={"a.py"}
+        )
+        self.assertFalse(report.ready)
+        self.assertIn(
+            ReadinessBlock.REQUIRED_COMMAND_NOT_PASSED,
+            {item.block for item in report.findings},
+        )
+
+    def test_an_interface_obligation_is_discharged_by_observed_symbols(self) -> None:
+        contract = SliceAcceptanceContract(
+            slice_id="s1",
+            criteria=["C1"],
+            obligations=[
+                AcceptanceObligation(
+                    obligation_id="o1",
+                    kind=ObligationKind.TEST_OR_WITNESS,
+                    description="criterion",
+                    criteria=["C1"],
+                ),
+                AcceptanceObligation(
+                    obligation_id="iface",
+                    kind=ObligationKind.INTERFACE,
+                    description="IncidentService is exercised",
+                    required_symbols=["incident.services.IncidentService"],
+                ),
+            ],
+        )
+        witness = _witness(
+            criteria_proved=["C1"],
+            coverage=CoverageObservation(
+                executed_paths=["a.py"],
+                observed_symbols=["incident.services.IncidentService"],
+                collection_method="coverage.py",
+            ),
+        )
+        report = evaluate_slice_readiness(contract, _delta(), [witness])
+        self.assertTrue(report.ready, report.detail)
+
+    def test_an_unexercised_interface_blocks(self) -> None:
+        contract = SliceAcceptanceContract(
+            slice_id="s1",
+            criteria=["C1"],
+            obligations=[
+                AcceptanceObligation(
+                    obligation_id="o1",
+                    kind=ObligationKind.TEST_OR_WITNESS,
+                    description="criterion",
+                    criteria=["C1"],
+                ),
+                AcceptanceObligation(
+                    obligation_id="iface",
+                    kind=ObligationKind.INTERFACE,
+                    description="ExportService is exercised",
+                    required_symbols=["incident.services.ExportService"],
+                ),
+            ],
+        )
+        report = evaluate_slice_readiness(
+            contract, _delta(), [_witness(criteria_proved=["C1"])]
+        )
+        self.assertFalse(report.ready)
+        self.assertIn("never observed being exercised", report.detail)
+
+    def test_an_integration_route_is_discharged_by_a_witness_that_called_it(
+        self,
+    ) -> None:
+        contract = SliceAcceptanceContract(
+            slice_id="s1",
+            criteria=["C1"],
+            obligations=[
+                AcceptanceObligation(
+                    obligation_id="o1",
+                    kind=ObligationKind.TEST_OR_WITNESS,
+                    description="criterion",
+                    criteria=["C1"],
+                ),
+                AcceptanceObligation(
+                    obligation_id="int",
+                    kind=ObligationKind.INTEGRATION_EDGE,
+                    description="dashboard reaches the API",
+                    required_routes=["/api/incidents"],
+                ),
+            ],
+        )
+        launch = _witness(
+            witness_id="launch",
+            kind=WitnessKind.LAUNCH_HTTP,
+            criteria_proved=["C1"],
+            process=ProcessObservation(
+                command=["python3", "server.py"],
+                readiness_condition="port connectable",
+                bound_address="127.0.0.1:8000",
+                cleaned_up=True,
+            ),
+            exchanges=[
+                HttpExchange(method="GET", route="/api/incidents", status=200)
+            ],
+        )
+        report = evaluate_slice_readiness(contract, _delta(), [launch])
+        self.assertTrue(report.ready, report.detail)
+
+    def test_a_route_nobody_called_blocks(self) -> None:
+        contract = SliceAcceptanceContract(
+            slice_id="s1",
+            criteria=["C1"],
+            obligations=[
+                AcceptanceObligation(
+                    obligation_id="o1",
+                    kind=ObligationKind.TEST_OR_WITNESS,
+                    description="criterion",
+                    criteria=["C1"],
+                ),
+                AcceptanceObligation(
+                    obligation_id="int",
+                    kind=ObligationKind.INTEGRATION_EDGE,
+                    description="dashboard reaches the API",
+                    required_routes=["/api/exports"],
+                ),
+            ],
+        )
+        report = evaluate_slice_readiness(
+            contract, _delta(), [_witness(criteria_proved=["C1"])]
+        )
+        self.assertFalse(report.ready)
+        self.assertIn("never called by any witness", report.detail)
+
+    def test_a_required_command_that_never_passed_blocks(self) -> None:
+        contract = SliceAcceptanceContract(
+            slice_id="s1",
+            criteria=["C1"],
+            obligations=[
+                AcceptanceObligation(
+                    obligation_id="o1",
+                    kind=ObligationKind.PRODUCTION_ARTIFACT,
+                    description="x",
+                    required_paths=["a.py"],
+                    criteria=["C1"],
+                )
+            ],
+            required_commands=["unit-tests"],
+        )
+        # The only witness is from a different command, so `unit-tests` has
+        # no evidence behind it at all.
+        witness = _witness(
+            command_name="lint",
             criteria_proved=["C1"],
             coverage=CoverageObservation(
                 executed_paths=["a.py"], collection_method="coverage.py"

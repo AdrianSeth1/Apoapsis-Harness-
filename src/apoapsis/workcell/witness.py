@@ -119,6 +119,11 @@ class CoverageObservation(StrictModel):
     executed_lines: dict[str, list[int]] = Field(default_factory=dict)
     #: Modules imported, for languages where import is the meaningful signal.
     imported_modules: list[str] = Field(default_factory=list)
+    #: Fully-qualified symbols the run actually executed or imported, derived
+    #: from the same controller-produced artifact as the line data. This is
+    #: what lets an *interface* obligation be discharged by observation rather
+    #: than by a planner's suggestion that the symbol ought to exist.
+    observed_symbols: list[str] = Field(default_factory=list)
     #: How the coverage was collected. `None` means it was asserted rather
     #: than measured, which `require_witness` refuses.
     collection_method: str | None = None
@@ -184,6 +189,29 @@ class StructuredWitness(StrictModel):
     @property
     def exercised_paths(self) -> set[str]:
         return set(self.coverage.executed_paths) if self.coverage else set()
+
+    @property
+    def exercised_symbols(self) -> set[str]:
+        """Symbols this run was observed to reach.
+
+        Union of the coverage artifact's observed symbols and its imported
+        modules. Both come from the controller's own measurement; neither is a
+        claim the witness makes about itself.
+        """
+
+        if self.coverage is None:
+            return set()
+        return set(self.coverage.observed_symbols) | set(self.coverage.imported_modules)
+
+    @property
+    def exercised_routes(self) -> set[str]:
+        """Routes this run actually called.
+
+        A route is exercised by being *requested*, which no coverage tool
+        reports and which only a launch or behavioural witness can observe.
+        """
+
+        return {item.route for item in self.exchanges}
 
     @property
     def mutations(self) -> list[HttpExchange]:

@@ -47,6 +47,8 @@ def compile_slice_contract(
     *,
     unmeasured_reasons: dict[str, str] | None = None,
     independent_criteria: set[str] | None = None,
+    required_interfaces: dict[str, list[str]] | None = None,
+    required_integration_routes: dict[str, list[str]] | None = None,
 ) -> SliceAcceptanceContract:
     """Turn one approved slice into the contract its completion must meet.
 
@@ -58,6 +60,19 @@ def compile_slice_contract(
     `independent_criteria` marks criteria that model-authored evidence may not
     discharge. The unrestricted control wrote 87 passing tests and still
     shipped a broken filter; some criteria need someone else's eyes.
+
+    `required_interfaces` maps an interface name to the symbols a witness must
+    be *observed* exercising, and `required_integration_routes` maps an
+    integration contract id to the routes a witness must have *called*. Both
+    are owner-approved inputs, and both default to empty.
+
+    The planner's `suggested_symbols` and `integration_contract_ids` are
+    deliberately **not** used. `ImplementationSlice` says in its own docstring
+    that every cross-reference on it is "advisory proposals from the planner",
+    and the first version of this compiler promoted that advice into mandatory
+    obligations it then marked intentionally-unmeasured -- which silently
+    turned a suggestion into a completion gate no evidence could open. Advice
+    is not a gate. An owner who wants an interface gated names it here.
     """
 
     unmeasured_reasons = unmeasured_reasons or {}
@@ -95,20 +110,18 @@ def compile_slice_contract(
             )
         )
 
-    # 2. Declared symbols are interfaces later slices will consume.
-    for index, symbol in enumerate(sorted(target.suggested_symbols), start=1):
-        obligation_id = f"{slice_id}-interface-{index}"
+    # 2. Interfaces the *owner* asked to be gated, discharged by observing the
+    #    named symbols actually being exercised. The planner's advisory
+    #    `suggested_symbols` is ignored: see the docstring.
+    for name, symbols in sorted((required_interfaces or {}).items()):
+        obligation_id = f"{slice_id}-interface-{name}"
         obligations.append(
             AcceptanceObligation(
                 obligation_id=obligation_id,
                 kind=ObligationKind.INTERFACE,
-                description=f"{symbol} is provided for consuming slices",
-                criteria=[],
-                required_paths=[],
-                must_be_exercised=[],
-                unmeasured_reason=unmeasured_reasons.get(
-                    obligation_id, f"no structured witness maps to symbol {symbol}"
-                ),
+                description=f"{name} is provided and exercised for consuming slices",
+                required_symbols=sorted(symbols),
+                unmeasured_reason=unmeasured_reasons.get(obligation_id, ""),
             )
         )
 
@@ -127,21 +140,23 @@ def compile_slice_contract(
             )
         )
 
-    # 4. Integration edges this slice introduces or consumes. A networked
+    # 4. Integration edges the owner mapped to concrete routes. A networked
     #    contract with only static evidence behind it is what ADR 0076 already
-    #    refuses at plan level; here it becomes a slice obligation.
-    for contract_id in sorted(target.integration_contract_ids):
+    #    refuses at plan level; here it becomes a slice obligation a launch or
+    #    behavioural witness can discharge by actually calling the route.
+    #
+    #    The plan's `integration_contract_ids` alone are not enough: an `INT-`
+    #    identifier names an edge, not anything a witness can observe. Without
+    #    a route mapping there is nothing to check, so no obligation is made.
+    for contract_id, routes in sorted((required_integration_routes or {}).items()):
         obligation_id = f"{slice_id}-integration-{contract_id}"
         obligations.append(
             AcceptanceObligation(
                 obligation_id=obligation_id,
                 kind=ObligationKind.INTEGRATION_EDGE,
                 description=f"integration contract {contract_id} is exercised",
-                criteria=[],
-                unmeasured_reason=unmeasured_reasons.get(
-                    obligation_id,
-                    f"no structured witness is mapped to {contract_id}",
-                ),
+                required_routes=sorted(routes),
+                unmeasured_reason=unmeasured_reasons.get(obligation_id, ""),
             )
         )
 

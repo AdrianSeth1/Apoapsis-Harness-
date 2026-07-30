@@ -1469,6 +1469,17 @@ them.
 against the *admitted snapshot* so no command is observed running over a
 refused file, evaluate readiness, decide.
 
+Two rules the first integration got wrong and Slice 4C fixed. **Advisory plan
+metadata is not a completion gate**: `ImplementationSlice` documents its
+cross-references as advisory, so the compiler ignores `suggested_symbols` and
+`integration_contract_ids` and takes interface and integration obligations only
+from owner-approved `required_interfaces`/`required_integration_routes`,
+discharged by observed symbols and by routes a witness actually called. And
+**required-command success is derived from usable, fingerprint-bound
+witnesses**, never supplied alongside them -- a caller-provided set could
+describe a different tree or an earlier turn, which is the stale-evidence
+problem refused everywhere else.
+
 Read the relevant ADR completely before altering its area. Preserve old ADRs as
 history; supersede them with a new ADR rather than rewriting the old decision.
 

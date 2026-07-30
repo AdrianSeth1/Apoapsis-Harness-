@@ -77,7 +77,6 @@ def run_checkpoint(
     emit_witnesses: WitnessEmitter,
     base_commit: str | None = None,
     policy: AdmissionPolicy | None = None,
-    passed_commands: set[str] | None = None,
     slice2_spike=None,
 ) -> CheckpointRecord:
     """Run one checkpoint end to end and return what it concluded.
@@ -125,7 +124,6 @@ def run_checkpoint(
         delta,
         witnesses,
         candidate_paths=_paths_in(snapshot),
-        passed_commands=passed_commands,
         behaviour_units=behaviour,
     )
     decision = evaluate_checkpoint(True, admission.detail, readiness)

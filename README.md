@@ -1366,6 +1366,13 @@ production file, a new top-level symbol inside a modified file, or a new route
 — each checked against line-level coverage. Routes may also be satisfied by a
 witness that actually called them.
 
+Interface and integration obligations are gated only when the **owner** asks
+for them, via `required_interfaces` and `required_integration_routes`. The
+planner's `suggested_symbols` and `integration_contract_ids` are advisory by
+their own schema and are never promoted into completion gates. Whether a
+required command passed is derived from the witnesses themselves, so a stale
+run cannot open the gate.
+
 At a checkpoint the loop freezes the workcell, admits the delta atomically,
 emits witnesses against the admitted snapshot, and decides one of four
 outcomes. **`CONTINUE`** is the important one: the work was admitted,
