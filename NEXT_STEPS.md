@@ -111,7 +111,7 @@ Follow
 2. **Done (handoff slice 1).** ADR 0077 sets the boundary: ephemeral capability
    inside a disposable workcell, durable authority outside it. It supersedes the
    execution boundary of ADRs 0059 and 0071 without editing either.
-3. **Implemented, live evidence outstanding (handoff slice 2).** The
+3. **Implemented in part; live gate blocked at conformance (handoff slice 2).** The
    `apoapsis.workcell` package provides the pinned identity
    (`pins.py`, every field required and folded into one digest), the hardened
    container lifecycle (`controller.py`, one persistent container per session,
@@ -131,13 +131,15 @@ Follow
    check that cross-checks the relay's own request counter
    (`relay_preflight.py`). 54 further deterministic tests pass.
 
-   **Nothing live has run.** No container was started, no CLI executed, no
-   probe or conformance check ran against a real namespace or template, and no
-   model was reached. The evaluation environment has no container runtime, GPU,
-   model weights, or `llama-server`; the live sequence needs the owner's
-   machine. See
+   A 2026-07-30 owner-machine run passed 22/22 containment probes after
+   sanitizing the sacrificial clone and image, then passed the complete relay
+   path through health, model listing, and a one-token local Qwen generation.
+   The run fixed a stale relay-counter API and Unix-socket group assignment.
+   It stopped before either quality task because no code drives the nine live
+   conformance observations; all nine remain `NOT_RUN`. Automatic clone
+   sanitization and prompt/tool/template pin provenance are also missing. See
    `docs/evaluation/slice-2-workcell-conformance-spike-2026-07-30.md` and
-   `docs/evaluation/slice-2a-model-relay-2026-07-30.md`.
+   `docs/evaluation/slice-2-live-gate-2026-07-30.md`.
 
    Run the live evidence in this order, and stop at the first failure:
    containment probes with no model spend; relay readiness through the real

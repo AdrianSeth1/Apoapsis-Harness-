@@ -1208,16 +1208,23 @@ Context and output ceilings are classified as first-class conditions
 separately from model reasoning failures, so a response that filled the context
 window is never counted as the model failing to reason.
 
-## Capability Sandbox workcell (ADR 0077, implemented, not yet exercised)
+## Capability Sandbox workcell (ADR 0077, experimental and gate-blocked)
 
 The workcell runs the real Qwen coding CLI's own native loop inside a
 disposable, hardened container. Apoapsis keeps every durable authority —
 admission, verification, checkpointing, promotion, delivery — outside it.
 
-**No live run has happened yet.** No container has been started, no CLI
-executed, and no containment probe or conformance check run against a real
-namespace or chat template. Treat this section as describing implemented code,
-not demonstrated execution.
+Live containment and relay readiness have now run. After sanitizing the
+sacrificial clone and image, all 22 containment probes passed. The complete
+container → loopback forwarder → Unix socket → controller relay → local
+`llama-server` path passed health, model listing, and a one-token completion,
+with three requests observed by the relay and clean teardown.
+
+The mode is still blocked: the real Qwen CLI has not run in this workcell, and
+the repository has no driver that produces the nine live conformance
+observations. All nine therefore remain `NOT_RUN`; no baseline or matched
+quality claim is permitted. See
+`docs/evaluation/slice-2-live-gate-2026-07-30.md`.
 
 Validate a pinned configuration without starting a model:
 

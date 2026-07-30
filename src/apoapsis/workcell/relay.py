@@ -445,13 +445,23 @@ class ModelRelay:
             raise RelayStartupError(
                 f"could not bind the relay socket at {self.config.socket_path}: {exc}"
             ) from exc
-        # Owner-only. The container runs as a mapped uid, so the socket's group
-        # is what makes it reachable; the dedicated directory is the control
-        # that matters, and this narrows the file itself as far as it can go.
+        # The container runs as a mapped uid, so the dedicated directory's
+        # group is what makes the socket reachable. Docker Desktop bind mounts
+        # do not reliably preserve setgid inheritance, so apply that group
+        # explicitly and fail before a token-spending probe if it cannot be
+        # established.
         try:
+            directory_gid = Path(self.config.socket_path).parent.stat().st_gid
+            os.chown(self.config.socket_path, -1, directory_gid)
             os.chmod(self.config.socket_path, 0o660)
-        except OSError:
-            pass
+        except OSError as exc:
+            self._server.server_close()
+            self._server = None
+            Path(self.config.socket_path).unlink(missing_ok=True)
+            raise RelayStartupError(
+                "could not assign the relay socket to the workcell's "
+                f"dedicated group: {exc}"
+            ) from exc
         self._thread = threading.Thread(
             target=self._server.serve_forever,
             kwargs={"poll_interval": 0.2},
