@@ -136,8 +136,27 @@ Follow
    Crisis Atlas rollover rather than proven; and `relay.py` still cannot be
    imported on Windows.
 
-4. admit and verify the complete candidate delta outside the model's trust
-   boundary;
+4. **Done (handoff slice 3).** `apoapsis/workcell/delta.py` computes the whole
+   candidate delta by hashing two controller-materialised trees — never the
+   workcell's Git, which the agent may rewrite — and classifies every path as
+   production, test, dependency, generated, documentation, or forbidden.
+   `apoapsis/workcell/admission.py` applies whole-delta policy, reports every
+   violation at once, admits or refuses atomically, and reconstructs a clean
+   verifier tree from the approved base plus the admitted entries rather than
+   from the workcell. `admit_candidate` calls `require_slice3_unblocked`, so
+   Slice 2's evidence gates the first thing Slice 3 does.
+
+   **Live, 2026-07-30**, against the real Slice 2D clones: both arms admitted
+   (2 production files, 9 changed lines), `.git` and `__pycache__` in neither
+   delta, the reconstructed tree running `run_tests.py` to exit 0, a tainted
+   copy refused atomically with both forbidden paths reported together and no
+   snapshot written, and the base fingerprint unchanged throughout. See
+   `docs/evaluation/slice-3-candidate-delta-admission-2026-07-30.md`.
+
+   Outstanding for later slices: verification still runs in the controller
+   rather than in a separate pinned verifier workcell (ADR 0077 Layer 4), and
+   the admitted snapshot is not yet bound into the plan graph as an
+   authoritative `PlanCheckpoint` (slice 6);
 5. replace green-test termination with strict slice-readiness contracts and
    structured witnesses;
 6. add bounded recoverable tool output, two-tier compaction, stable-prefix
