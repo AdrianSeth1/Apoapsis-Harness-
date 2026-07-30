@@ -271,7 +271,19 @@ max_seconds = 300
 [research.sources.official_docs]
 enabled = true
 priority = 1
+# Official documentation research is impossible for a vendor/domain that is
+# not listed here -- add every ecosystem this project actually needs before
+# relying on official-doc research (ADR 0055). Examples:
+#   Google/Gmail API docs:  "developers.google.com"
+#   Twilio docs:            "www.twilio.com"
+#   Vonage docs:            "developer.vonage.com"
 allowed_domains = ["docs.python.org"]
+# No search provider ships in this repository yet (ADR 0055): with no
+# provider configured, official_docs can only use URLs the local model
+# names explicitly, and every one of those still has to pass
+# allowed_domains above. Research questions needing discovery of a URL you
+# have not listed here will be reported as unusable, not silently dropped.
+search_provider = "none"
 
 [research.sources.github]
 enabled = true
@@ -288,6 +300,12 @@ user_agent = "apoapsis-harness-research/1.0"
 purposes = ["user_pain_points", "product_expectations", "failure_discovery"]
 
 [research.security]
+# This is the lower-level network allowlist every research fetch is checked
+# against, in addition to (not instead of) [research.sources.official_docs]
+# allowed_domains above -- a domain must be present in BOTH lists for
+# official-doc research to reach it (ADR 0055). Add any domain you add above
+# to this list too, e.g. "developers.google.com", "www.twilio.com",
+# "developer.vonage.com".
 allow_domains = [
   "docs.python.org", "github.com", "api.github.com", "reddit.com",
   "www.reddit.com", "oauth.reddit.com"

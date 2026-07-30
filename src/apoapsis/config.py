@@ -213,6 +213,19 @@ class OfficialDocsResearchSourceConfig(ResearchSourceConfig):
     allowed_domains: list[str] = Field(
         default_factory=lambda: ["docs.python.org"]
     )
+    # "none" (default) keeps official_docs a direct-URL-only adapter. ADR
+    # 0056 records the owner's explicit authorization of "tavily" (the
+    # Tavily search API) as the one concrete provider implemented in this
+    # repository (``research/sources/tavily.py``); any other value fails
+    # clearly in ``research/factory.py`` rather than guessing at a vendor
+    # (ADR 0055).
+    search_provider: str = "none"
+    # The one dedicated environment-variable name the configured provider
+    # reads a credential from. The harness/provider reads this variable,
+    # never the model; the variable's value must never enter a prompt, log,
+    # cache key, or audit artifact. Defaults to "TAVILY_API_KEY" when
+    # search_provider = "tavily" and this is left unset.
+    search_credentials_env: str | None = None
 
 
 class GitHubResearchSourceConfig(ResearchSourceConfig):
