@@ -2,6 +2,12 @@
 
 Date: 2026-07-29
 
+Status: remediation history. Slices A-D were implemented as ADRs 0072-0076.
+The context/action-protocol and model-performance strategy is superseded by
+`docs/handoff-2026-07-30-qwen-baseline-preserving-superiority.md`; the
+truthfulness, verification, integration, operability, and twelve-point
+regression requirements below remain valid.
+
 ## Assignment
 
 Use the preserved Crisis Atlas run to fix the gap between:

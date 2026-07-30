@@ -5,8 +5,8 @@ ideas and safety boundaries without assuming you already know the codebase.
 `HANDOFF.md` remains the canonical technical record for coding agents; the ADRs
 under `docs/adr/` preserve why individual decisions were made.
 
-Current as of 2026-07-30, after ADR 0076 and the live Crisis Atlas 64K
-Qwen-plus-Codex trial.
+Current as of 2026-07-30, after ADR 0076, the live Crisis Atlas 64K
+Qwen-plus-Codex trial, and the isolated unrestricted-Qwen CLI control.
 
 ## The short version
 
@@ -113,6 +113,41 @@ The defensible conclusion is therefore:
 - do not change the default context window from this evidence; and
 - measure context size and output capacity as separate variables.
 
+### The unrestricted CLI control changed the diagnosis
+
+A follow-up control gave the same Qwen model the complete approved plan and an
+arbitrary shell inside a disposable offline container. It was not allowed onto
+the host, the harness repository, the network, or credentials. It built all
+layers, added 87 new tests beyond the inherited smoke test, repaired failures,
+and produced a usable application without Codex editing its files.
+
+That is much stronger than Qwen's raw sliced result. In particular, it did not
+repeat Slice 2's wrong-package skeleton or stop after inherited tests stayed
+green. This means the poor sliced behavior was not purely a model-capability
+ceiling. The one-action protocol and its evidence/acceptance design materially
+shaped what the model could express.
+
+It still was not a true success. Qwen claimed all acceptance criteria passed,
+but the configured strict web check failed and independent browser inspection
+showed that status filtering did nothing. Create, select, status update,
+timeline, action items, and reload persistence worked. Qwen's 88 passing tests
+never exercised the broken filter path.
+
+The control therefore sharpens, rather than reverses, the architecture lesson:
+
+- give a capable local model enough freedom inside the sandbox to make and
+  diagnose coherent changes;
+- do not confuse self-authored green tests with independent acceptance proof;
+- keep completion, delivery, credentials, network, and host authority outside
+  the model; and
+- make a stronger reviewer inspect the result against plan-mapped behavior.
+
+The cost profile also matters. The CLI arm used 2,080,801 input and 35,787
+output tokens across 62 successful calls, versus 258,632 input and 55,364 output
+tokens across 19 sliced calls. It finished in less provider time, but replayed
+about eight times as many input tokens. Real context compaction is therefore a
+core efficiency feature, not an optional cleanup.
+
 ### Design changes suggested by the trial
 
 The next improvements should focus less on supplying more tokens and more on
@@ -144,13 +179,41 @@ making proof follow the new behavior:
 7. **Treat truncation as its own stop reason.** Repeated responses that end
    exactly at the output ceiling should trigger an output-budget diagnosis,
    rather than being mixed with reasoning or context failures.
+8. **Preserve the baseline agent before adding supervision.** The primary
+   future local path should run Qwen's normal persistent shell/file/test loop
+   inside a disposable workcell. Apoapsis should supervise the resulting delta
+   from outside the workcell instead of forcing every engineering action
+   through a lower-capability JSON protocol.
+
+### The boundary should contain power, not remove competence
+
+The old phrasing “the model does not get a shell” mixed up ephemeral and
+durable authority. A model can safely have a real shell inside a sacrificial
+offline container while still having no access to the owner's repository,
+network, credentials, workflow transitions, verification verdict, or delivery.
+
+The proposed Capability Sandbox therefore keeps two layers distinct:
+
+- **Inside:** Qwen can navigate, edit, run local commands, start processes, and
+  repair its work like the default coding CLI.
+- **Outside:** Apoapsis freezes and audits the candidate delta, rejects policy
+  violations, reconstructs it in a clean verifier, evaluates plan-mapped
+  witnesses, records authoritative repair checkpoints, and alone decides
+  whether the work advances.
+
+This is not implemented yet. It requires a superseding authority-boundary ADR
+and paired qualification in which every default-Qwen pass remains a pass while
+Apoapsis catches defects the default agent missed. The implementation contract
+is `docs/handoff-2026-07-30-qwen-baseline-preserving-superiority.md`.
 
 ## Why this exists
 
 Coding models can be useful without being reliably correct. A small local model
 may understand most of a task, make a nearly correct edit, or recover after a
 test shows the precise mistake. The dangerous approach is to give it an
-unrestricted terminal and accept its claim that it is done.
+unrestricted *host* terminal or accept its claim that it is done. A real
+terminal inside a disposable, controller-confined workcell is a capability
+surface, not completion authority.
 
 Apoapsis instead tries to make model work:
 
@@ -526,6 +589,11 @@ result, and how much did it cost?"
   live HTTP and launch checks, browser inspection, and an offline-storage
   negative control. This is evidence for a local-first/frontier-review pattern,
   not an autonomous local-model success rate.
+- The isolated unrestricted-Qwen CLI control built a coherent whole product and
+  passed 88 self-authored tests, but failed the configured strict web gate and
+  missed a browser filtering defect. This is evidence that the current action
+  protocol suppresses model capability and that independent completion
+  authority remains necessary at the same time.
 - Earlier baseline runs exposed a real false-success problem: four of five
   apparent completions failed the held-out oracle. That result is why visible
   acceptance coverage and independent oracle measurement both matter.

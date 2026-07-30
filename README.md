@@ -1161,6 +1161,16 @@ mechanics — hand-authored unified diffs, tool-call wrapper residue,
 cross-action fields — rather than on coding ability. In this mode the model
 writes **whole files** and Apoapsis computes the diff.
 
+The unrestricted Crisis Atlas control showed that even atomic multi-file JSON
+actions do not preserve all of a normal coding CLI's useful behavior. A
+baseline-preserving **Capability Sandbox** is therefore the next architecture
+assignment, not current product behavior: Qwen gets its ordinary persistent
+shell/file/test loop only inside a disposable container, while Apoapsis remains
+the sole authority for admitting the resulting delta, running independent
+verification, checkpointing, completing, and delivering it. That design and
+its required paired non-inferiority gates are specified in
+`docs/handoff-2026-07-30-qwen-baseline-preserving-superiority.md`.
+
 It is disabled by default and the strict loop remains the documented default.
 In the UI, open **Models & environment**, use **Turn on Local Power**, and
 confirm the warning. Apoapsis updates only the known execution settings, reloads
@@ -1680,6 +1690,14 @@ measured local Qwen smoke results are in
 [`docs/evaluation/local-qwen-smoke.md`](docs/evaluation/local-qwen-smoke.md).
 The installed Coder-Next Q4 evaluation is in
 [`docs/evaluation/qwen3-coder-next-smoke.md`](docs/evaluation/qwen3-coder-next-smoke.md).
+The Crisis Atlas 64K Qwen-plus-Codex checkpoint trial and the isolated
+unrestricted-Qwen CLI control are recorded separately in
+[`docs/evaluation/crisis-atlas-64k-codex-frontier-trial-2026-07-30.md`](docs/evaluation/crisis-atlas-64k-codex-frontier-trial-2026-07-30.md)
+and
+[`docs/evaluation/crisis-atlas-qwen-cli-control-2026-07-30.md`](docs/evaluation/crisis-atlas-qwen-cli-control-2026-07-30.md).
+The control built substantially more coherent code than raw sliced Qwen, but
+used about eight times as many input tokens and still falsely claimed full
+acceptance while browser filtering was broken.
 The first bounded-agent run to complete the controlled fixture used ten agent
 turns and three verification runs; all three tests passed with one source file
 changed. The earlier one-shot failures remain documented as the comparison
