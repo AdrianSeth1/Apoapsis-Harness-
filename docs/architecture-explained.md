@@ -5,7 +5,8 @@ ideas and safety boundaries without assuming you already know the codebase.
 `HANDOFF.md` remains the canonical technical record for coding agents; the ADRs
 under `docs/adr/` preserve why individual decisions were made.
 
-Current as of 2026-07-19, after ADR 0026 (hardening ADR 0024's Commits D2a and D2b).
+Current as of 2026-07-30, after ADR 0076 and the live Crisis Atlas 64K
+Qwen-plus-Codex trial.
 
 ## The short version
 
@@ -29,6 +30,120 @@ Think of the model as a talented contractor:
 The central rule is:
 
 > Models propose. Apoapsis validates, executes, verifies, records, and decides.
+
+## What the latest live trial taught us
+
+The July 2026 Crisis Atlas trial tested a practical split between a local Qwen
+model and Codex as the frontier reviewer:
+
+1. Qwen attempted one dependency-ordered slice.
+2. When Qwen stopped or claimed completion, Codex inspected the actual product,
+   repaired it, and committed a verified checkpoint.
+3. The next Qwen slice started from that checkpoint.
+
+The final incident-response application worked. Its 57 tests passed, the real
+HTTP lifecycle and one-process launch passed, the dashboard was exercised in a
+browser, and a deliberate `localStorage` regression correctly failed the
+required gate. But the route to that result exposed an important distinction:
+
+> A model defect explains why bad code was proposed. A harness defect explains
+> why bad or incomplete code was accepted as complete.
+
+### Slice 2: mostly a model miss, made dangerous by a harness miss
+
+Qwen reported the service/export slice complete after one short call. It had
+actually created a partial `IncidentService` under the wrong plural
+`services/` package, called interfaces that did not exist, omitted
+`ExportService`, and added no tests.
+
+Those are model failures: it did not reconcile its proposal with the repository
+it was shown, and it did not cover the requested slice.
+
+The harness failure was accepting that proposal. The inherited tests never
+imported the new file, the task's acceptance criteria were not mapped to
+commands, and baseline completion treated "the old test suite is still green"
+as proof that a new service layer existed. Qwen deserves responsibility for the
+bad implementation; Apoapsis deserves responsibility for the false green
+verdict.
+
+### Slice 3: a useful implementation with ordinary runtime bugs
+
+Qwen produced a substantial standard-library HTTP server in one call. The
+architecture was directionally right, but four defects remained:
+
+- static assets pointed at a directory that did not exist;
+- export routes were shadowed by a broader route;
+- timeline and action-item objects were sent to `json.dumps` without
+  serialization; and
+- traversal-path handling called a string method on a `Path`.
+
+These were model gaps, not context-window failures. The model had the relevant
+files and used only about 13.8K input tokens. It simply failed to execute the
+control flow carefully enough.
+
+Again, the harness amplified the problem: it accepted `server.py` without a
+single live HTTP test. The requested integration tests were missing, but the
+older domain tests still passed. The model wrote the bugs; the verification
+contract failed to detect them.
+
+### Slice 4: evidence that the local model can contribute real value
+
+The dashboard slice was much stronger. Qwen changed four coordinated files,
+used the same-origin API, and recovered across three verification attempts.
+The browser workflow largely worked before frontier repair. Codex still found
+incorrect README flags, mislabeled behavioral and launch checks, inaccessible
+form controls, and blocking alert-based errors.
+
+This is the division of labor Apoapsis should optimize for: use a local model
+for a bounded first implementation, then make a stronger reviewer inspect the
+new behavior and its proof obligations—not merely ask whether the inherited
+suite stayed green.
+
+### Context size was not the limiting factor
+
+Across the four local-model slices, the largest actual input was 24,583 tokens.
+The 64K context window was never stressed. The output cap did matter: the first
+coherent dashboard patch used 8,213 output tokens, just over the original
+8,192-token cap, while two earlier Slice 1 responses hit that old ceiling and
+became unusable.
+
+The defensible conclusion is therefore:
+
+- raise output room for coherent multi-file slices;
+- do not change the default context window from this evidence; and
+- measure context size and output capacity as separate variables.
+
+### Design changes suggested by the trial
+
+The next improvements should focus less on supplying more tokens and more on
+making proof follow the new behavior:
+
+1. **Use two scorecards.** Record proposal quality separately from harness
+   detection. "The model wrote a bug" and "the harness falsely accepted it"
+   are different failures with different fixes.
+2. **Require slice-specific proof.** A new service, server, or dashboard cannot
+   complete solely because inherited tests pass. Every active slice criterion
+   should map to an acceptance-designated command under strict completion.
+3. **Bind test obligations to the plan.** If a slice promises live HTTP
+   integration, its completion package should show that the configured command
+   actually starts the server and drives the endpoints. A command's friendly
+   name is not evidence about what its test module does.
+4. **Make frontier mean a different reviewer.** Reusing Qwen as both local and
+   "frontier" model adds budget, not capability. The intended path is: local
+   model attempts the slice, then an explicitly authorized stronger model
+   receives the diff, failures, plan obligations, and current checkpoint.
+5. **Make repaired checkpoints first-class.** A frontier or human repair must
+   be recordable as the authoritative slice result so the next slice and final
+   delivery stay inside the plan state machine. The trial had to seed later
+   slices from direct commits, which proved the product but could not produce
+   a truthful plan `delivery.json`.
+6. **Keep negative controls near architectural invariants.** The
+   `localStorage` mutation was caught immediately once "API-only state" became
+   a real test. Similar owner-authored controls can test single-process launch,
+   restart persistence, and deterministic exports.
+7. **Treat truncation as its own stop reason.** Repeated responses that end
+   exactly at the output ceiling should trigger an output-budget diagnosis,
+   rather than being mixed with reasoning or context failures.
 
 ## Why this exists
 
@@ -57,7 +172,9 @@ flowchart TD
     M -- "Yes, optional" --> AP["Architect Mode package"]
     AP --> HM["Strong model proposes architecture and slices"]
     HM --> PV["Apoapsis validates; you approve the plan"]
-    PV --> GAP["Approved plan is currently inert\n(slice execution is next-stage work)"]
+    PV --> SS["You select one ready slice"]
+    SS --> SP["Immutable slice package + explicit approval"]
+    SP --> CC
 
     M -- "No / run directly" --> SE["Model proposes structured specification"]
     SE --> SA["Schema, catalog, and verbatim-constraint validation"]
@@ -164,7 +281,7 @@ of these typed actions:
 - search the repository;
 - read a bounded part of a safe text file;
 - inspect the current tracked and untracked diff;
-- propose a unified diff;
+- propose a unified diff or one atomic multi-file change set;
 - replace one exact, uniquely occurring text block;
 - run one configured check by name;
 - submit the current worktree for full verification; or
@@ -302,10 +419,18 @@ slices, including objectives, exclusions, inherited constraints, acceptance
 criteria, verification commands, advisory paths/symbols, risks, and a concise
 local-model brief.
 
-Approval is intentionally inert today. No code path turns an approved slice
-into a task yet. The planned bridge will require an explicit user selection and
-will give the local coder its normal search/read/edit/test freedom; suggested
-paths will remain hints, not an allowlist.
+Approval does not start autonomous execution. You select one dependency-ready
+slice, inspect an immutable package of its constraints, criteria, repository
+state, and dependency evidence, and explicitly approve that package. Apoapsis
+then creates a normal task. Starting it is a second explicit action, and it
+uses the same bounded search/read/edit/test workflow as a directly entered
+task. A completed slice must be genuinely integrated into Git history before a
+dependent slice becomes ready. There is no "run all" scheduler.
+
+After all slices, delivery runs the plan's whole-project verification commands
+against the integrated commit. Delivery is blocked if current evidence is
+missing or stale, integration is not exercised, required artifacts are absent,
+or the structured launch contract is not proven.
 
 ## Human Review and frontier rescue
 
@@ -384,8 +509,10 @@ result, and how much did it cost?"
   context/agent/patch/verification/reporting implementation `apoapsis run`
   always used. A user can now go from a typed request to a completed (or
   Human-Review-stopped) task entirely from the browser.
-- 452 deterministic tests in the current repository snapshot, with six
-  intentional environment-gated skips.
+- More than 1,100 deterministic tests across task execution, planning,
+  verification, review, delivery, and UI behavior. The latest full harness run
+  is recorded in `HANDOFF.md`, including its known pre-existing failures rather
+  than presenting a misleading all-green count.
 
 ### Proven with real local inference
 
@@ -393,6 +520,12 @@ result, and how much did it cost?"
 - In the second three-attempt strict evaluation, one attempt reached
   `COMPLETE` and its held-out oracle passed. The other two received accurate
   failure evidence but exhausted their budgets.
+- Qwen3.6-27B Q4_K_M produced useful work across all four Crisis Atlas slices,
+  including a largely functional four-file dashboard. Codex inspection was
+  still required on every slice. The final candidate passed 57 product tests,
+  live HTTP and launch checks, browser inspection, and an offline-storage
+  negative control. This is evidence for a local-first/frontier-review pattern,
+  not an autonomous local-model success rate.
 - Earlier baseline runs exposed a real false-success problem: four of five
   apparent completions failed the held-out oracle. That result is why visible
   acceptance coverage and independent oracle measurement both matter.
@@ -403,10 +536,11 @@ still small.
 ### Still not proven live
 
 - Real hosted-frontier rescue and cost savings;
-- the Docker sandbox success path on this machine;
 - broad performance across varied repositories and task types; and
-- the newly hardened review/fresh-frontier paths with real providers (their
-  workflow branches currently have deterministic fake-provider coverage).
+- real hosted-frontier rescue and its cost/quality tradeoff. Codex repaired the
+  Crisis Atlas checkpoints interactively, but that direct checkpoint protocol
+  was not yet recorded through Apoapsis's authoritative frontier/delivery state
+  machine.
 
 ## What should be built next
 
@@ -585,7 +719,6 @@ numbers and what happens next.
 
 ### Later operational work
 
-- Prove the pinned Docker sandbox success path live.
 - Run paired local-first/fresh-frontier/direct-frontier experiments when real
   hosted credentials and spending authorization exist.
 - Package the proven loopback app in a native wrapper without hiding Python,
