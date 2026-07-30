@@ -23,12 +23,50 @@ from apoapsis.discovery.service import (
 )
 from apoapsis.discovery.store import SQLiteDiscoveryStore
 from apoapsis.models.telemetry import InstrumentedModelProvider
+from apoapsis.repository.git import GitRepository
 from apoapsis.operations.lease import (
     DEFAULT_HEARTBEAT_INTERVAL,
     DEFAULT_LEASE_DURATION,
     LeaseHeartbeat,
     new_owner_id,
 )
+from apoapsis.research.engine import ResearchEngineError, ResearchFailureReason
+
+_RESEARCH_FAILURE_RECOMMENDATIONS = {
+    ResearchFailureReason.NO_SOURCE_CANDIDATES: (
+        "Widen the effective research mode/allowed sources, or add explicit "
+        "official-document URLs the model can use, then retry."
+    ),
+    ResearchFailureReason.PLANNED_SOURCE_UNUSABLE: (
+        "Authoritative vendor documentation was required but is unavailable "
+        "under the configured domains/search capability: add the vendor's "
+        "domain(s) to [research.sources.official_docs].allowed_domains and "
+        "[research.security].allow_domains, or configure a search provider, "
+        "then retry."
+    ),
+    ResearchFailureReason.NO_RELEVANT_FINDINGS: (
+        "The retrieved sources were not actually relevant. Narrow or "
+        "redirect the research questions/queries (or add official-document "
+        "URLs/domains for the specific vendor involved) and retry."
+    ),
+    ResearchFailureReason.PROVENANCE_REJECTED: (
+        "Findings were proposed but failed provenance/security validation. "
+        "Inspect rejected-evidence.jsonl and security-warnings.json in the "
+        "research audit directory before retrying."
+    ),
+    ResearchFailureReason.INSUFFICIENT_SOURCE_DIVERSITY: (
+        "Allow additional official-doc domains or research sources so a "
+        "finding can be corroborated from more than one place, then retry."
+    ),
+}
+
+
+def _describe_research_failure(exc: ResearchEngineError) -> str:
+    recommendation = _RESEARCH_FAILURE_RECOMMENDATIONS.get(
+        exc.reason,
+        "Inspect the task's research audit directory for the specific cause.",
+    )
+    return f"{exc}\nRecommended operator action: {recommendation}"
 
 
 def prepare_discovery_operation(
@@ -53,6 +91,18 @@ def prepare_discovery_operation(
     if session.version != expected_version:
         raise StaleSessionError(
             f"expected session version {expected_version}, found {session.version}"
+        )
+    # Fail fast and legibly rather than deep inside the worker. Research and
+    # planning both compile repository context, which is anchored to a base
+    # commit; in a repository with no commits that surfaced as a raw
+    # `git rev-parse HEAD: ambiguous argument 'HEAD'` recorded as a failed
+    # operation, which says nothing about what the operator should do.
+    if not GitRepository(root).has_commits():
+        raise DiscoveryError(
+            f"repository {Path(root).resolve()} has no commits yet, so there "
+            "is no base commit to anchor planning to. Make one commit (for "
+            "example `git add -A` then `git commit -m \"initial commit\"`) "
+            "and retry."
         )
     package_id: str | None = None
     research_mode = research_mode_for_action(action)
@@ -181,6 +231,19 @@ def run_discovery_operation(
             summary = f"frontier API call completed (measured cost ${cost_usd:.4f})"
         else:
             raise AssertionError(f"unhandled discovery operation action: {record.action}")
+    except ResearchEngineError as exc:
+        # Give the operator a classified, actionable failure instead of a
+        # bare exception string: which kind of research failure this was,
+        # and what to do about it. Detailed audit artifacts (queries,
+        # unusable-queries, candidates, retrieved-source-manifest,
+        # rejected-evidence, recovery) are preserved on disk under the
+        # task's research audit directory regardless of this summary.
+        operation_store.mark_failed(
+            operation_id,
+            owner_id=owner_id,
+            error=_describe_research_failure(exc),
+        )
+        raise
     except Exception as exc:
         operation_store.mark_failed(
             operation_id, owner_id=owner_id, error=f"{type(exc).__name__}: {exc}"

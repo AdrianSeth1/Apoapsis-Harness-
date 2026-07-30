@@ -20,6 +20,10 @@ from apoapsis.config import (
 from apoapsis.repository.fingerprint import compute_worktree_fingerprint
 from apoapsis.repository.git import GitRepository
 from apoapsis.specification.schema import StrictModel, TaskSpecification, utc_now
+from apoapsis.verification.contract import (
+    VerificationContractAssessment,
+    assess_verification_contract,
+)
 from apoapsis.workflow.routing import select_agent_route
 
 # Fixed, non-negotiable statements of who decides what -- included in every
@@ -78,6 +82,11 @@ class ExecutionAuthorizationPackage(StrictModel):
     verification_backend: str = Field(min_length=1)
     verification_command_catalog: list[str] = Field(default_factory=list)
     verification_config_sha256: str = Field(min_length=64, max_length=64)
+    # ADR 0069. Included in the authorized content, not merely displayed
+    # beside it: what a confirmation authorizes is partly *what a success
+    # would mean*, and on TASK-33E0EB6476C4 that was the one thing nobody
+    # was shown before spending model calls.
+    verification_contract: VerificationContractAssessment | None = None
     authority_rules: list[str] = Field(default_factory=lambda: list(AUTHORITY_RULES))
     generated_at: datetime = Field(default_factory=utc_now)
     # Filled in after the rest of the package is built -- see
@@ -177,6 +186,11 @@ def build_execution_authorization_package(
             item.name for item in config.verification.commands
         ],
         verification_config_sha256=_sha256_canonical(safe_config["verification"]),
+        verification_contract=assess_verification_contract(
+            specification,
+            list(config.verification.commands),
+            config.execution.completion_policy,
+        ),
     )
     package_sha256 = _sha256_canonical(
         package.model_dump(

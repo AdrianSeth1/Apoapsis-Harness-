@@ -5,6 +5,7 @@ import uuid
 from pathlib import Path
 from typing import Callable
 
+from apoapsis.agent.power_session import LocalPowerSession
 from apoapsis.agent.session import (
     AgentSessionOutcome,
     AgentSessionResult,
@@ -67,6 +68,7 @@ from apoapsis.specification.schema import (
     TaskSpecification,
     TraceableStatement,
 )
+from apoapsis.verification.contract import assess_verification_contract
 from apoapsis.verification.failures import FailureNormalizer
 from apoapsis.verification.results import VerificationResult, VerificationStatus
 from apoapsis.verification.runner import VerificationRunner
@@ -136,6 +138,12 @@ class VerticalSliceRunner:
         self.agent_result: AgentSessionResult | None = None
         self.local_agent_result: AgentSessionResult | None = None
         self.frontier_agent_result: AgentSessionResult | None = None
+        # ADR 0059: populated only when the experimental Local Power Sandbox
+        # ran. Kept alongside the ordinary agent results rather than replacing
+        # them so a report can always say which execution path produced the
+        # change under review.
+        self.local_power_session: LocalPowerSession | None = None
+        self.local_power_review_package = None
         self.routing_decision: RoutingDecision | None = None
         self.escalation_package_path: str | None = None
         self.escalation_reason: str | None = None
@@ -792,14 +800,26 @@ class VerticalSliceRunner:
                 event_type="frontier_agent_budget_exhausted",
             )
 
-        local_result = self._run_agent_session(
-            provider=self.local_coder_provider,
-            provider_config=self.local_coder_config,
-            context=implementation_context,
-            agent_config=self.config.execution.agent,
-            role=ModelRole.LOCAL_CODING_AGENT,
-            audit_prefix="",
-        )
+        # ADR 0059: the experimental Local Power Sandbox replaces only the
+        # *local* stage, and only when explicitly enabled. Frontier escalation,
+        # completion authority, verification, and every workflow transition
+        # below are untouched -- a sandbox session returns the same
+        # `AgentSessionResult` shape the strict loop returns, and it can only
+        # report COMPLETE when the harness's own verification passed.
+        local_power = self.config.execution.local_power
+        if local_power.enabled:
+            local_result = self._run_local_power_session(implementation_context)
+            event_prefix = "local_power_sandbox"
+        else:
+            local_result = self._run_agent_session(
+                provider=self.local_coder_provider,
+                provider_config=self.local_coder_config,
+                context=implementation_context,
+                agent_config=self.config.execution.agent,
+                role=ModelRole.LOCAL_CODING_AGENT,
+                audit_prefix="",
+            )
+            event_prefix = "local_agent"
         self.local_agent_result = local_result
         self.agent_result = local_result
         self._record_agent_result(local_result)
@@ -807,7 +827,7 @@ class VerticalSliceRunner:
             return self._complete_agent_workflow(
                 local_result,
                 implementing_version=implementing_version,
-                event_prefix="local_agent",
+                event_prefix=event_prefix,
             )
 
         escalation = self.store.transition(
@@ -849,6 +869,51 @@ class VerticalSliceRunner:
                 f"{local_result.stop_reason}"
             ),
         )
+
+    def _run_local_power_session(
+        self, context: ContextPackage
+    ) -> AgentSessionResult:
+        """Run one experimental Local Power Sandbox stage (ADR 0059).
+
+        Structurally parallel to `_run_agent_session`, deliberately kept as a
+        separate method rather than a branch inside it: the strict loop's
+        patch-application seam (`apply_patch`) does not exist here, because in
+        this mode the model edits sandbox files directly and the harness
+        derives the diff afterwards instead of validating one patch at a time.
+        """
+
+        assert self.audit is not None
+        assert self.specification is not None
+        assert self.worktree_path is not None
+
+        def model_call(*args, **kwargs):
+            return self._model_call(
+                *args,
+                **kwargs,
+                provider=self.local_coder_provider,
+                provider_config=self.local_coder_config,
+            )
+
+        session = LocalPowerSession(
+            specification=self.specification,
+            worktree=self.worktree_path,
+            initial_context=context,
+            config=self.config.execution.local_power,
+            verification_config=self.config.verification,
+            audit=self.audit,
+            model_call=model_call,
+            model_role=ModelRole.LOCAL_CODING_AGENT,
+            completion_policy=self.config.execution.completion_policy,
+        )
+        try:
+            result = session.run()
+        except InstrumentedProviderError as exc:
+            result = session.interrupted(
+                f"local power sandbox provider call failed: {exc}"
+            )
+        self.local_power_session = session
+        self.local_power_review_package = session.review_package
+        return result
 
     def _run_agent_session(
         self,
@@ -1417,6 +1482,15 @@ class VerticalSliceRunner:
             context_attribution=context_attribution,
             completion_policy=self.config.execution.completion_policy,
             acceptance_coverage=self.acceptance_coverage,
+            # ADR 0069: recorded on every report, not only failing ones. A
+            # report that says COMPLETE without saying what the configured
+            # contract could prove is the exact artifact that made
+            # TASK-33E0EB6476C4 look finished.
+            verification_contract=assess_verification_contract(
+                self.specification,
+                list(self.config.verification.commands),
+                self.config.execution.completion_policy,
+            ),
             local_agent_budget=(
                 self.config.execution.agent
                 if self.config.execution.mode == ExecutionMode.AGENT

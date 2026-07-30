@@ -22,6 +22,8 @@ from apoapsis.discovery.schema import (
 from apoapsis.discovery.response import apply_frontier_planning_response
 from apoapsis.discovery.store import SQLiteDiscoveryStore
 from apoapsis.research.schemas import ResearchMode
+from apoapsis.specification.pasted_json import PastedJsonError, parse_pasted_json
+from apoapsis.specification.skeleton import json_skeleton
 
 
 def build_frontier_planning_markdown(package: FrontierPlanningRequestPackage) -> str:
@@ -155,6 +157,23 @@ def build_frontier_planning_markdown(package: FrontierPlanningRequestPackage) ->
     lines.append(json.dumps(package.architect_ceilings, indent=2, sort_keys=True))
     lines.append("```")
     lines.append("")
+    lines.append("## LOCAL_CODER_BUDGET (informational only)")
+    lines.append("")
+    lines.append(
+        "This is the bounded turn/patch-attempt/verification-run budget the "
+        "harness actually gives its local coding model to implement one "
+        "slice end to end. It is small on purpose -- the local model is far "
+        "less capable than you are. A slice this package asks you to design "
+        "will be attempted by that model against exactly this budget, not "
+        "against your own capabilities. Use it to size slices per the "
+        "PLANNING_QUALITY_REQUIREMENTS below, not merely to fit under "
+        "Architect Mode's structural ceilings."
+    )
+    lines.append("")
+    lines.append("```json")
+    lines.append(json.dumps(package.local_coder_budget, indent=2, sort_keys=True))
+    lines.append("```")
+    lines.append("")
     lines.append("## Required response format")
     lines.append("")
     lines.append(
@@ -164,6 +183,82 @@ def build_frontier_planning_markdown(package: FrontierPlanningRequestPackage) ->
         f"{package.max_clarification_questions} questions) or `\"plan\"`, "
         "and include only the matching field:"
     )
+    lines.append("")
+    # ADR 0066: the literal shape comes first, before the JSON Schema. The
+    # schema is authoritative but `$ref`-indirected; a reader who stops after
+    # the first code block should already have every key they need.
+    lines.append("### The exact shape to copy")
+    lines.append("")
+    lines.append(
+        "Below is the complete response object with every permitted key "
+        "expanded, including inside every nested object, with placeholder "
+        "values. **These are all the keys that exist.** Every object in this "
+        "response rejects unknown keys, so a plausible-sounding field name "
+        "that is not listed here will fail validation and the whole plan will "
+        "be rejected -- pay particular attention to the nested objects "
+        "(`delivery_contract`, `runtime_design`, `verification_strategy`), "
+        "whose keys are easy to guess wrongly. Replace the placeholders with "
+        "real content, omit the variant you are not returning, and drop any "
+        "field you have nothing to say about (all of them have defaults)."
+    )
+    lines.append("")
+    lines.append("```json")
+    lines.append(
+        json.dumps(
+            json_skeleton(FrontierPlanningResponseEnvelope), indent=2
+        )
+    )
+    lines.append("```")
+    lines.append("")
+    # ADR 0075. `runtime_boundary` is the one field whose *value* changes
+    # whether a deterministic check runs at all, so the shape above is not
+    # enough on its own -- a reader who leaves it at `unspecified` silently
+    # opts out of the contradiction detection ADR 0074 added. Placed
+    # immediately after the shape, where a reader is looking at the keys.
+    lines.append("### `runtime_boundary` on every integration contract")
+    lines.append("")
+    lines.append(
+        "Set `runtime_boundary` on each entry in `integration_contracts` to "
+        "how the producer and consumer actually communicate at runtime. "
+        "Apoapsis cross-checks this against the flags of the verification "
+        "commands that govern the contract and **rejects the plan** when they "
+        "contradict each other -- for example a contract declaring "
+        "`same_origin_http` while a governing command passes "
+        "`--forbid-runtime-network-apis`, which would forbid the very "
+        "mechanism the contract requires."
+    )
+    lines.append("")
+    lines.append(
+        "This matters because such a plan is not merely wrong, it is "
+        "unsatisfiable: the only way to make every configured check pass is "
+        "to delete the integration. That has happened. Naming the boundary "
+        "lets validation catch the contradiction before any code is written."
+    )
+    lines.append("")
+    for value, meaning in (
+        ("in_process", "a direct call inside one process"),
+        (
+            "same_origin_http",
+            "an HTTP request to the same origin that served the page, e.g. a "
+            "browser calling `/incidents` on its own backend",
+        ),
+        (
+            "cross_origin_http",
+            "an HTTP request naming another origin, including an absolute "
+            "loopback URL such as `http://localhost:8000/x`",
+        ),
+        ("filesystem", "communication through files on disk"),
+        ("subprocess", "one component launching another as a child process"),
+        (
+            "unspecified",
+            "you genuinely do not know. This is the default and asserts "
+            "nothing, so the contradiction check does not run for that "
+            "contract -- do not use it to avoid deciding",
+        ),
+    ):
+        lines.append(f"- `{value}` -- {meaning}")
+    lines.append("")
+    lines.append("### The full JSON Schema (authoritative)")
     lines.append("")
     lines.append("```json")
     lines.append(json.dumps(package.response_json_schema, indent=2, sort_keys=True))
@@ -234,9 +329,9 @@ def import_manual_frontier_planning_response(
     except UnicodeDecodeError as exc:
         raise MalformedResponseError(f"response is not valid UTF-8: {exc}") from exc
     try:
-        raw_payload = json.loads(raw_text)
-    except json.JSONDecodeError as exc:
-        raise MalformedResponseError(f"response is not valid JSON: {exc}") from exc
+        raw_payload = parse_pasted_json(raw_text, what="response")
+    except PastedJsonError as exc:
+        raise MalformedResponseError(str(exc)) from exc
     if not isinstance(raw_payload, dict):
         raise MalformedResponseError("response must be a single JSON object")
     try:

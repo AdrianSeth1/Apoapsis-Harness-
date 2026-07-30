@@ -9,6 +9,7 @@ from apoapsis.agent.session import (
     AgentTurnRecord,
     BoundedAgentSession,
 )
+from apoapsis.architect.schema import VerificationStrategy
 from apoapsis.architect.store import SQLitePlanStore
 from apoapsis.architect.slice_store import PlanSliceExecutionStore
 from apoapsis.audit.store import TaskAuditStore
@@ -446,6 +447,13 @@ class _SingleSlicePlanMixin:
                     verification_method="v2-jobs-tests",
                 )
             ],
+            # ADR 0074: a plan naming no whole-project verification command
+            # is invalid, because nothing would ever run against the
+            # integrated result. This fixture is deliberately the smallest
+            # approvable plan, so it declares the one command it has.
+            verification_strategy=VerificationStrategy(
+                whole_project_verification_commands=["v2-jobs-tests"],
+            ),
         )
 
     def _approve_plan(self, root: Path):

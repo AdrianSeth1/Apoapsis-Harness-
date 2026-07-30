@@ -18,7 +18,7 @@ from apoapsis.manual_frontier.schema import (
     VerificationCatalogEntry,
 )
 from apoapsis.review.schema import ReviewCase
-from apoapsis.review.case import read_agent_session
+from apoapsis.review.case import read_agent_session, read_local_stage_session
 from apoapsis.specification.schema import TaskSpecification
 from apoapsis.verification.runner import VerificationCommand
 from apoapsis.workflow.events import WorkflowEvent
@@ -101,7 +101,10 @@ def compile_manual_frontier_evidence(
     sessions = [
         item
         for item in (
-            read_agent_session(task_directory, ""),
+            # Whichever local loop ran: a manual-frontier handoff built
+            # without the sandbox stage's transcript would hand the
+            # subscription model a description of an empty attempt.
+            read_local_stage_session(task_directory)[0],
             read_agent_session(task_directory, "frontier-"),
         )
         if item is not None

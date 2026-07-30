@@ -105,6 +105,7 @@ def build_frontier_planning_request_package(
         active_hard_constraints=idea_brief.key_constraints,
         verification_catalog=_verification_catalog(config),
         architect_ceilings=config.architect.ceilings.model_dump(mode="json"),
+        local_coder_budget=config.execution.agent.model_dump(mode="json"),
         plan_json_schema=ArchitecturePlan.model_json_schema(),
         response_json_schema=FrontierPlanningResponseEnvelope.model_json_schema(),
         max_clarification_rounds=config.discovery.max_frontier_clarification_rounds,
