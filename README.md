@@ -1220,16 +1220,37 @@ container → loopback forwarder → Unix socket → controller relay → local
 `llama-server` path passed health, model listing, and a one-token completion,
 with three requests observed by the relay and clean teardown.
 
-The mode is still blocked: the real Qwen CLI has not run in this workcell, and
-the nine live conformance observations are now produced by
+The nine live conformance observations are produced by
 `workcell/conformance_driver.py`, driven through the real relay path by
-`apoapsis workcell-conformance`. In the 2026-07-30 Slice 2B live run,
-containment held 22/22 and seven of the nine checks passed, but
-`declared_limits_match_server` failed: the CLI believes this model has a
-1,000,000-token context window while the server reports 65,536.
-`multiline_unicode_integrity` also failed, on model transcription rather than
-transport corruption. Conformance therefore fails closed, the capability spike
-is `NOT_MEASURABLE`, and no baseline or matched quality claim is permitted. See
+`apoapsis workcell-conformance`. In the 2026-07-30 **Slice 2C** live run,
+containment held 22/22, relay readiness passed, and **all nine conformance
+checks passed**. The two Slice 2B failures were fixed at their source:
+
+- `declared_limits_match_server` — a `generationConfig` override on the
+  selected `modelProviders` entry pins `contextWindowSize` to 65,536 and
+  `samplingParams.max_tokens` to 16,384. Qwen's bundled model table is
+  deliberately **not** patched and still reports 1,000,000 / 64,000; what the
+  CLI *resolves* is read back by executing its own `loadSettings` and
+  `resolveCliGenerationConfig` inside the image, and the whole effective
+  configuration is credential-redacted, hashed, and folded into the run
+  manifest digest.
+- `multiline_unicode_integrity` — ADR 0078 re-bases the check on a
+  deterministic echo provider reached through the real relay, socket, and
+  forwarder, comparing captured request bytes against parsed response bytes so
+  no model transcription is involved. Model transcription accuracy survives as
+  a separate non-gating metric.
+
+The relay additionally **refuses** — never clamps — any request whose output
+budget exceeds the run's pinned ceiling, and records the peak budget it
+observed.
+
+**The mode is still blocked.** The paired arms ran live with no acceptance
+repair and returned `CAPABILITY_REGRESSED`, so `apoapsis slice3-gate` refuses.
+That verdict is not a valid capability comparison: the agent CLI inside the
+workcell image exposes no `write_file`, `edit`, or `run_shell_command`, so
+neither arm could edit a file. No baseline or matched quality claim is
+permitted. See
+`docs/evaluation/slice-2c-limits-envelope-and-paired-arms-2026-07-30.md` and
 `docs/evaluation/slice-2b-live-conformance-and-pins-2026-07-30.md`.
 
 Run the ordered live gate, and decide whether Slice 3 may begin:

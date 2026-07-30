@@ -20,7 +20,9 @@ an experiment that is already invalid.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from pathlib import Path
+from typing import Iterator
 
 from apoapsis.workcell.containment import (
     DEFAULT_CONTAINMENT_PROBES,
@@ -33,14 +35,21 @@ from apoapsis.workcell.controller import (
     WorkcellController,
     check_relay_readiness,
 )
-from apoapsis.workcell.conformance import ConformanceReport, evaluate_conformance
+from apoapsis.workcell.conformance import (
+    ConformanceCheck,
+    ConformanceReport,
+    evaluate_conformance,
+)
 from apoapsis.workcell.conformance_driver import (
     DeclaredCliLimits,
     LiveConformanceRunner,
 )
+from apoapsis.workcell.echo_provider import DeterministicEchoProvider
 from apoapsis.workcell.pins import WorkcellConfig
 from apoapsis.workcell.platform_support import prepare_socket_directory
 from apoapsis.workcell.relay import ModelRelay
+from apoapsis.workcell.relay_policy import ModelRelayConfig
+from apoapsis.workcell.transcription import TranscriptionFidelity
 from apoapsis.workcell.relay_preflight import RelayReadinessReport
 
 
@@ -52,6 +61,10 @@ class LiveWorkcellSession:
         self.controller = WorkcellController(config)
         self.relay = ModelRelay(config.egress.relay)
         self._started = False
+        #: The echo provider from the most recent `envelope_path` block, kept
+        #: after teardown so its captured request bytes remain readable as
+        #: evidence.
+        self._last_echo_provider: DeterministicEchoProvider | None = None
 
     def __enter__(self) -> "LiveWorkcellSession":
         # The socket directory is prepared before the relay binds and before the
@@ -68,6 +81,13 @@ class LiveWorkcellSession:
         # EACCES -- before a single token is spent, which is the good version of
         # this bug and the reason readiness runs before conformance.
         self._grant_socket_group()
+        # Prepared before the container exists for the same reason as the model
+        # socket directory: Docker creates a missing bind-mount source as a
+        # root-owned directory the workcell cannot use.
+        envelope_directory = self.config.egress.envelope_socket_host_directory
+        if envelope_directory:
+            Path(envelope_directory).mkdir(parents=True, exist_ok=True)
+            self._grant_group(Path(envelope_directory))
         self.relay.start()
         try:
             self.controller.start()
@@ -92,11 +112,13 @@ class LiveWorkcellSession:
         connect to the relay, not to be able to stand in for it.
         """
 
+        self._grant_group(Path(self.config.egress.socket_host_directory))
+
+    def _grant_group(self, directory: Path) -> None:
         import os
         import stat
 
         _, _, gid_text = self.config.user.partition(":")
-        directory = Path(self.config.egress.socket_host_directory)
         try:
             os.chown(directory, -1, int(gid_text))
             # setgid so a socket created afterwards inherits the group rather
@@ -143,6 +165,73 @@ class LiveWorkcellSession:
         )
         return exit_code, stderr
 
+    # -- the deterministic envelope path (ADR 0078) ------------------------
+
+    @contextmanager
+    def envelope_path(self) -> Iterator[str]:
+        """Stand up a second relay whose upstream is the echo provider.
+
+        Everything but the model is real: a `DeterministicEchoProvider` on the
+        controller, a second `ModelRelay` binding a second socket in the same
+        controller-owned directory, and a second in-container forwarder on a
+        second loopback port. The workcell reaches it exactly the way it
+        reaches the model -- loopback, socket, relay -- which is the whole point
+        of ADR 0078's insistence that the check run through the real path.
+
+        The echo socket lives in its own dedicated directory, mounted at
+        container creation. The first version of this put it beside the model
+        socket, and `prepare_socket_directory` refused: a socket directory must
+        contain exactly one socket, or mounting it becomes an unmediated
+        channel. That refusal was correct and is why there are two directories.
+
+        Yields the in-container base URL. Both halves are torn down on exit,
+        including on failure -- an echo provider left running would be an
+        unpinned second upstream, which is precisely what the relay exists to
+        make impossible.
+        """
+
+        egress = self.config.egress
+        if not egress.envelope_socket_host_directory:
+            raise RuntimeError(
+                "no envelope socket directory is configured, so the ADR 0078 "
+                "echo path cannot be stood up; the envelope check will report "
+                "NOT_RUN rather than fall back on a model measurement"
+            )
+        echo_port = egress.loopback_port + 1
+        socket_directory = Path(egress.envelope_socket_host_directory)
+        echo_socket = socket_directory / "echo.sock"
+        prepare_socket_directory(str(echo_socket))
+        self._grant_group(socket_directory)
+        provider = DeterministicEchoProvider(model=self.config.pin.model.model_name)
+        provider.start()
+        relay = ModelRelay(
+            ModelRelayConfig(
+                upstream_base_url=provider.base_url,
+                socket_path=str(echo_socket),
+                # Narrowed to the one route the probe uses. The echo path has no
+                # business being reachable for anything else, and narrowing is
+                # the only direction `allowed_routes` permits.
+                allowed_routes=["/v1/chat/completions", "/health"],
+                max_total_requests=16,
+            )
+        )
+        relay.start()
+        self._last_echo_provider = provider
+        try:
+            container_socket = (
+                f"{egress.envelope_socket_container_directory.rstrip('/')}/echo.sock"
+            )
+            command = (
+                f"nohup python3 {egress.forwarder_container_path} "
+                f"--port {echo_port} --socket {container_socket} "
+                f"> /tmp/apoapsis-echo-forwarder.log 2>&1 & sleep 2"
+            )
+            self.exec(["sh", "-c", command], timeout_seconds=40.0)
+            yield f"http://127.0.0.1:{echo_port}"
+        finally:
+            relay.stop()
+            provider.stop()
+
     # -- the ordered live sequence ----------------------------------------
 
     def run_containment(
@@ -179,7 +268,14 @@ class LiveWorkcellSession:
         declared_cli_limits: DeclaredCliLimits | None,
         mutating_tool_runner=None,
     ) -> tuple[ConformanceReport, LiveConformanceRunner]:
-        """Drive the nine checks through the relay and evaluate them."""
+        """Drive the nine checks through the relay and evaluate them.
+
+        Eight run against `llama-server`. `multiline_unicode_integrity` runs
+        against the deterministic echo path (ADR 0078), which is stood up and
+        torn down around it rather than kept open for the whole suite: a second
+        upstream that outlives the one check that needs it is a second upstream
+        the rest of the suite could accidentally use.
+        """
 
         pin = self.config.pin
         runner = LiveConformanceRunner(
@@ -192,11 +288,43 @@ class LiveWorkcellSession:
             declared_cli_limits=declared_cli_limits,
             mutating_tool_runner=mutating_tool_runner,
         )
-        results = runner.run_all()
+        results: list = []
+        with self.envelope_path() as envelope_base_url:
+            runner.envelope_base_url = envelope_base_url.rstrip("/")
+            envelope_result = runner.run_multiline_unicode_integrity()
+            provider = self._last_echo_provider
+            exchange = provider.last_exchange() if provider is not None else None
+            if exchange is not None and exchange.payload is not None:
+                # Re-decide with the *captured* request bytes now that the
+                # provider has them. Comparing the response against the probe
+                # constant would leave the inbound half of the round trip
+                # unverified, which the first pass says out loud.
+                runner.captured_envelope_bytes = exchange.payload.encode("utf-8")
+                envelope_result = runner.run_multiline_unicode_integrity()
+        results.append(envelope_result)
+        runner.envelope_base_url = None
+        results.extend(
+            check
+            for check in runner.run_all()
+            if check.check is not ConformanceCheck.MULTILINE_UNICODE_INTEGRITY
+        )
         report = evaluate_conformance(
             results, workcell_manifest_digest=pin.manifest_digest()
         )
         return report, runner
+
+    def run_transcription_fidelity(
+        self, runner: LiveConformanceRunner
+    ) -> TranscriptionFidelity:
+        """Measure the model's transcription accuracy. Never gates.
+
+        Kept out of `run_conformance` so that no future edit can accidentally
+        fold its result into `evaluate_conformance`: the two live in different
+        methods and different modules, and this one returns a type that has no
+        `ConformanceStatus` to fold.
+        """
+
+        return runner.run_transcription_fidelity()
 
 
 def write_evidence(directory: Path, name: str, payload: object) -> Path:

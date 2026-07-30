@@ -245,11 +245,62 @@ class DriverCheckTests(unittest.TestCase):
         ).run_single_tool_call()
         self.assertIs(result.status, ConformanceStatus.PASSED)
 
+    def test_multiline_unicode_is_not_run_without_the_echo_path(self) -> None:
+        """ADR 0078: no echo path means no evidence, and no evidence fails.
+
+        The pre-2C driver would have fallen back on whatever the model said,
+        which is how a quotation-mark preference became an adapter defect.
+        """
+
+        result = _runner(
+            [
+                _envelope(
+                    body=_chat(
+                        finish_reason="tool_calls",
+                        tool_calls=[
+                            _call(
+                                "write_file",
+                                {
+                                    "path": "probe.py",
+                                    "content": UNICODE_PROBE_CONTENT,
+                                },
+                            )
+                        ],
+                    )
+                )
+            ]
+        ).run_multiline_unicode_integrity()
+        self.assertIs(result.status, ConformanceStatus.NOT_RUN)
+
+    def test_multiline_unicode_passes_on_a_byte_exact_echo(self) -> None:
+        runner = _runner(
+            [
+                _envelope(
+                    body=_chat(
+                        finish_reason="tool_calls",
+                        tool_calls=[
+                            _call(
+                                "write_file",
+                                {
+                                    "path": "probe.py",
+                                    "content": UNICODE_PROBE_CONTENT,
+                                },
+                            )
+                        ],
+                    )
+                )
+            ],
+            envelope_base_url="http://127.0.0.1:8081",
+            captured_envelope_bytes=UNICODE_PROBE_CONTENT.encode("utf-8"),
+        )
+        result = runner.run_multiline_unicode_integrity()
+        self.assertIs(result.status, ConformanceStatus.PASSED)
+
     def test_multiline_unicode_reports_corruption_rather_than_smoothing_it(
         self,
     ) -> None:
         mangled = UNICODE_PROBE_CONTENT.replace("\n", "\\n")
-        result = _runner(
+        runner = _runner(
             [
                 _envelope(
                     body=_chat(
@@ -262,12 +313,31 @@ class DriverCheckTests(unittest.TestCase):
                         ],
                     )
                 )
-            ]
-        ).run_multiline_unicode_integrity()
+            ],
+            envelope_base_url="http://127.0.0.1:8081",
+            captured_envelope_bytes=UNICODE_PROBE_CONTENT.encode("utf-8"),
+        )
+        result = runner.run_multiline_unicode_integrity()
         self.assertIs(result.status, ConformanceStatus.FAILED)
+        # Not asserted as "escaped": the payload deliberately *already*
+        # contains a literal backslash-n, so the escaping detector correctly
+        # declines to claim it and the generic corruption report is the honest
+        # classification. Asserting the more specific message here would be
+        # asserting a misdiagnosis.
+        self.assertIn("changed in transit", result.detail)
 
-    def test_multiline_unicode_is_inconclusive_without_a_parseable_call(self) -> None:
-        result = _runner(
+    def test_multiline_unicode_fails_rather_than_stalls_on_an_unparseable_call(
+        self,
+    ) -> None:
+        """With a deterministic provider there is no benign explanation left.
+
+        Under the old design an unparseable call could mean the model declined
+        to make one, so `INCONCLUSIVE` was the honest answer. An echo provider
+        always emits exactly one well-formed call, so anything else is the
+        envelope.
+        """
+
+        runner = _runner(
             [
                 _envelope(
                     body=_chat(
@@ -275,9 +345,12 @@ class DriverCheckTests(unittest.TestCase):
                         tool_calls=[_call("write_file", "{broken")],
                     )
                 )
-            ]
-        ).run_multiline_unicode_integrity()
-        self.assertIs(result.status, ConformanceStatus.INCONCLUSIVE)
+            ],
+            envelope_base_url="http://127.0.0.1:8081",
+            captured_envelope_bytes=UNICODE_PROBE_CONTENT.encode("utf-8"),
+        )
+        result = runner.run_multiline_unicode_integrity()
+        self.assertIs(result.status, ConformanceStatus.FAILED)
 
     def test_replay_guard_fails_when_the_provider_omits_a_call_id(self) -> None:
         result = _runner(

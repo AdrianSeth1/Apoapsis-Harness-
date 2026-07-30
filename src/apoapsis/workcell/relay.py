@@ -53,6 +53,8 @@ from apoapsis.workcell.relay_policy import (
     RelayRejection,
     classify_redirect,
     classify_request,
+    classify_request_body,
+    observed_output_budget,
     sanitise_headers,
 )
 
@@ -75,11 +77,20 @@ class RelayRequestRecord(StrictModel):
     streamed: bool = False
     client_cancelled: bool = False
     detail: str = ""
+    #: The explicit output budget this request carried, or `None` if it named
+    #: none. `None` and `0` are different findings; see `observed_output_budget`.
+    output_budget_tokens: int | None = Field(default=None, ge=0)
 
 
 class RelayStats(StrictModel):
     requests_served: int = Field(default=0, ge=0)
     requests_refused: int = Field(default=0, ge=0)
+    #: The largest explicit output budget any request carried, and how many
+    #: carried one at all. Slice 2C reports the cap as *observed* rather than
+    #: as *configured*: "no request exceeded the ceiling" is only meaningful
+    #: alongside "and this many requests were actually inspected".
+    peak_output_budget_tokens: int | None = Field(default=None, ge=0)
+    requests_with_output_budget: int = Field(default=0, ge=0)
     upstream_failures: int = Field(default=0, ge=0)
     bytes_to_upstream: int = Field(default=0, ge=0)
     bytes_from_upstream: int = Field(default=0, ge=0)
@@ -133,6 +144,16 @@ class _RelayState:
                 self.stats.cancellations += 1
             self.stats.bytes_to_upstream += entry.request_bytes
             self.stats.bytes_from_upstream += entry.response_bytes
+            if entry.output_budget_tokens is not None:
+                # Counted for refused requests too. The peak is a record of
+                # what was *asked for* at the boundary, not of what was
+                # allowed through, and a refusal is the most interesting thing
+                # that can happen to an over-budget request.
+                self.stats.requests_with_output_budget += 1
+                self.stats.peak_output_budget_tokens = max(
+                    self.stats.peak_output_budget_tokens or 0,
+                    entry.output_budget_tokens,
+                )
             self.stats.records.append(entry)
 
 
@@ -252,6 +273,29 @@ class _RelayHandler(BaseHTTPRequestHandler):
                 state.record(entry)
                 return
         entry.request_bytes = len(body)
+
+        # Body inspection happens here and only here: the body is already in
+        # memory for forwarding, so the check costs one JSON parse and adds no
+        # buffering the relay was not already doing.
+        observed_budget = observed_output_budget(
+            upstream_path=upstream_path, body=body
+        )
+        if observed_budget is not None:
+            entry.output_budget_tokens = observed_budget.tokens
+        body_decision = classify_request_body(
+            upstream_path=upstream_path, body=body, config=config
+        )
+        if not body_decision.allowed:
+            self._refuse(body_decision.status, body_decision.detail)
+            # The record was optimistically created as allowed; nothing reached
+            # the upstream, so the audit trail must not say otherwise.
+            entry.allowed = False
+            entry.rejection = body_decision.rejection
+            entry.status = body_decision.status
+            entry.detail = body_decision.detail
+            entry.duration_seconds = time.monotonic() - started
+            state.record(entry)
+            return
 
         scheme, host, port = config.upstream_origin
         connection_class = (

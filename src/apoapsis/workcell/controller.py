@@ -234,6 +234,19 @@ class WorkcellController:
             # workcell a channel the relay does not mediate.
             "-v",
             f"{egress.socket_host_directory}:{egress.socket_container_directory}:rw",
+            # The ADR 0078 envelope path's socket directory, when one is
+            # configured. Mounted at creation because a mount cannot be added
+            # to a running container, and empty for all but the few seconds the
+            # envelope check owns it.
+            *(
+                [
+                    "-v",
+                    f"{egress.envelope_socket_host_directory}:"
+                    f"{egress.envelope_socket_container_directory}:rw",
+                ]
+                if egress.envelope_socket_host_directory
+                else []
+            ),
             # Immutable controller tooling, read-only and outside /workspace so
             # the agent cannot edit it and it never enters the computed delta.
             "-v",
@@ -278,18 +291,31 @@ class WorkcellController:
             )
 
     def exec(
-        self, argv: list[str], *, timeout_seconds: float | None = None
+        self,
+        argv: list[str],
+        *,
+        timeout_seconds: float | None = None,
+        stdin: str | None = None,
     ) -> WorkcellExecResult:
         """Run one command inside the persistent container.
 
         Never through a host shell: `argv` is passed as a list, and any shell
         the agent wants runs *inside* the workcell where it is contained.
+
+        `stdin` exists so that content -- a configuration document, a patch --
+        can be delivered without being quoted into an argv. Interpolating a
+        JSON document into a shell command is how a quotation mark inside it
+        becomes a parse failure attributed to something else entirely, which is
+        a mistake this codebase has already made once at a different layer.
         """
 
         effective = timeout_seconds or self.config.limits.command_timeout_seconds
         full = [
             self.config.runtime_executable,
             "exec",
+            # `-i` only when there is something to send: an interactive exec
+            # with nothing on stdin waits for a writer that never arrives.
+            *(["-i"] if stdin is not None else []),
             "--user",
             self.config.user,
             "-w",
@@ -301,6 +327,7 @@ class WorkcellController:
         try:
             completed = subprocess.run(
                 full,
+                input=stdin,
                 capture_output=True,
                 text=True,
                 encoding="utf-8",

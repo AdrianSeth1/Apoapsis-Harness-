@@ -38,7 +38,7 @@ from apoapsis.workcell.conformance import (
     ObservedToolCall,
     ObservedStopReason,
     check_declared_limits_match_server,
-    check_multiline_unicode_integrity,
+    check_envelope_integrity,
     check_parallel_tool_calls,
     check_replay_non_idempotence_guard,
     check_role_round_trip,
@@ -46,6 +46,11 @@ from apoapsis.workcell.conformance import (
     check_stop_reason_fidelity,
     check_thinking_block_handling,
     check_usage_accounting,
+)
+from apoapsis.workcell.echo_provider import ECHO_BEGIN, ECHO_END
+from apoapsis.workcell.transcription import (
+    TranscriptionFidelity,
+    measure_transcription_fidelity,
 )
 
 #: Output budget for every probe whose point is *not* to hit the output cap.
@@ -416,6 +421,8 @@ class LiveConformanceRunner:
         supports_parallel_tool_calls: bool = True,
         declared_cli_limits: DeclaredCliLimits | None = None,
         mutating_tool_runner: Callable[[ObservedToolCall], None] | None = None,
+        envelope_base_url: str | None = None,
+        captured_envelope_bytes: bytes | None = None,
     ) -> None:
         self.exec_fn = exec_fn
         self.base_url = base_url.rstrip("/")
@@ -425,6 +432,15 @@ class LiveConformanceRunner:
         self.supports_parallel_tool_calls = supports_parallel_tool_calls
         self.declared_cli_limits = declared_cli_limits
         self.mutating_tool_runner = mutating_tool_runner
+        #: Base URL of the second forwarder/relay pair whose upstream is the
+        #: deterministic echo provider. `None` makes the envelope check
+        #: `NOT_RUN` rather than letting it degrade into a model measurement.
+        self.envelope_base_url = (
+            envelope_base_url.rstrip("/") if envelope_base_url else None
+        )
+        #: The echo provider's verbatim record of the request it received. Set
+        #: by the session after the probe runs.
+        self.captured_envelope_bytes = captured_envelope_bytes
         #: Provider signals actually observed, one per provoked outcome.
         self.stop_signals: dict[ObservedStopReason, str] = {}
 
@@ -438,9 +454,10 @@ class LiveConformanceRunner:
         timeout_seconds: float = 300.0,
         pad_chars: int = 0,
         path: str = "/v1/chat/completions",
+        base_url: str | None = None,
     ) -> ProbeOutcome:
         argv = build_conformance_probe_argv(
-            url=f"{self.base_url}{path}",
+            url=f"{base_url or self.base_url}{path}",
             payload=json.dumps(payload),
             mode=mode,
             timeout_seconds=timeout_seconds,
@@ -582,6 +599,105 @@ class LiveConformanceRunner:
         )
 
     def run_multiline_unicode_integrity(self) -> CheckResult:
+        """Round-trip the payload through the real path and a fake model.
+
+        ADR 0078. The request goes through the in-container forwarder, the
+        controller-owned Unix socket, and a real `ModelRelay` -- the same three
+        hops the agent's requests take -- but the relay's upstream for this one
+        check is `DeterministicEchoProvider` rather than `llama-server`. The
+        model is the only thing removed, because the model is the only thing
+        the check was never trying to measure.
+
+        `envelope_base_url` is required and there is no fallback. An
+        unavailable echo path makes the check `NOT_RUN`, and `NOT_RUN` fails
+        the gate: the previous design's willingness to fall back on whatever
+        evidence was available is how it ended up reporting a model's quotation
+        marks as an adapter defect.
+        """
+
+        if self.envelope_base_url is None:
+            return CheckResult(
+                check=ConformanceCheck.MULTILINE_UNICODE_INTEGRITY,
+                status=ConformanceStatus.NOT_RUN,
+                detail=(
+                    "no deterministic echo path was configured, so envelope "
+                    "integrity was not exercised; a model-transcription "
+                    "substitute would measure the model instead"
+                ),
+            )
+        outcome = self._post(
+            {
+                "model": self.model_name,
+                "temperature": 0,
+                "stream": False,
+                "max_tokens": 16,
+                "tools": [WRITE_TOOL],
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": ECHO_BEGIN + UNICODE_PROBE_CONTENT + ECHO_END,
+                    }
+                ],
+            },
+            base_url=self.envelope_base_url,
+        )
+        if not outcome.ok:
+            return CheckResult(
+                check=ConformanceCheck.MULTILINE_UNICODE_INTEGRITY,
+                status=ConformanceStatus.FAILED,
+                detail=(
+                    f"the envelope round trip failed at the transport: HTTP "
+                    f"{outcome.status} {outcome.error or outcome.raw_body[:200]}"
+                ),
+            )
+        calls = observed_tool_calls(outcome.body or {})
+        if not calls or calls[0].arguments is None:
+            return CheckResult(
+                check=ConformanceCheck.MULTILINE_UNICODE_INTEGRITY,
+                status=ConformanceStatus.FAILED,
+                detail=(
+                    "the echoed tool call did not come back parseable, which "
+                    "with a deterministic provider can only be the envelope"
+                ),
+            )
+        received = calls[0].arguments.get("content")
+        received_bytes = (
+            received.encode("utf-8") if isinstance(received, str) else b""
+        )
+        # `captured_request_bytes` is filled by the session from the echo
+        # provider's own record of the request. When it is absent the check
+        # falls back to the payload constant, and says so: comparing against a
+        # constant proves the response half only.
+        sent_bytes = self.captured_envelope_bytes
+        if sent_bytes is None:
+            result = check_envelope_integrity(
+                sent_bytes=UNICODE_PROBE_CONTENT.encode("utf-8"),
+                received_bytes=received_bytes,
+            )
+            return result.model_copy(
+                update={
+                    "detail": (
+                        result.detail
+                        + " (compared against the probe constant: the echo "
+                        "provider's captured request bytes were not available "
+                        "to this runner, so the inbound half is unverified)"
+                    )
+                }
+            )
+        return check_envelope_integrity(
+            sent_bytes=sent_bytes, received_bytes=received_bytes
+        )
+
+    def run_transcription_fidelity(self) -> TranscriptionFidelity:
+        """Ask the real model to retype the payload. Reported, never gating.
+
+        This is the signal ADR 0078 removed from the conformance gate, kept
+        rather than deleted. It runs against `llama-server` and the real chat
+        template, so it also happens to be the only place the multiline payload
+        meets the template -- which the ADR records as an accepted narrowing of
+        gated coverage, not as an equivalent substitute.
+        """
+
         outcome = self._post(
             self._chat(
                 max_tokens=REASONING_HEADROOM_TOKENS * 2,
@@ -603,29 +719,19 @@ class LiveConformanceRunner:
             )
         )
         if not outcome.ok:
-            return CheckResult(
-                check=ConformanceCheck.MULTILINE_UNICODE_INTEGRITY,
-                status=ConformanceStatus.FAILED,
-                detail=(
-                    f"the content round-trip request failed at the transport: "
-                    f"HTTP {outcome.status} {outcome.error or outcome.raw_body[:200]}"
-                ),
+            return measure_transcription_fidelity(
+                sent=UNICODE_PROBE_CONTENT, received=None
             )
         self._note_stop(outcome)
         calls = observed_tool_calls(outcome.body or {})
         if not calls or calls[0].arguments is None:
-            return CheckResult(
-                check=ConformanceCheck.MULTILINE_UNICODE_INTEGRITY,
-                status=ConformanceStatus.INCONCLUSIVE,
-                detail=(
-                    "no parseable tool call came back, so the content never "
-                    "made a round trip through the tool envelope"
-                ),
+            return measure_transcription_fidelity(
+                sent=UNICODE_PROBE_CONTENT, received=None
             )
         received = calls[0].arguments.get("content")
-        return check_multiline_unicode_integrity(
+        return measure_transcription_fidelity(
             sent=UNICODE_PROBE_CONTENT,
-            received=received if isinstance(received, str) else "",
+            received=received if isinstance(received, str) else None,
         )
 
     def run_thinking_block_handling(self) -> CheckResult:

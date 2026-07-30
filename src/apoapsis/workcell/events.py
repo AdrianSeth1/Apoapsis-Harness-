@@ -57,10 +57,17 @@ _EVENT_TYPE_MAP: dict[str, WorkcellEventKind] = {
     "tool_result": WorkcellEventKind.TOOL_RESULT,
     "usage": WorkcellEventKind.USAGE,
     "compaction": WorkcellEventKind.COMPACTION,
+    # The CLI's session banner. It carries `session_id` and the tool list.
+    "system": WorkcellEventKind.SESSION_START,
     "session.end": WorkcellEventKind.SESSION_END,
     "result": WorkcellEventKind.SESSION_END,
     "error": WorkcellEventKind.ERROR,
 }
+
+#: Event types that carry their real content nested under `message.content`
+#: rather than at the top level. Handled before the flat map so the nested
+#: blocks reach the ordinary handlers; see `feed_event`.
+_ENVELOPE_EVENT_TYPES: frozenset[str] = frozenset({"assistant", "user"})
 
 #: The only signal the agent may send back to the controller. Its name is
 #: deliberately not "complete": ADR 0077 makes it a request for inspection.
@@ -158,6 +165,25 @@ class WorkcellEventAdapter:
 
     def feed_event(self, payload: dict) -> None:
         raw_type = str(payload.get("type", ""))
+
+        # The CLI does not emit one flat event per action. `assistant` and
+        # `user` events are *envelopes* carrying a `message.content` list, and
+        # the tool calls and tool results -- the only evidence any capability
+        # was exercised -- live inside that list as nested blocks.
+        #
+        # Slice 2C found this the expensive way. The adapter recognised
+        # `assistant`, `user`, and `result` at the top level, so it reported
+        # zero malformed lines and zero unrecognised types while silently
+        # counting zero tool calls across a 158-event session in which the
+        # agent had plainly used tools. The paired spike then read that empty
+        # trace as seven lost capabilities and returned CAPABILITY_REGRESSED.
+        # A parser that fails by finding nothing, without ever saying it found
+        # nothing, is worse than one that raises: unwrapping happens here so
+        # the nested blocks reach the same handlers as everything else.
+        if raw_type in _ENVELOPE_EVENT_TYPES:
+            self._feed_envelope(payload)
+            return
+
         kind = _EVENT_TYPE_MAP.get(raw_type)
         if kind is None:
             if raw_type not in self.trace.unrecognised_event_types:
@@ -174,6 +200,61 @@ class WorkcellEventAdapter:
         }.get(kind)
         if handler is not None:
             handler(payload)
+
+    def _feed_envelope(self, payload: dict) -> None:
+        """Dispatch the blocks nested inside an `assistant`/`user` envelope.
+
+        Usage is read from the envelope rather than from a separate event
+        because that is where the CLI puts it. It is fed through `_on_usage`
+        unchanged so that ceiling classification stays in one place.
+        """
+
+        message = payload.get("message")
+        if not isinstance(message, dict):
+            # An envelope with no message is a malformed line even though it
+            # parsed as JSON: the type promised content that is not there.
+            self.trace.malformed_lines += 1
+            return
+
+        usage = message.get("usage")
+        if isinstance(usage, dict):
+            self._on_usage(
+                _flatten_usage(usage, finish_reason=message.get("stop_reason"))
+            )
+
+        content = message.get("content")
+        if not isinstance(content, list):
+            return
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            block_type = str(block.get("type", ""))
+            if block_type == "tool_use":
+                self._on_tool_call(
+                    {
+                        "id": block.get("id"),
+                        "name": block.get("name"),
+                        # The CLI names the argument object `input`; the flat
+                        # schema called it `arguments`. Both are accepted so
+                        # the handler stays the single definition of a call.
+                        "arguments": block.get("input"),
+                    }
+                )
+            elif block_type == "tool_result":
+                content_text = block.get("content")
+                self._on_tool_result(
+                    {
+                        "id": block.get("tool_use_id"),
+                        "output": content_text
+                        if isinstance(content_text, str)
+                        else json.dumps(content_text, default=str),
+                        # `is_error` is the only failure signal in this schema;
+                        # there is no exit code on the block. Mapping it to a
+                        # synthetic exit code would invent a number the CLI
+                        # never reported, so `failed` is set directly instead.
+                        "is_error": bool(block.get("is_error")),
+                    }
+                )
 
     # -- handlers ---------------------------------------------------------
 
@@ -213,6 +294,11 @@ class WorkcellEventAdapter:
         if isinstance(exit_code, int):
             record.exit_code = exit_code
             record.failed = exit_code != 0
+        elif payload.get("is_error"):
+            # No exit code exists in the nested schema. `failed` is set without
+            # inventing an `exit_code`, because a fabricated 1 would be
+            # indistinguishable from one the tool actually reported.
+            record.failed = True
         pid = payload.get("background_pid") or payload.get("pid")
         if isinstance(pid, int):
             record.background_pid = pid
@@ -293,6 +379,25 @@ class WorkcellEventAdapter:
 
     def _on_session_end(self, payload: dict) -> None:
         self.trace.ended = True
+
+        # The CLI reports per-message usage as zeros and puts the session's
+        # real totals on this final event. They are adopted only when nothing
+        # else reported any, so a CLI that does populate per-message usage is
+        # never double-counted. `model_requests` is deliberately left alone:
+        # one summary event is not evidence of how many requests there were,
+        # and inferring a count here would be inventing one.
+        usage = payload.get("usage")
+        if isinstance(usage, dict) and not (
+            self.trace.input_tokens
+            or self.trace.output_tokens
+            or self.trace.cached_input_tokens
+        ):
+            flat = _flatten_usage(usage)
+            for field in ("input_tokens", "output_tokens", "cached_input_tokens"):
+                value = flat.get(field)
+                if isinstance(value, int) and value >= 0:
+                    setattr(self.trace, field, value)
+
         reason = payload.get("reason") or payload.get("stop_reason")
         if isinstance(reason, str) and reason:
             self.trace.end_reason = reason
@@ -327,6 +432,27 @@ class WorkcellEventAdapter:
             )
         self._open_calls.clear()
         return self.trace
+
+
+def _flatten_usage(usage: dict, *, finish_reason: object = None) -> dict:
+    """Lift a nested `usage` object into the flat shape `_on_usage` reads.
+
+    `cache_read_input_tokens` is the CLI's name for what the trace calls
+    `cached_input_tokens`. Both spellings are accepted rather than one being
+    canonicalised at the source, because the source is a vendored CLI whose
+    field names are not ours to normalise.
+    """
+
+    flat = {
+        "input_tokens": usage.get("input_tokens"),
+        "output_tokens": usage.get("output_tokens"),
+        "cached_input_tokens": usage.get("cached_input_tokens")
+        if usage.get("cached_input_tokens") is not None
+        else usage.get("cache_read_input_tokens"),
+    }
+    if finish_reason is not None:
+        flat["finish_reason"] = finish_reason
+    return flat
 
 
 def _as_int(value: object) -> int | None:

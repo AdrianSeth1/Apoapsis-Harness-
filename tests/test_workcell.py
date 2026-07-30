@@ -78,6 +78,7 @@ def _pin(**overrides) -> WorkcellPin:
             is_default_distribution=True,
             system_prompt_sha256=_SHA,
             tool_schema_sha256=_SHA,
+            effective_config_sha256=_SHA,
             tool_names=["glob", "read_file", "run_shell_command", "write_file"],
         ),
         "container": ContainerPin(
@@ -166,6 +167,7 @@ class PinTests(unittest.TestCase):
                     is_default_distribution=True,
                     system_prompt_sha256=_SHA,
                     tool_schema_sha256=_SHA,
+                    effective_config_sha256=_SHA,
                     tool_names=names,
                 )
 

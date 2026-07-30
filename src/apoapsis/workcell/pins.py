@@ -30,7 +30,11 @@ _IMAGE_DIGEST = r"^sha256:[0-9a-f]{64}$"
 
 #: Bumped whenever the set of pinned fields changes, so an old manifest can
 #: never be silently compared against a new one.
-PIN_SCHEMA_VERSION = "1.0"
+#:
+#: 1.1 adds `AgentCliPin.effective_config_sha256`. Every Slice 2B manifest
+#: digest is therefore invalid against a 2C one, which is correct: those runs
+#: had an unpinned configuration and are not comparable to runs that do not.
+PIN_SCHEMA_VERSION = "1.1"
 
 
 class ModelPin(StrictModel):
@@ -90,6 +94,14 @@ class AgentCliPin(StrictModel):
     #: the ordering is part of the identity.
     tool_schema_sha256: str = Field(pattern=_SHA256_HEX)
     tool_names: list[str] = Field(min_length=1)
+    #: Hash of the *effective* configuration the CLI resolved for itself --
+    #: settings files merged, environment applied, provider entry selected --
+    #: not of the file Apoapsis wrote. Slice 2B pinned the bundle and the
+    #: declared limits and still could not have detected an edited settings
+    #: file, which is the same shape of hole as the unrecorded seed commit that
+    #: made the Crisis Atlas arms incomparable. See
+    #: `pin_capture.EffectiveCliConfig`.
+    effective_config_sha256: str = Field(pattern=_SHA256_HEX)
     #: Line-delimited `stream-json` is the supported adapter input. Scraping
     #: terminal text is not a conformance-testable interface.
     headless_event_format: Literal["stream-json"] = "stream-json"
@@ -259,6 +271,19 @@ class EgressPolicy(StrictModel):
     #: Where the socket's *directory* appears inside the container. Only the
     #: dedicated directory is mounted, never a broad writable host path.
     socket_container_directory: str = Field(default="/run/apoapsis", min_length=1)
+    #: Host directory for the ADR 0078 envelope-check socket, mounted the same
+    #: way and subject to the same rule.
+    #:
+    #: A *second* directory rather than a second socket in the first one.
+    #: `prepare_socket_directory` requires each socket directory to contain
+    #: exactly its own socket, so that mounting it cannot become an unmediated
+    #: channel between the controller and the workcell. Sharing one directory
+    #: between two relays would have quietly weakened that, and the check
+    #: caught the attempt.
+    envelope_socket_host_directory: str | None = Field(default=None, min_length=1)
+    envelope_socket_container_directory: str = Field(
+        default="/run/apoapsis-envelope", min_length=1
+    )
     #: Loopback port the in-container forwarder listens on. Inside a
     #: `--network none` namespace this reaches nothing but the forwarder.
     loopback_port: int = Field(default=8080, ge=1, le=65_535)

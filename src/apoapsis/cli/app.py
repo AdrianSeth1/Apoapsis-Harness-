@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import sys
 import uuid
@@ -1286,6 +1287,23 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     conformance.add_argument(
+        "--cli-settings",
+        type=Path,
+        default=None,
+        help=(
+            "JSON settings file to install into the agent CLI's home inside "
+            "the workcell before anything is captured. This is where a "
+            "provider-specific generationConfig override lives; the file is "
+            "installed, and then what the CLI *resolved* from it is captured "
+            "and hashed, because the two are not the same object"
+        ),
+    )
+    conformance.add_argument(
+        "--cli-home",
+        default="/tmp/qwen-home",
+        help="the agent CLI's HOME inside the workcell image",
+    )
+    conformance.add_argument(
         "--skip-containment",
         action="store_true",
         help=(
@@ -1389,6 +1407,8 @@ def _dispatch(args: argparse.Namespace) -> dict[str, object] | None:
             cli_bundle_path=args.cli_bundle_path,
             server_max_output_tokens=args.server_max_output_tokens,
             skip_containment=args.skip_containment,
+            cli_settings_path=args.cli_settings,
+            cli_home=args.cli_home,
         )
     if args.command == "slice3-gate":
         return _slice3_gate_command(args.report)
@@ -3033,6 +3053,8 @@ def _workcell_conformance_command(
     cli_bundle_path: str,
     server_max_output_tokens: int,
     skip_containment: bool = False,
+    cli_settings_path: Path | None = None,
+    cli_home: str = "/tmp/qwen-home",
 ) -> dict[str, object]:
     """Run the ordered live gate and write every observation to disk.
 
@@ -3050,10 +3072,16 @@ def _workcell_conformance_command(
     from apoapsis.workcell.conformance_driver import DeclaredCliLimits
     from apoapsis.workcell.controller import load_workcell_config
     from apoapsis.workcell.live_session import LiveWorkcellSession, write_evidence
+    from apoapsis.workcell.relay_policy import RelayRejection
     from apoapsis.workcell.pin_capture import (
         PinCaptureError,
         cli_declared_limits_argv,
+        cli_effective_config_argv,
+        cli_export_discovery_argv,
+        extract_resolved_limits,
         parse_declared_limits,
+        parse_discovered_module,
+        parse_effective_config,
     )
 
     resolved = config_path.resolve()
@@ -3083,6 +3111,32 @@ def _workcell_conformance_command(
                 payload["stopped_at"] = "containment"
                 return payload
 
+        if cli_settings_path is not None:
+            # Installed before readiness and before any capture, because
+            # everything downstream is supposed to observe the configured CLI
+            # rather than the image's default one. Written through `exec` with
+            # the content passed on stdin: a mount would have had to exist at
+            # container creation, and shell-quoting a JSON document into an
+            # argv is how a stray quote becomes an unexplained parse failure.
+            settings_text = cli_settings_path.resolve().read_text(encoding="utf-8")
+            install = session.controller.exec(
+                [
+                    "sh",
+                    "-c",
+                    f'mkdir -p "{cli_home}/.qwen" && cat > "{cli_home}/.qwen/settings.json"',
+                ],
+                timeout_seconds=60.0,
+                stdin=settings_text,
+            )
+            payload["cli_settings_installed"] = install.exit_code == 0
+            payload["cli_settings_sha256"] = hashlib.sha256(
+                settings_text.encode("utf-8")
+            ).hexdigest()
+            if install.exit_code != 0:
+                payload["stopped_at"] = "cli_settings"
+                payload["cli_settings_error"] = install.stderr[:2000]
+                return payload
+
         started, stderr = session.start_forwarder()
         if started != 0:
             payload["stopped_at"] = "forwarder"
@@ -3096,9 +3150,81 @@ def _workcell_conformance_command(
             payload["stopped_at"] = "readiness"
             return payload
 
-        # Read from the CLI rather than accepted as an argument: an operator who
-        # can type this number can type the number that makes the check pass.
+        # Two captures, and the distinction between them is the whole Slice 2C
+        # finding.
+        #
+        # The *table* capture asks the CLI's bundled token-limit module what it
+        # believes about this model name. For `qwen3.6-27b` it answers
+        # 1,000,000 / 64,000, because a broad `qwen3.x` rule in that table
+        # matches a self-hosted model it was never written for. It still
+        # answers that after Slice 2C, and recording it is the point: the table
+        # was not patched.
+        #
+        # The *effective* capture asks the CLI's own resolver what the assembled
+        # configuration actually produces, which is what the CLI uses when it
+        # decides whether to compact. That is the number the check compares.
         declared: DeclaredCliLimits | None = None
+        modules: dict[str, str] = {}
+        effective_stderr = ""
+        exit_code: int | None = 0
+        for symbol in ("loadSettings", "resolveCliGenerationConfig"):
+            code, out, err = session.exec(
+                cli_export_discovery_argv(cli_bundle_path, symbol),
+                timeout_seconds=180.0,
+            )
+            if code != 0:
+                exit_code, effective_stderr = code, err
+                break
+            try:
+                modules[symbol] = parse_discovered_module(out, symbol=symbol)
+            except PinCaptureError as exc:
+                exit_code, effective_stderr = 3, str(exc)
+                break
+        if exit_code == 0:
+            exit_code, stdout, effective_stderr = session.exec(
+                cli_effective_config_argv(
+                    settings_module=modules["loadSettings"],
+                    resolve_module=modules["resolveCliGenerationConfig"],
+                    workspace="/workspace",
+                ),
+                timeout_seconds=180.0,
+            )
+        if exit_code == 0:
+            try:
+                effective = parse_effective_config(
+                    stdout,
+                    source=(
+                        "loadSettings + resolveCliGenerationConfig, executed "
+                        "inside the workcell image"
+                    ),
+                )
+                resolved_limits = extract_resolved_limits(effective)
+            except PinCaptureError as exc:
+                payload["effective_cli_config_error"] = str(exc)
+            else:
+                payload["effective_config_sha256"] = effective.effective_config_sha256
+                payload["resolved_cli_limits"] = resolved_limits.model_dump(mode="json")
+                write_evidence(evidence, "effective-cli-config.json", effective)
+                write_evidence(evidence, "resolved-cli-limits.json", resolved_limits)
+                declared = DeclaredCliLimits(
+                    context_limit_tokens=resolved_limits.context_window_size,
+                    max_output_tokens=resolved_limits.max_output_tokens,
+                    source=effective.source,
+                )
+                if (
+                    effective.effective_config_sha256
+                    != config.pin.agent_cli.effective_config_sha256
+                ):
+                    # A pin that disagrees with the configuration the CLI just
+                    # resolved is not a warning: it means the manifest identifies
+                    # a different experiment from the one that ran.
+                    payload["effective_config_pin_mismatch"] = {
+                        "pinned": config.pin.agent_cli.effective_config_sha256,
+                        "observed": effective.effective_config_sha256,
+                    }
+        else:
+            payload["effective_cli_config_error"] = effective_stderr[:2000]
+
         argv = cli_declared_limits_argv(cli_bundle_path, config.pin.model.model_name)
         exit_code, stdout, limits_stderr = session.exec(argv, timeout_seconds=120.0)
         if exit_code == 0:
@@ -3115,11 +3241,17 @@ def _workcell_conformance_command(
             else:
                 payload["declared_cli_limits"] = captured.model_dump(mode="json")
                 write_evidence(evidence, "declared-cli-limits.json", captured)
-                declared = DeclaredCliLimits(
-                    context_limit_tokens=captured.context_limit_tokens,
-                    max_output_tokens=captured.max_output_tokens,
-                    source=captured.source,
-                )
+                # Deliberately not assigned to `declared`. The table is recorded
+                # as evidence of what the unoverridden CLI would have believed;
+                # it is not what this run's CLI uses, and using it here would
+                # re-fail a check that the provider override has fixed.
+                if declared is None:
+                    payload["declared_cli_limits_note"] = (
+                        "the effective-configuration capture failed, so no "
+                        "resolved limits were available; the table values are "
+                        "recorded but are not a substitute and the check will "
+                        "report NOT_RUN"
+                    )
         else:
             payload["declared_cli_limits_error"] = limits_stderr[:2000]
 
@@ -3138,6 +3270,35 @@ def _workcell_conformance_command(
             "stop-signals.json",
             {reason.value: signal for reason, signal in runner.stop_signals.items()},
         )
+        # Measured whatever conformance said, and never consulted by it. This
+        # is the signal ADR 0078 moved off the gate; deleting it would have
+        # thrown away a real observation about the model, and gating on it is
+        # what produced the Slice 2B misattribution.
+        transcription = session.run_transcription_fidelity(runner)
+        payload["model_transcription_fidelity"] = transcription.model_dump(mode="json")
+        write_evidence(evidence, "model-transcription-fidelity.json", transcription)
+
+        # Deliverable 3, stated affirmatively. The relay sees every request by
+        # construction, so this is the one place that can say what was actually
+        # asked for rather than what a config file intended. `requests_observed`
+        # is reported alongside the peak because "nothing exceeded the cap" is
+        # vacuous if nothing carried a budget at all.
+        relay_stats = session.relay.stats
+        payload["outbound_output_budget"] = {
+            "relay_requests_total": relay_stats.total_requests,
+            "requests_carrying_a_budget": relay_stats.requests_with_output_budget,
+            "peak_output_budget_tokens": relay_stats.peak_output_budget_tokens,
+            "configured_cap_tokens": session.config.egress.relay.max_output_tokens,
+            "refused_above_cap": sum(
+                1
+                for record in relay_stats.records
+                if record.rejection == RelayRejection.OUTPUT_BUDGET_ABOVE_CAP
+            ),
+        }
+        write_evidence(
+            evidence, "outbound-output-budget.json", payload["outbound_output_budget"]
+        )
+
         if not report.conformant:
             payload["stopped_at"] = "conformance"
 

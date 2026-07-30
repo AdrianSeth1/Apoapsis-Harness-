@@ -224,6 +224,81 @@ def check_multiline_unicode_integrity(*, sent: str, received: str) -> CheckResul
     )
 
 
+def check_envelope_integrity(
+    *, sent_bytes: bytes, received_bytes: bytes
+) -> CheckResult:
+    """The byte-level form of `check_multiline_unicode_integrity`.
+
+    ADR 0078. The evidence is the payload as it was captured off the wire on
+    the way in, and the payload as it was parsed out of the response bytes on
+    the way back -- with a deterministic echo provider in between, so nothing
+    in the path is entitled to change it. That is what makes a difference here
+    attributable: under the previous design a difference could equally well
+    have been a model retyping a quotation mark, and in Slice 2B it was.
+
+    Bytes, not `str`, because two of the three named failure modes are
+    invisible after decoding. A UTF-8 payload re-read as Latin-1 and re-encoded
+    is a different byte string that compares equal to nothing useful once it
+    has been normalised into Python text, and a truncation that lands mid
+    code-point is a decode error rather than a shorter string.
+    """
+
+    if sent_bytes == received_bytes:
+        return CheckResult(
+            check=ConformanceCheck.MULTILINE_UNICODE_INTEGRITY,
+            status=ConformanceStatus.PASSED,
+            detail=(
+                f"{len(sent_bytes)} bytes round-tripped byte-for-byte through "
+                "the relay, the forwarder, and the tool-call envelope"
+            ),
+        )
+    if not received_bytes:
+        return CheckResult(
+            check=ConformanceCheck.MULTILINE_UNICODE_INTEGRITY,
+            status=ConformanceStatus.FAILED,
+            detail=(
+                f"{len(sent_bytes)} bytes were sent and nothing came back; the "
+                "envelope did not carry the content at all"
+            ),
+        )
+    if sent_bytes.startswith(received_bytes):
+        return CheckResult(
+            check=ConformanceCheck.MULTILINE_UNICODE_INTEGRITY,
+            status=ConformanceStatus.FAILED,
+            detail=(
+                f"content was truncated from {len(sent_bytes)} to "
+                f"{len(received_bytes)} bytes; a file tool would write a "
+                "partial file"
+            ),
+        )
+    # Below this point the difference is a substitution rather than a length
+    # change, so the specific corruptions are worth naming individually.
+    sent_text = sent_bytes.decode("utf-8", "replace")
+    received_text = received_bytes.decode("utf-8", "replace")
+    if "\\n" in received_text and "\\n" not in sent_text:
+        return CheckResult(
+            check=ConformanceCheck.MULTILINE_UNICODE_INTEGRITY,
+            status=ConformanceStatus.FAILED,
+            detail="newlines came back escaped as literal backslash-n",
+        )
+    if received_bytes == sent_text.encode("utf-8").decode("latin-1", "replace").encode(
+        "utf-8", "replace"
+    ):
+        return CheckResult(
+            check=ConformanceCheck.MULTILINE_UNICODE_INTEGRITY,
+            status=ConformanceStatus.FAILED,
+            detail="content was double-encoded (UTF-8 bytes read as Latin-1)",
+        )
+    return CheckResult(
+        check=ConformanceCheck.MULTILINE_UNICODE_INTEGRITY,
+        status=ConformanceStatus.FAILED,
+        detail=(
+            f"content changed in transit: sent {len(sent_bytes)} bytes, "
+            f"received {len(received_bytes)}"
+        ),
+    )
+
+
 def check_thinking_block_handling(
     *, supported: bool, stripped_once: str, stripped_twice: str
 ) -> CheckResult:

@@ -19,6 +19,7 @@ general-purpose tunnel to the model host.
 
 from __future__ import annotations
 
+import json
 from enum import StrEnum
 from urllib.parse import urlsplit
 
@@ -71,6 +72,24 @@ _UPSTREAM_STEERING_HEADERS: frozenset[str] = frozenset(
 )
 
 
+#: Every key an OpenAI-compatible client can use to ask for an output budget.
+#: `max_tokens` is the classic one; Qwen Code's own bundle carries
+#: `max_completion_tokens` and `max_new_tokens` in its
+#: `PROVIDER_OUTPUT_BUDGET_KEYS`, so a cap that only knew about `max_tokens`
+#: would be trivially bypassed by a provider preset the operator never read.
+OUTPUT_BUDGET_KEYS: tuple[str, ...] = (
+    "max_tokens",
+    "max_completion_tokens",
+    "max_new_tokens",
+)
+
+#: The only routes whose bodies are inspected at all. Narrow on purpose: see
+#: `classify_request_body` for why body inspection is kept this small.
+_OUTPUT_BUDGET_ROUTES: frozenset[str] = frozenset(
+    {"/v1/chat/completions", "/v1/completions"}
+)
+
+
 class RelayRejection(StrEnum):
     CONNECT_METHOD = "connect_method"
     ABSOLUTE_FORM_URI = "absolute_form_uri"
@@ -84,6 +103,8 @@ class RelayRejection(StrEnum):
     CROSS_ORIGIN_REDIRECT = "cross_origin_redirect"
     UPSTREAM_UNAVAILABLE = "upstream_unavailable"
     IDLE_TIMEOUT = "idle_timeout"
+    #: The request asked for more output tokens than the run is pinned to.
+    OUTPUT_BUDGET_ABOVE_CAP = "output_budget_above_cap"
 
 
 #: HTTP status the relay returns for each rejection. Deliberately not 200 with
@@ -101,6 +122,9 @@ _REJECTION_STATUS: dict[RelayRejection, int] = {
     RelayRejection.CROSS_ORIGIN_REDIRECT: 502,
     RelayRejection.UPSTREAM_UNAVAILABLE: 502,
     RelayRejection.IDLE_TIMEOUT: 504,
+    # 400, not 413: the body is not too large, it asks for something the run is
+    # not pinned to. A distinct status keeps the two apart in the audit trail.
+    RelayRejection.OUTPUT_BUDGET_ABOVE_CAP: 400,
 }
 
 
@@ -162,6 +186,13 @@ class ModelRelayConfig(StrictModel):
     upstream_timeout_seconds: float = Field(default=600.0, gt=0, le=3_600)
     #: Hard session budget, enforced at the socket.
     max_total_requests: int = Field(default=400, ge=1, le=10_000)
+    #: The run's pinned output ceiling, enforced on request bodies.
+    #:
+    #: `None` means no body is inspected at all, which is the pre-Slice-2C
+    #: behaviour and stays the default so that existing configurations do not
+    #: silently acquire a new refusal. A live run sets this to the same value
+    #: as `ModelPin.max_output_tokens`.
+    max_output_tokens: int | None = Field(default=None, ge=1, le=1_048_576)
 
     @model_validator(mode="after")
     def validate_upstream_is_origin_only(self) -> ModelRelayConfig:
@@ -299,6 +330,127 @@ def classify_request(
 
     upstream_path = path if not split.query else f"{path}?{split.query}"
     return RelayDecision(allowed=True, upstream_path=upstream_path)
+
+
+def classify_request_body(
+    *, upstream_path: str, body: bytes, config: ModelRelayConfig
+) -> RelayDecision:
+    """Refuse a request that asks for more output than the run is pinned to.
+
+    **Why the relay inspects a body at all.** Until Slice 2C the relay looked
+    only at methods, paths, and headers, and that was a deliberate simplicity:
+    a forwarder that does not parse payloads cannot be confused by one. The
+    Slice 2B failure is what changes the calculus. The CLI believed it had a
+    64,000-token output ceiling against a server serving 16,384, and the only
+    thing standing between that belief and a run full of silent truncations was
+    a JSON file nobody hashed. Configuration is a statement of intent; the
+    relay is the only component on the path that is actually a boundary. So the
+    boundary gets to enforce the number.
+
+    **Why it refuses rather than clamps.** Clamping is tempting because it
+    always "works", and that is the problem. A clamped request succeeds while
+    the client still believes it asked for 64,000 tokens, which reproduces the
+    exact defect one layer lower: two components disagreeing about the output
+    budget, with nothing failing. The disagreement would then surface as a
+    response that stopped early for no visible reason -- indistinguishable, in
+    the transcript, from a model that chose to stop. Refusing turns a silent
+    measurement error into a loud transport error that `conformance.py` can see
+    and an operator can fix at its source. This module already refuses rather
+    than sanitises everywhere the sanitised version would change meaning
+    (`CONNECT`, absolute-form URIs, traversal), and this is the same case.
+
+    **What it deliberately does not do.** It is not a schema validator and must
+    not become one. It reads three top-level integer keys on two routes and
+    ignores everything else. A body that is not JSON, is not an object, or
+    names no budget key is forwarded untouched: the upstream is entitled to
+    reject its own malformed input, and a relay that started adjudicating
+    payload shape would become a second, undocumented API surface. The
+    guarantee is therefore precise and bounded:
+
+    > No request carrying an explicit output budget above the cap crosses the
+    > relay.
+
+    A request that names no budget is governed by the server's own `-n` flag,
+    which is pinned separately. That is the honest limit of this check, and it
+    is why the check is defence in depth rather than the primary control.
+    """
+
+    cap = config.max_output_tokens
+    if cap is None:
+        return RelayDecision(allowed=True, upstream_path=upstream_path)
+
+    observed = observed_output_budget(upstream_path=upstream_path, body=body)
+    if observed is not None and observed.tokens > cap:
+        return _refuse(
+            RelayRejection.OUTPUT_BUDGET_ABOVE_CAP,
+            f"the request asked for {observed.tokens:,} output tokens via "
+            f"{observed.key!r}, above this run's pinned {cap:,}-token ceiling; "
+            "the relay refuses rather than clamping so the disagreement is "
+            "visible instead of becoming an unexplained early stop",
+        )
+    return RelayDecision(allowed=True, upstream_path=upstream_path)
+
+
+class ObservedOutputBudget(StrictModel):
+    """The largest explicit output budget a request carried, and which key
+    carried it.
+
+    Separated from the refusal decision because the two answer different
+    questions. `classify_request_body` answers "may this cross?", which is a
+    boundary control. This answers "what did the client actually ask for?",
+    which is *evidence* -- and Slice 2C needs it in the affirmative form. A run
+    that merely records "no request was refused" cannot distinguish a fleet of
+    well-behaved requests from a relay whose cap was never configured, and the
+    latter is exactly the silent-no-op failure the pins exist to catch.
+    """
+
+    #: The budget value observed on the wire.
+    tokens: int = Field(ge=0)
+    #: Which of `OUTPUT_BUDGET_KEYS` carried it, so a disagreement names the
+    #: field an operator has to go and change.
+    key: str = Field(min_length=1)
+
+
+def observed_output_budget(
+    *, upstream_path: str, body: bytes
+) -> ObservedOutputBudget | None:
+    """Read the explicit output budget off a request body, or `None`.
+
+    `None` means "this request named no budget", which is not the same as zero
+    and must not be recorded as zero: such a request is governed by the
+    server's own `-n` flag rather than by anything the client said. Callers
+    that summarise a run have to keep that distinction or they will report a
+    reassuring peak of 0 for traffic they never actually inspected.
+
+    The maximum across the recognised keys is returned rather than the first
+    match, because a body naming two budgets is bounded by the larger one.
+    """
+
+    if urlsplit(upstream_path).path not in _OUTPUT_BUDGET_ROUTES:
+        return None
+    if not body:
+        return None
+    try:
+        payload = json.loads(body)
+    except (ValueError, UnicodeDecodeError):
+        # Not our business: see `classify_request_body`. The upstream will
+        # reject it, and guessing at a budget here would invent evidence.
+        return None
+    if not isinstance(payload, dict):
+        return None
+
+    best: ObservedOutputBudget | None = None
+    for key in OUTPUT_BUDGET_KEYS:
+        value = payload.get(key)
+        # `bool` is an `int` in Python and `{"max_tokens": true}` is nonsense
+        # rather than a budget, so it is excluded rather than compared.
+        if not isinstance(value, int) or isinstance(value, bool):
+            continue
+        if value < 0:
+            continue
+        if best is None or value > best.tokens:
+            best = ObservedOutputBudget(tokens=value, key=key)
+    return best
 
 
 def classify_redirect(
