@@ -13,7 +13,7 @@
     "detail": "the candidate is admitted: 4 file(s), 39 changed line(s), no policy violations",
     "file_count": 4,
     "schema_version": "1.0",
-    "snapshot_path": "/tmp/tmpj0zokxan/snapshot",
+    "snapshot_path": "/tmp/tmpg1z9qlx5/snapshot",
     "violations": []
   },
   "behaviour_units": [
@@ -91,7 +91,7 @@
         "obligation_id": "incident-service",
         "status": "proved",
         "supporting_witnesses": [
-          "tests-3ee569be67e7"
+          "tests-96a0474cbb3b"
         ]
       },
       {
@@ -100,7 +100,7 @@
         "obligation_id": "export-service",
         "status": "proved",
         "supporting_witnesses": [
-          "tests-3ee569be67e7"
+          "tests-96a0474cbb3b"
         ]
       }
     ],
@@ -113,6 +113,6 @@
   "schema_version": "1.0",
   "slice_id": "SLICE-crisis-atlas-services",
   "witness_ids": [
-    "tests-3ee569be67e7"
+    "tests-96a0474cbb3b"
   ]
 }

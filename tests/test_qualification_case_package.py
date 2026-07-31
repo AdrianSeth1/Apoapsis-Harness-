@@ -458,6 +458,57 @@ class RepetitionTests(_PackageCase):
             validate_repetitions(resolve_case_package(self.root))
         self.assertIn("exactly 3", str(caught.exception))
 
+    def test_the_package_does_not_claim_seeds_reach_the_provider(self) -> None:
+        payload = json.loads(
+            (self.root / "repetitions.json").read_text(encoding="utf-8")
+        )
+        determinism = payload["sampling_determinism"]
+        self.assertFalse(determinism["seed_reaches_provider_request"])
+        self.assertIsNone(determinism["declared_sampling_seed"])
+        self.assertEqual(determinism["model_sampling"], "stochastic")
+        self.assertEqual(
+            determinism["comparability_policy"], "paired_within_repetition_only"
+        )
+        self.assertEqual(len(determinism["audited_paths"]), 3)
+        for item in payload["repetitions"]:
+            self.assertNotIn("sampling_seed", item)
+
+    def test_seed_terminology_is_refused_without_proven_propagation(self) -> None:
+        """A session id is not a sampling seed.
+
+        Nothing in the provider payload, the server argv or Qwen's resolved
+        `samplingParams` carries a seed, so a package using the word would be
+        claiming a determinism control that does not exist.
+        """
+
+        def mutate(payload):
+            for item in payload["repetitions"]:
+                item["sampling_seed"] = item.pop("repetition_ordinal")
+
+        self._rewrite(mutate)
+        with self.assertRaises(CasePackageError) as caught:
+            validate_repetitions(resolve_case_package(self.root))
+        self.assertIn("sampling_seed", str(caught.exception))
+
+    def test_seed_terminology_is_allowed_once_propagation_is_proven(self) -> None:
+        def mutate(payload):
+            payload["sampling_determinism"]["seed_reaches_provider_request"] = True
+            payload["sampling_determinism"]["provider_request_field"] = "body.seed"
+            for item in payload["repetitions"]:
+                item["sampling_seed"] = item.pop("repetition_ordinal")
+
+        self._rewrite(mutate)
+        validate_repetitions(resolve_case_package(self.root))
+
+    def test_claiming_propagation_without_naming_the_field_is_refused(self) -> None:
+        def mutate(payload):
+            payload["sampling_determinism"]["seed_reaches_provider_request"] = True
+
+        self._rewrite(mutate)
+        with self.assertRaises(CasePackageError) as caught:
+            validate_repetitions(resolve_case_package(self.root))
+        self.assertIn("names no request field", str(caught.exception))
+
     def test_a_repetition_may_not_carry_a_controlled_variable(self) -> None:
         self._rewrite(
             lambda payload: payload["repetitions"][2].update(

@@ -13,7 +13,7 @@
     "detail": "the candidate is admitted: 3 file(s), 29 changed line(s), no policy violations",
     "file_count": 3,
     "schema_version": "1.0",
-    "snapshot_path": "/tmp/tmppmmmm5ks/snapshot",
+    "snapshot_path": "/tmp/tmp9uhdxdqt/snapshot",
     "violations": []
   },
   "behaviour_units": [
@@ -127,6 +127,6 @@
   "schema_version": "1.0",
   "slice_id": "SLICE-crisis-atlas-services",
   "witness_ids": [
-    "tests-ee0dfb36943d"
+    "tests-b9f02554280f"
   ]
 }

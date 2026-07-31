@@ -546,7 +546,31 @@ The remaining path, in order:
    qualification work and would mean editing tests to suit a runner; it is
    recorded here so the next person does not re-diagnose it.
 
-   **Still to do (Slice 7P.2):** capture model/server/Qwen/workcell identities
+   **Slice 7P.2 froze the pilot.** Manifest
+   `docs/qualification/slice7-crisis-atlas-pilot-manifest.json` (digest
+   `0f4b0fd5…`) and a separate lock, in two commits so the lock can name the
+   manifest's commit without containing it. Three findings changed what may be
+   claimed: no declared sampling seed reaches any provider request, so the
+   repetitions are **repetition identities** and sampling is **stochastic**
+   with comparison **paired-within-repetition only**; the 17,920-byte
+   `llama-server` is a launcher, so the dependency closure now hashes
+   `libllama-server-impl.so` and `libggml-cuda` rather than pretending the
+   launcher digest identifies the arithmetic; and image ids are not provenance,
+   so the controller is rebuilt from `ad13cf0` via a committed `git archive`
+   context with the source commit labelled into the image. Temperature is
+   recorded `null`, never `0.0` — the resolved config carries none. The package
+   was re-issued and **re-qualified** (digest `d7c4b195…`, all eight real
+   proofs pass). `ready_for_inference()` is true, which means complete, not
+   authorised.
+
+   **Next action is the zero-token orchestration rehearsal**, and nothing
+   before it. The lock authorises that rehearsal and explicitly does not
+   authorise live inference. Known gaps to close at live preflight: the Qwen
+   workcell image has no provenance labels (`provenance_proven: false`), and
+   the realised tool surface must be reobserved because Slice 2C once found an
+   image exposing 57 tools with no `write_file` at all.
+
+   **Superseded, for reference (Slice 7P.2):** capture model/server/Qwen/workcell identities
    without inference; author the separate Crisis Atlas pilot manifest; bind the
    three paired executions; resolve every controlled variable; write the
    immutable pilot lock. `PackageProbe.run_checkpoint` now has a real

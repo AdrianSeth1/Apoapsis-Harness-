@@ -1,6 +1,6 @@
 """One reproducible runtime profile. Not a tuning framework.
 
-The handoff lists eleven server knobs worth benchmarking — GPU offload, thread
+The handoff lists eleven server knobs worth benchmarking â€” GPU offload, thread
 counts, batch sizes, Flash Attention, KV-cache precision, slot counts, prompt
 cache, memory locking, speculative decoding. Each is a real lever and the list
 is a research programme. Running it would answer a question nobody is currently
@@ -25,6 +25,7 @@ reason, so a later session finds a decision rather than an oversight.
 from __future__ import annotations
 
 from enum import Enum
+from typing import Literal
 
 from pydantic import Field
 
@@ -52,6 +53,15 @@ class OptimisationDecision(StrictModel):
     rationale: str = Field(min_length=1)
 
 
+#: 1.1 replaces `sampling_seed` with `repetition_identity` and makes
+#: `temperature` nullable. 1.0 recorded `sampling_seed=0` and
+#: `temperature=0.0`; neither was ever observed in the resolved configuration,
+#: and both would let a later record claim determinism nothing enforces. A
+#: profile recorded under 1.0 is preserved and marked superseded rather than
+#: rewritten.
+PROFILE_SCHEMA_VERSION = "1.1"
+
+
 class RuntimeProfile(StrictModel):
     """The pinned runtime configuration for a comparable run.
 
@@ -68,8 +78,21 @@ class RuntimeProfile(StrictModel):
     server_version: str = Field(min_length=1)
     context_limit_tokens: int = Field(ge=1)
     max_output_tokens: int = Field(ge=1)
-    temperature: float = Field(ge=0)
-    sampling_seed: int
+    schema_version: str = PROFILE_SCHEMA_VERSION
+    #: `None` means the resolved configuration carried no temperature and the
+    #: provider default applied. Schema 1.0 wrote 0.0 here, which stated a
+    #: setting nobody made: the CLI's resolved `samplingParams` is
+    #: `{"max_tokens": 16384}` and contains no temperature at all.
+    temperature: float | None = Field(default=None, ge=0)
+    temperature_state: Literal["unset_provider_default", "explicit"] = (
+        "unset_provider_default"
+    )
+    #: Was `sampling_seed`. Renamed because nothing transmits it: the provider
+    #: payload has no seed field, the `llama-server` argv has no `--seed`, and
+    #: the resolved generation config contains no seed key. Calling it a seed
+    #: let a repetition label look like a determinism control.
+    repetition_identity: int = Field(ge=0)
+    sampling_seed_transmitted: bool = False
     cli_name: str = Field(min_length=1)
     cli_version: str = Field(min_length=1)
     #: Reasoning disabled, as both Crisis Atlas arms ran. Enabling it is a
@@ -95,8 +118,14 @@ QUALIFIED_PROFILE = RuntimeProfile(
     server_version="b10107-c0bc8591e",
     context_limit_tokens=65_536,
     max_output_tokens=16_384,
-    temperature=0.0,
-    sampling_seed=0,
+    # Superseded from schema 1.0, which recorded `temperature=0.0` and
+    # `sampling_seed=0`. Neither appears in the CLI's resolved configuration;
+    # both were this module's assumptions rather than observations, and are
+    # corrected here rather than carried forward into pilot evidence.
+    temperature=None,
+    temperature_state="unset_provider_default",
+    repetition_identity=0,
+    sampling_seed_transmitted=False,
     cli_name="@qwen-code/qwen-code",
     cli_version="0.21.1",
     reasoning_enabled=False,

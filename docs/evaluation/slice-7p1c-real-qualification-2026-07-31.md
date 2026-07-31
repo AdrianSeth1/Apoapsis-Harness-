@@ -98,6 +98,18 @@ holding the full `CheckpointRecord` and the derived observation.
 `registerable: True`, package digest
 `993e7a5610f09f0ee5aedf7bd1d35580cb8c169840ab0ecbc6b55e9c102514e8`.
 
+> **Digest amended, 7P.2.** The package was re-issued when the sampling-seed
+> audit found that no declared seed reaches any provider request, so
+> `repetitions.json` renames `sampling_seed` to `repetition_identity` and adds
+> the audit. That changes the package bytes, and therefore its digest, to
+> **`d7c4b195ef505975c90f21892a17f633dce6d943dc4224ef3fd01010aef25d22`**. The
+> eight proofs were **re-run in full against the re-issued package** and all
+> eight pass again; the committed evidence under `slice-7p1c-evidence/` is
+> regenerated from that run and digests to
+> `d6c67ce643977c938c9486069100f2b3d02f12c8e49b1c983ae65176f6da52fa`. Every
+> finding below is unchanged — the candidate fingerprints are identical,
+> because `repetitions.json` is not part of any candidate tree.
+
 ### Proof 3, measured rather than asserted
 
 The seed's own suite exits 0 and its coverage names **no** service path. The

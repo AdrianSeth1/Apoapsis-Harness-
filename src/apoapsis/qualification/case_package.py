@@ -391,13 +391,38 @@ def validate_repetitions(package: ResolvedCasePackage) -> None:
             "could vary the seed tree, task, contract, criteria, commands, "
             "difficulty or budgets without any of it being visible"
         )
-    controlled = {"sampling_seed", "session_identity", "repetition_id"}
+    controlled = {"repetition_ordinal", "session_identity", "repetition_id"}
+    determinism = payload.get("sampling_determinism", {})
+    propagates = bool(determinism.get("seed_reaches_provider_request"))
+    if propagates:
+        # Only a package that has *proved* propagation may use the word, and
+        # then it must name the request field carrying it.
+        if not determinism.get("provider_request_field"):
+            raise CasePackageError(
+                "sampling_determinism claims the seed reaches the provider "
+                "request but names no request field carrying it"
+            )
+        controlled.add("sampling_seed")
+
     for item in repetitions:
         extra = set(item) - controlled
         if extra:
             raise CasePackageError(
                 f"repetition {item.get('repetition_id')!r} carries "
-                f"{sorted(extra)}, which is not sampling or session identity"
+                f"{sorted(extra)}, which is not a repetition or session "
+                "identity"
+            )
+        if "sampling_seed" in item and not propagates:
+            # A session id is not a sampling seed. The audited paths -- the
+            # provider payload, the server argv and Qwen's resolved
+            # samplingParams -- carry no seed, so a package using the term
+            # would be claiming a determinism control that does not exist.
+            raise CasePackageError(
+                f"repetition {item['repetition_id']!r} declares a "
+                "'sampling_seed', but the package has not proved that any "
+                "seed reaches a provider request. Rename it to a repetition "
+                "or session identity, or prove propagation and name the "
+                "request field."
             )
 
 
