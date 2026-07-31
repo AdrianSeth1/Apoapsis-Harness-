@@ -803,6 +803,11 @@ criteria only when their pass genuinely proves the criterion.
   `docs/evaluation/adr-0077-paired-scorer-and-frozen-arms-2026-07-30.md`
 - Slice 2 Capability Sandbox workcell (deterministic implementation record):
   `docs/evaluation/slice-2-workcell-conformance-spike-2026-07-30.md`
+- Slice 5C live Option B qualification -- compaction observed, continuation
+  verified, cache measured at 2,173 tokens:
+  `docs/evaluation/slice-5c-live-qualification-2026-07-30.md`
+- Slice 5C native session interface probe (no inference):
+  `docs/evaluation/slice5c-native-session-probe-2026-07-30.md`
 - Slice 5B session coordinator and the three corrections of authority
   (deterministic only; two of seven exit criteria unmet, both live):
   `docs/evaluation/slice-5b-session-coordinator-2026-07-30.md`
@@ -1523,6 +1528,23 @@ between native invocations, injecting a bounded handoff capsule via
 `qwen --resume <id> -p`. `compaction.py` is capsule construction and threshold
 simulation, not the live history manager, and the claim that its 0.70 default
 "matched Qwen Code" was false — that setting is REMOVED in 0.21.1.
+
+**Qualified live on 2026-07-30**, one run through the controller-owned relay:
+containment 22/22 with 0 breaches and 0 unproven; the workcell could not
+resolve the upstream at all; every model turn crossed the relay. `--resume`
+**preserves the execution profile** (`yolo`, 26 tools, no computer-use or
+tool-search surface), which had only been shown for a fresh `-p`. Three native
+compaction events were observed as the CLI's own events, and the dependent
+edit after compaction is verified by the controller running the tests rather
+than by the model's report. The stable-prefix cache benefit is **measured at
+2,173 tokens** for that workload (19,742 -> 21,915 cached input at a constant
+22,431 input tokens; the perturbed arm never moved).
+
+Three things stay open and are carried into the diagnostics stage: the
+resolved `context.autoCompactThreshold` was never read back, so
+`resolved_from_cli` is `False`; one perturbed call made an unexplained
+53,397-token second internal call; and 2,173 tokens is one workload on one
+server, not a general saving.
 
 Compaction and the token ceilings read **provider-reported usage only**. The
 controller's estimate is retained for diagnosis and barred from both gates,

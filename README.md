@@ -1434,9 +1434,15 @@ controller produced a new evidence artifact. A debugging turn that edits nothing
 and produces a new diagnosis counts. What the model says about its own turn does
 not.
 
-**No live session has run through this yet.** Whether a real model continues
-working from the capsule after compaction, and whether the stable prefix
-actually earns cache hits, are both unmeasured.
+This was qualified live on 2026-07-30. Qwen compacted its own history three
+times, and the work continued across the boundary: a function written after
+compaction, built on one written before it, with the tests run by the harness
+rather than reported by the model. A byte-identical prompt prefix earned
+**2,173 additional cached input tokens** from the second call onward, where a
+prefix perturbed by one early value earned none.
+
+That number is one workload, at one prefix size, on one local server. It shows
+the mechanism works and is observable here; it is not a general saving.
 
 ## Local Power Sandbox (ADR 0059, experimental)
 

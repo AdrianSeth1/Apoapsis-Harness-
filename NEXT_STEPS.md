@@ -236,12 +236,58 @@ Follow
    cannot rescue stops rather than summarising.
    `TurnResult.observation` is not yet routed through `bound_observation`. See
    `docs/evaluation/slice-5b-session-coordinator-2026-07-30.md`;
-7. benchmark safe LSP feedback, adaptive verification, task-routed reasoning,
+
+7. **Done and QUALIFIED LIVE (handoff slice 5C, ADR 0081 superseding 0080).**
+   The probe of the pinned 0.21.1 settled who owns context: Qwen does.
+   `qwen --resume <id> -p` restores conversation history, tool outputs and
+   chat-compression checkpoints, so Apoapsis injects a bounded handoff capsule
+   between native invocations instead of managing the model's history.
+   `NativeContextPin` pins `context.autoCompactThreshold` (0.85) and
+   `maxRecentFilesToRetain` (5) rather than reimplementing Qwen's ladder, and
+   `compaction.py` is now capsule construction and simulation, not the live
+   history manager. The claim that its 0.70 default "matched Qwen Code" was
+   false and is corrected everywhere: that setting is REMOVED in 0.21.1 and
+   silently ignored.
+
+   **Live, 2026-07-30, one run through the controller-owned relay**
+   (`tools/slice5c/`, provenance in
+   `.apoapsis-eval/slice5c-2026-07-30/provenance.json`): containment 22/22 with
+   0 breaches and 0 unproven; the workcell could not resolve the upstream at
+   all (`socket.gaierror`, no DNS in the netns); relay readiness ready with 3
+   observed requests, and every model turn produced non-zero relay traffic.
+   **`--resume` preserves the execution profile** -- `permission_mode=yolo`,
+   26 tools, no `computer_use__*`, no tool-search surface -- which had only
+   ever been established for a fresh `-p`.
+
+   **Three native compaction events were observed**, as the CLI's own events
+   rather than inferred from token counts. **The dependent edit after
+   compaction is verified:** `multiply` written against the `subtract` added
+   before compaction, both asserted, and the tests run by the controller rather
+   than believed from the model's report. **The cache benefit is measured at
+   2,173 tokens** for this workload: the stable arm's cached input rose
+   19,742 -> 21,915 -> 21,915 at a constant 22,431 input tokens while the
+   perturbed arm stayed flat at 19,742. This is the first efficiency number in
+   the programme that is a measurement rather than an abstention.
+
+   **Outstanding, and none of it cosmetic.** `context.autoCompactThreshold` was
+   never read back from resolved CLI settings, so
+   `NativeContextPin.resolved_from_cli` is `False` and 0.85 remains this
+   model's default rather than an observed value. One perturbed call shows an
+   unexplained 53,397-token second internal call against 33,431 elsewhere; it
+   does not touch the measured first-message comparison and is not accounted
+   for. And 2,173 tokens is one workload at one prefix size on one server --
+   it shows the mechanism works and is observable here, **not a general
+   saving**. See `docs/evaluation/slice-5c-live-qualification-2026-07-30.md`;
+
+8. benchmark safe LSP feedback, adaptive verification, task-routed reasoning,
    read-only parallelism, and the local `llama-server` profile without lowering
-   any paired quality result;
-8. make local, genuinely stronger frontier, and human repairs authoritative
+   any paired quality result. **Carry two open Slice 5C items into this
+   stage's telemetry work:** capture the resolved native context settings so
+   `NativeContextPin.resolved_from_cli` can become `True`, and account for the
+   53,397-token second internal call;
+9. make local, genuinely stronger frontier, and human repairs authoritative
    plan checkpoints; and
-9. run paired qualification plus architectural negative controls before any
+10. run paired qualification plus architectural negative controls before any
    default changes.
 
 The release rule is per-case, not merely an average: every task passed by
