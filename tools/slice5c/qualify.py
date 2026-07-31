@@ -184,7 +184,12 @@ def stage_1_containment(session: LiveWorkcellSession, digest: str) -> dict:
         )
     report = evaluate_containment(observations, workcell_manifest_digest=digest)
     write("stage1-containment.json", report.model_dump(mode="json"))
-    return {"passed": report.passed, "detail": report.detail}
+    return {
+        "passed": report.contained,
+        "breaches": report.breaches,
+        "unproven": report.unproven,
+        "detail": report.detail,
+    }
 
 
 def stage_1b_no_direct_upstream(session: LiveWorkcellSession) -> dict:
@@ -275,6 +280,7 @@ def main() -> int:
         write("stage1d-relay-readiness.json", readiness.model_dump(mode="json"))
         summary["stages"]["1d_relay_readiness"] = {
             "ready": readiness.ready,
+            "relay_requests_observed": readiness.relay_requests_observed,
             "detail": readiness.detail,
         }
         if not readiness.ready:
