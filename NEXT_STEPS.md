@@ -563,12 +563,39 @@ The remaining path, in order:
    proofs pass). `ready_for_inference()` is true, which means complete, not
    authorised.
 
-   **Next action is the zero-token orchestration rehearsal**, and nothing
-   before it. The lock authorises that rehearsal and explicitly does not
-   authorise live inference. Known gaps to close at live preflight: the Qwen
-   workcell image has no provenance labels (`provenance_proven: false`), and
-   the realised tool surface must be reobserved because Slice 2C once found an
-   image exposing 57 tools with no `write_file` at all.
+   **Slice 7P.3 attempted the rehearsal and stopped at the first gate.**
+   Verdict `NOT_MEASURABLE`; live preflight is **not** authorized and nothing
+   was executed. Stage 0 verified: every locked digest recomputes. Gate 1
+   failed twice. **(A)** The manifest and lock bind no executable runner — the
+   six-slot scheduler, scripted fake provider, arm-slot driver and verdict
+   model are absent from both locked commits, and writing them to rehearse
+   under this lock is exactly what the gate forbids. **(B)** The lock does not
+   bind its own validator: `qualification/pilot.py` arrived in `a5a30d2` but
+   the lock names `evaluator_framework_commit = 22cd8af`, where that file does
+   not exist. Nothing caught it because every test imports the module from the
+   working tree.
+
+   **Next action is a superseding manifest and lock, not a rehearsal.** In
+   order: author the runner as reviewable source; add runner identity to the
+   manifest schema so verdict-deciding executables sit inside the artifact
+   authorising them; correct `evaluator_framework_commit` and add a validator
+   refusing a lock whose evaluator commit lacks `pilot.py`; re-run the eight
+   real package proofs and the pilot suite; re-lock in two commits; then
+   rehearse from the beginning. Leave `a5a30d2`/`6eb267d` intact as the
+   superseded pair.
+
+   Two regression tests hold the line meanwhile: the evaluator-commit check is
+   `expectedFailure`, so it stays visible in every run and starts passing by
+   itself when fixed, and a second test asserts the runner is *currently
+   unbound* so a future binding cannot land unnoticed.
+
+   Still open for live preflight whenever it is reached: the Qwen workcell
+   image has no provenance labels (`provenance_proven: false`); the realised
+   tool surface must be reobserved because Slice 2C once found an image
+   exposing 57 tools with no `write_file`; and `test_workcell_relay`'s
+   dropped-stream intermittent (4 pass / 1 fail over five repeats, at both
+   `918bc82` and the 7P.2 tree) sits on the egress path both arms depend on and
+   must be diagnosed before any live run.
 
    **Superseded, for reference (Slice 7P.2):** capture model/server/Qwen/workcell identities
    without inference; author the separate Crisis Atlas pilot manifest; bind the

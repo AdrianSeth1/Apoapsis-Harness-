@@ -481,6 +481,78 @@ class LockGateTests(unittest.TestCase):
             self.assertNotEqual(self.lock.manifest_commit, head)
 
 
+class ExecutableProvenanceTests(unittest.TestCase):
+    """The lock must bind the code that decides whether the lock is valid.
+
+    Slice 7P.3's gate found that it did not: `pilot.py` defines `PilotLock`,
+    `authorize_rehearsal` and the stop conditions, and was introduced in the
+    manifest commit, while the lock named an *earlier* evaluator commit that
+    does not contain it. Nothing noticed, because every test imports the module
+    from the working tree where it is present and never asks which commit it
+    came from.
+    """
+
+    def setUp(self) -> None:
+        self.lock = load_lock()
+        if self.lock is None:
+            self.skipTest("no lock yet")
+        if not (REPO / ".git").exists():
+            self.skipTest("not a git checkout")
+
+    def _contains(self, commit: str, path: str) -> bool:
+        return (
+            subprocess.run(  # noqa: S603
+                ["git", "cat-file", "-e", f"{commit}:{path}"],
+                cwd=REPO,
+                capture_output=True,
+                check=False,
+            ).returncode
+            == 0
+        )
+
+    @unittest.expectedFailure
+    def test_the_evaluator_commit_contains_the_lock_schema_module(self) -> None:
+        """Known defect in lock `6eb267d`; remediation needs a superseding lock.
+
+        Marked expected-failure rather than deleted or weakened, so the gap
+        stays visible in every run and the test starts passing by itself once
+        `evaluator_framework_commit` names a commit containing `pilot.py`.
+        """
+
+        self.assertTrue(
+            self._contains(
+                self.lock.evaluator_framework_commit,
+                "src/apoapsis/qualification/pilot.py",
+            ),
+            "the lock names an evaluator commit that does not contain the "
+            "module defining PilotLock and authorize_rehearsal",
+        )
+
+    def test_no_rehearsal_runner_is_bound_by_the_current_lock(self) -> None:
+        """Records the state that blocks 7P.3, and will fail when it changes.
+
+        This asserts the *absence* deliberately. When a superseding lock binds
+        a runner, this test fails and must be rewritten to assert the binding —
+        which is the point: the change should not be able to pass unnoticed.
+        """
+
+        fields = set(self.lock.model_dump(mode="json"))
+        runner_fields = {
+            name
+            for name in fields
+            if any(
+                key in name
+                for key in ("runner", "script", "orchestrat", "driver")
+            )
+        }
+        self.assertEqual(
+            runner_fields,
+            set(),
+            "a runner is now bound; update this test to assert the binding "
+            "and re-enable the 7P.3 rehearsal",
+        )
+
+
 class ExecutionRecordTests(unittest.TestCase):
     def setUp(self) -> None:
         self.manifest = load_manifest()
