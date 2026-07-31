@@ -176,9 +176,9 @@ def stage_1_containment(session: LiveWorkcellSession) -> dict:
     """Containment before anything is spent. Zero model tokens."""
     observations = []
     for probe in DEFAULT_CONTAINMENT_PROBES:
-        code, stdout, stderr = session.exec(
-            ["sh", "-c", probe.command], timeout_seconds=45.0
-        )
+        # `argv`, not a shell string: probes are executed directly so a
+        # shell cannot reinterpret them into something else.
+        code, stdout, stderr = session.exec(probe.argv, timeout_seconds=45.0)
         observations.append(
             classify_probe(probe, exit_code=code, stdout=stdout, stderr=stderr)
         )
@@ -266,6 +266,18 @@ def main() -> int:
 
         code, stderr = session.start_forwarder()
         summary["stages"]["1c_forwarder"] = {"exit_code": code, "stderr": stderr[-500:]}
+
+        from apoapsis.workcell.controller import check_relay_readiness
+
+        readiness = check_relay_readiness(session.controller)
+        write("stage1d-relay-readiness.json", readiness.model_dump(mode="json"))
+        summary["stages"]["1d_relay_readiness"] = {
+            "ready": readiness.ready,
+            "detail": readiness.detail,
+        }
+        if not readiness.ready:
+            write("summary.json", summary | {"verdict": "RELAY_NOT_READY"})
+            return 7
 
         # CLI settings: the pinned yolo coding profile, pointed at the loopback
         # forwarder rather than at any upstream the workcell could name.
