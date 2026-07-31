@@ -1,4 +1,14 @@
-"""Compact before the cliff, in two tiers, and spill what is dropped.
+"""Build the handoff capsule under a size bound, and simulate compaction.
+
+**This module is not the live history manager.** It was written as one, and
+the Option C probe of the pinned CLI settled that it cannot be: Qwen Code owns
+its own conversation history and compacts it itself, at
+`context.autoCompactThreshold`. Apoapsis speaks only between native
+invocations. So what lives here is (a) the bounded selection of what goes into
+a session-handoff capsule, and (b) a simulation of threshold behaviour used to
+reason about, and test against, recorded runs. Nothing here decides when the
+model's real context is compacted.
+
 
 The Crisis Atlas unrestricted control died at the ceiling. Its README write
 ended with prompt 64,409 + completion 1,127 = exactly the 65,536-token window;
@@ -7,9 +17,9 @@ evaluator, not the agent, started a fresh continuation. Slice 2D's own
 near-boundary run reached 58,038 tokens — **88.6% of the window** — and still
 fired no compaction event.
 
-So the rule is *proactive*: compaction starts at a measured fraction of the
-window, well before the hard ceiling, because compaction that begins at the
-ceiling has no room left to work in.
+So the rule is *proactive*: selection starts at a measured fraction of the
+window, well before the hard ceiling. Under Option B this governs the capsule,
+and the native threshold governs the model.
 
 Two tiers, cheapest first:
 
@@ -20,10 +30,22 @@ Two tiers, cheapest first:
    It costs a model call and it summarises, which means it can lose things —
    so it is the fallback, not the default.
 
-The threshold itself is a **configurable experiment point, not a constant**.
-Qwen Code's own default is 0.70 and the handoff is explicit that this is a
-first experiment point rather than an Apoapsis truth; 60/70/80 are to be
-compared on the benchmark corpus.
+The threshold is a **configurable experiment point, not a constant**, and its
+provenance was previously stated wrongly here. Earlier versions of this file,
+the README, and ADR 0080 all said 0.70 "matches Qwen Code's default". It does
+not. The setting that carried a percentage threshold,
+`model.chatCompression.contextPercentageThreshold`, is marked **REMOVED** in
+0.21.1 and "silently ignored (no startup warning)". The live setting is
+`context.autoCompactThreshold`, **default 0.85**, and it is not flat: the
+bundled docs describe a three-tier warn/auto/hard ladder computed from the
+window by `computeThresholds()`, which fires earlier on small windows.
+
+0.70 is therefore an Apoapsis choice with no upstream backing. It is kept as
+the *capsule* trigger, deliberately below the native threshold so a capsule is
+ready before the model's own compaction fires -- which is a reason, unlike the
+one it had. The native value is pinned separately in `pins.NativeContextPin`
+rather than reimplemented, because duplicating a ladder we do not control is
+how the two drift apart silently.
 
 Truncation is always visible and always reversible. Nothing is dropped without
 an artifact pointer the model can follow, because the alternative — silently
@@ -41,8 +63,10 @@ from pydantic import Field, model_validator
 
 from apoapsis.specification.schema import StrictModel
 
-#: Qwen Code's own auto-compaction default. Recorded as the starting point for
-#: the 60/70/80 comparison the handoff asks for, not as a settled value.
+#: Apoapsis's *capsule* trigger. NOT Qwen's compaction default -- that is
+#: `NativeContextPin.auto_compact_threshold`, 0.85 for 0.21.1. Set below the
+#: native threshold on purpose: the handoff capsule should exist before the
+#: model's own compaction fires, not after it.
 DEFAULT_COMPACTION_THRESHOLD = 0.70
 
 #: Below this the window is too small for two-tier compaction to help; the

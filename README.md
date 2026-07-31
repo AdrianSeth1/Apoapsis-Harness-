@@ -1388,14 +1388,23 @@ The task kernel **refuses** to contain a timestamp, a UUID, or a request id:
 those change between otherwise identical calls, and the resulting cost is
 invisible because the run still works and every answer is still correct.
 
-Compaction is proactive and two-tier. It begins at a configurable fraction of
-the context window (default 0.70, matching Qwen Code and treated as a first
-experiment point rather than a fixed truth), drops old reasoning and spills old
-tool output to retrievable artifacts, and only asks for semantic summarisation
-if that was not enough. The state capsule — outstanding obligations, interface
-ledger, changed paths, witnesses already observed, latest failures, refused and
-no-progress actions — is never compacted away, and the model's own notes in it
-are rendered as advisory.
+**Qwen manages its own conversation history, and Apoapsis does not.** The
+pinned CLI compacts at `context.autoCompactThreshold` — resolved default 0.85,
+a ceiling on an internal warn/auto/hard ladder that fires earlier on small
+windows — and restores the five most recently touched files afterwards. Both
+values are pinned so a comparison cannot silently span two different upstream
+behaviours, and neither is reimplemented.
+
+What Apoapsis builds is a bounded **session-handoff capsule**, injected as a
+user turn between native invocations. Its own 0.70 trigger is deliberately
+below the native threshold so the capsule exists before the model's compaction
+fires. Earlier documentation here said 0.70 "matched Qwen Code" — that was
+wrong: the setting it matched is REMOVED in this version and silently ignored.
+
+The capsule — outstanding obligations, interface ledger, changed paths,
+witnesses already observed, latest failures, refused and no-progress actions —
+carries no transcript, and the model's own notes in it are rendered as
+advisory.
 
 Nothing is dropped irreversibly. Truncation keeps the head and the tail, names
 the artifact holding the rest, and is refused outright if there is nowhere to

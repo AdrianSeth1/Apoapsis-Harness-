@@ -164,6 +164,41 @@ class RelayPin(StrictModel):
         return self
 
 
+class NativeContextPin(StrictModel):
+    """Qwen's own context settings, pinned because we delegate to them.
+
+    Under Option B the native loop manages the live conversation, so these are
+    not Apoapsis policy -- they are *upstream behaviour a comparison depends
+    on*. Pinning them means a run recorded against 0.85 is never silently
+    compared with one recorded against something else.
+
+    They are pinned rather than reimplemented. `context.autoCompactThreshold`
+    is documented as a ceiling on a three-tier warn/auto/hard ladder computed
+    internally by `computeThresholds()`, firing earlier on small windows.
+    Duplicating that ladder would give Apoapsis a second, subtly different
+    model of when compaction happens, and the two would diverge without anyone
+    noticing -- which is the failure mode this whole slice keeps rediscovering.
+    """
+
+    #: `context.autoCompactThreshold`. 0.85 is the resolved default for the
+    #: pinned 0.21.1. The value the run actually used must be captured from
+    #: resolved settings, never assumed from this default.
+    auto_compact_threshold: float = Field(default=0.85, gt=0.0, le=1.0)
+    #: `model.chatCompression.maxRecentFilesToRetain`. Pinned because it
+    #: materially decides post-compaction continuity: it is how many
+    #: recently-touched files Qwen restores into history after compacting, and
+    #: therefore how much of the working set survives without the capsule
+    #: having to carry it.
+    max_recent_files_to_retain: int = Field(default=5, ge=0, le=100)
+    #: `model.chatCompression.maxRecentImagesToRetain`. Irrelevant to a coding
+    #: run with computer-use disabled, pinned so that stays true on purpose.
+    max_recent_images_to_retain: int = Field(default=3, ge=0, le=100)
+    #: Whether these were read back from the CLI's resolved settings or are
+    #: still this model's defaults. A run recorded on assumed values is not
+    #: evidence about the run's actual behaviour.
+    resolved_from_cli: bool = False
+
+
 class WorkcellPin(StrictModel):
     """The complete, required identity of one workcell run."""
 
@@ -172,6 +207,8 @@ class WorkcellPin(StrictModel):
     agent_cli: AgentCliPin
     container: ContainerPin
     relay: RelayPin
+    #: Qwen's own context management settings, which Option B delegates to.
+    native_context: NativeContextPin = Field(default_factory=NativeContextPin)
     #: Commit the disposable clone was made from.
     seed_commit: str = Field(pattern=r"^[0-9a-f]{40}$")
     #: Hash of the read-only task artifact mounted outside the project tree.

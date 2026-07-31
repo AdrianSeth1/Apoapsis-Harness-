@@ -1515,6 +1515,15 @@ rendered once, written, hashed, and read back for every call, and
 `KernelDriftError` names an edit rather than absorbing it. A fixed upstream
 UUID in an objective is legitimate and no longer refused.
 
+Option B (ADR 0081) settles who owns context: **Qwen does.** The pinned CLI
+compacts at `context.autoCompactThreshold` (resolved default 0.85, an internal
+warn/auto/hard ladder) and restores `maxRecentFilesToRetain` files afterwards;
+both are pinned in `NativeContextPin`, not reimplemented. Apoapsis speaks
+between native invocations, injecting a bounded handoff capsule via
+`qwen --resume <id> -p`. `compaction.py` is capsule construction and threshold
+simulation, not the live history manager, and the claim that its 0.70 default
+"matched Qwen Code" was false — that setting is REMOVED in 0.21.1.
+
 Compaction and the token ceilings read **provider-reported usage only**. The
 controller's estimate is retained for diagnosis and barred from both gates,
 because an estimate reading high compacts a session that did not need it and an

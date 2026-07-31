@@ -48,7 +48,13 @@ TRUNCATING_FINISH_REASONS: frozenset[str] = frozenset(
 )
 
 #: Fraction of the server context window at which compaction should begin.
-#: Qwen Code's own default auto-compaction threshold is 0.70; the handoff is
+#: Apoapsis's pressure-reporting threshold. An earlier comment here claimed
+#: 0.70 was "Qwen Code's own default auto-compaction threshold". That is false
+#: for the pinned 0.21.1, whose `context.autoCompactThreshold` defaults to 0.85
+#: with an adaptive ladder; the 0.70-era setting is REMOVED and silently
+#: ignored. This value reports *pressure*, which is a different job from
+#: triggering compaction, so it is left where it is -- with an honest label.
+#: The handoff is
 #: explicit that this is a first experiment point, not an Apoapsis constant.
 DEFAULT_CONTEXT_PRESSURE_THRESHOLD = 0.70
 
