@@ -575,7 +575,22 @@ The remaining path, in order:
    not exist. Nothing caught it because every test imports the module from the
    working tree.
 
-   **Next action is a superseding manifest and lock, not a rehearsal.** In
+   **Slice 7P.2S did that supersession.** Commits `b30079a` (R, executables
+   and race fixes), `e4b82f5` (M, manifest v2 `91bc99d6…`) and this commit
+   (L, lock v2 `032afa70…`). The runner exists and thirteen modules are bound
+   by committed bytes; `authority.py` reads Git objects and never imports what
+   it checks. Five intermittents were fixed at two root causes — worker
+   lifecycle (a product defect: no way to stop a daemon worker) and relay
+   observation (a test defect plus the missing `wait_for_records` affordance)
+   — each now 50/50 consecutive on canonical ext4. Package evidence was
+   **regenerated, not reused**: `case_package.py` changed in 7P.2, so all
+   eight real proofs were re-run and the evidence digest is `236e650f…`.
+   Canonical suite: **1,874 tests, zero failures.**
+
+   **Next action is 7P.3 again, from Stage 0, under lock v2.** Nothing before
+   it. If that passes, the action after is the real six-arm model session.
+
+   **Superseded, for reference — the 7P.3 remediation list.** In
    order: author the runner as reviewable source; add runner identity to the
    manifest schema so verdict-deciding executables sit inside the artifact
    authorising them; correct `evaluator_framework_commit` and add a validator

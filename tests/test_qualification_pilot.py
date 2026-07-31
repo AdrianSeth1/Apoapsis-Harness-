@@ -588,13 +588,15 @@ class ExecutableProvenanceTests(unittest.TestCase):
             == 0
         )
 
-    @unittest.expectedFailure
     def test_the_evaluator_commit_contains_the_lock_schema_module(self) -> None:
-        """Known defect in lock `6eb267d`; remediation needs a superseding lock.
+        """Was `expectedFailure` under lock `6eb267d`, and is not any more.
 
-        Marked expected-failure rather than deleted or weakened, so the gap
-        stays visible in every run and the test starts passing by itself once
-        `evaluator_framework_commit` names a commit containing `pilot.py`.
+        7P.3 marked this expected-failure rather than deleting or weakening it,
+        precisely so it would start passing by itself once the binding was
+        corrected. Under the v2 lock it does: `evaluator_framework_commit` now
+        names a commit that contains `pilot.py`. The marker is removed rather
+        than left in place, because a passing test under `expectedFailure` is
+        an *unexpected success* -- a failure with a friendlier name.
         """
 
         self.assertTrue(
@@ -606,29 +608,76 @@ class ExecutableProvenanceTests(unittest.TestCase):
             "module defining PilotLock and authorize_rehearsal",
         )
 
-    def test_no_rehearsal_runner_is_bound_by_the_current_lock(self) -> None:
-        """Records the state that blocks 7P.3, and will fail when it changes.
+    def test_a_rehearsal_runner_is_now_bound_by_committed_bytes(self) -> None:
+        """The rewrite the 7P.3 placeholder asked for.
 
-        This asserts the *absence* deliberately. When a superseding lock binds
-        a runner, this test fails and must be rewritten to assert the binding —
-        which is the point: the change should not be able to pass unnoticed.
+        That test asserted the runner was *absent*, so it would fail the moment
+        a binding appeared and force this rewrite. Note it inspected the lock,
+        where the authority does not live; had it stayed, it would have kept
+        passing vacuously after the binding landed. Asserting an absence is
+        only safe when it is checked where the presence would actually be.
         """
 
-        fields = set(self.lock.model_dump(mode="json"))
-        runner_fields = {
-            name
-            for name in fields
-            if any(
-                key in name
-                for key in ("runner", "script", "orchestrat", "driver")
-            )
-        }
-        self.assertEqual(
-            runner_fields,
-            set(),
-            "a runner is now bound; update this test to assert the binding "
-            "and re-enable the 7P.3 rehearsal",
+        from apoapsis.qualification.authority import BoundModule, verify_authority
+
+        manifest = load_manifest()
+        authority = manifest.pilot_authority
+        self.assertIsNotNone(authority, "no pilot authority is bound")
+        declared = tuple(
+            BoundModule(path=item["path"], sha256=item["sha256"])
+            for item in authority.bound_modules
         )
+        paths = {item.path for item in declared}
+        self.assertIn("src/apoapsis/qualification/rehearsal.py", paths)
+        self.assertIn("src/apoapsis/qualification/fake_pilot_provider.py", paths)
+
+        result = verify_authority(
+            authority.authority_commit, declared, repo=REPO
+        )
+        self.assertTrue(result.satisfied, [f.detail for f in result.findings])
+
+    def test_changing_one_runner_byte_invalidates_the_authority(self) -> None:
+        from apoapsis.qualification.authority import BoundModule, verify_authority
+
+        authority = load_manifest().pilot_authority
+        assert authority is not None
+        tampered = tuple(
+            BoundModule(
+                path=item["path"],
+                sha256=("0" * 64 if "rehearsal.py" in item["path"] else item["sha256"]),
+            )
+            for item in authority.bound_modules
+        )
+        result = verify_authority(
+            authority.authority_commit, tampered, repo=REPO
+        )
+        self.assertFalse(result.satisfied)
+        self.assertIn(
+            "src/apoapsis/qualification/rehearsal.py",
+            {item.path for item in result.findings},
+        )
+
+    def test_changing_the_fake_provider_script_invalidates_authorization(self) -> None:
+        from apoapsis.qualification.fake_pilot_provider import (
+            SCRIPTS,
+            ScriptId,
+            script_digest,
+        )
+
+        authority = load_manifest().pilot_authority
+        assert authority is not None
+        self.assertEqual(authority.fake_provider_script_sha256, script_digest())
+
+        original = SCRIPTS[ScriptId.INCOMPLETE_PROPOSAL]
+        SCRIPTS[ScriptId.INCOMPLETE_PROPOSAL] = (
+            original[0].model_copy(update={"finish_reason": "length"}),
+        )
+        try:
+            self.assertNotEqual(
+                authority.fake_provider_script_sha256, script_digest()
+            )
+        finally:
+            SCRIPTS[ScriptId.INCOMPLETE_PROPOSAL] = original
 
 
 class ExecutionRecordTests(unittest.TestCase):

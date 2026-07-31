@@ -1280,6 +1280,17 @@ reports `unrun` for want of an optional dependency, and the witness records
 `collection_method` accordingly. Nothing opens a socket; the environment is
 scrubbed of proxy variables and runs with `PYTHONDONTWRITEBYTECODE=1`.
 
+**Authority is read from Git objects, never the working tree.**
+`qualification/authority.py` answers "does this commit contain these exact
+bytes" with `git cat-file`, and imports nothing it checks. That distinction is
+not academic: a pilot lock once named an evaluator commit that did not contain
+the module defining the lock itself, and every test passed because every test
+imported that module from the checkout. A manifest binds each verdict-deciding
+executable by the digest of its committed bytes, and
+`package_authority_modules_unchanged` compares blobs to decide whether existing
+qualification evidence may be reused — comparing commits would be too strict,
+comparing behaviour too weak.
+
 Under real qualification the shipped package passes all eight proofs and is
 registerable. Raw evidence — the full `CheckpointRecord` per checkpoint, the
 inherited-suite result and its coverage artifact — is persisted outside the
