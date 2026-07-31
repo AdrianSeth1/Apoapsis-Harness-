@@ -1325,7 +1325,64 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         help="JSON file containing a CapabilitySpikeReport",
     )
+
+    rehearse = subparsers.add_parser(
+        "rehearse-pilot",
+        help=(
+            "execute the locked Crisis Atlas pilot rehearsal end to end "
+            "against a scripted provider; no model is contacted"
+        ),
+    )
+    rehearse.add_argument("--manifest", type=Path, required=True)
+    rehearse.add_argument("--lock", type=Path, required=True)
+    rehearse.add_argument("--evidence-root", type=Path, required=True)
+    rehearse.add_argument(
+        "--seed-repository",
+        type=Path,
+        default=None,
+        help="Crisis Atlas seed; defaults to the in-repository evaluation fixture",
+    )
+    rehearse.add_argument(
+        "--relay-iterations",
+        type=int,
+        default=20,
+        help="consecutive relay readiness iterations required by stage 3",
+    )
     return parser
+
+
+def _rehearse_pilot_command(args) -> str:
+    """A shell around `run_rehearsal`, and nothing more.
+
+    Deliberately thin. Any decision made here would be a decision made outside
+    the module the manifest binds, which is exactly the gap that made lock v2
+    bind ingredients rather than a runner.
+    """
+
+    from apoapsis.qualification.runner import run_rehearsal
+
+    report = run_rehearsal(
+        args.manifest,
+        args.lock,
+        args.evidence_root,
+        seed_repository=args.seed_repository,
+        relay_iterations=args.relay_iterations,
+    )
+    lines = [
+        f"verdict:        {report.verdict}",
+        f"reason:         {report.reason}",
+        f"arm slots:      {len(report.arm_slots)}",
+        f"controls:       {len(report.negative_controls)}",
+        f"relay stress:   {report.relay_stress_iterations} iterations, "
+        f"passed={report.relay_stress_passed}",
+        f"evidence root:  {report.evidence_root}",
+        f"evidence digest:{report.evidence_digest}",
+        f"report digest:  {report.digest()}",
+        f"live inference: {report.authorises_live_inference}",
+    ]
+    for stage in report.stages:
+        lines.append(f"  {stage.outcome.value.upper():<13} {stage.stage}")
+    return "\n".join(lines)
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -1412,6 +1469,12 @@ def _dispatch(args: argparse.Namespace) -> dict[str, object] | None:
         )
     if args.command == "slice3-gate":
         return _slice3_gate_command(args.report)
+    # Deliberately before the task store is opened. The rehearsal runs against
+    # frozen artifacts and a scripted provider; it needs no project database,
+    # and requiring one would couple the bound entry point to state the
+    # rehearsal does not use.
+    if args.command == "rehearse-pilot":
+        return _rehearse_pilot_command(args)
     if args.command == "eval-paired":
         return _score_paired_corpus_command(
             root, args.records, args.output_dir, args.candidate_arm
