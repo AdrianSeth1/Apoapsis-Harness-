@@ -456,7 +456,26 @@ The remaining path, in order:
    excludes `manifest_commit` so committing the artifact cannot change it.
    **`ready_for_inference()` is false: 8 controlled-variable hashes still carry
    capture placeholders** and Phase 2 must refuse to start until they are taken
-   live. No inference has been run and `llama-server` has not been started;
+   live. No inference has been run and `llama-server` has not been started.
+
+   **Phase 1B is BLOCKED at the corpus seeds, and no manifest is authorized.**
+   Only **1 of 8** required corpus kinds has a real seed repository (Crisis
+   Atlas, at `.apoapsis-eval/slice-e-crisis-atlas-seed-2026-07-29`). Focus
+   Orbit, cross-file refactor, launch/operability, misleading inherited suite
+   and the held-out repository **do not exist**; `examples/download-service{,-v2}`
+   are plausible candidates for small-backend-change and test-repair but are not
+   declared seeds. **3 of 24 pairs have a concrete seed identity.** The draft
+   manifest's per-case hashes are `sha256("slice7::<case-id>::...")` — hashes of
+   labels — so resolving the eight placeholders alone would yield a manifest
+   reporting `ready_for_inference() == true` that still cannot seed a run. The
+   model GGUF and `llama-server` binary were located and are hashable, but were
+   deliberately **not** captured, because finalization is atomic and a
+   four-of-eight commit produces a third digest that is neither authorized nor
+   the baseline. Unblocking is real engineering, not hashing: author seven seed
+   repositories with tasks that exercise the capability each case name claims,
+   then their task/criteria/command artifacts, then the canonical structured
+   mount/verification/argv/repair objects. See
+   `docs/evaluation/slice-7-phase-1b-blocked-2026-07-30.md`;
 4. rollout and fallback **only if** non-inferiority passes.
 
 **Run the full deterministic suite on Python 3.11+ once, before qualification —
