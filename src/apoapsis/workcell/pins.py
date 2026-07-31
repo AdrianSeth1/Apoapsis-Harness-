@@ -23,6 +23,9 @@ from typing import Literal
 from pydantic import Field, model_validator
 
 from apoapsis.specification.schema import StrictModel
+# `pin_capture` imports `pins` only inside a function, so this direction is
+# safe; the ladder is defined next to the capture that measures it.
+from apoapsis.workcell.pin_capture import ResolvedThresholdLadder
 from apoapsis.workcell.relay_policy import ModelRelayConfig
 
 _SHA256_HEX = r"^[0-9a-f]{64}$"
@@ -34,7 +37,12 @@ _IMAGE_DIGEST = r"^sha256:[0-9a-f]{64}$"
 #: 1.1 adds `AgentCliPin.effective_config_sha256`. Every Slice 2B manifest
 #: digest is therefore invalid against a 2C one, which is correct: those runs
 #: had an unpinned configuration and are not comparable to runs that do not.
-PIN_SCHEMA_VERSION = "1.1"
+#:
+#: 1.2 adds `WorkcellPin.threshold_ladder`. A run recorded before it cannot be
+#: compared against one recorded after, and that is the honest outcome: the
+#: earlier runs did not know the window they compacted at, and their pinned
+#: 0.85 described a percentage rather than a trigger.
+PIN_SCHEMA_VERSION = "1.2"
 
 
 class ModelPin(StrictModel):
@@ -180,9 +188,19 @@ class NativeContextPin(StrictModel):
     noticing -- which is the failure mode this whole slice keeps rediscovering.
     """
 
-    #: `context.autoCompactThreshold`. 0.85 is the resolved default for the
-    #: pinned 0.21.1. The value the run actually used must be captured from
-    #: resolved settings, never assumed from this default.
+    #: `context.autoCompactThreshold` as a *percentage*, and nothing more.
+    #:
+    #: 0.85 is genuinely the pinned build's `DEFAULT_PCT`, measured by executing
+    #: its own `computeThresholds`. It is nevertheless **not the trigger**, and
+    #: an earlier revision of this comment claiming it was "the resolved
+    #: default" invited exactly the misuse that followed: `computeThresholds`
+    #: returns `min(pct * window, effectiveWindow - AUTOCOMPACT_BUFFER)`, and at
+    #: the pinned 65,536-token window the ceiling governs. The real trigger is
+    #: 32,536 -- 49.65% of the window -- while `pct * window` is 55,706.
+    #:
+    #: Anything predicting when compaction fires must use
+    #: `WorkcellPin.threshold_ladder`, not this field. It is retained because
+    #: the configured percentage is still part of the run's identity.
     auto_compact_threshold: float = Field(default=0.85, gt=0.0, le=1.0)
     #: `model.chatCompression.maxRecentFilesToRetain`. Pinned because it
     #: materially decides post-compaction continuity: it is how many
@@ -209,6 +227,16 @@ class WorkcellPin(StrictModel):
     relay: RelayPin
     #: Qwen's own context management settings, which Option B delegates to.
     native_context: NativeContextPin = Field(default_factory=NativeContextPin)
+    #: The compaction ladder the pinned CLI's own `computeThresholds` returns
+    #: for this window, executed rather than reimplemented.
+    #:
+    #: Optional because a manifest written before the ladder was measurable is
+    #: still a valid record of its run. It is **not** optional at the point of
+    #: use: a consumer that needs a trigger must refuse to synthesise one from
+    #: `native_context.auto_compact_threshold`, because that product is the
+    #: proportional term alone and overstated the real trigger by 1.71x for the
+    #: whole of Slice 5C.
+    threshold_ladder: "ResolvedThresholdLadder | None" = None
     #: Commit the disposable clone was made from.
     seed_commit: str = Field(pattern=r"^[0-9a-f]{40}$")
     #: Hash of the read-only task artifact mounted outside the project tree.

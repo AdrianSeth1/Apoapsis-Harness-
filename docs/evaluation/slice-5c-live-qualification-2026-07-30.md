@@ -91,14 +91,55 @@ max across all messages and landed on a later call — 27,535 → 29,708 — who
 delta was also 2,173 by coincidence. Same answer, wrong quantity; the record
 measures the first provider message and says so.
 
+## Withdrawn on 2026-07-30 by Slice 5A task 4
+
+**Withdrawn: that this run watched the correct predicted compaction trigger.**
+Stage 5 computed its target as `auto_compact_threshold * limit` = 0.85 x 65,536
+= 55,706. Executing the pinned CLI's own exported `computeThresholds` shows it
+returns `min(pct * window, effectiveWindow - AUTOCOMPACT_BUFFER)`, and at this
+window the ceiling governs: the real trigger is **32,536 tokens, 49.65% of the
+window**. The prediction was 1.71x too high. See ADR 0082 and
+`docs/evaluation/slice-5a-telemetry-and-resolved-settings-2026-07-30.md`.
+
+**Not withdrawn — the context-safety result stands entire.** Compaction was
+observed as the CLI's own events, three times, never inferred from a token
+count; the post-compaction dependent edit was verified by the controller
+running the tests rather than believed from the model's report. Neither claim
+ever depended on the predicted trigger. It is precisely because the result
+rested on observed events that a wrong prediction did not invalidate it — and
+precisely why the prediction went unchallenged: the real threshold fires
+*earlier* than the predicted one, so compaction happened sooner than stage 5
+expected rather than not at all.
+
+The efficiency result is likewise unaffected: 2,173 tokens was measured on the
+first exposed provider message and has nothing to do with the threshold.
+
+## Corrected on 2026-07-30: the 53,397 figure
+
+An earlier revision of this section described "an anomalous 53,397-token second
+internal call". **There was no second call.** 53,397 is the `result` event —
+the CLI's own session aggregate. The invocation exposed exactly one
+usage-bearing `assistant` message, at 22,433. The unexplained quantity is a
+**30,964-token unattributed residual** (451 output, 6,745 cached).
+
+The same residual is present in all six stage-7 invocations, grouped at ~10,997
+input tokens in five of them, so it is structural: the CLI spends roughly a
+third of each invocation's input on provider traffic it emits no envelope for.
+Only this invocation's residual deviates, at 2.82x the cohort median, with
+*lower* cached tokens despite far more input. No cause is inferred; the event
+stream does not contain one. Status: **persisted and terminally unexplained.**
+
+The evidence is retained at
+`.apoapsis-eval/slice5c-2026-07-30/evidence/`, copied from the Docker Desktop
+VM disk.
+
 ## Still outstanding
 
 - `context.autoCompactThreshold` was **not** read back from resolved CLI
-  settings, so `NativeContextPin.resolved_from_cli` is `False` and 0.85 remains
-  this model's default rather than an observed value.
-- One perturbed call shows an anomalous 53,397-token second internal call
-  against 33,431 elsewhere. It does not touch the measured first-message
-  comparison, and it is unexplained.
+  settings, so `NativeContextPin.resolved_from_cli` is `False`. The capture has
+  since been run: all fields resolve to unset, because the installed settings
+  write no `context` block and the bundle exports no default-threshold symbol.
+  0.85 is confirmed as `DEFAULT_PCT` but is a percentage, **not** the trigger.
 - The 2,173-token benefit is one workload at one prefix size on one server. It
   establishes that the mechanism works and is observable here; it does not
   establish a general saving.

@@ -44,6 +44,7 @@ from apoapsis.workcell.admission import (
 )
 from apoapsis.workcell.behaviour import BehaviourUnit, changed_behaviour
 from apoapsis.workcell.delta import CandidateDelta, compute_delta
+from apoapsis.workcell.diagnostics import DiagnosticReport
 from apoapsis.workcell.witness import StructuredWitness
 
 #: Emits the witnesses for one checkpoint. Given the admitted snapshot and the
@@ -66,6 +67,12 @@ class CheckpointRecord(StrictModel):
     behaviour_units: list[BehaviourUnit] = Field(default_factory=list)
     witness_ids: list[str] = Field(default_factory=list)
     emitter_error: str | None = None
+    #: Advisory diagnostics observed at this checkpoint, recorded for the audit
+    #: trail and **never consulted**. `evaluate_checkpoint` is called with
+    #: `(admitted, detail, readiness)` and cannot see this field; it is set
+    #: after the decision is made, which is enforced by ordering below and
+    #: asserted by a test. See `workcell/diagnostics.py` and ADR 0083.
+    diagnostics: DiagnosticReport | None = None
 
 
 def run_checkpoint(
@@ -78,6 +85,7 @@ def run_checkpoint(
     base_commit: str | None = None,
     policy: AdmissionPolicy | None = None,
     slice2_spike=None,
+    collect_diagnostics: Callable[[Path, str], DiagnosticReport] | None = None,
 ) -> CheckpointRecord:
     """Run one checkpoint end to end and return what it concluded.
 
@@ -144,6 +152,21 @@ def run_checkpoint(
             ),
         )
 
+    # Deliberately after `decision`. Diagnostics are advisory evidence for the
+    # audit trail and for the agent's next turn; collecting them here makes it
+    # structurally impossible for them to have influenced the outcome above,
+    # and a failed collection is recorded as NOT_CHECKED rather than skipped.
+    diagnostics: DiagnosticReport | None = None
+    if collect_diagnostics is not None:
+        try:
+            diagnostics = collect_diagnostics(snapshot, delta.candidate_fingerprint)
+        except Exception as exc:  # noqa: BLE001
+            from apoapsis.workcell.diagnostics import not_checked
+
+            diagnostics = not_checked(
+                "diagnostics", f"{type(exc).__name__}: {exc}", failed=True
+            )
+
     return CheckpointRecord(
         slice_id=contract.slice_id,
         contract_digest=contract.digest(),
@@ -154,6 +177,7 @@ def run_checkpoint(
         behaviour_units=behaviour,
         witness_ids=[item.witness_id for item in witnesses],
         emitter_error=emitter_error,
+        diagnostics=diagnostics,
     )
 
 

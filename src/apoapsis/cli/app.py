@@ -3078,10 +3078,13 @@ def _workcell_conformance_command(
         cli_declared_limits_argv,
         cli_effective_config_argv,
         cli_export_discovery_argv,
+        cli_native_context_argv,
         extract_resolved_limits,
+        native_context_pin_from_resolved,
         parse_declared_limits,
         parse_discovered_module,
         parse_effective_config,
+        parse_native_context,
     )
 
     resolved = config_path.resolve()
@@ -3224,6 +3227,81 @@ def _workcell_conformance_command(
                     }
         else:
             payload["effective_cli_config_error"] = effective_stderr[:2000]
+
+        # The native context capture, separate from the effective-config one
+        # above and asking a different question.
+        #
+        # `resolveCliGenerationConfig` produces the *generation* config -- the
+        # window size and the sampling params. It says nothing about
+        # `context.autoCompactThreshold`, which is what the CLI compacts
+        # against and which Option B delegates to rather than reimplements.
+        # Slice 5C left that value at this model's declared 0.85 with
+        # `resolved_from_cli = False`, and the settings file Apoapsis installs
+        # writes no `context` block at all -- so the run compacted against
+        # whatever the CLI build's own default is, and nothing had ever
+        # compared that to the 0.85 the pin asserts.
+        if modules.get("loadSettings"):
+            defaults_module = ""
+            for symbol in (
+                "DEFAULT_AUTO_COMPACT_THRESHOLD",
+                "AUTO_COMPACT_THRESHOLD",
+            ):
+                code, out, _ = session.exec(
+                    cli_export_discovery_argv(cli_bundle_path, symbol),
+                    timeout_seconds=180.0,
+                )
+                if code == 0 and out.strip():
+                    try:
+                        defaults_module = parse_discovered_module(out, symbol=symbol)
+                    except PinCaptureError:
+                        continue
+                    break
+            # A missing defaults chunk is not fatal: a settings-configured value
+            # still resolves without it. It is recorded so an unresolved
+            # threshold is attributable to the right cause.
+            payload["native_context_defaults_module"] = defaults_module or None
+            code, out, err = session.exec(
+                cli_native_context_argv(
+                    settings_module=modules["loadSettings"],
+                    defaults_module=defaults_module or modules["loadSettings"],
+                    workspace="/workspace",
+                ),
+                timeout_seconds=180.0,
+            )
+            if code != 0:
+                payload["native_context_error"] = err[:2000]
+            else:
+                try:
+                    native = parse_native_context(
+                        out,
+                        source=(
+                            "loadSettings merged settings plus the CLI's own "
+                            "default exports, executed inside the workcell image"
+                        ),
+                    )
+                except PinCaptureError as exc:
+                    payload["native_context_error"] = str(exc)
+                else:
+                    observed_pin = native_context_pin_from_resolved(native)
+                    payload["native_context"] = native.model_dump(mode="json")
+                    payload["native_context_resolved_from_cli"] = (
+                        observed_pin.resolved_from_cli
+                    )
+                    write_evidence(evidence, "native-context.json", native)
+                    if not native.fully_resolved:
+                        # Degrades to "not checked", never to a clean
+                        # all-clear carrying plausible numbers.
+                        payload["native_context_unresolved_fields"] = (
+                            native.unresolved_fields()
+                        )
+                    elif observed_pin != config.pin.native_context:
+                        # Same severity as the effective-config mismatch: the
+                        # manifest describes a run that compacted at a
+                        # different threshold from the one that actually ran.
+                        payload["native_context_pin_mismatch"] = {
+                            "pinned": config.pin.native_context.model_dump(mode="json"),
+                            "observed": observed_pin.model_dump(mode="json"),
+                        }
 
         argv = cli_declared_limits_argv(cli_bundle_path, config.pin.model.model_name)
         exit_code, stdout, limits_stderr = session.exec(argv, timeout_seconds=120.0)

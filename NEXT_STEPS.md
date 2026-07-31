@@ -281,14 +281,136 @@ Follow
 
 8. benchmark safe LSP feedback, adaptive verification, task-routed reasoning,
    read-only parallelism, and the local `llama-server` profile without lowering
-   any paired quality result. **Carry two open Slice 5C items into this
-   stage's telemetry work:** capture the resolved native context settings so
-   `NativeContextPin.resolved_from_cli` can become `True`, and account for the
-   53,397-token second internal call;
+   any paired quality result. **Task 4 (telemetry) is implemented; the other
+   five tasks are untouched and must stay in the handoff's experiment order,
+   because each of them changes behaviour this telemetry measures.**
+
+   Task 4 closed the read-back half of the native-context item and found a
+   second cause the Slice 5C record did not name: the installed settings
+   document writes no `context` block at all, so there was never a configured
+   threshold to read and `NativeContextPin`'s 0.85 was an unverified belief
+   about the CLI's own default. `pin_capture.parse_native_context` now captures
+   the value with provenance and fails closed to `resolved_from_cli = False` on
+   any unresolved field. **It has been run** against the pinned image with no
+   network, no model call and no setting written: all three fields are
+   unresolved and `resolved_from_cli` correctly stays `False`, because the
+   bundle exports no default-threshold symbol to fall back to.
+
+   **A correction that outranks the above.** 0.85 is `DEFAULT_PCT`, a
+   percentage — not the trigger. `getAutoCompactThreshold()` returns
+   `undefined` when unset, and `computeThresholds` takes `min(pct * window,
+   window - 20_000 - 13_000)`. At the pinned 65,536 window the absolute ceiling
+   wins: the real auto threshold is **32,536 tokens (ratio 0.4965)**, roughly
+   half the window. `tools/slice5c/qualify.py` computes `trigger =
+   auto_compact_threshold * limit` = 55,706, **1.71x too high**; Slice 5C saw
+   its three compaction events only because the real threshold fires earlier.
+   **Fixed, and recorded as ADR 0082**, which supersedes only the
+   threshold-modelling portion of ADR 0081. `computeThresholds` is exported, so
+   it is now executed rather than reimplemented, and its constants are recovered
+   by probing it. `WorkcellPin.threshold_ladder` carries all six quantities plus
+   the governing term and the source chunk hash; `PIN_SCHEMA_VERSION` is 1.2, so
+   pre-ladder manifests are not comparable. `qualify.py` raises rather than
+   synthesising a trigger from a percentage. Evidence:
+   `.apoapsis-eval/slice5a-2026-07-30/native-context-capture.json` and
+   `threshold-ladder.json`.
+
+   **Only the predicted-trigger claim is withdrawn from Slice 5C.** Native
+   compaction was directly observed and continuation succeeded; neither result
+   depended on the prediction.
+
+   **Binding on task 6 when it starts** (ADR 0082): total token cost from CLI
+   session aggregates; per-call and cache comparisons from exposed provider
+   messages; the unattributed residual reported separately, always; and the
+   aggregate never counted as another call nor its cost omitted.
+
+   **Two things remain owner decisions, not coding
+   tasks:** whether to write `context.autoCompactThreshold` explicitly into the
+   settings document (it would resolve the pin immediately and would also
+   change compaction behaviour), and running
+   the full deterministic suite plus `compileall` and `git diff --check` on
+   Python 3.11+ — none of the three could run in the session that wrote this
+   code, and `tests/test_acceptance_coverage.py` failures observed under a 3.10
+   shim are believed environmental but are **not** proven to be.
+
+   **The 53,397 figure was misdescribed and its evidence is retained.** The
+   stage-7 records were on the Docker Desktop VM disk and are now durable under
+   `.apoapsis-eval/slice5c-2026-07-30/evidence/`. 53,397 is the `result`
+   session aggregate, not a second call; the invocation exposed one message at
+   22,433, leaving a **30,964-token unattributed residual**. That residual is
+   present in all six stage-7 invocations at ~10,997 in five of them, so it is
+   structural — the CLI spends tokens on traffic it emits no envelope for — and
+   only `perturbed-1` deviates, at 2.82x the cohort median. No cause is
+   inferred. `call_decomposition.py` models the aggregate separately from the
+   calls it totals and reports the residual; the 2,173-token cache result is
+   unaffected and is now pinned by a regression test against that evidence.
+
+   The residual is **persisted and terminally unexplained**, and by owner
+   decision it stays that way. **Do not investigate it further unless it
+   invalidates scoring** — that is, unless a residual makes a per-case verdict
+   or a median-input comparison unsafe under the ADR 0082 accounting rules. It
+   is accounted for, not understood, and that is sufficient. See
+   `docs/evaluation/slice-5a-telemetry-and-resolved-settings-2026-07-30.md`;
 9. make local, genuinely stronger frontier, and human repairs authoritative
    plan checkpoints; and
 10. run paired qualification plus architectural negative controls before any
    default changes.
+
+### Slice 5 is FROZEN as of 2026-07-30 (owner decision)
+
+Context work is done. **No Slice 5D. No further threshold archaeology. No
+further pursuit of the 53,397 residual** unless it invalidates scoring.
+
+Slice 5A tasks 1-3 and 5 collapse into **one minimal diagnostics and runtime
+profile** — enough to keep the agent working and the runs comparable, and no
+more. This is deliberately not an optimisation research programme: LSP feedback,
+adaptive verification, read-only parallelism, reasoning-effort routing and
+`llama-server` tuning are each worth a benchmark only if they plausibly move the
+per-case verdict. If one does not, record the negative result and move on.
+
+The remaining path, in order:
+
+1. minimal diagnostics and runtime profile — **DONE, ADR 0083.** Advisory
+   syntax diagnostics inside the workcell, captured as controller evidence and
+   structurally unable to authorise completion: `DiagnosticReport` is not a
+   `StructuredWitness`, `evaluate_checkpoint` keeps its
+   `(admitted, detail, readiness)` signature, and `run_checkpoint` collects
+   diagnostics *after* deciding. A missing or crashed tool yields `NOT_CHECKED`,
+   which is not `CLEAN`. One pinned `QUALIFIED_PROFILE` from the already-
+   qualified Slice 5C configuration, trigger 32,536 rather than a percentage.
+   Seven optimisations considered, five rejected without benchmarking, two kept
+   as candidates (reasoning-effort routing, LSP beyond syntax) — neither
+   enabled nor benchmarked. No sweep was run. See
+   `docs/evaluation/slice-5a-minimal-profile-2026-07-30.md`;
+2. authoritative Codex / frontier / human repair checkpoints — **DONE, ADR
+   0084.** `workcell/plan_checkpoint.py` makes a repair a state transition
+   rather than an edit, with one shape for all three actor classes: bind, apply
+   in controller state, admit, witness, readiness, required verification, append.
+   Five bindings (parent, commit, fingerprint, contract digest, failure packet)
+   checked *before* anything is applied; nine distinct refusals, because a stale
+   proposal and a verification failure need different responses. A human repair
+   is not exempt from verification. A failed verification appends nothing, so
+   the head does not move. The ledger is append-only and refuses a parent that
+   is not the head. `authoritative_delivery_input` and `next_slice_base` return
+   the *same object*, and delivery raises `StaleProjection` when handed a
+   pre-repair fingerprint. 9/9 required cases plus 16 boundary cases. See
+   `docs/evaluation/slice-6-authoritative-repair-checkpoints-2026-07-30.md`;
+3. paired corpus, the Crisis Atlas must-pass regression, and negative controls;
+4. rollout and fallback **only if** non-inferiority passes.
+
+**Run the full deterministic suite on Python 3.11+ once, before qualification —
+not before every implementation step.** The two `test_acceptance_coverage`
+failures and the nine `enterContext` failures observed under a 3.10 shim resolve
+there or they become real findings; either way that check belongs to
+qualification, not to each commit.
+
+### The question every remaining task answers
+
+> Does Apoapsis Qwen match or beat unharnessed Qwen **per case**, with fewer
+> false completions and lower median input tokens?
+
+A finding that does not affect that claim, containment, or authoritative state
+gets **documented and left**. This file has twice grown a subsection for a
+measurement that was interesting and immaterial. Interesting is not the bar.
 
 The release rule is per-case, not merely an average: every task passed by
 matched default Qwen must also pass before frontier repair, final verified

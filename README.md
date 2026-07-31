@@ -1437,12 +1437,48 @@ not.
 This was qualified live on 2026-07-30. Qwen compacted its own history three
 times, and the work continued across the boundary: a function written after
 compaction, built on one written before it, with the tests run by the harness
-rather than reported by the model. A byte-identical prompt prefix earned
+rather than reported by the model. That result stands — though the harness had
+predicted compaction would start at 85% of the context window, and it actually
+starts at about half. The CLI subtracts two fixed reserves before applying the
+percentage, so the percentage stops describing the behaviour at this window
+size. The harness now runs the CLI's own calculation instead of guessing from
+one number, and refuses to guess when it has not run it. A byte-identical prompt prefix earned
 **2,173 additional cached input tokens** from the second call onward, where a
 prefix perturbed by one early value earned none.
 
 That number is one workload, at one prefix size, on one local server. It shows
 the mechanism works and is observable here; it is not a general saving.
+
+Two things that run qualified are still open. The threshold Qwen compacted
+against was never read back from the CLI, and the settings Apoapsis installed
+never set it — so the run used the CLI build's own default and the harness's
+recorded 0.85 was a belief about that default rather than a measurement. The
+capture that reads it back now exists and reports "not checked" rather than a
+plausible number when it cannot resolve a field.
+
+Separately, the run's own token totals do not add up, and the retained evidence
+shows why the earlier description of that was wrong. What looked like one
+oversized call is the session total, and every invocation in the control spends
+roughly a third of its input tokens on provider traffic the CLI never reports
+individually. One invocation spends nearly three times as much of it as the
+others. Those tokens are accounted for as a named residual now rather than
+hidden inside a total, and no explanation is offered for them, because the
+evidence does not contain one. The measured cache saving is unaffected — it was
+taken on the part of the run that is reported.
+
+When something needs fixing — by the local model, by a stronger reviewer, or by
+a person — the fix goes through the same door. It is checked against the exact
+state it was written for, applied only in the harness's own copy, and then put
+through the whole inspection again from scratch. A fix that does not pass
+changes nothing; the project stays where it was. A fix made by a person gets no
+shortcut, because who made a change is not evidence that it works.
+
+This matters because of what happened before it existed. The best result the
+project ever produced came from a stronger model repairing the local model's
+work, and it still could not be shipped: the repair was made off to the side,
+so later work inherited the repaired files without inheriting the record that
+they had been repaired, and the final report went on describing the run that had
+failed. Delivery now reads the current state and refuses anything else.
 
 ## Local Power Sandbox (ADR 0059, experimental)
 

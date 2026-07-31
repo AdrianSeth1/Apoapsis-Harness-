@@ -1546,6 +1546,151 @@ resolved `context.autoCompactThreshold` was never read back, so
 53,397-token second internal call; and 2,173 tokens is one workload on one
 server, not a general saving.
 
+**Slice 5A task 4 addressed the first two as instrumentation, and diagnosis
+made the first one worse than recorded.** The settings document the run
+installed writes no `context` block and no `model.chatCompression` block at
+all, so there was never a configured value to read back: the run compacted
+against the CLI build's own default and the `0.85` in `NativeContextPin` was
+Apoapsis's belief about that constant, asserted in a docstring and never
+compared to the CLI. `pin_capture.parse_native_context` now reads the value and
+its provenance from the CLI's own resolver and **fails closed** — any
+unresolved field returns a default pin with `resolved_from_cli` still `False`,
+so a partial capture degrades to "not checked" rather than to plausible numbers
+carrying the authority of an observation. Writing the setting explicitly would
+make it resolve immediately and would also change compaction behaviour; that is
+an owner decision and is deliberately not taken inside an instrumentation task.
+
+**The capture has been run** against the pinned `apoapsis-qwen-workcell:0.21.1`
+image, `--network none`, no model call, no setting written. All three fields
+return unresolved and `resolved_from_cli` correctly stays `False`: the settings
+carry no `context` block and **no chunk in the bundle exports a default-threshold
+symbol** for the fallback to read.
+
+Reading the bundle's own constants then showed that **0.85 is a percentage, not
+the trigger.** `getAutoCompactThreshold()` returns `undefined` when unset — there
+is no 0.85 fallback at that layer — and `computeThresholds` takes
+`min(pct * window, window - SUMMARY_RESERVE - AUTOCOMPACT_BUFFER)`. At the pinned
+65,536 window that is `min(55,705.6, 32,536)`, so the run auto-compacted at
+**32,536 tokens, an effective ratio of 0.4965** — roughly half the window, not
+85% of it. `tools/slice5c/qualify.py` computes its trigger as
+`auto_compact_threshold * limit` = 55,706, **1.71x the real value**; Slice 5C
+still saw three compaction events only because the real threshold fires earlier
+than the one it was watching for. This is the divergence `NativeContextPin`'s
+docstring warned about, and it happened — the mechanism was not duplication of
+the ladder but substitution of a single number for it.
+
+**ADR 0082 supersedes the threshold-modelling portion of ADR 0081.** A runtime
+threshold that governs behaviour is now captured by *executing the pinned
+implementation*: `computeThresholds` is exported, so it is run rather than
+reimplemented, and its constants are recovered by probing it (the percentage
+from a window wide enough that the proportional term governs, the buffer from a
+`pct = 1` call). `WorkcellPin.threshold_ladder` carries configured pct, built-in
+pct, summary reserve (20,000), autocompact buffer (13,000), effective window
+(45,536), warn/auto/hard (12,536 / 32,536 / 42,536), the governing term, and the
+SHA-256 of the chunk that answered. `PIN_SCHEMA_VERSION` is **1.2**; earlier
+manifests are not comparable, which is honest rather than unfortunate.
+`qualify.py` now **raises** when no ladder is pinned instead of falling back to
+`pct * limit`. `context.autoCompactThreshold` is still **not** written into the
+settings — that would move the proportional term and change behaviour, and needs
+an owner decision. Evidence:
+`.apoapsis-eval/slice5a-2026-07-30/native-context-capture.json` and
+`threshold-ladder.json`.
+
+**The Slice 5C context-safety result stands.** Only the claim that its runner
+watched the correct predicted trigger is withdrawn. Compaction was observed as
+the CLI's own events and the post-compaction dependent edit was verified by the
+controller running the tests; neither ever depended on the prediction.
+
+**The minimal Slice 5A profile is done (ADR 0083).** `workcell/diagnostics.py`
+gives the agent fast syntax feedback inside the disposable workcell and gives
+the harness no new authority. Advisory is structural, not conventional:
+`DiagnosticReport` is deliberately not a `StructuredWitness` so it cannot
+discharge an obligation, `evaluate_checkpoint` still takes only
+`(admitted, detail, readiness)` with a test asserting the signature, and
+`run_checkpoint` collects diagnostics *after* computing its decision. Four
+statuses, never a boolean: a missing or crashed tool is `NOT_CHECKED`, which is
+not `CLEAN`, and an unparseable non-zero exit is `TOOL_FAILED` rather than a
+passing parse. The hierarchy is unchanged — diagnostics advisory, checkpoint
+witnesses determine readiness, ADR 0074 integrated verification governs
+delivery. `workcell/runtime_profile.py` pins one `QUALIFIED_PROFILE` from the
+already-qualified Slice 5C configuration, with the measured 32,536 trigger;
+seven optimisations are recorded as decisions, five rejected without
+benchmarking and two kept as candidates, and no sweep was run.
+
+**Slice 6 is implemented (ADR 0084).** `workcell/plan_checkpoint.py` makes a
+repair a *state transition* rather than an edit. The Crisis Atlas trial's best
+result came from Codex repairing Qwen's work and was still not a deliverable,
+because the repair was a commit somebody made and the plan graph never learned
+about it. One shape now, for local Qwen, a genuinely stronger frontier model,
+and a human alike: bind, apply in controller-owned candidate state, admit, emit
+witnesses, evaluate readiness, run required verification, append. A human repair
+is **not** exempt — being made by a person is provenance, not evidence about the
+tree — and a test asserts all three actors produce an identical result shape.
+
+Five bindings, checked **before** anything is applied so a stale proposal never
+touches candidate state: parent checkpoint, base commit, worktree fingerprint,
+contract digest, and failure packet. The last catches what the others cannot —
+a repair written for failure A applied after A was already fixed, where commit,
+tree and contract all still match. Nine distinct refusals, because a stale
+proposal should be rebased and a verification failure should not; re-application
+is refused rather than silently idempotent, and a partial apply is refused
+rather than verified as whole. **A failed verification appends nothing**, so the
+head does not move and a later slice inherits the last authoritative state.
+
+The ledger is append-only and refuses a parent that is not the head — an
+out-of-band commit in ledger form. Checkpoint identity is content plus ancestry.
+`authoritative_delivery_input` and `next_slice_base` return the **same object**,
+asserted by identity rather than equality, because two accessors returning
+different states is exactly how Crisis Atlas inherited repaired files without
+the repaired checkpoint. Delivery raises `StaleProjection` when handed a
+pre-repair fingerprint. Models gain no transition, verification, completion,
+Git, host, or delivery authority; `RepairProposal` is a request.
+
+**Slice 5 is frozen as of 2026-07-30.** Context work is complete: no 5D, no
+further threshold archaeology, and no further pursuit of the unattributed
+residual unless it invalidates scoring. The residual is *accounted for* under
+the ADR 0082 rules, which is what qualification needs; it is not understood, and
+that is accepted. Remaining path: one minimal diagnostics and runtime profile,
+then authoritative repair checkpoints, then the paired corpus with the Crisis
+Atlas regression and negative controls, then rollout only if non-inferiority
+passes. The full deterministic suite runs on Python 3.11+ **once before
+qualification**, not before every step. Every remaining task answers one
+question — does Apoapsis Qwen match or beat unharnessed Qwen per case, with
+fewer false completions and lower median input tokens — and a finding that
+touches neither that, containment, nor authoritative state is documented and
+left alone.
+
+**The 53,397 figure is not a call, and the evidence for it is retained.** The
+complete stage-7 records were on the Docker Desktop VM disk and are now copied
+durably to `.apoapsis-eval/slice5c-2026-07-30/evidence/`. Read against them,
+53,397 is the `result` event — the CLI's own **session aggregate**. The
+invocation exposed exactly one usage-bearing `assistant` message at 22,433, so
+the quantity that was never explained is a **30,964-token unattributed
+residual** (451 output, 6,745 cached), not a second call. The same residual is
+present in all six stage-7 invocations, grouped tightly at ~10,997 input tokens
+in five of them: the CLI spends provider tokens on traffic it emits no envelope
+for, and only `perturbed-1`'s residual deviates, at 2.82x the cohort median. No
+cause is inferred; the event stream does not contain evidence that would
+support one.
+
+`workcell/call_decomposition.py` therefore models the `result` aggregate
+separately from the calls it totals — counting it as a call compares a sum with
+its own component — and exposes `residual = aggregate - exposed` with a
+`ResidualStatus` that distinguishes "no aggregate to reconcile against" from
+"fully attributed". `flag_residual_anomalies` is set-level, because a residual
+present in every run of a controlled set is a property of the CLI rather than an
+anomaly. The measured 2,173-token cache benefit is unaffected: it was taken on
+the first exposed message, and a regression test now asserts it against the
+retained evidence. The residual is **persisted and terminally unexplained** —
+closing it needs either a CLI that emits envelopes for internal traffic or
+relay-side per-request accounting reconciling against the aggregate, which is a
+scoping input for Slice 5A task 5. Until then no 5A benchmark depending on
+per-call input accounting is settled, because roughly a third of a controlled
+invocation's input tokens are unattributed by construction. See
+`docs/evaluation/slice-5a-telemetry-and-resolved-settings-2026-07-30.md`, which
+also records that the full deterministic suite could not be run in that session
+and states what must be re-run before the work is trusted.
+
 Compaction and the token ceilings read **provider-reported usage only**. The
 controller's estimate is retained for diagnosis and barred from both gates,
 because an estimate reading high compacts a session that did not need it and an

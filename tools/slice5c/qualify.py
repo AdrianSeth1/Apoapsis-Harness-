@@ -418,9 +418,30 @@ def main() -> int:
         # crosses the resolved native threshold. The threshold is Qwen's, not
         # ours: we do not compact anything here, we only watch for the CLI's
         # own compaction event.
+        # `auto_compact_threshold * limit` was WRONG and is withdrawn. That
+        # product is the *proportional* term only, and `computeThresholds`
+        # returns `min(proportional, effectiveWindow - AUTOCOMPACT_BUFFER)`. At
+        # the pinned 65,536-token window the absolute ceiling governs: the real
+        # trigger is 32,536, not 55,706, so this predicted a threshold 1.71x too
+        # high. Compaction was still observed because the real trigger fires
+        # *earlier* than the predicted one -- the benign direction, which is
+        # exactly why it went unnoticed for a whole slice.
+        #
+        # The ladder is now taken from the CLI's own exported
+        # `computeThresholds`, executed rather than reimplemented. A second
+        # Apoapsis-side model of when compaction happens is the failure this
+        # keeps rediscovering.
         native = config.pin.native_context
         limit = config.pin.model.context_limit_tokens
-        trigger = native.auto_compact_threshold * limit
+        ladder = config.pin.threshold_ladder
+        if ladder is None:
+            raise SystemExit(
+                "no pinned threshold ladder: capture it with "
+                "`computeThresholds` before predicting a compaction trigger. "
+                "Deriving one from a percentage is what produced the withdrawn "
+                "55,706 figure."
+            )
+        trigger = ladder.auto_tokens
         pressure_log = []
         compaction_seen: list = []
         turn = 0
@@ -454,10 +475,15 @@ def main() -> int:
             if hits:
                 compaction_seen = hits
             write("stage5-pressure.json", {"trigger_tokens": trigger,
-                                           "native_threshold": native.auto_compact_threshold,
+                                           "threshold_ladder": ladder.model_dump(mode="json"),
                                            "log": pressure_log})
         summary["stages"]["5_native_compaction"] = {
-            "native_threshold": native.auto_compact_threshold,
+            # The ladder entire, not one percentage. A percentage cannot
+            # express `min(proportional, ceiling)` and reporting it alone is
+            # how the withdrawn trigger survived review.
+            "threshold_ladder": ladder.model_dump(mode="json"),
+            "governing_term": ladder.governing_term.value,
+            "effective_ratio": ladder.effective_ratio,
             "threshold_tokens": trigger,
             "turns_run": turn,
             "log": pressure_log,
