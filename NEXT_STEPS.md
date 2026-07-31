@@ -394,7 +394,22 @@ The remaining path, in order:
    the *same object*, and delivery raises `StaleProjection` when handed a
    pre-repair fingerprint. 9/9 required cases plus 16 boundary cases. See
    `docs/evaluation/slice-6-authoritative-repair-checkpoints-2026-07-30.md`;
-3. paired corpus, the Crisis Atlas must-pass regression, and negative controls;
+3. paired corpus, the Crisis Atlas must-pass regression, and negative controls —
+   **BLOCKED at Slice 7 Phase 0.** The full deterministic suite now runs on
+   supported Python 3.12: **6 failed, 1625 passed**, against the `d50ddf2`
+   baseline's **6 failed, 1546 passed** — an identical failure set, so the
+   committed work adds 79 passing tests and no new failures. But the baseline is
+   not clean, and three of the six are safety rules that are not firing:
+   `.git` and `.apoapsis` are not excluded from desktop import, and an absolute
+   destination is accepted. They reproduce on Linux **and** Windows, so they are
+   not a platform artifact. Two more are the stale-worktree-digest and
+   untracked-new-file cases — the exact stale-evidence property Slice 7 would be
+   measuring. The nine `enterContext` failures are confirmed **interpreter-only**
+   (zero on 3.12). Separately, the suite **cannot run on Windows at all**
+   (`ThreadingUnixStreamServer`), so it has never been observed green in any one
+   environment and the supported platform is undocumented. No live inference was
+   run. See `docs/evaluation/slice-7-phase-0-freeze-2026-07-30.md` for the
+   owner decision that unblocks this;
 4. rollout and fallback **only if** non-inferiority passes.
 
 **Run the full deterministic suite on Python 3.11+ once, before qualification —
