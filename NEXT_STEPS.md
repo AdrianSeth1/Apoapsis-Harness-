@@ -442,7 +442,21 @@ The remaining path, in order:
    cases skip correctly (37 passed, 20 skipped for that module), but full
    Windows execution **stalls around 4% and is not a qualification pass**. Not
    investigated in this phase by instruction. See
-   `docs/evaluation/slice-7-phase-0b-baseline-repairs-2026-07-30.md`;
+   `docs/evaluation/slice-7-phase-0b-baseline-repairs-2026-07-30.md`.
+
+   **Phase 1 froze the qualification manifest (ADR 0085).** Source under test is
+   `ad13cf0`; the manifest is
+   `docs/qualification/slice7-qualification-manifest.json`, digest
+   `8c374827aa4ace9576ed9d2d2f0db04747f3b4fb05d425b10e6fc770454f3762`. Two arms
+   (control and Capability Sandbox, no legacy arm, neither with host authority),
+   8 corpus cases x 3 repetitions = **24 paired executions, 48 arm-runs**, 10
+   negative controls each with a mapped detector, the 15 Crisis Atlas must-pass
+   requirements, 9 stop conditions, and Phase 0 provenance recorded with
+   `counts_as_capability_sandbox_win = False`. Every model is frozen; the digest
+   excludes `manifest_commit` so committing the artifact cannot change it.
+   **`ready_for_inference()` is false: 8 controlled-variable hashes still carry
+   capture placeholders** and Phase 2 must refuse to start until they are taken
+   live. No inference has been run and `llama-server` has not been started;
 4. rollout and fallback **only if** non-inferiority passes.
 
 **Run the full deterministic suite on Python 3.11+ once, before qualification —

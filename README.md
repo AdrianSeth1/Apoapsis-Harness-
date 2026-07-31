@@ -1480,6 +1480,20 @@ so later work inherited the repaired files without inheriting the record that
 they had been repaired, and the final report went on describing the run that had
 failed. Delivery now reads the current state and refuses anything else.
 
+Before any of that is measured, the measurement itself is written down and
+locked. The comparison — harnessed model against the same model running
+normally — has its rules fixed in advance: which tasks, how many repetitions,
+what counts as a pass, what counts as no answer at all, and what must be
+identical between the two sides for a comparison to mean anything. The file is
+immutable and carries its own fingerprint, so adjusting it mid-experiment is
+visible rather than quiet.
+
+Two things it deliberately makes impossible. There is no single combined score,
+because one number lets a cheap saving cancel a real regression. And a run that
+produced no usable evidence is not a pass — missing evidence, an unreadable
+truncation, an infrastructure failure, and a mismatched pair are each recorded
+as their own outcome, and none of them counts in favour.
+
 ## Local Power Sandbox (ADR 0059, experimental)
 
 An opt-in second execution path for **local models only**. It exists to test one

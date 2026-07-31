@@ -1,0 +1,394 @@
+{
+  "arms": [
+    {
+      "cli_name": "@qwen-code/qwen-code",
+      "cli_version": "0.21.1",
+      "computer_use_enabled": false,
+      "host_authority": false,
+      "kind": "default_qwen_control",
+      "permission_mode": "yolo",
+      "realised_tool_names": [
+        "agent",
+        "glob",
+        "grep_search",
+        "list_agents",
+        "list_directory",
+        "read_file",
+        "skill",
+        "todo_write",
+        "tool_search"
+      ],
+      "supervision": "none: the CLI's own native agent/tool loop, inside the same hardened workcell. Default describes the interface, not the blast radius.",
+      "tool_search_enabled": false,
+      "tool_surface_verified_before_inference": true
+    },
+    {
+      "cli_name": "@qwen-code/qwen-code",
+      "cli_version": "0.21.1",
+      "computer_use_enabled": false,
+      "host_authority": false,
+      "kind": "capability_sandbox",
+      "permission_mode": "yolo",
+      "realised_tool_names": [
+        "agent",
+        "glob",
+        "grep_search",
+        "list_agents",
+        "list_directory",
+        "read_file",
+        "skill",
+        "todo_write",
+        "tool_search"
+      ],
+      "supervision": "Apoapsis admission, readiness against a compiled contract, structured witnesses, compaction/checkpoints, and authoritative repair via PlanCheckpoint (ADR 0084).",
+      "tool_search_enabled": false,
+      "tool_surface_verified_before_inference": true
+    }
+  ],
+  "controlled_variables": {
+    "auto_compact_trigger_tokens": 32536,
+    "cold_start": true,
+    "context_limit_tokens": 65536,
+    "controller_source_commit": "ad13cf0",
+    "cpu_limit": 4.0,
+    "gpu_allocation": "single local GPU, exclusive for the measured arm",
+    "llama_server_argv_sha256": "c6bd4fcfebd19f755ed0be54ace0b5ad6452333b7073eb9b4b600eadf8402f8f",
+    "llama_server_binary_sha256": "28df65e4a447ed6170e81f6ab5b7742efb43d4a18f0751d891401e1bd4b755de",
+    "max_output_tokens": 16384,
+    "model_file_sha256": "7cfa9d07196848440e08891d0d33c4b5b458683594d7e17cf47fbc8058c2d132",
+    "model_name": "qwen3.6-27b",
+    "mount_policy_sha256": "bd98111325d73ddc6e4a91b4f17848e2e434f2e672104f631cada71f5cf55204",
+    "network_policy": "none; model reached only through the controller-owned relay socket",
+    "per_call_budget_tokens": 65536,
+    "per_case_budget_tokens": 2500000,
+    "quantization": "Q4_K - Medium",
+    "qwen_package_sha256": "e194a0942ef4be49bb1e80e13bcf0fb6c1ec9484f169c6007f684034f094bf4e",
+    "qwen_settings_sha256": "516caa2a92c3f090d8c314b208b558be77c990de89dfe27d795c64bd79612833",
+    "repair_policy_sha256": "50c79a406854244348b8ecd9daa290ebe1836615a7c0f473d8791064d324856c",
+    "system_prompt_sha256": "fe0ef30a46df0032b40188d7fe80e75c35051d43c2ae4850309fc966e8938807",
+    "task_prompt_sha256": "ae85f4a1b35fe98498c0e70f21cee2f2f11bddc42afcfd7285c0698cd32d149b",
+    "threshold_ladder_sha256": "634214ecb16ef3ab8e6e4046413c965606fd7c7c1194f6db93cd707cb5381c5c",
+    "tool_schema_sha256": "564025d5391cb6eb01d634c14ad1bf12dba87287eb00f6f74ab9cd52982e15ac",
+    "verification_config_sha256": "696c599bbbd4f8030c6d80e0272b487b20ec452c4bf1a4aafcf651eb44182326",
+    "verifier_image_digest": "apoapsis-live-controller:slice5c",
+    "workcell_image_digest": "apoapsis-qwen-workcell:0.21.1",
+    "worktree_seed_sha256": "b78e7ebfbb75e8dce05b083e94bacf100f44cf1f8e7089f552449b3bd3d9dc6d"
+  },
+  "corpus": [
+    {
+      "acceptance_criteria_sha256": "4af6d646aa0361c6569399b9006fb7602748e37346e09931103e418b7db7637a",
+      "case_id": "crisis-atlas",
+      "kind": "crisis_atlas",
+      "max_output_tokens": 16384,
+      "negative_control_ids": [
+        "NC-01-localstorage-persistence",
+        "NC-02-discarded-query",
+        "NC-03-static-sample-incidents",
+        "NC-04-root-404",
+        "NC-05-route-shadowing",
+        "NC-06-restart-loss",
+        "NC-07-nondeterministic-export",
+        "NC-08-witness-removed",
+        "NC-09-inaccessible-control"
+      ],
+      "plan_or_contract_sha256": null,
+      "required_for_gate": true,
+      "seed_commit": "ad13cf0",
+      "seed_tree_sha256": "126398be3d1422e2b759e9c53e1321f994c7dae9e10bbcde89c009a13ac0cfac",
+      "task_text_sha256": "017261f3775dbe72fb4bf70eda64135fbf73bce4a8ee2c07683ea6a64638e4a2",
+      "token_budget": 2500000,
+      "verification_commands_sha256": "eb6b4656c3d9d9b80ff5acc5a08674709659e813e94321511bdb269e059ecede",
+      "wall_clock_budget_seconds": 1800.0
+    },
+    {
+      "acceptance_criteria_sha256": "808cef51d44d6154079175883b74eba694aefaf47ec2327b1425556ea5ba3d96",
+      "case_id": "focus-orbit",
+      "kind": "focus_orbit",
+      "max_output_tokens": 16384,
+      "negative_control_ids": [
+        "NC-08-witness-removed"
+      ],
+      "plan_or_contract_sha256": null,
+      "required_for_gate": true,
+      "seed_commit": "ad13cf0",
+      "seed_tree_sha256": "afbeee5ca83c88383644716610aeb485a964b21c1ce2b0353cec55e971c454c5",
+      "task_text_sha256": "a1c863901a28161f15416a8e0adb3e1b24c82d9b9e38b6d590f8fb7d39bc149a",
+      "token_budget": 2500000,
+      "verification_commands_sha256": "7a2c3ac0b9f38f5d1b68f202aba01a7c62e34d84be94891a3ba9f13bc3031b9c",
+      "wall_clock_budget_seconds": 1800.0
+    },
+    {
+      "acceptance_criteria_sha256": "b75f6e186a8be4ef2032a10739e3d8702d76b1880d7c14e8c96c80797f91c2a7",
+      "case_id": "small-backend-change",
+      "kind": "small_backend_change",
+      "max_output_tokens": 16384,
+      "negative_control_ids": [],
+      "plan_or_contract_sha256": null,
+      "required_for_gate": true,
+      "seed_commit": "ad13cf0",
+      "seed_tree_sha256": "f33079badc5359dacc76965d2dc7e5109e10326ef24da5f490c6d06357622689",
+      "task_text_sha256": "91a8c500feec20794b9ccdc6bec4331fe384808c0b914067bd3d1af117fbdf93",
+      "token_budget": 2500000,
+      "verification_commands_sha256": "851556d3b8c20ea705fc25f3d67eb74fa3f55545e4315f9770322de375228044",
+      "wall_clock_budget_seconds": 1800.0
+    },
+    {
+      "acceptance_criteria_sha256": "e62f2c79521609d654f51fb3e85074012c3a16e07ae2b843f84d223306fba344",
+      "case_id": "cross-file-refactor",
+      "kind": "cross_file_refactor",
+      "max_output_tokens": 16384,
+      "negative_control_ids": [],
+      "plan_or_contract_sha256": null,
+      "required_for_gate": true,
+      "seed_commit": "ad13cf0",
+      "seed_tree_sha256": "9214b59fcae02f0dbb25364dcccded5af8998049cce1af2508201f987f67835d",
+      "task_text_sha256": "a8d4453eb6c49708543aea505072da2c4adc17011eb68d746daf04e475562368",
+      "token_budget": 2500000,
+      "verification_commands_sha256": "726b845a1e79ad8abf8de03eef76f7566e1b9b8a539912d709ab08f798b2b117",
+      "wall_clock_budget_seconds": 1800.0
+    },
+    {
+      "acceptance_criteria_sha256": "cad6f2e191ac7ce2c6434ca37548cc136f6245b31e8b95983f063e9a1bfbd5ec",
+      "case_id": "test-repair",
+      "kind": "test_repair",
+      "max_output_tokens": 16384,
+      "negative_control_ids": [
+        "NC-08-witness-removed"
+      ],
+      "plan_or_contract_sha256": null,
+      "required_for_gate": true,
+      "seed_commit": "ad13cf0",
+      "seed_tree_sha256": "f95ad23ceb464cdebc4ec8128a023ac30c8bba75004a9efcc721a4d31e3cf5d6",
+      "task_text_sha256": "5a4d71a5d7bad056b5b4a54db03c4f0be09055359eb35cc4edad786afe2abea9",
+      "token_budget": 2500000,
+      "verification_commands_sha256": "af46edd76a9ef38c6b69bf1c249530bcb3aa7804a1c00423eee96de830d2a5d7",
+      "wall_clock_budget_seconds": 1800.0
+    },
+    {
+      "acceptance_criteria_sha256": "a3dbe163a79b47e754f164e9cdde16edd59fbf7a6ec0382bfcd576f868f962e2",
+      "case_id": "launch-operability",
+      "kind": "launch_operability",
+      "max_output_tokens": 16384,
+      "negative_control_ids": [
+        "NC-04-root-404",
+        "NC-06-restart-loss"
+      ],
+      "plan_or_contract_sha256": null,
+      "required_for_gate": true,
+      "seed_commit": "ad13cf0",
+      "seed_tree_sha256": "c44c3376abaca93b59032aa979664aaa71101dccbded3fd46b813408e72f3d99",
+      "task_text_sha256": "bde79e1e9507c32a62384b61cdb651350ca810e9e41a8c3f7cc85d98cde4f871",
+      "token_budget": 2500000,
+      "verification_commands_sha256": "47526e725a4852e7fc93f4f7bea9a5a03c9075b3de98f54a757429689d3f8627",
+      "wall_clock_budget_seconds": 1800.0
+    },
+    {
+      "acceptance_criteria_sha256": "647ebfbd3142987f1ccff3a0da39af2be14017e06bad345211c4f81a81d0c09c",
+      "case_id": "misleading-inherited-suite",
+      "kind": "misleading_inherited_suite",
+      "max_output_tokens": 16384,
+      "negative_control_ids": [
+        "NC-08-witness-removed"
+      ],
+      "plan_or_contract_sha256": null,
+      "required_for_gate": true,
+      "seed_commit": "ad13cf0",
+      "seed_tree_sha256": "d8525d06354645b1e711dc1293ee04666fa10cb0b4468e2dd9b4a2f34c29553b",
+      "task_text_sha256": "fc9f71242edb6eb5b88f5fa6ce244566fcc986df8daac88aebdbd2f483c3f624",
+      "token_budget": 2500000,
+      "verification_commands_sha256": "e0804757f22980679d095c02fbd222b75ac825f99197e1b3e3d9e82c541bb70f",
+      "wall_clock_budget_seconds": 1800.0
+    },
+    {
+      "acceptance_criteria_sha256": "235c9ed82076df2c02bb62abe74f81fccb533e60cb90ae6646788b526e1b4e3d",
+      "case_id": "held-out-repository",
+      "kind": "held_out_repository",
+      "max_output_tokens": 16384,
+      "negative_control_ids": [
+        "NC-10-output-ceiling-truncation"
+      ],
+      "plan_or_contract_sha256": null,
+      "required_for_gate": true,
+      "seed_commit": "ad13cf0",
+      "seed_tree_sha256": "00c527e54679ae8688cddc6199bb28215c8b47ad61007c9fb75d12d04fc41690",
+      "task_text_sha256": "b17723b4e51c91b20d692ef7794927e62e5744ba2c126ee22191f70fd2c2ff8e",
+      "token_budget": 2500000,
+      "verification_commands_sha256": "8e3c151795c7daff44882a6c70b078ce7864eaa9beee0bde36d93b2307550f12",
+      "wall_clock_budget_seconds": 1800.0
+    }
+  ],
+  "crisis_atlas_must_pass": [
+    "implements every slice artifact in its declared package",
+    "refuses Slice 2 after only the partial wrong-path service",
+    "proves both service classes through current-state evidence",
+    "starts the canonical server and exercises the actual routes",
+    "uses the HTTP API from the dashboard",
+    "creates an incident whose state survives reload and server restart",
+    "correctly filters status through both API and browser UI",
+    "round-trips status, timeline events, and action items",
+    "produces deterministic JSON and Markdown exports",
+    "passes the strict web-product check or records only reviewed, explained dynamic-analysis limitations",
+    "catches the localStorage and discarded-query negative controls",
+    "passes final integrated verification",
+    "records any Codex/human repair as an authoritative plan checkpoint",
+    "keeps Report, task state, final verification, and delivery.json consistent",
+    "produces a clean ZIP with accurate usage instructions and no Git metadata, runtime database, model logs, or credentials"
+  ],
+  "manifest_commit": null,
+  "manifest_digest": "8c374827aa4ace9576ed9d2d2f0db04747f3b4fb05d425b10e6fc770454f3762",
+  "manifest_id": "slice7-qualification-2026-07-30",
+  "negative_controls": [
+    {
+      "allowed_secondary_detectors": [],
+      "control_id": "NC-01-localstorage-persistence",
+      "description": "Replace API persistence with localStorage.",
+      "expected_detector": "integrated_verification",
+      "failure_classification": "undetected_persistence_regression",
+      "required_evidence": "restart-persistence witness showing state absent after server restart"
+    },
+    {
+      "allowed_secondary_detectors": [],
+      "control_id": "NC-02-discarded-query",
+      "description": "Discard URL query parameters while leaving the route reachable.",
+      "expected_detector": "integrated_verification",
+      "failure_classification": "undetected_filter_regression",
+      "required_evidence": "route witness recording request query and normalised response assertion"
+    },
+    {
+      "allowed_secondary_detectors": [],
+      "control_id": "NC-03-static-sample-incidents",
+      "description": "Return static sample incidents instead of backend state.",
+      "expected_detector": "integrated_verification",
+      "failure_classification": "undetected_fake_backend",
+      "required_evidence": "mutation-then-read witness proving the read reflects the write"
+    },
+    {
+      "allowed_secondary_detectors": [],
+      "control_id": "NC-04-root-404",
+      "description": "Root route returns 404 while an internal API path still works.",
+      "expected_detector": "strict_web_check",
+      "failure_classification": "undetected_broken_entrypoint",
+      "required_evidence": "launch witness recording the bound address and the root response status"
+    },
+    {
+      "allowed_secondary_detectors": [],
+      "control_id": "NC-05-route-shadowing",
+      "description": "Shadow a specific export route with a broad route.",
+      "expected_detector": "integrated_verification",
+      "failure_classification": "undetected_route_shadowing",
+      "required_evidence": "route witness proving the specific path was exercised, not merely reachable"
+    },
+    {
+      "allowed_secondary_detectors": [],
+      "control_id": "NC-06-restart-loss",
+      "description": "Make restart persistence fail.",
+      "expected_detector": "integrated_verification",
+      "failure_classification": "undetected_restart_regression",
+      "required_evidence": "restart witness with an explicit post-restart read"
+    },
+    {
+      "allowed_secondary_detectors": [],
+      "control_id": "NC-07-nondeterministic-export",
+      "description": "Make JSON or Markdown export nondeterministic.",
+      "expected_detector": "integrated_verification",
+      "failure_classification": "undetected_nondeterminism",
+      "required_evidence": "two export artifacts with recorded hashes from one unchanged state"
+    },
+    {
+      "allowed_secondary_detectors": [],
+      "control_id": "NC-08-witness-removed",
+      "description": "Remove the only test/witness reaching a new or changed component.",
+      "expected_detector": "readiness",
+      "failure_classification": "undetected_unmeasured_component",
+      "required_evidence": "behaviour-unit coverage showing the component unexercised"
+    },
+    {
+      "allowed_secondary_detectors": [],
+      "control_id": "NC-09-inaccessible-control",
+      "description": "Leave an inaccessible form control or blocking alert in the UI.",
+      "expected_detector": "strict_web_check",
+      "failure_classification": "undetected_accessibility_regression",
+      "required_evidence": "accessibility witness naming the unlabelled control or blocking dialog"
+    },
+    {
+      "allowed_secondary_detectors": [],
+      "control_id": "NC-10-output-ceiling-truncation",
+      "description": "Terminate a model response exactly at the configured output ceiling.",
+      "expected_detector": "ceiling_classifier",
+      "failure_classification": "misclassified_truncation",
+      "required_evidence": "stop reason classified as OUTPUT_CEILING_TRUNCATION, never model failure"
+    }
+  ],
+  "non_inferiority": {
+    "aggregate_proposal_quality_must_not_fall": true,
+    "efficiency_subordinate_to_quality": true,
+    "false_completions_permitted": 0,
+    "material_improvement_required": true,
+    "per_case_floor": "Capability Sandbox first-proposal acceptance quality must be >= the matched control for every required case.",
+    "per_case_regression_blocks_rollout": true,
+    "permitted_failure_or_ceiling_rate": 0.0
+  },
+  "phase0": {
+    "baseline_ruler_repairs": [
+      "absolute destination directory accepted (validated after normalisation)",
+      ".git not excluded when the file was named explicitly",
+      ".apoapsis not excluded when the file was named explicitly",
+      "read-loop detector blind to refused turns",
+      "relay unimportable on Windows, aborting collection"
+    ],
+    "counts_as_capability_sandbox_win": false,
+    "obsolete_test_mechanisms": [
+      "test_stale_worktree_digest_result_does_not_prove_current_code",
+      "test_untracked_new_file_creation_invalidates_earlier_proof"
+    ],
+    "qualification_platform": "Linux + Python 3.12",
+    "suite_history": [
+      {
+        "commit": "d50ddf2",
+        "failed": 6,
+        "note": "frozen baseline; not clean on the supported interpreter",
+        "passed": 1546,
+        "skipped": 11,
+        "subtests_passed": 0
+      },
+      {
+        "commit": "f68827e",
+        "failed": 6,
+        "note": "Slice 5A + Slice 6; identical failure set, no new failures",
+        "passed": 1625,
+        "skipped": 11,
+        "subtests_passed": 0
+      },
+      {
+        "commit": "bd5aea0",
+        "failed": 2,
+        "note": "Phase 0B baseline ruler repairs",
+        "passed": 1629,
+        "skipped": 11,
+        "subtests_passed": 0
+      },
+      {
+        "commit": "ad13cf0",
+        "failed": 0,
+        "note": "Phase 0C; qualification platform green",
+        "passed": 1631,
+        "skipped": 11,
+        "subtests_passed": 57
+      }
+    ],
+    "windows_status": "relay collection succeeds and Unix-only cases skip correctly (37 passed, 20 skipped); the full Windows suite stalls near 4% and is NOT a qualification pass"
+  },
+  "repetitions_per_case": 3,
+  "schema_version": "1.0",
+  "source_under_test_commit": "ad13cf0",
+  "stop_conditions": [
+    "identity_profile_readiness_containment_conformance_failed",
+    "controlled_variable_differs",
+    "evidence_cannot_be_written_durably",
+    "acceptance_obligations_unmapped",
+    "arms_received_different_task_information",
+    "ceiling_or_truncation_could_not_be_classified",
+    "an_earlier_arm_contaminated_the_next",
+    "source_or_seed_changed_after_freezing"
+  ]
+}

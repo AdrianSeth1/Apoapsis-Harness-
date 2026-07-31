@@ -1617,6 +1617,25 @@ already-qualified Slice 5C configuration, with the measured 32,536 trigger;
 seven optimisations are recorded as decisions, five rejected without
 benchmarking and two kept as candidates, and no sweep was run.
 
+**The Slice 7 qualification manifest is frozen (ADR 0085).**
+`src/apoapsis/qualification/` holds the experiment, written down while the
+outcome is unknown. Source under test `ad13cf0`; artifact at
+`docs/qualification/slice7-qualification-manifest.json`, digest
+`8c374827aa4ace9576ed9d2d2f0db04747f3b4fb05d425b10e6fc770454f3762`. Every model
+is immutable, and the digest excludes `manifest_commit` so committing the
+artifact cannot change it. Two scorecards with **no way to combine them** — a
+test scans the module's own symbols for one — and `ProposalScore` refuses
+construction when a repair was applied, so a repair cannot inflate the proposal
+score at data-entry time. `evaluate_gate` contains no arithmetic spanning cases,
+so an aggregate cannot offset a per-case regression even in principle; every
+abstention (`NOT_MEASURABLE`, `MISSING_EVIDENCE`, `UNCLASSIFIED_TRUNCATION`,
+`INFRASTRUCTURE_FAILURE`, `INCOMPARABLE`) fails the gate, and an omitted case
+blocks too. `check_pair` returns the mismatched field names rather than
+substituting a value. 8 cases x 3 repetitions = 24 paired executions (48
+arm-runs), 10 negative controls with mapped detectors, 15 Crisis Atlas
+must-pass requirements, 9 stop conditions. **`ready_for_inference()` is false:
+8 hashes still carry capture placeholders.**
+
 **Slice 6 is implemented (ADR 0084).** `workcell/plan_checkpoint.py` makes a
 repair a *state transition* rather than an edit. The Crisis Atlas trial's best
 result came from Codex repairing Qwen's work and was still not a deliverable,
