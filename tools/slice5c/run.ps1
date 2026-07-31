@@ -74,6 +74,15 @@ $provenance = [ordered]@{
 $provenance | ConvertTo-Json -Depth 6 | Set-Content -Encoding utf8 "$Eval\provenance.json"
 Write-Output "== provenance written to $Eval\provenance.json"
 
+# --- clean the run root ------------------------------------------------
+# Earlier failed runs leave the daemon-created mount sources behind, and a
+# missing bind-mount source is created by the daemon as a DIRECTORY -- so a
+# stale `controller/forwarder.py` comes back as a directory and every later
+# run dies writing to it. Start from nothing rather than from someone else's
+# wreckage.
+Write-Output "== cleaning $Root"
+docker run --rm --entrypoint sh -v /mnt/docker-desktop-disk/data:/d $Tag -c "rm -rf /d/$(Split-Path $Root -Leaf)"
+
 # --- run ---------------------------------------------------------------
 Write-Output "== RUN"
 & docker @argv
