@@ -276,7 +276,13 @@ def main() -> int:
 
         from apoapsis.workcell.controller import check_relay_readiness
 
-        readiness = check_relay_readiness(session.controller)
+        # The relay count is passed in so readiness can prove the round trip
+        # crossed the relay, not merely that something answered on loopback.
+        readiness = check_relay_readiness(
+            session.controller,
+            relay_requests_before=session.relay_request_count(),
+            relay_request_count=session.relay_request_count,
+        )
         write("stage1d-relay-readiness.json", readiness.model_dump(mode="json"))
         summary["stages"]["1d_relay_readiness"] = {
             "ready": readiness.ready,
