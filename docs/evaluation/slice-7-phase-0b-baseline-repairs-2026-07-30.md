@@ -8,9 +8,13 @@ fixed so that the qualification's own release gate means something.
 
 ## Result
 
-| | Before | After |
-|---|---|---|
-| Linux + Python 3.12, full suite | 6 failed, 1625 passed | **2 failed, 1629 passed** |
+> **Phase 0C followed and closed the remaining two.** Linux + Python 3.12 is now
+> **1631 passed, 11 skipped, 0 failed.** See the classification at the end of
+> this record.
+
+| | Before | After 0B | After 0C |
+|---|---|---|---|
+| Linux + Python 3.12, full suite | 6 failed, 1625 passed | 2 failed, 1629 passed | **0 failed, 1631 passed** |
 | Windows + Python 3.12, collection | **aborted the entire run** | **succeeds** |
 | Windows + Python 3.12, `test_workcell_relay.py` | not reached | 37 passed, 20 skipped |
 | Windows + Python 3.12, full suite | not reached | reaches ~4% then stalls — **new, separate finding, see below** |
@@ -167,4 +171,57 @@ matching the product's improved behaviour. That is a change to the test's
 mechanism, not just its expected value, which is more than Phase 0B's remit
 allows without explicit approval.
 
-Until then, Linux is at **2 failed, 1629 passed**, and Phase 1 remains blocked.
+## Phase 0C: the two tests corrected, invariant preserved
+
+Approved and done. Both tests now assert the invariant as the **sequence** it
+actually is, via `_assert_stale_digest_sequence`:
+
+1. **Digest-A evidence cannot prove digest B.** Asserted against
+   `compute_acceptance_coverage` directly — the public function whose
+   documented contract *is* the invariant — using the criteria the run itself
+   parsed, not a hand-built stand-in.
+2. **Visibly unproven before the sweep.** Given a results map with no entry for
+   the mapped command (exactly the digest-B state before the re-run), AC-1 is
+   `UNPROVEN` with reason *"has not yet been executed for the current worktree
+   state"*.
+3. **The sweep may re-run and produce digest-B evidence.** Asserted from the
+   durable report: the mapped command appears **at least twice** across
+   `verification_results`, and the proving execution's `started_at` is strictly
+   after the first execution's `finished_at` — so it post-dates the mutation
+   rather than preceding it.
+4. **Success must cite the new evidence.** Final coverage is `PROVEN` with
+   reason *"for the current worktree state"* and `evidence_reference` naming the
+   mapped command.
+
+Two further assertions the owner asked for:
+
+- **The digest genuinely moved** — `compute_worktree_fingerprint` on the report's
+  own worktree must show a non-empty tracked diff against HEAD or untracked
+  files present. Not a bare "is it a sha256" check.
+- **The old evidence cannot be smuggled back** — a results map carrying a pass
+  for a command that is not a configured acceptance check still leaves the
+  criterion `UNPROVEN`. The only path to `PROVEN` is an approved acceptance
+  command executed for the current state.
+
+Nothing was weakened: digest matching, the end-of-session verification sweep,
+and the three-strikes rule are all untouched. No product code changed in 0C.
+
+## Classification
+
+| Item | Class |
+|---|---|
+| Absolute destination accepted | **baseline ruler repair** |
+| `.git` not excluded | **baseline ruler repair** |
+| `.apoapsis` not excluded | **baseline ruler repair** |
+| Read-loop detector blind to refused turns | **baseline ruler repair** |
+| `test_stale_worktree_digest_result_does_not_prove_current_code` | **obsolete test mechanism; original stale-evidence invariant preserved** |
+| `test_untracked_new_file_creation_invalidates_earlier_proof` | **obsolete test mechanism; original stale-evidence invariant preserved** |
+| Relay unimportable on Windows | **baseline ruler repair** |
+
+**None of these is a Capability Sandbox win.** They are repairs to the
+instrument, made so that the qualification's own release gate — *"the
+deterministic suite must add no failures"* — measures something real. Counting
+any of them toward the harness defect-detection claim would be counting the
+ruler's calibration as a measurement.
+
+Linux is green. Phase 1 is unblocked. **No live inference has been run.**

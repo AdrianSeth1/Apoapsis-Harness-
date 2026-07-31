@@ -424,17 +424,25 @@ The remaining path, in order:
    `>= 4` streak bound that the product's own three-strikes stop rule makes
    unreachable, pinned to `== 3`.
 
-   **Two blockers remain.** The `test_acceptance_coverage` stale-evidence pair
-   still fails. The digest scoping is demonstrably working — the fingerprint
-   bumps and AC-1 is correctly `unproven` at the new digest — and the final
-   outcome differs only because `_final_verification_passed` re-runs the full
-   command set at session end, legitimately re-proving the criterion with
-   current evidence. That reading makes the tests' outcome assertion obsolete,
-   **and it was deliberately not acted on**: it resolves in the flattering
-   direction, and these two tests guard the exact property Slice 7 measures.
-   Separately, with collection unblocked the Windows suite now **stalls at ~4%**
-   — previously invisible, unbounded to diagnose, and recorded rather than
-   chased. See `docs/evaluation/slice-7-phase-0b-baseline-repairs-2026-07-30.md`;
+   **Phase 0C corrected the two stale-evidence tests** after owner review. They
+   now assert the invariant as the sequence it is: digest-A evidence cannot
+   prove digest B (asserted against `compute_acceptance_coverage` itself); the
+   criterion is visibly unproven for digest B before the sweep; the sweep may
+   re-run and produce digest-B evidence (the mapped command appears twice in
+   `verification_results`, the proving run strictly post-dating the mutation);
+   and success cites that new evidence. Plus: the digest must genuinely have
+   moved, and a pass for a non-acceptance command still cannot prove the
+   criterion. Digest matching, the final sweep and the three-strikes rule were
+   not weakened, and no product code changed in 0C.
+
+   **Linux + Python 3.12 is green: 1631 passed, 11 skipped, 0 failed.**
+   `compileall` and the CRLF-aware diff check pass. **Phase 1 is unblocked.**
+
+   **Windows, recorded accurately:** relay collection succeeds and Unix-only
+   cases skip correctly (37 passed, 20 skipped for that module), but full
+   Windows execution **stalls around 4% and is not a qualification pass**. Not
+   investigated in this phase by instruction. See
+   `docs/evaluation/slice-7-phase-0b-baseline-repairs-2026-07-30.md`;
 4. rollout and fallback **only if** non-inferiority passes.
 
 **Run the full deterministic suite on Python 3.11+ once, before qualification —

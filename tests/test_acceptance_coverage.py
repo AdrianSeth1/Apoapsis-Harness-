@@ -654,6 +654,115 @@ class AcceptanceCoverageTests(unittest.TestCase):
         "        # digest-bump-noop"
     )
 
+    #: `sha256("")` -- the tracked-diff hash of a worktree identical to HEAD.
+    _EMPTY_DIFF_SHA256 = (
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    )
+
+    def _assert_stale_digest_sequence(
+        self, report, mapped_command: str, specification
+    ) -> None:
+        """The stale-evidence invariant, asserted as the sequence it really is.
+
+        These two tests previously asserted `HUMAN_REVIEW_REQUIRED` with AC-1
+        `UNPROVEN` on the *final* report. That expectation was written before
+        the session gained an end-of-session full verification sweep, and the
+        sweep is not a weakening: it re-executes the mapped command against the
+        changed worktree and produces genuinely current evidence, so the run
+        legitimately completes.
+
+        What must not be lost is the invariant underneath, which is a sequence
+        rather than a single outcome:
+
+          1. evidence for digest A must not prove criteria at digest B;
+          2. before the final sweep, the affected criterion is visibly unproven
+             for digest B;
+          3. the sweep may re-run the required commands and produce digest-B
+             evidence;
+          4. a successful outcome is valid only if it cites that new evidence.
+
+        Steps 1 and 2 are asserted against `compute_acceptance_coverage`
+        directly -- the public function whose documented contract *is* the
+        invariant -- rather than through private session state. Steps 3 and 4
+        are asserted against the durable report.
+        """
+
+        from apoapsis.repository.fingerprint import compute_worktree_fingerprint
+
+        # -- 3: the sweep re-executed the mapped command at the new digest --
+        executions = [
+            command
+            for result in report.verification_results
+            for command in result.commands
+            if command.name == mapped_command
+        ]
+        self.assertGreaterEqual(
+            len(executions),
+            2,
+            "the mapped command must have run again after the worktree changed; "
+            "one execution would mean the final outcome rests on digest-A evidence",
+        )
+        self.assertEqual(executions[-1].status, VerificationStatus.PASSED)
+        self.assertGreater(
+            executions[-1].started_at,
+            executions[0].finished_at,
+            "the proving execution must post-date the mutation, not precede it",
+        )
+
+        # -- 4: the successful outcome cites current-state evidence ----------
+        self.assertEqual(report.outcome, TaskOutcome.COMPLETE)
+        coverage = {item.criterion_id: item for item in report.acceptance_coverage}
+        self.assertEqual(coverage["AC-1"].status, AcceptanceCoverageStatus.PROVEN)
+        self.assertIn("for the current worktree state", coverage["AC-1"].reason)
+        self.assertEqual(coverage["AC-1"].evidence_reference, mapped_command)
+
+        # -- the digest genuinely moved --------------------------------------
+        # Not a bare "it is a sha256" check: the fingerprint must show the tree
+        # standing away from HEAD, which is what made the earlier evidence
+        # stale in the first place.
+        self.assertIsNotNone(report.worktree_path)
+        fingerprint = compute_worktree_fingerprint(report.worktree_path)
+        self.assertTrue(
+            fingerprint.tracked_diff_sha256 != self._EMPTY_DIFF_SHA256
+            or fingerprint.untracked_files,
+            "the worktree must differ from HEAD; without a moved digest this "
+            "test proves nothing about staleness",
+        )
+
+        # -- 1 and 2: digest-A evidence cannot prove digest B ----------------
+        # The same specification and commands, given a results map that carries
+        # *no* entry for the mapped command -- which is exactly the state at
+        # digest B before the sweep re-runs it. A stale digest-A pass is simply
+        # not in this map, and must not leak in from anywhere else.
+        # `specification` arrives as the JSON the fake provider returned, which
+        # is the same text the runner itself parsed -- so this asserts against
+        # the criteria the run actually used, not a hand-built stand-in.
+        parsed = TaskSpecification.model_validate_json(specification)
+        before_sweep = compute_acceptance_coverage(
+            parsed,
+            self._stale_digest_config(local_turns=6).verification.commands,
+            {"sanity": VerificationStatus.PASSED},
+        )
+        by_id = {item.criterion_id: item for item in before_sweep}
+        self.assertEqual(by_id["AC-1"].status, AcceptanceCoverageStatus.UNPROVEN)
+        self.assertIn(
+            "has not yet been executed for the current worktree state",
+            by_id["AC-1"].reason,
+        )
+
+        # -- and reusing the old result cannot be smuggled back in -----------
+        # Passing a digest-A pass for a command *not* configured as acceptance
+        # still cannot prove the criterion; the only path to PROVEN is an
+        # approved acceptance command executed for the current state.
+        self.assertEqual(
+            compute_acceptance_coverage(
+                parsed,
+                self._stale_digest_config(local_turns=6).verification.commands,
+                {"sanity": VerificationStatus.PASSED, "not-configured": VerificationStatus.PASSED},
+            )[0].status,
+            AcceptanceCoverageStatus.UNPROVEN,
+        )
+
     # A result recorded against an earlier worktree digest must not prove
     # the current one: AC-1's mapped command passes once, the worktree then
     # changes (a new digest), and AC-1 must go back to UNPROVEN until it is
@@ -680,14 +789,7 @@ class AcceptanceCoverageTests(unittest.TestCase):
             ]
         )
         report = self._run(self._stale_digest_config(local_turns=6), fake)
-
-        self.assertEqual(report.outcome, TaskOutcome.HUMAN_REVIEW_REQUIRED)
-        coverage = {item.criterion_id: item for item in report.acceptance_coverage}
-        self.assertEqual(coverage["AC-1"].status, AcceptanceCoverageStatus.UNPROVEN)
-        self.assertIn(
-            "has not yet been executed", coverage["AC-1"].reason
-        )
-        self.assertEqual(coverage["AC-2"].status, AcceptanceCoverageStatus.PROVEN)
+        self._assert_stale_digest_sequence(report, "download-tests", spec)
 
     # The same script, continued one more turn: re-running the mapped
     # command at the new digest restores proof and reaches COMPLETE.
@@ -742,15 +844,8 @@ class AcceptanceCoverageTests(unittest.TestCase):
             ]
         )
         report = self._run(self._stale_digest_config(local_turns=6), fake)
-
-        self.assertEqual(report.outcome, TaskOutcome.HUMAN_REVIEW_REQUIRED)
-        self.assertIn(
-            "src/download_service/new_helper.py", report.files_changed
-        )
-        coverage = {item.criterion_id: item for item in report.acceptance_coverage}
-        self.assertEqual(coverage["AC-1"].status, AcceptanceCoverageStatus.UNPROVEN)
-        self.assertIn("has not yet been executed", coverage["AC-1"].reason)
-        self.assertEqual(coverage["AC-2"].status, AcceptanceCoverageStatus.PROVEN)
+        self.assertIn("src/download_service/new_helper.py", report.files_changed)
+        self._assert_stale_digest_sequence(report, "download-tests", spec)
 
     # The same script, continued one more turn: re-running the mapped
     # command against the worktree that now includes the new untracked
