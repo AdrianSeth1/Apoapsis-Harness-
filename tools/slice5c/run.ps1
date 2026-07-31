@@ -36,8 +36,16 @@ $imageId = (docker image inspect $Tag --format '{{.Id}}').Trim()
 $workcellId = (docker image inspect apoapsis-qwen-workcell:0.21.1 --format '{{.Id}}').Trim()
 
 # --- the container argv, recorded before it is run ---------------------
+# $Root must be mounted at the SAME path inside the controller. It is both
+# where the controller writes evidence and where it creates the bind-mount
+# sources the workcell container will use -- and a bind mount source path is
+# resolved by the daemon, not by the controller's namespace, so the two must
+# agree. Without this mount the controller's writes land in its own overlay
+# and disappear on --rm, while the daemon silently creates the mount sources
+# itself; the run then looks like it produced no evidence at all.
 $mounts = @(
   "-v", "/var/run/docker.sock:/var/run/docker.sock",
+  "-v", "${Root}:${Root}",
   "-v", "${Repo}:/src-repo:ro",
   "-v", "${Eval}:/probe:ro"
 )
