@@ -475,7 +475,37 @@ The remaining path, in order:
    repositories with tasks that exercise the capability each case name claims,
    then their task/criteria/command artifacts, then the canonical structured
    mount/verification/argv/repair objects. See
-   `docs/evaluation/slice-7-phase-1b-blocked-2026-07-30.md`;
+   `docs/evaluation/slice-7-phase-1b-blocked-2026-07-30.md`.
+
+   **Scope narrowed to a Crisis Atlas pilot (owner decision).** The eight-case
+   corpus is **deferred, not cancelled** — it remains required before Apoapsis
+   can become the default or claim broad non-inferiority. The pilot is one
+   case, three repetitions, two arms, six live arm-runs, and Crisis Atlas
+   influenced harness development, so it is a **regression benchmark rather
+   than held-out evidence**. A passing pilot supports only: *Apoapsis preserved
+   or improved Qwen's performance on the Crisis Atlas workload while adding
+   measurable protection against false completion.*
+
+   **Slice 7P.1a is done: artifact-backed resolution.**
+   `qualification/artifacts.py` closes the false-readiness defect found in
+   `cfe7df7`. A digest resolves only when the path exists, is a regular file,
+   stays inside the package root *after* following symlinks, is read byte by
+   byte, recomputes to the declared value, and matches its declared kind.
+   `ResolvedArtifact` is constructible only by `resolve_artifact`, so
+   "resolved" cannot be faked by assembling the model. `ArtifactKind` marks
+   evaluator-only kinds, so an oracle and a task text stop being
+   interchangeable UTF-8 files. `is_label_derived` recognises the draft's
+   `slice7::<case-id>::…` scheme for an accurate error, and a test asserts it
+   is a message improvement rather than the defence — an unrecognised label
+   hash still fails at the missing-file step.
+
+   **Still to do before the zero-token rehearsal:** the Crisis Atlas package
+   itself (seed, task text, contract, mapped criteria, verification commands,
+   evaluator-only assets, expected witnesses, three repetition seeds, budget
+   class, the historical incomplete Slice 2 candidate, a known-good reference,
+   and the discrimination rationale), its eight deterministic proofs, and the
+   separate pilot manifest. `unresolved_hashes()` = 8 and
+   `ready_for_inference()` = false, deliberately unchanged during 7A/7P.1;
 4. rollout and fallback **only if** non-inferiority passes.
 
 **Run the full deterministic suite on Python 3.11+ once, before qualification —

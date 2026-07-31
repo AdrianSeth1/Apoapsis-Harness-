@@ -1488,6 +1488,20 @@ identical between the two sides for a comparison to mean anything. The file is
 immutable and carries its own fingerprint, so adjusting it mid-experiment is
 visible rather than quiet.
 
+That lock had a flaw worth describing, because it is the kind that survives
+review. Each task in the plan was identified by a fingerprint, and the
+fingerprints were computed from the task's *name* rather than from any actual
+files. They looked exactly like real ones — same length, same characters — and
+referred to nothing at all. The system would have reported itself ready to run
+while most of the work it planned to measure did not exist. Fingerprints are
+now only accepted after the file is found, read, and re-fingerprinted, and a
+file that points outside its own package is refused.
+
+The comparison has also been narrowed for now to a single demanding workload
+rather than the full set, and that workload helped shape the tool being tested
+— so a good result there shows no regression on familiar ground, not general
+superiority.
+
 Two things it deliberately makes impossible. There is no single combined score,
 because one number lets a cheap saving cancel a real regression. And a run that
 produced no usable evidence is not a pass — missing evidence, an unreadable

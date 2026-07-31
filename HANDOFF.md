@@ -1617,6 +1617,25 @@ already-qualified Slice 5C configuration, with the measured 32,536 trigger;
 seven optimisations are recorded as decisions, five rejected without
 benchmarking and two kept as candidates, and no sweep was run.
 
+**The draft manifest carried a false-readiness defect, and `artifacts.py`
+closes it.** `cfe7df7` accepted `sha256("slice7::<case-id>::seed")` as a seed
+identity — a perfectly well-formed SHA-256 referring to nothing. Every per-case
+identity was built that way, so `ready_for_inference()` would have become true
+once eight unrelated placeholders were captured while 21 of 24 pairs still had
+no repository to clone. The fault was not the value; it was that a name and a
+measurement are both 64 hex characters and nothing could tell them apart.
+`qualification/artifacts.py` makes resolution a procedure over bytes: the path
+must exist, be a regular file, stay inside the package root *after* symlink
+resolution, be read, recompute to the declared digest, and match its declared
+kind. `ResolvedArtifact` is constructible only by `resolve_artifact`.
+`ArtifactKind.evaluator_side_only` stops an oracle and a task text being
+interchangeable UTF-8 files.
+
+**Scope is now a Crisis Atlas pilot**, three repetitions, two arms, six live
+arm-runs. The eight-case corpus is deferred and still required before default
+rollout or any broad non-inferiority claim. Crisis Atlas shaped the harness, so
+it is a regression benchmark, not held-out evidence.
+
 **The Slice 7 qualification manifest is frozen (ADR 0085).**
 `src/apoapsis/qualification/` holds the experiment, written down while the
 outcome is unknown. Source under test `ad13cf0`; artifact at
