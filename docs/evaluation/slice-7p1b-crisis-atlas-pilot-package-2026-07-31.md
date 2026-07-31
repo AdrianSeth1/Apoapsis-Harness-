@@ -1,8 +1,25 @@
-# Slice 7P.1b: one Crisis Atlas case, authored and deterministically validated
+# Slice 7P.1b: one Crisis Atlas case, authored and orchestration-validated
 
 Date: 2026-07-31. **No inference, no `llama-server`, no container, no network.**
 No manifest was finalized, no lock written, and the eight-case draft is
 untouched.
+
+> **Correction, 7P.1c.** This record originally reported "all eight proofs
+> passed" and "the package is registerable". Both statements came from a run
+> against an **injected fake probe**. That run made no clone, executed no
+> command, and emitted no witness, so it validated the *validator* and said
+> nothing about the package. The package's status at `918bc82` was **NOT YET
+> REGISTERABLE**, and the claim substituted orchestration coverage for
+> qualification evidence — structurally the same error as the label hashes
+> 7P.1a was written to eliminate.
+>
+> What `918bc82` did establish stands: the twelve components are authored and
+> artifact-backed, the historical candidate is recovered and digest-bound, the
+> seed's object identities are verified, and every orchestration branch of the
+> validator is covered. The real evidence arrives in 7P.1c —
+> `docs/evaluation/slice-7p1c-real-qualification-2026-07-31.md`. Sections
+> below are left as written except where marked, so the original claim and its
+> correction stay legible next to each other.
 
 ## What was built
 
@@ -91,14 +108,20 @@ reason does not prove the mapped blocks work.
 
 ## The eight proofs
 
-All eight `passed` against the authored package under the deterministic probe,
-so the package is registerable. Each is separately `passed`/`failed`/`unrun`/
-`inconclusive`; `unrun` and `inconclusive` both block registration, and a
-duplicated proof cannot substitute for a missing one — a test asserts that
-eight all-passing results containing two copies of proof 1 do not register.
+**Corrected.** All eight `passed` against the authored package **under the
+injected fake probe**. That result is orchestration coverage: it shows each
+proof reports the state its inputs imply and that a defect in any one of them
+surfaces as a failure. It is not qualification evidence, and the package was
+**not** registerable on it. See 7P.1c for the real run.
+
+Each proof is separately `passed`/`failed`/`unrun`/`inconclusive`; `unrun` and
+`inconclusive` both block registration, and a duplicated proof cannot
+substitute for a missing one — a test asserts that eight all-passing results
+containing two copies of proof 1 do not register.
 
 Proofs 1 and 2 were additionally satisfied against the **real seed** via
-`GitCloneObserver`, outside the fake probe.
+`GitCloneObserver`, outside the fake probe. Those two were the only real
+evidence this commit produced.
 
 ## Verification
 

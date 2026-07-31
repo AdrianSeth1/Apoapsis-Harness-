@@ -84,6 +84,33 @@ class ProofState(StrEnum):
         return self is not ProofState.PASSED
 
 
+class EvidenceKind(StrEnum):
+    """What a validation run's results are evidence *of*.
+
+    7P.1b reported "eight proofs passed" and "registerable" from a run against
+    an injected fake probe. Those results were real, and they proved something
+    real -- that the orchestration branches, and that a failure in any one of
+    them is reported as a failure. They did not prove anything about the
+    package, because no clone was made, no suite was run, and no witness was
+    emitted. The claim substituted orchestration coverage for qualification
+    evidence, which is the same class of error as substituting a label hash for
+    a measurement.
+
+    So the distinction is now a value the probe must declare, `registerable`
+    consults, and no caller can omit.
+    """
+
+    #: An injected probe. Proves the validator's branches, nothing about bytes.
+    ORCHESTRATION_ONLY = "orchestration_only"
+    #: Real clones, real commands, real witnesses, real filesystem.
+    REAL_QUALIFICATION = "real_qualification"
+
+
+class PackageStatus(StrEnum):
+    NOT_YET_REGISTERABLE = "not_yet_registerable"
+    REGISTERABLE = "registerable"
+
+
 class ProofResult(StrictModel):
     proof_id: ProofId
     state: ProofState
@@ -142,7 +169,15 @@ class CheckpointObservation(StrictModel):
 
 
 class PackageProbe(Protocol):
-    """The operations validation needs but must not perform itself."""
+    """The operations validation needs but must not perform itself.
+
+    `evidence_kind` is required rather than defaulted. A probe that forgot to
+    declare it would otherwise default to something, and whichever value were
+    chosen would be wrong half the time -- silently, in the direction of
+    whichever caller forgot.
+    """
+
+    evidence_kind: EvidenceKind
 
     def clone_seed(self, *, destination: Path) -> SeedObservation: ...
 
@@ -410,7 +445,13 @@ class CasePackageValidation(StrictModel):
 
     package_id: str
     package_digest: str
+    evidence_kind: EvidenceKind
     results: tuple[ProofResult, ...]
+    #: Fields excluded from the proof-8 comparison because they vary between
+    #: two correct runs. Declared per run and reported, never inferred: a
+    #: comparison that silently dropped whatever differed would pass by
+    #: construction.
+    volatile_evidence_fields: tuple[str, ...] = ()
 
     def result(self, proof_id: ProofId) -> ProofResult:
         for item in self.results:
@@ -423,8 +464,13 @@ class CasePackageValidation(StrictModel):
         return tuple(item for item in self.results if item.state.blocks_registration)
 
     @property
-    def registerable(self) -> bool:
-        """Eight distinct proofs, all ``PASSED``. Nothing weaker registers."""
+    def all_proofs_passed(self) -> bool:
+        """Eight distinct proofs, all ``PASSED``.
+
+        Named for what it measures. Under a fake probe this is true and means
+        only that the orchestration works, which is why it is no longer the
+        thing called `registerable`.
+        """
 
         reported = [item.proof_id for item in self.results]
         if sorted(reported) != sorted(ProofId):
@@ -432,6 +478,42 @@ class CasePackageValidation(StrictModel):
         if len(set(reported)) != len(reported):
             return False
         return not self.blocking
+
+    @property
+    def registerable(self) -> bool:
+        """Eight distinct real-qualification passes. Nothing weaker registers.
+
+        An orchestration-only run can never return true here however green it
+        is. That is the correction: 7P.1b called a fake-probe result
+        registerable, and the type system had nothing to say about it.
+        """
+
+        return (
+            self.evidence_kind is EvidenceKind.REAL_QUALIFICATION
+            and self.all_proofs_passed
+        )
+
+    @property
+    def status(self) -> PackageStatus:
+        return (
+            PackageStatus.REGISTERABLE
+            if self.registerable
+            else PackageStatus.NOT_YET_REGISTERABLE
+        )
+
+    def why_not_registerable(self) -> str:
+        if self.registerable:
+            return "registerable"
+        if self.evidence_kind is not EvidenceKind.REAL_QUALIFICATION:
+            return (
+                "this run used an orchestration-only probe. It validates the "
+                "validator, not the package: no clone was made, no command "
+                "ran, and no witness was emitted."
+            )
+        blocking = {str(item.proof_id): str(item.state) for item in self.blocking}
+        if blocking:
+            return f"real qualification did not pass every proof: {blocking}"
+        return "not every proof was reported exactly once"
 
     def summary(self) -> dict[str, str]:
         return {str(item.proof_id): str(item.state) for item in self.results}
@@ -758,7 +840,11 @@ def _run_seven(
 
 
 def validate_case_package(
-    package_root: Path, *, probe: PackageProbe, workspace: Path
+    package_root: Path,
+    *,
+    probe: PackageProbe,
+    workspace: Path,
+    volatile_evidence_fields: tuple[str, ...] = (),
 ) -> CasePackageValidation:
     """Resolve the package, then run all eight proofs.
 
@@ -781,10 +867,21 @@ def validate_case_package(
     # Proof 8 compares the two runs rather than asserting determinism from one.
     # A validator that ran once and declared the result reproducible would be
     # making the claim it was asked to check.
+    def comparable(evidence: dict[str, str]) -> dict[str, str]:
+        # Volatile fields are dropped only when the caller *declared* them. A
+        # comparison that discarded whatever happened to differ would agree
+        # with itself by construction.
+        return {
+            key: value
+            for key, value in evidence.items()
+            if key not in volatile_evidence_fields
+        }
+
     divergent = [
         str(left.proof_id)
         for left, right in zip(first, second, strict=True)
-        if left.state is not right.state or left.evidence != right.evidence
+        if left.state is not right.state
+        or comparable(left.evidence) != comparable(right.evidence)
     ]
     if divergent:
         second_pass = _failed(
@@ -808,6 +905,8 @@ def validate_case_package(
     return CasePackageValidation(
         package_id=package.package_id,
         package_digest=package.package_digest,
+        evidence_kind=probe.evidence_kind,
+        volatile_evidence_fields=volatile_evidence_fields,
         results=tuple([*first, second_pass]),
     )
 

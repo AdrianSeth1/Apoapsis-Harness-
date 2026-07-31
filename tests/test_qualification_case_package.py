@@ -26,8 +26,10 @@ from apoapsis.qualification.case_package import (
     CasePackageError,
     CheckpointObservation,
     CommandOutcome,
+    EvidenceKind,
     GitCloneObserver,
     GitObject,
+    PackageStatus,
     ProofId,
     ProofState,
     SeedObservation,
@@ -70,8 +72,14 @@ class FakeProbe:
 
     Every field is a knob a test turns to produce exactly one defect, so a
     failure names the property that broke rather than "something went wrong".
+
+    It declares `ORCHESTRATION_ONLY`, so every result in this module validates
+    the validator and nothing else. A package cannot be registered from here
+    however green the run is -- which is the correction to 7P.1b, where a
+    fake-probe pass was reported as qualification.
     """
 
+    evidence_kind: EvidenceKind = EvidenceKind.ORCHESTRATION_ONLY
     commit: str = SEED_COMMIT
     tree: str = SEED_TREE
     tree_type: str = "tree"
@@ -103,7 +111,11 @@ class FakeProbe:
     removal_still_satisfies: bool = False
     #: Values consumed one per clone, so the second validation can differ.
     per_clone_commit: list[str] = field(default_factory=list)
+    #: Varies proof 7's evidence while every proof's *state* stays identical --
+    #: which is the only shape a volatile field can legitimately have.
+    per_clone_fingerprint: list[str] = field(default_factory=list)
     _clones: int = 0
+    _checkpoints: int = 0
 
     def clone_seed(self, *, destination: Path) -> SeedObservation:
         if self.clone_raises:
@@ -155,6 +167,11 @@ class FakeProbe:
                 satisfied_criteria=(),
                 readiness_blocks=("MISSING_REQUIRED_ARTIFACT",),
             )
+        fingerprints = self.fingerprints
+        if self.per_clone_fingerprint and omit_path is None:
+            index = min(self._checkpoints, len(self.per_clone_fingerprint) - 1)
+            fingerprints = (self.per_clone_fingerprint[index],)
+            self._checkpoints += 1
         return CheckpointObservation(
             outcome=self.reference_outcome,
             satisfied_criteria=self.reference_criteria,
@@ -164,7 +181,7 @@ class FakeProbe:
                     exit_code=0,
                     worktree_fingerprint=value,
                 )
-                for index, value in enumerate(self.fingerprints)
+                for index, value in enumerate(fingerprints)
             ),
             emitter_failed=self.emitter_failed,
         )
@@ -209,15 +226,58 @@ class _PackageCase(unittest.TestCase):
 
 
 class AuthoredPackageTests(_PackageCase):
-    def test_the_authored_package_resolves_and_registers(self) -> None:
+    def test_the_authored_package_passes_every_orchestration_proof(self) -> None:
         validation = self.validate()
         self.assertEqual(
             validation.summary(),
             {str(proof): "passed" for proof in ProofId},
             validation.summary(),
         )
-        self.assertTrue(validation.registerable)
+        self.assertTrue(validation.all_proofs_passed)
         self.assertEqual(validation.blocking, ())
+
+    def test_eight_fake_passes_do_not_register_the_package(self) -> None:
+        """The 7P.1b defect, as a regression.
+
+        Every proof passes and the package is still not registerable, because
+        nothing was cloned, no command ran, and no witness was emitted. The
+        earlier report called this state "registerable"; the type system now
+        contradicts that rather than leaving it to a reader's care.
+        """
+
+        validation = self.validate()
+        self.assertTrue(validation.all_proofs_passed)
+        self.assertIs(validation.evidence_kind, EvidenceKind.ORCHESTRATION_ONLY)
+        self.assertFalse(validation.registerable)
+        self.assertIs(validation.status, PackageStatus.NOT_YET_REGISTERABLE)
+        self.assertIn("orchestration-only", validation.why_not_registerable())
+
+    def test_a_declared_volatile_field_is_excluded_from_proof_eight(self) -> None:
+        # Only declared fields are excluded. Dropping whatever happened to
+        # differ would make the determinism proof agree with itself.
+        varying = ["a" * 64, "b" * 64]
+        without = validate_case_package(
+            self.root,
+            probe=FakeProbe(per_clone_fingerprint=list(varying)),
+            workspace=self.workspace / "a",
+        )
+        # Every state agrees; only proof 7's evidence differs, and undeclared
+        # that is a determinism failure.
+        self.assertIs(
+            without.result(ProofId.SECOND_FRESH_CLONE_IS_IDENTICAL).state,
+            ProofState.FAILED,
+        )
+        declared = validate_case_package(
+            self.root,
+            probe=FakeProbe(per_clone_fingerprint=list(varying)),
+            workspace=self.workspace / "b",
+            volatile_evidence_fields=("fingerprint",),
+        )
+        self.assertIs(
+            declared.result(ProofId.SECOND_FRESH_CLONE_IS_IDENTICAL).state,
+            ProofState.PASSED,
+        )
+        self.assertEqual(declared.volatile_evidence_fields, ("fingerprint",))
 
     def test_every_proof_is_reported_exactly_once(self) -> None:
         validation = self.validate()
@@ -241,7 +301,7 @@ class AuthoredPackageTests(_PackageCase):
         # containment proof is simply absent.
         self.assertEqual(len(duplicated.results), 8)
         self.assertTrue(all(item.state is ProofState.PASSED for item in duplicated.results))
-        self.assertFalse(duplicated.registerable)
+        self.assertFalse(duplicated.all_proofs_passed)
 
     def test_an_unrun_proof_blocks_registration(self) -> None:
         validation = self.validate(FakeProbe(clone_raises="no seed on this host"))
@@ -249,7 +309,7 @@ class AuthoredPackageTests(_PackageCase):
             validation.result(ProofId.FRESH_CLONE_REPRODUCES_SEED).state,
             ProofState.UNRUN,
         )
-        self.assertFalse(validation.registerable)
+        self.assertFalse(validation.all_proofs_passed)
 
     def test_an_inconclusive_proof_blocks_registration(self) -> None:
         validation = self.validate(FakeProbe(inherited_exit=1))
@@ -257,7 +317,7 @@ class AuthoredPackageTests(_PackageCase):
             validation.result(ProofId.INHERITED_TEST_STATE_RECORDED).state,
             ProofState.INCONCLUSIVE,
         )
-        self.assertFalse(validation.registerable)
+        self.assertFalse(validation.all_proofs_passed)
 
 
 class ArtifactIntegrityTests(_PackageCase):
@@ -535,7 +595,7 @@ class ProofBehaviourTests(_PackageCase):
         result = validation.result(ProofId.INCOMPLETE_CANDIDATE_CANNOT_COMPLETE)
         self.assertIs(result.state, ProofState.FAILED)
         self.assertIn("regression", result.detail)
-        self.assertFalse(validation.registerable)
+        self.assertFalse(validation.all_proofs_passed)
 
     def test_a_refusal_for_the_wrong_reason_fails_proof_six(self) -> None:
         # Refused, but only for the missing artifact. The unexercised-behaviour
@@ -593,7 +653,7 @@ class ProofBehaviourTests(_PackageCase):
             validation.result(ProofId.SECOND_FRESH_CLONE_IS_IDENTICAL).state,
             ProofState.FAILED,
         )
-        self.assertFalse(validation.registerable)
+        self.assertFalse(validation.all_proofs_passed)
 
 
 class ObjectTypeTests(_PackageCase):

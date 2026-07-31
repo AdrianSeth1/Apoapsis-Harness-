@@ -520,12 +520,38 @@ The remaining path, in order:
    with an export service and a full suite; that is the post-Codex-repair
    state and is deliberately unused.
 
+   **Slice 7P.1c supplies the real evidence, and corrects 7P.1b.** `918bc82`
+   reported eight passing proofs and a registerable package from a run against
+   an **injected fake probe** — nothing cloned, no command run, no witness
+   emitted. That validated the validator; the package was **NOT YET
+   REGISTERABLE** there. `EvidenceKind` now separates `ORCHESTRATION_ONLY` from
+   `REAL_QUALIFICATION`, the probe must declare it, and `registerable` requires
+   the latter, so a fake-probe pass cannot be reported as qualification again.
+   `real_probe.py` drives the existing checkpoint/witness machinery over fresh
+   clones, and **all eight proofs now pass on real evidence** — including the
+   historical candidate reaching `CONTINUE` with the acceptance command green,
+   and two independent clone runs producing identical candidate fingerprints.
+
+   **Canonical suite results are Linux/ext4/CPython 3.12 with the venv
+   activated: 1756 tests, zero failures, 12 skipped.** `/mnt/c` results are a
+   portability finding and never the qualification result.
+
+   **Known portability weakness, deliberately not fixed here.** 25 fixture
+   sites across 16 test modules configure verification commands as
+   `argv=["python", ...]`. Ubuntu ships no `python`, so running the suite via
+   `.venv/bin/python` by absolute path — rather than activating the venv —
+   leaves it off `PATH` and fails `test_context_measurement_integration` and
+   `test_specification_correction` for a purely environmental reason.
+   `sys.executable` would be correct everywhere. Repairing 16 modules is not
+   qualification work and would mean editing tests to suit a runner; it is
+   recorded here so the next person does not re-diagnose it.
+
    **Still to do (Slice 7P.2):** capture model/server/Qwen/workcell identities
    without inference; author the separate Crisis Atlas pilot manifest; bind the
    three paired executions; resolve every controlled variable; write the
-   immutable pilot lock. `PackageProbe.run_checkpoint` still has no production
-   implementation — `GitCloneObserver` does the real clone half, and wiring the
-   checkpoint half to a live workcell belongs to 7P.2. The original eight-case
+   immutable pilot lock. `PackageProbe.run_checkpoint` now has a real
+   implementation in `real_probe.py`, offline and model-free; what 7P.2 adds is
+   the *live workcell* path and the runtime identities. The original eight-case
    manifest stays a deferred historical draft: `unresolved_hashes()` = 8 and
    `ready_for_inference()` = false, deliberately unchanged through 7A/7P.1;
 4. rollout and fallback **only if** non-inferiority passes.

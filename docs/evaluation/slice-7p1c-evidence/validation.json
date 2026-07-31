@@ -1,0 +1,72 @@
+{
+  "evidence_kind": "real_qualification",
+  "package_digest": "993e7a5610f09f0ee5aedf7bd1d35580cb8c169840ab0ecbc6b55e9c102514e8",
+  "package_id": "crisis-atlas-pilot",
+  "results": [
+    {
+      "detail": "a fresh clone reproduced the declared commit and tree, and both carry their declared Git object types",
+      "evidence": {
+        "commit": "197b3610e5720cf36718c548fa19c05fe784a978",
+        "tree": "02fb45efeb4e19c619e3f730bd05a1f70bef9f13"
+      },
+      "proof_id": "fresh_clone_reproduces_seed",
+      "state": "passed"
+    },
+    {
+      "detail": "neither declared service path nor either declared symbol exists in the seed, so the task asks for behaviour that is genuinely absent",
+      "evidence": {},
+      "proof_id": "requested_behaviour_absent_from_seed",
+      "state": "passed"
+    },
+    {
+      "detail": "the inherited suite passes and its coverage reaches none of the declared service paths, which is the false-green shape this case exists to detect",
+      "evidence": {
+        "covered": "crisis_atlas/__init__.py,tests/__init__.py,tests/test_smoke.py",
+        "exit_code": "0"
+      },
+      "proof_id": "inherited_test_state_recorded",
+      "state": "passed"
+    },
+    {
+      "detail": "the known-good reference satisfies every mapped criterion and reaches COMPLETE. It is evaluator reference material, not a model achievement.",
+      "evidence": {
+        "outcome": "COMPLETE"
+      },
+      "proof_id": "reference_satisfies_every_criterion",
+      "state": "passed"
+    },
+    {
+      "detail": "each of the 2 declared removals failed exactly the criterion it is mapped to",
+      "evidence": {},
+      "proof_id": "removal_fails_its_mapped_criterion",
+      "state": "passed"
+    },
+    {
+      "detail": "the historical candidate reached CONTINUE with 1 configured command(s) passing, blocked independently by ['CHANGED_BEHAVIOUR_UNEXERCISED', 'MISSING_REQUIRED_ARTIFACT']",
+      "evidence": {
+        "outcome": "CONTINUE",
+        "passing_commands": "unit-tests"
+      },
+      "proof_id": "incomplete_candidate_cannot_complete",
+      "state": "passed"
+    },
+    {
+      "detail": "every witness is bound to one admitted-snapshot fingerprint",
+      "evidence": {
+        "fingerprint": "122b7e35035d8573b997395cf5aebbc21be927d6cddaf0030737ba0da5a297a9"
+      },
+      "proof_id": "witnesses_bound_to_admitted_snapshot",
+      "state": "passed"
+    },
+    {
+      "detail": "a second fresh clone produced identical outcomes and identical evidence identities for all seven preceding proofs",
+      "evidence": {},
+      "proof_id": "second_fresh_clone_is_identical",
+      "state": "passed"
+    }
+  ],
+  "volatile_evidence_fields": [
+    "workspace",
+    "duration_seconds"
+  ]
+}

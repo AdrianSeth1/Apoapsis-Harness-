@@ -1225,6 +1225,22 @@ reference candidate, and a deliberately incomplete one. All twelve are
 mandatory. None may default, because a package whose oracle quietly defaulted
 to empty would register while proving nothing.
 
+**Orchestration coverage is not qualification evidence.** A validation run
+declares which it is, and the probe must say so:
+
+```python
+class EvidenceKind(StrEnum):
+    ORCHESTRATION_ONLY = "orchestration_only"    # injected probe
+    REAL_QUALIFICATION = "real_qualification"    # clones, commands, witnesses
+```
+
+A run against an injected probe can pass every proof — that is worth having,
+because it shows each proof reports what its inputs imply — and it still cannot
+register a package, because nothing was cloned, no command ran and no witness
+was emitted. `all_proofs_passed` is the honest name for that result;
+`registerable` additionally requires `REAL_QUALIFICATION`. Slice 7P.1b reported
+a fake-probe pass as "registerable", and this is the correction.
+
 `validate_case_package` reports **eight separate proofs**, each `passed`,
 `failed`, `unrun` or `inconclusive`:
 
@@ -1253,6 +1269,22 @@ known-good reference is **evaluator material, not a model achievement**, and
 says so. Crisis Atlas is a regression benchmark: its failure mode was known
 before these acceptance rules were written, so a result here cannot establish
 non-inferiority on anything else.
+
+`RealCasePackageProbe` (`qualification/real_probe.py`) is the real
+implementation. It clones the seed twice per checkpoint — base and candidate
+independently, so a defect in a copy cannot appear as a delta the checkpoint
+blames on the model — and drives the same `run_checkpoint`, `admit_candidate`
+and `emit_test_witness` the Capability Sandbox uses. Coverage is measured with
+the standard library `trace` module rather than `coverage.py`, so no proof
+reports `unrun` for want of an optional dependency, and the witness records
+`collection_method` accordingly. Nothing opens a socket; the environment is
+scrubbed of proxy variables and runs with `PYTHONDONTWRITEBYTECODE=1`.
+
+Under real qualification the shipped package passes all eight proofs and is
+registerable. Raw evidence — the full `CheckpointRecord` per checkpoint, the
+inherited-suite result and its coverage artifact — is persisted outside the
+ephemeral clones, because a qualification that deleted its own evidence would
+leave the claim and remove the reason to believe it.
 
 ## Capability Sandbox workcell (ADR 0077, experimental and gate-blocked)
 
