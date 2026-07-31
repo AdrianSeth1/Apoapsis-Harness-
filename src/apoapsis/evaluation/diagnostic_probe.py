@@ -351,7 +351,22 @@ def summarize_diagnostic_probe(
     seen_inspection_keys: set[tuple[str, str]] = set()
     for item in turn_records:
         key = (item.action, item.summary)
-        if item.accepted and item.action in _NO_PROGRESS_ACTIONS:
+        # `accepted` is deliberately NOT required any more, and dropping it
+        # fixes a blind spot rather than loosening the rule.
+        #
+        # The harness now refuses a repeated inspection that adds no evidence,
+        # and it stops a session that keeps trying. Both are improvements. But
+        # a refused read is recorded as a turn whose summary is the *rejection
+        # message*, so the read loop this field exists to name stopped
+        # appearing in it entirely: every looping turn was `accepted=False`,
+        # the condition excluded them, and the field reported `None` while the
+        # model sat in exactly the loop the D4b forensic analysis was about.
+        #
+        # A refused repeated inspection is the strongest available evidence of
+        # no progress -- the harness refused it *because* it added nothing. The
+        # verification actions this docstring warns about are excluded by
+        # `_NO_PROGRESS_ACTIONS` and are unaffected either way.
+        if item.action in _NO_PROGRESS_ACTIONS:
             if key in seen_inspection_keys and not item.evidence_ids:
                 first_no_progress_turn = item.turn
                 break

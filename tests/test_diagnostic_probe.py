@@ -611,7 +611,17 @@ class RunSingleSliceDiagnosticProbeTests(_SingleSlicePlanMixin, PlanningEvaluati
         self.assertFalse(result.behavior.invoked_run_check)
         self.assertFalse(result.behavior.invoked_submit_for_verification)
         self.assertIsNotNone(result.behavior.first_no_progress_turn)
-        self.assertGreaterEqual(result.behavior.max_identical_action_streak, 4)
+        # Was `>= 4`, which is now structurally unreachable rather than merely
+        # unmet. The harness stops this session itself, with the stop reason
+        # "coding model repeated prohibited no-progress repository observations
+        # **three times** without making progress" -- so a fourth identical turn
+        # cannot be recorded, by the product's own rule. The old bound was
+        # written when the loop ran to the turn cap.
+        #
+        # Pinned to exactly 3 rather than relaxed to `>= 3`: the number is the
+        # three-strikes rule, and a test that tolerated 4 would stop noticing if
+        # the stop ever regressed to firing late.
+        self.assertEqual(result.behavior.max_identical_action_streak, 3)
         self.assertEqual(result.report.outcome, TaskOutcome.HUMAN_REVIEW_REQUIRED)
 
 

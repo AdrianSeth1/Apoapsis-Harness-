@@ -435,11 +435,36 @@ class _RelayHandler(BaseHTTPRequestHandler):
             pass
 
 
-class _UnixHTTPServer(socketserver.ThreadingUnixStreamServer):
+class UnixSocketUnsupportedError(RuntimeError):
+    """Raised when a Unix-socket relay is *constructed* on a host without one."""
+
+
+#: `socketserver.ThreadingUnixStreamServer` does not exist on Windows, and
+#: subclassing it at import time made this whole module unimportable there.
+#: That was not a contained problem: `tests/test_workcell_relay.py` failed
+#: during *collection*, which aborts the entire pytest run, so the complete
+#: deterministic suite could not be executed on a Windows host at all -- and the
+#: release gate reads "the deterministic suite must add no failures".
+#:
+#: Falling back to `object` keeps import and collection working everywhere. The
+#: capability itself is not faked: construction refuses, so a Windows host gets
+#: a clear error at the point of use rather than a relay that appears to exist.
+_UnixStreamServerBase = getattr(socketserver, "ThreadingUnixStreamServer", object)
+
+_UNIX_SOCKETS_AVAILABLE = hasattr(socketserver, "ThreadingUnixStreamServer")
+
+
+class _UnixHTTPServer(_UnixStreamServerBase):  # type: ignore[misc,valid-type]
     daemon_threads = True
     request_queue_size = 16
 
     def __init__(self, socket_path: str, state: _RelayState) -> None:
+        if not _UNIX_SOCKETS_AVAILABLE:
+            raise UnixSocketUnsupportedError(
+                "the controller-owned relay requires Unix domain sockets, "
+                "which this host does not provide; run the workcell on Linux. "
+                "See workcell/platform_support.assess_socket_support."
+            )
         self.state = state
         super().__init__(socket_path, _RelayHandler)
 

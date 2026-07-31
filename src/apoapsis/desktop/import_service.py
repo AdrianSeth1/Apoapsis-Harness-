@@ -41,6 +41,19 @@ class _CandidateFile:
     absolute_source: Path
     relative_destination: str
     is_symlink: bool
+    #: What the exclusion rules are evaluated against.
+    #:
+    #: Not the same string as `relative_destination`, and that difference is a
+    #: fixed defect rather than a nicety. An explicitly named source file is
+    #: destined for `<dest>/<basename>`, so a file chosen from inside `.git`
+    #: arrived at the exclusion check as `HEAD` -- the `.git` parent had already
+    #: been dropped, and the directory exclusion could not see it. Walked
+    #: directories were pruned correctly, so the hole opened only for the case
+    #: an operator is most likely to hit: picking the file directly.
+    exclusion_probe: str = ""
+
+    def probe(self) -> str:
+        return self.exclusion_probe or self.relative_destination
 
 
 class _PreviewState:
@@ -88,13 +101,20 @@ class DesktopImportService:
     ) -> dict[str, Any]:
         project_root = self._project_service.resolve_session(session_id)
 
-        destination_relative_dir = destination_relative_dir.strip("/")
+        # Validated BEFORE normalisation, which is the whole fix. This used to
+        # `.strip("/")` first, so `/etc` became `etc` and then passed a
+        # validator whose first rule is `startswith("/") -> False`. The
+        # normalisation destroyed the exact property the check exists to test,
+        # and the absolute-destination test has been failing ever since.
         if destination_relative_dir and not is_safe_destination_relative_path(
             destination_relative_dir
         ):
             raise ImportSafetyError(
                 f"unsafe destination directory: {destination_relative_dir!r}"
             )
+        # Trailing separators are cosmetic and are still normalised away; a
+        # leading one is not cosmetic and no longer reaches this line.
+        destination_relative_dir = destination_relative_dir.rstrip("/")
         # Validates containment even for the "no subdirectory" case, so a
         # later per-file join can never be the first containment check.
         # Resolved only to validate containment and to record in the
@@ -130,7 +150,7 @@ class DesktopImportService:
                 skipped_count += 1
                 continue
 
-            exclusion_reason = hard_exclusion_reason(candidate.relative_destination)
+            exclusion_reason = hard_exclusion_reason(candidate.probe())
             if exclusion_reason is not None:
                 entries.append(
                     ImportFileEntry(
@@ -382,9 +402,23 @@ class DesktopImportService:
                             destination_relative_dir, source_path.name
                         ),
                         is_symlink=False,
+                        # The immediate parent, so a file selected from inside
+                        # `.git`, `.apoapsis`, `node_modules` or a build
+                        # directory is still recognised as coming from one. Only
+                        # the immediate parent: walking further up would start
+                        # matching the operator's own directory names, which
+                        # have nothing to do with what is being imported.
+                        exclusion_probe=DesktopImportService._exclusion_probe(
+                            source_path
+                        ),
                     )
                 )
         return candidates
+
+    @staticmethod
+    def _exclusion_probe(source_path: Path) -> str:
+        parent = source_path.parent.name
+        return f"{parent}/{source_path.name}" if parent else source_path.name
 
     @staticmethod
     def _walk_directory(

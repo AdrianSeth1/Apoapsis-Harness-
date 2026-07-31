@@ -408,8 +408,33 @@ The remaining path, in order:
    (zero on 3.12). Separately, the suite **cannot run on Windows at all**
    (`ThreadingUnixStreamServer`), so it has never been observed green in any one
    environment and the supported platform is undocumented. No live inference was
-   run. See `docs/evaluation/slice-7-phase-0-freeze-2026-07-30.md` for the
-   owner decision that unblocks this;
+   run. See `docs/evaluation/slice-7-phase-0-freeze-2026-07-30.md`.
+
+   **Phase 0B repaired four of the six** as pre-qualification baseline fixes,
+   not Capability Sandbox wins: the absolute-destination check ran *after* the
+   normalisation that removed the leading slash; `.git`/`.apoapsis` exclusion
+   was evaluated against the destination basename, so a file picked from inside
+   `.git` lost its parent before the check saw it (walked directories were
+   pruned correctly, so only the operator's most likely path was exposed); and
+   the read-loop detector required `accepted`, which excluded every turn of a
+   loop the harness now *refuses*. `relay.py` no longer subclasses
+   `ThreadingUnixStreamServer` at import, so Windows collection succeeds instead
+   of aborting the whole run. Linux + Python 3.12 is now **2 failed, 1629
+   passed**. Exactly one expectation was changed, justified individually: a
+   `>= 4` streak bound that the product's own three-strikes stop rule makes
+   unreachable, pinned to `== 3`.
+
+   **Two blockers remain.** The `test_acceptance_coverage` stale-evidence pair
+   still fails. The digest scoping is demonstrably working — the fingerprint
+   bumps and AC-1 is correctly `unproven` at the new digest — and the final
+   outcome differs only because `_final_verification_passed` re-runs the full
+   command set at session end, legitimately re-proving the criterion with
+   current evidence. That reading makes the tests' outcome assertion obsolete,
+   **and it was deliberately not acted on**: it resolves in the flattering
+   direction, and these two tests guard the exact property Slice 7 measures.
+   Separately, with collection unblocked the Windows suite now **stalls at ~4%**
+   — previously invisible, unbounded to diagnose, and recorded rather than
+   chased. See `docs/evaluation/slice-7-phase-0b-baseline-repairs-2026-07-30.md`;
 4. rollout and fallback **only if** non-inferiority passes.
 
 **Run the full deterministic suite on Python 3.11+ once, before qualification —
