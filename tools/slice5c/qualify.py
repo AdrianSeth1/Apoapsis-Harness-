@@ -172,7 +172,7 @@ def build_config(seed_commit: str, task_sha: str) -> dict:
     return payload
 
 
-def stage_1_containment(session: LiveWorkcellSession) -> dict:
+def stage_1_containment(session: LiveWorkcellSession, digest: str) -> dict:
     """Containment before anything is spent. Zero model tokens."""
     observations = []
     for probe in DEFAULT_CONTAINMENT_PROBES:
@@ -182,7 +182,7 @@ def stage_1_containment(session: LiveWorkcellSession) -> dict:
         observations.append(
             classify_probe(probe, exit_code=code, stdout=stdout, stderr=stderr)
         )
-    report = evaluate_containment(observations)
+    report = evaluate_containment(observations, workcell_manifest_digest=digest)
     write("stage1-containment.json", report.model_dump(mode="json"))
     return {"passed": report.passed, "detail": report.detail}
 
@@ -252,7 +252,9 @@ def main() -> int:
     summary: dict = {"upstream": UPSTREAM, "stages": {}}
 
     with LiveWorkcellSession(config) as session:
-        summary["stages"]["1_containment"] = stage_1_containment(session)
+        summary["stages"]["1_containment"] = stage_1_containment(
+            session, config.pin.manifest_digest()
+        )
         if not summary["stages"]["1_containment"]["passed"]:
             write("summary.json", summary | {"verdict": "CONTAINMENT_FAILED"})
             return 3
