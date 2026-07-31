@@ -1,0 +1,75 @@
+{
+  "approval_mode": "yolo",
+  "bundle_match_caveat": "string search over the installed package; matches vendored files too, so this is not the realised tool surface",
+  "bundle_tool_name_matches": [
+    "agent",
+    "computer_use",
+    "edit",
+    "glob",
+    "grep_search",
+    "list_agents",
+    "list_directory",
+    "notebook_edit",
+    "read_file",
+    "run_shell_command",
+    "skill",
+    "todo_write",
+    "tool_search",
+    "write_file"
+  ],
+  "computer_use_disabled_in_settings": true,
+  "computer_use_enabled": false,
+  "expected_tool_names": [
+    "agent",
+    "edit",
+    "glob",
+    "grep_search",
+    "list_agents",
+    "list_directory",
+    "notebook_edit",
+    "read_file",
+    "run_shell_command",
+    "skill",
+    "todo_write",
+    "tool_search",
+    "write_file"
+  ],
+  "files_added": [
+    "calc/__pycache__/__init__.cpython-311.pyc",
+    "calc/__pycache__/arithmetic.cpython-311.pyc",
+    "calc/arithmetic.py",
+    "tests/__pycache__/test_arithmetic.cpython-311.pyc",
+    "tests/test_arithmetic.py"
+  ],
+  "files_after": [
+    "TASK.md",
+    "calc/__init__.py",
+    "calc/__pycache__/__init__.cpython-311.pyc",
+    "calc/__pycache__/arithmetic.cpython-311.pyc",
+    "calc/arithmetic.py",
+    "tests/__init__.py",
+    "tests/__pycache__/test_arithmetic.cpython-311.pyc",
+    "tests/test_arithmetic.py"
+  ],
+  "files_before": [
+    "TASK.md",
+    "calc/__init__.py",
+    "tests/__init__.py"
+  ],
+  "label": "LIVE_ENGINEERING_SMOKE - NOT QUALIFICATION EVIDENCE",
+  "qwen_identity": {
+    "name": "@qwen-code/qwen-code",
+    "version": "0.21.1"
+  },
+  "relay_requests_after": 7,
+  "relay_requests_before": 3,
+  "relay_requests_for_task": 4,
+  "settings_sha256": "85b56cf1f1ee66175a68a0e5c817f8e6dd3822378709e6c1924c660a1ce69f8c",
+  "tool_search_enabled": false,
+  "verdict": "LIVE_ENGINEERING_SMOKE_PASSED",
+  "verification_exit_code": 0,
+  "verification_output": "...\n----------------------------------------------------------------------\nRan 3 tests in 0.000s\n\nOK\n",
+  "worktree_changed": true,
+  "worktree_fingerprint_after": "e7a467e9ae94f5299e0f86f3bece8b98993a0bb53f48bca0648432aca1bef3e1",
+  "worktree_fingerprint_before": "d62f607c12746c5c43166ebdccc2d3563ba6a0440234e55a01591ed5b2ca8782"
+}
