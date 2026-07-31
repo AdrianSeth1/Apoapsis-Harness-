@@ -471,6 +471,9 @@ class RelayEndToEndTests(unittest.TestCase):
         self.assertEqual(status, 403)
         self.assertIn(b"apoapsis_relay_refused", body)
         self.assertEqual(self.upstream.requests, [])
+        # The relay records on its handler thread, after the response is
+        # written, so reading stats straight after the call races it.
+        self.assertTrue(relay.wait_for_records(1))
         self.assertEqual(relay.stats.requests_refused, 1)
 
     def test_an_arbitrary_upstream_attempt_is_refused(self) -> None:
@@ -526,6 +529,7 @@ class RelayEndToEndTests(unittest.TestCase):
         status, body = self._request("GET", "/v1/models")
         self.assertEqual(status, 502)
         self.assertIn(b"apoapsis_relay_refused", body)
+        self.assertTrue(relay.wait_for_records(1))
         self.assertEqual(
             relay.stats.records[0].rejection, RelayRejection.CROSS_ORIGIN_REDIRECT
         )
@@ -572,7 +576,20 @@ class RelayEndToEndTests(unittest.TestCase):
         self.assertEqual(relay.stats.cancellations, 1)
         # The upstream connection was closed rather than drained, so the model
         # server's slot is free instead of generating for nobody.
-        self.assertTrue(self.upstream.stream_aborted)
+        #
+        # `stream_aborted` is set by the fake upstream's *own* thread, when its
+        # next write fails on the socket the relay closed -- and it writes on a
+        # 5ms cadence. Waiting only for `relay.stats.records` therefore stopped
+        # one event too early: the record is appended by the relay thread
+        # before the far end has noticed anything, so the assertion could run
+        # in the gap. That was the intermittent, and it was this wait, not the
+        # relay. Wait for the event actually being asserted.
+        while time.monotonic() < deadline and not self.upstream.stream_aborted:
+            time.sleep(0.05)
+        self.assertTrue(
+            self.upstream.stream_aborted,
+            "the upstream stream was never released within the deadline",
+        )
 
     def test_an_unreachable_upstream_is_a_502_not_a_hang(self) -> None:
         relay = ModelRelay(

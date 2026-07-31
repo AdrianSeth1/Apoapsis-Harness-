@@ -686,6 +686,71 @@ class ColdWarmProtocol(StrictModel):
     incomparable_if_state_not_equivalent: Literal[True] = True
 
 
+class PilotAuthority(StrictModel):
+    """The executables that may decide a verdict, bound by committed bytes.
+
+    Added in schema 2.0 because 7P.3 could not rehearse: schema 1.0 bound no
+    runner at all, so any runner written afterwards would have been unbound
+    code deciding an experimental outcome. `verify_authority` checks these
+    against Git objects, never the working tree.
+    """
+
+    authority_commit: str = Field(pattern=_GIT40)
+    bound_modules: tuple[dict[str, str], ...] = Field(min_length=4)
+    fake_provider_script_sha256: str = Field(pattern=_SHA256)
+    rationale: str = Field(min_length=1)
+
+
+class Supersession(StrictModel):
+    """What this manifest replaces, and why the replaced pair was invalid.
+
+    The superseded artifacts are preserved rather than edited. Rewriting them
+    to look correct would destroy the record of what was actually locked when,
+    which is the only reason anyone can now say the old pair was never
+    rehearsed and never authorised anything.
+    """
+
+    manifest_path: str = Field(min_length=1)
+    manifest_digest: str = Field(pattern=_SHA256)
+    manifest_commit: str = Field(min_length=7)
+    lock_path: str = Field(min_length=1)
+    lock_digest: str = Field(pattern=_SHA256)
+    lock_commit: str = Field(min_length=7)
+    status: Literal["superseded"] = "superseded"
+    ever_rehearsed: Literal[False] = False
+    ever_authorized_for_live_inference: Literal[False] = False
+    invalid_because: tuple[str, ...] = Field(min_length=1)
+    preserved_not_edited: Literal[True] = True
+
+
+class PackageEvidenceReuse(StrictModel):
+    """Whether the eight real proofs were reused, and on what evidence.
+
+    Reuse is permitted only when the modules that produced the evidence are
+    byte-identical between authorities. Comparing commits would be too strict
+    and comparing behaviour too weak; comparing blobs is the actual question.
+    """
+
+    reused: bool
+    reason: str = Field(min_length=1)
+    changed_modules: tuple[str, ...] = ()
+    requalified_at: str | None = Field(default=None, pattern=_GIT40)
+    all_eight_proofs_passed: bool
+
+    @model_validator(mode="after")
+    def validate_requalification_is_recorded(self) -> PackageEvidenceReuse:
+        if not self.reused and self.requalified_at is None:
+            raise ValueError(
+                "evidence was not reused, so the commit it was regenerated at "
+                "must be recorded; otherwise the evidence names no authority"
+            )
+        if self.reused and self.changed_modules:
+            raise ValueError(
+                "evidence cannot be reused while its authority modules changed"
+            )
+        return self
+
+
 class PilotManifest(StrictModel):
     """One case, three repetitions, two arms, frozen before any result exists.
 
@@ -695,7 +760,10 @@ class PilotManifest(StrictModel):
     model.
     """
 
-    schema_version: Literal["1.0"] = PILOT_MANIFEST_SCHEMA_VERSION
+    #: 2.0 adds `pilot_authority`, `supersedes` and `package_evidence_reuse`.
+    #: 1.0 remains readable so the superseded manifest can still be loaded and
+    #: compared rather than only looked at.
+    schema_version: Literal["1.0", "2.0"] = PILOT_MANIFEST_SCHEMA_VERSION
     manifest_id: str = Field(min_length=1)
     created_utc: str = Field(min_length=1)
     scope: PilotScope
@@ -720,6 +788,12 @@ class PilotManifest(StrictModel):
     #: other, which is how "COMPLETE with four green commands" happened.
     combined_score_defined: Literal[False] = False
     live_execution_authorised_by_manifest: Literal[False] = False
+    #: Schema 2.0. Optional so a 1.0 manifest still parses; required in
+    #: practice by `unresolved_hashes`, which reports a 2.0 manifest without
+    #: an authority as unresolved rather than accepting it.
+    pilot_authority: PilotAuthority | None = None
+    supersedes: Supersession | None = None
+    package_evidence_reuse: PackageEvidenceReuse | None = None
 
     @model_validator(mode="after")
     def validate_pilot_is_frozen_and_honest(self) -> PilotManifest:
@@ -758,6 +832,10 @@ class PilotManifest(StrictModel):
             unresolved.append("controller_image.source_commit")
         if self.model.digest_source != "recomputed_from_file":
             unresolved.append("model.sha256")
+        if self.schema_version == "2.0" and self.pilot_authority is None:
+            # A 2.0 manifest without an authority is the 7P.3 state: complete
+            # data and no bound executable to act on it.
+            unresolved.append("pilot_authority")
         return tuple(unresolved)
 
     def ready_for_inference(self) -> bool:

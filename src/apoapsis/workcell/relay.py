@@ -491,6 +491,32 @@ class ModelRelay:
     def stats(self) -> RelayStats:
         return self._state.stats
 
+    def wait_for_records(
+        self, count: int, *, timeout_seconds: float = 20.0
+    ) -> bool:
+        """Block until `count` requests are fully recorded, or time out.
+
+        An HTTP call against the relay returns when the response has been
+        written; the request is *recorded* afterwards, on the handler thread.
+        Any observer reading `stats` straight after a call is therefore racing
+        the relay, and will usually win -- which is what makes it a defect
+        found once every few dozen runs rather than immediately.
+
+        This is a synchronisation primitive, not a retry: it waits for the
+        event the caller is about to assert on, and reports honestly if that
+        event never arrived. Callers that need "the relay observed N requests"
+        as evidence -- the rehearsal's containment stage among them -- need
+        exactly this, because a count read too early understates traffic and
+        would make a bypassed turn look like a quiet one.
+        """
+
+        deadline = time.monotonic() + timeout_seconds
+        while time.monotonic() < deadline:
+            if len(self.stats.records) >= count:
+                return True
+            time.sleep(0.01)
+        return len(self.stats.records) >= count
+
     def start(self) -> None:
         """Create the socket and serve. Refuses early on an unusable platform."""
 

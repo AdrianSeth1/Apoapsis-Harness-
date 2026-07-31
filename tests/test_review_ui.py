@@ -121,10 +121,16 @@ class ReviewUIServiceTests(unittest.TestCase):
         self.service = ApoapsisUIService(self.root)
 
     def tearDown(self) -> None:
-        # Background worker threads are daemons and stop with the process,
-        # but drop our reference so tests don't accumulate live threads.
+        # The comment this replaces said daemon threads "stop with the
+        # process", which is true and beside the point: the process outlives
+        # this test by a whole suite, and the thread kept writing into
+        # `.apoapsis` while `TemporaryDirectory.cleanup` removed it. Dropping
+        # the reference was the only option available; joining is now.
         if getattr(self, "service", None) is not None:
-            self.service._review_worker = None
+            self.assertTrue(
+                self.service.shutdown_workers(timeout_seconds=30.0),
+                "a background worker survived teardown",
+            )
 
     def _write_config(self) -> None:
         # `ApoapsisUIService` and `ReviewWorker` both only ever read

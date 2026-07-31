@@ -867,6 +867,31 @@ class ApoapsisUIService:
             self._intake_worker = IntakeWorker(self.project_root)
         return self._intake_worker
 
+    def shutdown_workers(self, timeout_seconds: float = 30.0) -> bool:
+        """Stop both background workers and join their threads.
+
+        The service starts threads lazily and, until now, offered no way to
+        stop them. A caller finishing with a service could only drop its
+        reference to the workers, which leaves them running and still writing
+        into `.apoapsis` -- so any caller that then removed the project
+        directory was racing a live writer. That produced an intermittent
+        `Directory not empty` failure at roughly one run in five.
+
+        Returns whether *both* workers actually stopped. It reports rather
+        than raising because the interesting case for a caller proving "no
+        surviving background worker" is a worker that would not stop, and
+        that fact is more useful returned than thrown.
+        """
+
+        stopped = True
+        for attribute in ("_intake_worker", "_review_worker"):
+            worker = getattr(self, attribute, None)
+            if worker is None:
+                continue
+            stopped = worker.shutdown(timeout_seconds) and stopped
+            setattr(self, attribute, None)
+        return stopped
+
     # ---- Manual subscription-based frontier coding handoff (ADR 0031) ----
 
     def _manual_frontier_preview_store(self) -> ManualFrontierPreviewStore:

@@ -67,9 +67,15 @@ class IntakeUIServiceTests(unittest.TestCase):
         self.service = ApoapsisUIService(self.root)
 
     def tearDown(self) -> None:
+        # Joining, not nulling. Dropping the reference left a daemon thread
+        # writing into `.apoapsis` while `TemporaryDirectory.cleanup` removed
+        # it, which is what produced the intermittent "Directory not empty".
+        # The worker had no stop method to call; it does now.
         if getattr(self, "service", None) is not None:
-            self.service._intake_worker = None
-            self.service._review_worker = None
+            self.assertTrue(
+                self.service.shutdown_workers(timeout_seconds=30.0),
+                "a background worker survived teardown",
+            )
 
     def _write_config(self) -> None:
         self.config_path.write_text(
@@ -113,6 +119,50 @@ timeout_seconds = 30
         self.assertEqual(final["status"], "pending_specification_approval")
         task = self.store.get_task(final["task_id"])
         self.assertEqual(task.state, WorkflowState.SPEC_DRAFTED)
+
+    def test_shutdown_joins_the_worker_and_leaves_no_thread_running(self) -> None:
+        """The lifecycle gap behind the `Directory not empty` intermittent.
+
+        Deterministic: it asserts the thread object is gone, rather than
+        sleeping and hoping. Before `shutdown`, the only way to release a
+        worker was to drop the reference, and the thread kept writing.
+        """
+
+        worker = self.service._intake_worker_instance()
+        thread = worker._thread
+        self.assertTrue(thread.is_alive())
+
+        self.assertTrue(self.service.shutdown_workers(timeout_seconds=30.0))
+        self.assertFalse(thread.is_alive(), "the worker thread outlived shutdown")
+        self.assertIsNone(self.service._intake_worker)
+
+        # Idempotent: a second shutdown is not an error, because a caller
+        # proving teardown should not have to track whether it already ran.
+        self.assertTrue(self.service.shutdown_workers(timeout_seconds=5.0))
+
+    def test_shutdown_drains_queued_work_before_stopping(self) -> None:
+        """The sentinel goes through the queue, so queued work is not dropped.
+
+        A flag checked between jobs would let `shutdown` race ahead of items
+        already submitted; ordering through the queue makes "everything
+        submitted before shutdown ran" a property rather than a hope.
+        """
+
+        worker = self.service._intake_worker_instance()
+        seen: list[str] = []
+        started = threading.Event()
+
+        def record(operation_id: str) -> None:
+            seen.append(operation_id)
+            started.set()
+
+        worker._execute = record  # type: ignore[method-assign]
+        for index in range(5):
+            worker.submit(f"INOP-DRAIN-{index}")
+        self.assertTrue(started.wait(10), "the worker never picked up any work")
+
+        self.assertTrue(worker.shutdown(timeout_seconds=30.0))
+        self.assertEqual(len(seen), 5, f"queued work was dropped: {seen}")
 
     def test_duplicate_operation_id_is_rejected_replay_safe(self) -> None:
         fake = FakeModelProvider([specification_response(), specification_response()])

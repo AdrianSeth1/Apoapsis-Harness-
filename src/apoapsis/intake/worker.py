@@ -11,6 +11,11 @@ from apoapsis.intake.store import IntakeOperationStore
 from apoapsis.workflow.engine import SQLiteTaskStore, TaskStoreError
 
 
+#: Queue sentinel meaning "stop after the work already queued ahead of me".
+#: A unique object rather than a string, so no operation id can impersonate it.
+_STOP = object()
+
+
 class IntakeWorker:
     """Runs authorized new-task intake operations on a background thread,
     outside any HTTP request (ADR 0023), structurally mirroring
@@ -42,12 +47,44 @@ class IntakeWorker:
     def __init__(self, project_root: str | Path) -> None:
         self.project_root = Path(project_root).resolve()
         self._queue: queue.Queue[str] = queue.Queue()
+        self._stopping = False
         self._recover_at_startup()
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
 
     def submit(self, operation_id: str) -> None:
         self._queue.put(operation_id)
+
+    def shutdown(self, timeout_seconds: float = 30.0) -> bool:
+        """Stop accepting work, drain what is queued, and join the thread.
+
+        The worker previously had no way to stop. A caller that wanted it gone
+        could only drop its reference, which leaves a daemon thread still
+        writing into `.apoapsis` -- and a test that then removed its temporary
+        directory raced that thread, producing an intermittent
+        `Directory not empty` on roughly one run in five.
+
+        Dropping the reference was the only option available, so this is a
+        lifecycle gap in the worker rather than a defect in the caller. A
+        daemon thread makes process exit safe; it does nothing for a
+        long-running process that creates and discards services, and it says
+        nothing about when the worker's last write lands.
+
+        Returns whether the thread actually stopped. A caller that needs
+        "no surviving background worker" as evidence must check it rather
+        than assume, which is why this reports instead of raising.
+        """
+
+        if self._stopping:
+            self._thread.join(timeout_seconds)
+            return not self._thread.is_alive()
+        self._stopping = True
+        # The sentinel goes through the queue rather than setting a flag, so a
+        # worker blocked in `queue.get()` wakes up rather than waiting for a
+        # job that will never arrive.
+        self._queue.put(_STOP)
+        self._thread.join(timeout_seconds)
+        return not self._thread.is_alive()
 
     def _recover_at_startup(self) -> None:
         try:
@@ -66,6 +103,8 @@ class IntakeWorker:
     def _run(self) -> None:
         while True:
             operation_id = self._queue.get()
+            if operation_id is _STOP:
+                return
             try:
                 self._execute(operation_id)
             except Exception:

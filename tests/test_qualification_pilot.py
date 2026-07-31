@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 import subprocess
 import unittest
 from pathlib import Path
@@ -29,10 +30,20 @@ from apoapsis.qualification.pilot import (
 )
 
 REPO = Path(__file__).resolve().parents[1]
+#: The *current* manifest. The v1 pair is preserved unedited as decision
+#: history and is deliberately stale: it records the pre-requalification
+#: evidence digest, and rewriting it to match would destroy the record of what
+#: was actually locked when.
 MANIFEST_PATH = (
+    REPO / "docs" / "qualification" / "slice7-crisis-atlas-pilot-manifest-v2.json"
+)
+LOCK_PATH = REPO / "docs" / "qualification" / "slice7-crisis-atlas-pilot-lock-v2.json"
+SUPERSEDED_MANIFEST_PATH = (
     REPO / "docs" / "qualification" / "slice7-crisis-atlas-pilot-manifest.json"
 )
-LOCK_PATH = REPO / "docs" / "qualification" / "slice7-crisis-atlas-pilot-lock.json"
+SUPERSEDED_LOCK_PATH = (
+    REPO / "docs" / "qualification" / "slice7-crisis-atlas-pilot-lock.json"
+)
 PACKAGE = REPO / "docs" / "qualification" / "pilot" / "crisis-atlas"
 EVIDENCE = REPO / "docs" / "evaluation" / "slice-7p1c-evidence"
 DRAFT = REPO / "docs" / "qualification" / "slice7-qualification-manifest.json"
@@ -479,6 +490,73 @@ class LockGateTests(unittest.TestCase):
         ).stdout.strip()
         if head:
             self.assertNotEqual(self.lock.manifest_commit, head)
+
+
+class SupersessionTests(unittest.TestCase):
+    """The v1 pair is preserved, marked, and never rehearsed."""
+
+    def setUp(self) -> None:
+        self.current = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
+
+    def test_the_old_manifest_and_lock_still_exist_unedited(self) -> None:
+        self.assertTrue(SUPERSEDED_MANIFEST_PATH.is_file())
+        self.assertTrue(SUPERSEDED_LOCK_PATH.is_file())
+        old = json.loads(SUPERSEDED_MANIFEST_PATH.read_text(encoding="utf-8"))
+        self.assertEqual(old["manifest_id"], "slice7-crisis-atlas-pilot")
+        self.assertEqual(old["schema_version"], "1.0")
+
+    def test_the_new_manifest_records_why_the_old_one_was_invalid(self) -> None:
+        block = self.current["supersedes"]
+        self.assertEqual(block["status"], "superseded")
+        self.assertFalse(block["ever_rehearsed"])
+        self.assertFalse(block["ever_authorized_for_live_inference"])
+        self.assertTrue(block["preserved_not_edited"])
+        reasons = " ".join(block["invalid_because"])
+        self.assertIn("runner authority was absent", reasons)
+        self.assertIn("22cd8af", reasons)
+
+    def test_the_old_lock_cannot_authorise_the_new_manifest(self) -> None:
+        old_lock = PilotLock.model_validate_json(
+            SUPERSEDED_LOCK_PATH.read_text(encoding="utf-8")
+        )
+        decision = authorize_rehearsal(load_manifest(), old_lock)
+        self.assertFalse(decision.authorized)
+        self.assertIn("changed since it was locked", decision.reason)
+
+    def test_the_new_authority_binds_every_verdict_deciding_module(self) -> None:
+        authority = self.current["pilot_authority"]
+        bound = {item["path"] for item in authority["bound_modules"]}
+        for path in (
+            "src/apoapsis/qualification/pilot.py",
+            "src/apoapsis/qualification/authority.py",
+            "src/apoapsis/qualification/rehearsal.py",
+            "src/apoapsis/qualification/fake_pilot_provider.py",
+        ):
+            self.assertIn(path, bound)
+        self.assertTrue(authority["fake_provider_script_sha256"])
+
+    def test_the_bound_digests_match_the_bytes_at_the_authority_commit(self) -> None:
+        if not (REPO / ".git").exists() or shutil.which("git") is None:
+            self.skipTest("not a git checkout")
+        from apoapsis.qualification.authority import BoundModule, verify_authority
+
+        authority = self.current["pilot_authority"]
+        declared = tuple(
+            BoundModule(path=item["path"], sha256=item["sha256"])
+            for item in authority["bound_modules"]
+        )
+        result = verify_authority(
+            authority["authority_commit"], declared, repo=REPO
+        )
+        self.assertTrue(result.satisfied, [f.detail for f in result.findings])
+
+    def test_package_evidence_was_regenerated_not_reused(self) -> None:
+        reuse = self.current["package_evidence_reuse"]
+        self.assertFalse(reuse["reused"])
+        self.assertIn(
+            "src/apoapsis/qualification/case_package.py", reuse["changed_modules"]
+        )
+        self.assertTrue(reuse["all_eight_proofs_passed"])
 
 
 class ExecutableProvenanceTests(unittest.TestCase):
