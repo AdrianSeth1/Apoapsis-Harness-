@@ -127,15 +127,34 @@ def banner(record: dict) -> dict:
 
 
 def usage(record: dict) -> dict:
-    """Provider-reported usage only. Last usage-bearing event wins."""
+    """Provider-reported usage, normalised through the existing adapter.
+
+    `_flatten_usage` is the one place that knows the CLI spells cached input
+    `cache_read_input_tokens` while the trace calls it `cached_input_tokens`.
+    Stage 7 originally read the raw key and saw nothing, which turned a
+    measurable cache result into a false NOT_MEASURABLE -- the exact shape of
+    error this codebase treats as worse than a failure, because absence of a
+    reading was reported as absence of the thing.
+    """
+
+    from apoapsis.workcell.events import _flatten_usage
+
     found: dict = {}
     for item in record["events"]:
         block = item.get("usage")
         if isinstance(block, dict) and block:
-            found.update(block)
+            flat = _flatten_usage(block, finish_reason=item.get("stop_reason"))
+            found.update({k: v for k, v in flat.items() if v is not None})
+        # Some frames carry a nested message.usage instead.
+        message = item.get("message")
+        if isinstance(message, dict) and isinstance(message.get("usage"), dict):
+            flat = _flatten_usage(message["usage"])
+            found.update({k: v for k, v in flat.items() if v is not None})
         for key in ("input_tokens", "output_tokens", "cached_input_tokens"):
             if isinstance(item.get(key), int):
                 found[key] = item[key]
+        if isinstance(item.get("cache_read_input_tokens"), int):
+            found["cached_input_tokens"] = item["cache_read_input_tokens"]
     return found
 
 
@@ -422,11 +441,12 @@ def main() -> int:
                     "turn": turn,
                     "usage": reported,
                     "input_tokens": reported.get("input_tokens"),
-                    "utilisation": (
-                        round(reported.get("input_tokens", 0) / limit, 4)
-                        if reported.get("input_tokens")
-                        else None
-                    ),
+                    # No utilisation ratio is computed here. The reported
+                    # input total is AGGREGATE usage across every internal
+                    # call Qwen made during the turn, not one prompt's
+                    # occupancy of the window, so dividing it by the context
+                    # limit produces a number above 1.0 that means nothing.
+                    # The compaction events below are the direct evidence.
                     "compaction_events": len(hits),
                     "exit_code": probe["exit_code"],
                 }
@@ -515,14 +535,23 @@ def main() -> int:
                     }
                 )
             arms[arm] = reads
-        cached_reported = any(
-            isinstance(item["usage"].get("cached_input_tokens"), int)
-            for reads in arms.values()
-            for item in reads
+        def cached(reads):
+            return [item["usage"].get("cached_input_tokens") for item in reads]
+
+        stable_cached = [v for v in cached(arms["stable"]) if isinstance(v, int)]
+        perturbed_cached = [v for v in cached(arms["perturbed"]) if isinstance(v, int)]
+        cached_reported = bool(stable_cached or perturbed_cached)
+        benefit = (
+            max(stable_cached) - max(perturbed_cached)
+            if stable_cached and perturbed_cached
+            else None
         )
         summary["stages"]["7_cache_control"] = {
             "arms": arms,
             "cached_input_telemetry_present": cached_reported,
+            "stable_cached_input_tokens": stable_cached,
+            "perturbed_cached_input_tokens": perturbed_cached,
+            "stable_prefix_benefit_tokens": benefit,
             # Latency alone is insufficient and is not used as a fallback.
             "verdict": (
                 "MEASURED" if cached_reported else "NOT_MEASURABLE -- the server "

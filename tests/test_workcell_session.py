@@ -366,5 +366,49 @@ class CoordinatorTests(unittest.TestCase):
         )
 
 
+class CachedInputSpellingTests(unittest.TestCase):
+    """The CLI field name that cost Slice 5C a false NOT_MEASURABLE.
+
+    Qwen Code reports cached input as `cache_read_input_tokens`. The trace
+    calls the same quantity `cached_input_tokens`. Stage 7 of the live
+    qualification read the trace spelling straight off the raw provider
+    message, found nothing, and concluded the server reported no cache
+    telemetry -- when in fact the stable arm had climbed from 19,742 to 21,915
+    cached tokens while the perturbed arm stayed flat at 19,742.
+
+    That is the failure mode this codebase treats as the worst kind: absence
+    of a *reading* reported as absence of the *thing*. `_flatten_usage` is the
+    single place that knows both spellings, so it is the thing to pin.
+    """
+
+    def test_the_cli_spelling_is_normalised(self) -> None:
+        from apoapsis.workcell.events import _flatten_usage
+
+        flat = _flatten_usage(
+            {
+                "input_tokens": 21_915,
+                "output_tokens": 12,
+                "cache_read_input_tokens": 21_915,
+            }
+        )
+        self.assertEqual(flat["cached_input_tokens"], 21_915)
+
+    def test_the_trace_spelling_still_wins_when_both_are_present(self) -> None:
+        from apoapsis.workcell.events import _flatten_usage
+
+        flat = _flatten_usage(
+            {"cached_input_tokens": 21_915, "cache_read_input_tokens": 1}
+        )
+        self.assertEqual(flat["cached_input_tokens"], 21_915)
+
+    def test_a_missing_cached_field_stays_none_rather_than_zero(self) -> None:
+        # Zero would read as "measured, and the cache did nothing", which is a
+        # different claim from "not reported".
+        from apoapsis.workcell.events import _flatten_usage
+
+        flat = _flatten_usage({"input_tokens": 100, "output_tokens": 5})
+        self.assertIsNone(flat["cached_input_tokens"])
+
+
 if __name__ == "__main__":
     unittest.main()
