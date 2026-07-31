@@ -1208,6 +1208,52 @@ Context and output ceilings are classified as first-class conditions
 separately from model reasoning failures, so a response that filled the context
 window is never counted as the model failing to reason.
 
+### Qualification case packages (Slice 7P.1)
+
+A qualification case is a directory of artifacts, not a row in a manifest. The
+draft eight-case manifest recorded per-case identities as
+`sha256("slice7::<case-id>::seed")` — well-formed digests that referred to
+nothing — so `qualification/artifacts.py` (7P.1a) made a digest resolve only
+when bytes on disk produce it, and `qualification/case_package.py` (7P.1b)
+does the same for a whole package.
+
+Every package declares twelve components: seed locator/commit/tree, immutable
+task text, plan contract, mapped acceptance criteria, verification commands,
+evaluator-only oracle, expected witnesses, exactly three repetition
+identities, budget class, capability-discrimination rationale, a known-good
+reference candidate, and a deliberately incomplete one. All twelve are
+mandatory. None may default, because a package whose oracle quietly defaulted
+to empty would register while proving nothing.
+
+`validate_case_package` reports **eight separate proofs**, each `passed`,
+`failed`, `unrun` or `inconclusive`:
+
+1. a fresh clone reproduces the recorded seed commit and tree;
+2. the requested behaviour is absent from the seed;
+3. the inherited test state is recorded;
+4. the known-good reference satisfies every mapped criterion;
+5. removing a required artifact fails exactly its mapped criterion;
+6. the historical incomplete candidate cannot complete despite inherited green;
+7. verification emits witnesses bound to the admitted snapshot;
+8. a second fresh clone produces identical outcomes and evidence identities.
+
+Only eight distinct passes register a package. `unrun` and `inconclusive` both
+block it, and one proof never substitutes for another — eight results that are
+two copies of proof 1 and no containment proof do not register, however green
+they look.
+
+Commit and tree are recorded as separate objects **with their Git object
+types**. Both are forty hex characters, and an unquoted `HEAD^{tree}` on
+PowerShell prints the parent *commit* before failing, which is exactly the
+value the type check rejects.
+
+The one shipped package is `docs/qualification/pilot/crisis-atlas/`. Its
+incomplete candidate is the **actual historical Qwen Slice 2 bytes**; its
+known-good reference is **evaluator material, not a model achievement**, and
+says so. Crisis Atlas is a regression benchmark: its failure mode was known
+before these acceptance rules were written, so a result here cannot establish
+non-inferiority on anything else.
+
 ## Capability Sandbox workcell (ADR 0077, experimental and gate-blocked)
 
 The workcell runs the real Qwen coding CLI's own native loop inside a

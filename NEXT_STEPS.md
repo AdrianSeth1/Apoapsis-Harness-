@@ -499,13 +499,35 @@ The remaining path, in order:
    is a message improvement rather than the defence — an unrecognised label
    hash still fails at the missing-file step.
 
-   **Still to do before the zero-token rehearsal:** the Crisis Atlas package
-   itself (seed, task text, contract, mapped criteria, verification commands,
-   evaluator-only assets, expected witnesses, three repetition seeds, budget
-   class, the historical incomplete Slice 2 candidate, a known-good reference,
-   and the discrimination rationale), its eight deterministic proofs, and the
-   separate pilot manifest. `unresolved_hashes()` = 8 and
-   `ready_for_inference()` = false, deliberately unchanged during 7A/7P.1;
+   **Slice 7P.1b is done: one authored, deterministically validated case.**
+   `docs/qualification/pilot/crisis-atlas/` carries all twelve required
+   components, every one artifact-backed and digest-resolved, and
+   `qualification/case_package.py` validates it as eight separately-stated
+   proofs. Each proof is `passed`, `failed`, `unrun` or `inconclusive`; only
+   eight distinct passes register a package, and `unrun`/`inconclusive` block
+   it, because a boolean would force "did not run" to be reported as either a
+   pass or a lie.
+
+   Two recoveries changed what the package could claim. The **incomplete
+   candidate is the actual historical bytes**, not a reconstruction: the Qwen
+   Slice 2 proposal survives in
+   `.apoapsis-eval/slice-e-crisis-atlas-64k-codex-slice2-2026-07-29/.apoapsis/tasks/TASK-CB6141309D6E/`,
+   one write to `services/incident_service.py`, `finish_reason` `stop`, and a
+   verification record showing four configured commands at exit 0. The
+   **known-good reference is not** — it is evaluator material derived from the
+   Slice 4B turn-two fixture and is labelled as such everywhere it appears.
+   The preserved worktree in that same directory holds `service/` (singular)
+   with an export service and a full suite; that is the post-Codex-repair
+   state and is deliberately unused.
+
+   **Still to do (Slice 7P.2):** capture model/server/Qwen/workcell identities
+   without inference; author the separate Crisis Atlas pilot manifest; bind the
+   three paired executions; resolve every controlled variable; write the
+   immutable pilot lock. `PackageProbe.run_checkpoint` still has no production
+   implementation — `GitCloneObserver` does the real clone half, and wiring the
+   checkpoint half to a live workcell belongs to 7P.2. The original eight-case
+   manifest stays a deferred historical draft: `unresolved_hashes()` = 8 and
+   `ready_for_inference()` = false, deliberately unchanged through 7A/7P.1;
 4. rollout and fallback **only if** non-inferiority passes.
 
 **Run the full deterministic suite on Python 3.11+ once, before qualification —
