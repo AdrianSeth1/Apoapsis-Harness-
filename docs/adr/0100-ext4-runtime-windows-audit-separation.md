@@ -23,6 +23,13 @@ The WSL launcher creates one short, fresh runtime directory with `mktemp` under
 at the identical absolute path, and passes a dedicated controller runtime root.
 The launcher removes that exact generated directory on exit.
 
+The launcher also exposes a containment-preflight-only diagnostic mode. It
+uses the same seed normalization, mounts, committed controller image, runtime
+verification, and deterministic fake-provider containment path as production,
+writes its gates to the requested response artifact, and exits before any
+model server or Qwen execution. It grants no product/UI authority and exists
+only to prove this platform boundary repeatably.
+
 All socket directories, workcell workspaces, Qwen homes, forwarders, and other
 ephemeral sibling-container inputs use this ext4 runtime. Durable authorization,
 logs, observations, checkpoints, admitted snapshots, and the final response

@@ -72,6 +72,11 @@ if test "${5:-}" = "--preflight-only"; then
   exit 0
 fi
 
+CONTROLLER_EXTRA_ARGS=()
+if test "${5:-}" = "--containment-preflight-only"; then
+  CONTROLLER_EXTRA_ARGS+=("--containment-preflight-only")
+fi
+
 if ! docker image inspect "${TAG}" >/dev/null 2>&1; then
   bash "${REPO}/docker/pilot-controller/build.sh" "${COMMIT}" "${TAG}"
 fi
@@ -87,4 +92,5 @@ docker run --rm --pull never --network host --gpus all \
   -v /usr/local/cuda:/usr/local/cuda:ro \
   "${TAG}" -m apoapsis.workcell.product_live \
   --repo "${REPO}" --seed "${NORMALIZED_SEED}" --request "${REQUEST}" \
-  --response "${RESPONSE}" --runtime-root "${RUNTIME}/controller"
+  --response "${RESPONSE}" --runtime-root "${RUNTIME}/controller" \
+  "${CONTROLLER_EXTRA_ARGS[@]}"

@@ -129,6 +129,7 @@ class ApprovedPlanPayloadTests(unittest.TestCase):
         self.assertIn('git clone --quiet --no-local', launcher)
         self.assertIn('-v "${RUNTIME}:${RUNTIME}:rw"', launcher)
         self.assertIn('--runtime-root "${RUNTIME}/controller"', launcher)
+        self.assertIn('--containment-preflight-only', launcher)
         self.assertNotIn('test -d "${SEED}/.git"', launcher)
         self.assertIn("Capability Sandbox task path is not a Git worktree", launcher)
 
