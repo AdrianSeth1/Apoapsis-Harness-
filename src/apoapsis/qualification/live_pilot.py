@@ -131,6 +131,15 @@ def load_authorized_inputs(repo: Path, authorization_path: Path):
         path = repo / item.path
         if not path.is_file() or _sha256(path) != item.sha256:
             raise LivePilotError(f"bound live module differs: {item.path}")
+    required_live_paths = {
+        "src/apoapsis/qualification/live_pilot.py",
+        "src/apoapsis/qualification/slot_driver.py",
+        "src/apoapsis/qualification/session_factory.py",
+    }
+    if not required_live_paths.issubset(
+        {item.path for item in authorization.bound_live_modules}
+    ):
+        raise LivePilotError("the authorization omits a verdict-deciding live module")
     if not all(
         (authorization.exactly_six_slots, authorization.local_model_only,
          authorization.authorises_live_inference)

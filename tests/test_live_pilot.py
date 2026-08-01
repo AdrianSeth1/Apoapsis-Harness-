@@ -46,6 +46,7 @@ def authorization(module: Path) -> dict:
         "bound_live_modules": [
             {"path": module.relative_to(REPO).as_posix(), "sha256": sha(module)},
             {"path": "src/apoapsis/qualification/slot_driver.py", "sha256": sha(REPO / "src/apoapsis/qualification/slot_driver.py")},
+            {"path": "src/apoapsis/qualification/session_factory.py", "sha256": sha(REPO / "src/apoapsis/qualification/session_factory.py")},
         ],
     }
 
@@ -128,6 +129,16 @@ class LiveAuthorizationTests(unittest.TestCase):
             path = Path(raw) / "authorization.json"
             path.write_text(json.dumps(payload), encoding="utf-8")
             with self.assertRaisesRegex(LivePilotError, "bound live module differs"):
+                load_authorized_inputs(REPO, path)
+
+    def test_omitted_session_factory_refuses_the_run(self):
+        module = REPO / "src/apoapsis/qualification/live_pilot.py"
+        payload = authorization(module)
+        payload["bound_live_modules"] = payload["bound_live_modules"][:2]
+        with tempfile.TemporaryDirectory() as raw:
+            path = Path(raw) / "authorization.json"
+            path.write_text(json.dumps(payload), encoding="utf-8")
+            with self.assertRaisesRegex(LivePilotError, "omits"):
                 load_authorized_inputs(REPO, path)
 
 
