@@ -59,7 +59,7 @@ fi
 
 COMMIT="$(git -C "${REPO}" rev-parse HEAD)"
 TAG="apoapsis-product-controller:${COMMIT:0:12}"
-RUNTIME="$(mktemp -d /tmp/apx-product-XXXXXXXX)"
+RUNTIME="$(mktemp -d /tmp/apx.XXXXXX)"
 trap 'rm -rf "${RUNTIME}"' EXIT
 NORMALIZED_SEED="${RUNTIME}/seed"
 SEED_COMMIT="$(git --git-dir="${SEED_GIT_DIR}" --work-tree="${SEED}" rev-parse HEAD)"
@@ -92,5 +92,5 @@ docker run --rm --pull never --network host --gpus all \
   -v /usr/local/cuda:/usr/local/cuda:ro \
   "${TAG}" -m apoapsis.workcell.product_live \
   --repo "${REPO}" --seed "${NORMALIZED_SEED}" --request "${REQUEST}" \
-  --response "${RESPONSE}" --runtime-root "${RUNTIME}/controller" \
+  --response "${RESPONSE}" --runtime-root "${RUNTIME}/r" \
   "${CONTROLLER_EXTRA_ARGS[@]}"

@@ -18,10 +18,16 @@ same path on the WSL host.
 
 ## Decision
 
-The WSL launcher creates one short, fresh runtime directory with `mktemp` under
-`/tmp`, clones the approved seed there, mounts the runtime into the controller
-at the identical absolute path, and passes a dedicated controller runtime root.
-The launcher removes that exact generated directory on exit.
+The WSL launcher creates one short, fresh `/tmp/apx.XXXXXX` runtime directory
+with `mktemp`, clones the approved seed there, mounts the runtime into the
+controller at the identical absolute path, and passes a dedicated controller
+runtime root. The launcher removes that exact generated directory on exit.
+
+The runtime name and internal `r/p` and `r/s` roots are deliberately short so
+every derived relay socket stays below Linux's AF_UNIX pathname limit. Before
+the WSL-user cleanup trap runs, the root controller removes its exact runtime
+subtree so directories intentionally owned by the non-root workcell user do
+not survive or make cleanup fail.
 
 The launcher also exposes a containment-preflight-only diagnostic mode. It
 uses the same seed normalization, mounts, committed controller image, runtime
