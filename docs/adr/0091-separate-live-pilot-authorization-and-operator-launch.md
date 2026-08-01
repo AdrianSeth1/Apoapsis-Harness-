@@ -96,3 +96,15 @@ These corrections do not relax either gate. They make the observed topology
 match the declared one and restore the workcell's intended editing capability.
 Failed evidence is retained, and a retry must use new evidence/runtime roots
 and a newly built and bound controller image.
+
+The final corrected immutable image passed the complete live preflight with
+scripted providers only: 26 tools and the exact schema were observed, read,
+write, and shell were demonstrated, all 22 containment probes passed, the
+inside-container mount set was correct, and real `web_fetch` egress was
+refused. For that diagnostic only, the six-slot schedule was replaced at
+runtime with an empty tuple; the runner therefore refused at 0/6 slots after
+the gates passed and could not reach model startup. The corrected session
+factory is now an explicitly required live-authorization module.
+
+Runner commit `ec1c934` passed the canonical native-ext4 suite: 1,948 tests,
+13 skipped, zero failures in 348.880 seconds. No live arm has run.

@@ -84,3 +84,33 @@ not expose the `forwarder_path` and `task_artifact_path` arguments already
 supported by `build_workcell_config`. The public factory now passes those
 host-visible sources through explicitly. This diagnostic also stopped before
 server startup, readiness, or any arm.
+
+## Corrected live preflight passed
+
+The final corrected image is
+`sha256:b9b1d440fb502a1625649b37fc7e72d6c51452af12d19835c5fe268ccdb5f174`,
+built from runner commit `ec1c9342f5a13db2100fb297dce2f77d05dbec1b`,
+source tree `2e9db606c42bb4f24ee27c27e26a8bf8091e6d2b`, and build-context
+SHA-256 `ce426f9c065af749179b53ad3c120b232b10b07a61e4fcaf9e30b8ef1be17e4b`.
+The authorization now binds `live_pilot.py`, `slot_driver.py`, and the changed
+`session_factory.py`.
+
+A scripted-provider-only diagnostic in the actual controller-container
+topology passed both live gates:
+
+- 26 tools matched the bound set and schema digest
+  `d0d3891aa074f6efb9c7026cf83a5a4632ec8e7341dc40ec707d9145352e701d`;
+- read, write, and shell were each demonstrated behaviorally;
+- 22/22 containment probes passed with zero breaches and zero unproven;
+- mount observation and real `web_fetch` egress refusal passed.
+
+The diagnostic monkeypatched the schedule to empty, so after the gates passed
+the runner refused with `only 0 of six slots ran`. This proves the corrected
+preflight without permitting server startup. Post-run inspection found no
+`llama-server`, GPU compute process, workcell, readiness record, or arm record.
+Evidence is retained at
+`/home/arya/apoapsis-live-preflight-diagnostic-v4`.
+
+The final canonical native-ext4 suite at runner commit `ec1c934` passed 1,948
+tests with 13 skips and zero failures in 348.880 seconds. Its log is retained at
+`/home/arya/apoapsis-live-runner-ec1c934-full-suite.log`.

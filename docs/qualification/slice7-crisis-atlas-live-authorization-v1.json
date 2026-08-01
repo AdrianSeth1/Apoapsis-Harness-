@@ -4,16 +4,20 @@
   "bound_live_modules": [
     {
       "path": "src/apoapsis/qualification/live_pilot.py",
-      "sha256": "0905cc05f332d716479ff5590f773b6a122a8f7ef29002f6fda23618e57cb34c"
+      "sha256": "6bcf0e2f4a71b9884c623b775fcdd9b8a9fdb7e61feb86a3238d268026c043db"
     },
     {
       "path": "src/apoapsis/qualification/slot_driver.py",
-      "sha256": "f8cde15daa4aaeb87a64c8f1bf81f6909514442d4dc3820bf897ca39f4efa104"
+      "sha256": "695f0ec81a6718a2588106fc24347a414122263303304142775778f377d4ce08"
+    },
+    {
+      "path": "src/apoapsis/qualification/session_factory.py",
+      "sha256": "834eb0ca1f7a85889feec04654672671725e832804af337a963250eebaac4fa7"
     }
   ],
-  "controller_image_id": "sha256:41f592a7ee680358c177b4eda7fd9c4382d737120bcac268da608f53325b5b0f",
+  "controller_image_id": "sha256:b9b1d440fb502a1625649b37fc7e72d6c51452af12d19835c5fe268ccdb5f174",
   "exactly_six_slots": true,
-  "live_runner_commit": "ef2905bd5be5b00d7e209654475ba55a0fdbd01d",
+  "live_runner_commit": "ec1c9342f5a13db2100fb297dce2f77d05dbec1b",
   "local_model_only": true,
   "lock_digest": "61b36743c43ec3afc932d956ad76fe1f2a320d41cff52356ab749746b6112867",
   "lock_path": "docs/qualification/slice7-crisis-atlas-pilot-lock-v8.json",
