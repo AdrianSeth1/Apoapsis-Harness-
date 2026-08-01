@@ -190,6 +190,8 @@ def session_factory_from_manifest(
     workspace: Path,
     socket_directory: Path,
     upstream_base_url: str,
+    forwarder_path: Path | None = None,
+    task_artifact_path: Path | None = None,
 ) -> LiveWorkcellSession:
     """One real session, configured entirely from the frozen manifest."""
 
@@ -199,5 +201,7 @@ def session_factory_from_manifest(
         workspace=workspace,
         socket_directory=socket_directory,
         upstream_base_url=upstream_base_url,
+        forwarder_path=forwarder_path,
+        task_artifact_path=task_artifact_path,
     )
     return LiveWorkcellSession(config)

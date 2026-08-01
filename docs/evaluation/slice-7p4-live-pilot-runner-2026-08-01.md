@@ -77,3 +77,10 @@ session's controller-private task and forwarder sources; its egress probe was
 therefore also unobserved. No server or model request occurred. The next
 correction separates durable evidence from a short host-mounted runtime root
 and copies both manual-session mount inputs into that root.
+
+The next scripted-only diagnostic reached the corrected stage-1 topology and
+then refused before containment because `session_factory_from_manifest` did
+not expose the `forwarder_path` and `task_artifact_path` arguments already
+supported by `build_workcell_config`. The public factory now passes those
+host-visible sources through explicitly. This diagnostic also stopped before
+server startup, readiness, or any arm.

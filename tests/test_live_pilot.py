@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 import tempfile
 import unittest
@@ -16,6 +17,7 @@ from apoapsis.qualification.live_pilot import (
     run_live_pilot,
 )
 from apoapsis.qualification.pilot import PilotLock, PilotManifest
+from apoapsis.qualification.session_factory import session_factory_from_manifest
 from apoapsis.qualification.slot_driver import WORKCELL_UID, controller_address, run_qwen
 
 REPO = Path(__file__).resolve().parents[1]
@@ -49,6 +51,11 @@ def authorization(module: Path) -> dict:
 
 
 class LiveAuthorizationTests(unittest.TestCase):
+    def test_public_session_factory_accepts_host_visible_mount_sources(self):
+        parameters = inspect.signature(session_factory_from_manifest).parameters
+        self.assertIn("forwarder_path", parameters)
+        self.assertIn("task_artifact_path", parameters)
+
     def test_fake_provider_is_controller_local_even_inside_host_networking(self):
         self.assertEqual(controller_address(), "127.0.0.1")
 
