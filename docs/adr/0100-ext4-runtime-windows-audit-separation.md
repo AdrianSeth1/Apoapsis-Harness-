@@ -50,3 +50,15 @@ ephemeral runtime is removed.
 - Durable evidence remains visible and persistent in the project.
 - Ephemeral model workspaces are removed even when the controller fails.
 - No model, filesystem, command, or completion authority moves into the model.
+
+## Observed verification
+
+On 2026-08-01, the containment-only mode ran through the committed production
+launcher and controller image against the actual failed Slice 1 task seed. The
+runtime-identity gate observed all 26 bound tools with the expected schema
+digest. The containment gate passed all 22 probes with zero breaches and zero
+unproven results, including refused egress in every tested category. The mode
+then exited successfully before starting or calling Qwen. Focused product
+coverage passed 7/7; shell syntax, compileall, and `git diff --check` also
+passed. Per owner direction, no full test suite or target-project verification
+was run.
