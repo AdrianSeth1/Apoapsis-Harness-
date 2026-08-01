@@ -295,6 +295,266 @@ def observe_residue(
     )
 
 
+class WorkcellConfiguration(StrictModel):
+    """What authentication-shaped configuration the workcell actually holds.
+
+    `no-token-environment` asks whether a token-like variable is in the
+    environment, and it stays exactly as it was. This asks the complementary
+    question the environment probe cannot: given that the pinned CLI refuses to
+    start without a non-empty key, is the value present *the declared
+    placeholder*, in the declared place, pointed at the declared endpoint, with
+    nothing else credential-shaped anywhere in the box.
+
+    Every field is a separate fact for the same reason `EgressRefusal` is: a
+    single boolean would let one satisfied condition stand in for another, and
+    "the placeholder is correct" and "no other credentials exist" are different
+    claims with different failure modes.
+    """
+
+    #: The value found at `security.auth.apiKey`, or `None` if absent. Recorded
+    #: verbatim because it is declared non-secret; a secret would never be.
+    observed_api_key: str | None = None
+    api_key_is_declared_placeholder: bool = False
+    #: Where the CLI was told to send it.
+    observed_base_url: str | None = None
+    base_url_is_bound_loopback: bool = False
+    #: Anything else key-shaped: other settings keys, credential files, a token
+    #: in the environment after all.
+    other_credential_sites: tuple[str, ...] = ()
+    #: Container network mode, read from the runtime rather than from intent.
+    observed_network_mode: str | None = None
+    network_is_none: bool = False
+    #: The relay's upstream and route policy, as configured for this run.
+    observed_relay_upstream: str | None = None
+    observed_relay_routes: tuple[str, ...] = ()
+    relay_policy_matches_bound: bool = False
+    #: Digest of the exact settings bytes the controller wrote.
+    settings_sha256: str | None = None
+    settings_digest_matches_bound: bool = False
+    detail: str = Field(default="", min_length=0)
+
+    @property
+    def satisfied(self) -> bool:
+        return (
+            self.api_key_is_declared_placeholder
+            and self.base_url_is_bound_loopback
+            and not self.other_credential_sites
+            and self.network_is_none
+            and self.relay_policy_matches_bound
+            and self.settings_digest_matches_bound
+        )
+
+    @property
+    def unsatisfied_categories(self) -> tuple[str, ...]:
+        failures: list[str] = []
+        if not self.api_key_is_declared_placeholder:
+            failures.append("api_key_is_declared_placeholder")
+        if not self.base_url_is_bound_loopback:
+            failures.append("base_url_is_bound_loopback")
+        if self.other_credential_sites:
+            failures.append("other_credential_sites")
+        if not self.network_is_none:
+            failures.append("network_is_none")
+        if not self.relay_policy_matches_bound:
+            failures.append("relay_policy_matches_bound")
+        if not self.settings_digest_matches_bound:
+            failures.append("settings_digest_matches_bound")
+        return tuple(failures)
+
+
+#: Files that would mean a real credential reached the workcell. Absence is
+#: checked from inside, because the controller's intent is not evidence.
+CREDENTIAL_PATHS: tuple[str, ...] = (
+    "/tmp/qwen-home/.netrc",
+    "/tmp/qwen-home/.npmrc",
+    "/tmp/qwen-home/.ssh",
+    "/tmp/qwen-home/.aws",
+    "/tmp/qwen-home/.config/gcloud",
+    "/root/.netrc",
+    "/root/.ssh",
+    "/workspace/.netrc",
+    "/workspace/.git-credentials",
+)
+
+
+#: Settings key names that would carry a credential. Matched on the normalised
+#: name rather than as a substring: `max_tokens` contains "token" and is a
+#: ceiling, and a scanner that cannot tell those apart reports the ceiling as a
+#: secret -- which is a false positive that trains readers to ignore the check.
+_CREDENTIAL_KEY_NAMES: frozenset[str] = frozenset(
+    {
+        "apikey",
+        "api_key",
+        "token",
+        "accesstoken",
+        "access_token",
+        "refreshtoken",
+        "refresh_token",
+        "authtoken",
+        "auth_token",
+        "bearertoken",
+        "bearer_token",
+        "secret",
+        "clientsecret",
+        "client_secret",
+        "password",
+        "passwd",
+        "credential",
+        "credentials",
+    }
+)
+
+
+def _is_credential_key(key: str) -> bool:
+    """Whether this key name would carry a credential.
+
+    Suffix matching, not substring: `githubToken` and `clientSecret` are
+    credentials, while `max_tokens` is a ceiling. The caller additionally
+    requires a non-empty *string* value, which is what actually keeps numeric
+    ceilings out; this decides the name.
+    """
+
+    flattened = key.replace("-", "").replace("_", "").lower()
+    if flattened in {name.replace("_", "") for name in _CREDENTIAL_KEY_NAMES}:
+        return True
+    return any(
+        flattened.endswith(suffix)
+        for suffix in ("apikey", "token", "secret", "password", "credential", "credentials")
+    )
+
+
+def observe_workcell_configuration(
+    session,
+    *,
+    declared_placeholder: str,
+    declared_base_url: str,
+    declared_settings_sha256: str | None,
+    declared_relay_upstream: str | None,
+    declared_relay_routes: tuple[str, ...] = (),
+    settings_path: str = "/tmp/qwen-home/settings.json",
+) -> WorkcellConfiguration:
+    """Read the settings the CLI will actually use, from inside the container.
+
+    Not from the dict the controller built. The controller's copy is what it
+    meant to write; this is what arrived, and the two have already differed once
+    in this project over a path.
+    """
+
+    import hashlib
+
+    observation = WorkcellConfiguration()
+    code, raw, stderr = session.exec(["sh", "-c", f"cat {settings_path}"])
+    if code != 0 or not raw.strip():
+        observation.detail = (
+            f"the workcell holds no readable settings at {settings_path}: "
+            f"exit {code}: {stderr.strip()[:200]}"
+        )
+        return observation
+
+    observation.settings_sha256 = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+    observation.settings_digest_matches_bound = (
+        declared_settings_sha256 is not None
+        and observation.settings_sha256 == declared_settings_sha256
+    )
+
+    try:
+        settings = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        observation.detail = f"the settings are not valid JSON: {exc}"
+        return observation
+
+    auth = (settings.get("security") or {}).get("auth") or {}
+    observation.observed_api_key = auth.get("apiKey")
+    observation.api_key_is_declared_placeholder = (
+        observation.observed_api_key == declared_placeholder
+    )
+
+    providers = (settings.get("modelProviders") or {}).get("openai") or []
+    if providers:
+        observation.observed_base_url = providers[0].get("baseUrl")
+    observation.base_url_is_bound_loopback = (
+        observation.observed_base_url == declared_base_url
+        and str(observation.observed_base_url).startswith("http://127.0.0.1:")
+    )
+
+    # Anything else that looks like a credential, wherever it might be.
+    others: list[str] = []
+    _, env_hits, _ = session.exec(
+        [
+            "sh",
+            "-c",
+            "env | grep -Ei '(TOKEN|SECRET|PASSWORD|API_KEY|CREDENTIAL)=' || true",
+        ]
+    )
+    for line in env_hits.splitlines():
+        if line.strip():
+            others.append(f"environment: {line.split('=', 1)[0]}")
+
+    for path in CREDENTIAL_PATHS:
+        code, _out, _err = session.exec(["test", "-e", path])
+        if code == 0:
+            others.append(f"file: {path}")
+
+    def walk(node, trail: str) -> None:
+        if isinstance(node, dict):
+            for key, value in node.items():
+                here = f"{trail}.{key}" if trail else key
+                if (
+                    here != "security.auth.apiKey"
+                    # A credential is a *string*. `max_tokens` matched a naive
+                    # substring search for "token" and was reported as a
+                    # credential site; its value is 16384. Requiring a non-empty
+                    # string separates a secret from a ceiling without needing a
+                    # list of exceptions that would grow forever.
+                    and isinstance(value, str)
+                    and value
+                    and _is_credential_key(key)
+                ):
+                    others.append(f"settings: {here}")
+                walk(value, here)
+        elif isinstance(node, list):
+            for index, value in enumerate(node):
+                walk(value, f"{trail}[{index}]")
+
+    walk(settings, "")
+    observation.other_credential_sites = tuple(sorted(set(others)))
+
+    config = getattr(session, "config", None)
+    egress = getattr(config, "egress", None)
+    relay = getattr(egress, "relay", None)
+    if relay is not None:
+        observation.observed_relay_upstream = relay.upstream_base_url
+        observation.observed_relay_routes = tuple(sorted(relay.allowed_routes))
+    observation.relay_policy_matches_bound = bool(
+        observation.observed_relay_upstream is not None
+        and (
+            declared_relay_upstream is None
+            or observation.observed_relay_upstream == declared_relay_upstream
+        )
+        and (
+            not declared_relay_routes
+            or observation.observed_relay_routes == tuple(sorted(declared_relay_routes))
+        )
+    )
+
+    container = getattr(getattr(config, "pin", None), "container", None)
+    name = getattr(container, "image", "")
+    _, mode, _ = session.exec(["sh", "-c", "ip route 2>/dev/null | grep -c default || true"])
+    # `--network none` leaves loopback and no default route. Read from inside,
+    # because the flag the controller passed is intent and this is arrival.
+    observation.observed_network_mode = "none" if mode.strip() in {"0", ""} else "routed"
+    observation.network_is_none = observation.observed_network_mode == "none"
+
+    observation.detail = (
+        f"settings {observation.settings_sha256[:16]} from {name or 'the workcell'}: "
+        f"apiKey is the declared placeholder={observation.api_key_is_declared_placeholder}, "
+        f"baseUrl={observation.observed_base_url}, "
+        f"other credential sites={list(observation.other_credential_sites)}, "
+        f"network={observation.observed_network_mode}"
+    )
+    return observation
+
+
 class CapabilityProbe(StrictModel):
     """Whether the agent really read, wrote and ran a shell command.
 

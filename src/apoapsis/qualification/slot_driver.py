@@ -45,6 +45,24 @@ def controller_address() -> str:
     return socket.gethostbyname(socket.gethostname())
 
 
+#: The declared placeholder Qwen's OpenAI-compatible client validates against.
+#:
+#: It is public, non-secret, and written here in the source rather than read
+#: from anywhere: it authenticates nothing, grants no external access, and is
+#: accepted only because Qwen 0.21.1 refuses to start without a non-empty value
+#: -- "Missing API key for OpenAI-compatible auth. Set
+#: settings.security.auth.apiKey, or set the 'OPENAI_API_KEY' environment
+#: variable." The only endpoint it is ever sent to is the loopback forwarder,
+#: which reaches the controller-owned relay and nothing else; the relay does not
+#: inspect it. It is never sourced from the host environment, and no host
+#: credential reaches the workcell by this or any other route.
+#:
+#: See ADR 0090. The security property is credential exclusion, not the absence
+#: of all authentication-shaped configuration -- the latter is unsatisfiable
+#: against the pinned CLI, and a property nothing can satisfy protects nothing.
+LOCAL_PLACEHOLDER_API_KEY = "apoapsis-local-nonsecret-placeholder"
+
+
 def qwen_settings(
     *, model_alias: str, loopback_port: int, context_window: int, max_output: int
 ) -> dict:
@@ -52,7 +70,17 @@ def qwen_settings(
 
     return {
         "selectedAuthType": "openai",
-        "security": {"auth": {"selectedType": "openai"}},
+        "security": {
+            "auth": {
+                "selectedType": "openai",
+                # In the settings file, never in the environment. The workcell
+                # image supplies no token-like environment variable and the
+                # `no-token-environment` containment probe stays exactly as it
+                # was; this value lives in a file the manifest binds by digest,
+                # so changing it changes the run's identity.
+                "apiKey": LOCAL_PLACEHOLDER_API_KEY,
+            }
+        },
         "telemetry": {"enabled": False},
         "usageStatisticsEnabled": False,
         "providerProtocol": "openai",

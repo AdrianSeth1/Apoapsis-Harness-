@@ -68,6 +68,27 @@ WORKSPACE_ROOT = "/workspace"
 PROBE_MARKER = "APOAPSIS-CAPABILITY-MARKER-7P5"
 
 
+def _classify_authorization(header: str | None) -> str:
+    """What kind of thing the arm sent, without treating it as a secret.
+
+    Three outcomes, and the middle one is the point. `declared_placeholder`
+    means the arm sent exactly the public, non-secret value the manifest binds;
+    `unrecognised` means it sent something else, which is the finding -- a value
+    this evidence has no account of is the only shape that could be a real
+    credential. Classifying rather than redacting keeps that distinction
+    readable, which redaction would destroy.
+    """
+
+    from apoapsis.qualification.slot_driver import LOCAL_PLACEHOLDER_API_KEY
+
+    if not header:
+        return "absent"
+    value = header.split(" ", 1)[-1].strip() if " " in header else header.strip()
+    if value == LOCAL_PLACEHOLDER_API_KEY:
+        return "declared_placeholder"
+    return "unrecognised"
+
+
 def tool_schema_digest(tools: object) -> str:
     """One digest over the whole declared tool schema, not just the names.
 
@@ -400,7 +421,9 @@ class FakeProviderServer:
                 self.wfile.flush()
 
             def do_GET(self) -> None:  # noqa: N802
-                server._record("GET", self.path, None)
+                server._record(
+                    "GET", self.path, None, self.headers.get("Authorization")
+                )
                 # Relay readiness probes `/health` before any token is spent.
                 # A provider that 404s here makes readiness fail in a way that
                 # reads like a containment or relay defect rather than a
@@ -432,7 +455,12 @@ class FakeProviderServer:
                     request = json.loads(raw or b"{}")
                 except json.JSONDecodeError:
                     request = {"unparsable": True}
-                server._record("POST", self.path, request)
+                server._record(
+                    "POST",
+                    self.path,
+                    request,
+                    self.headers.get("Authorization"),
+                )
 
                 if not self.path.rstrip("/").endswith("/chat/completions"):
                     self._send(404, {"error": {"message": "not found"}})
@@ -476,7 +504,13 @@ class FakeProviderServer:
 
         return Handler
 
-    def _record(self, method: str, path: str, body: dict | None) -> None:
+    def _record(
+        self,
+        method: str,
+        path: str,
+        body: dict | None,
+        authorization: str | None = None,
+    ) -> None:
         with self._lock:
             self._requests.append(
                 {
@@ -487,5 +521,28 @@ class FakeProviderServer:
                     # between the two arms of a pair is how "byte-identical
                     # task information" stops being an assertion.
                     "body": body,
+                    #: Recorded verbatim and classified, because the value is a
+                    #: declared public placeholder rather than secret material.
+                    #: Redacting it would make the one thing worth checking --
+                    #: that the arm sent the declared placeholder and not
+                    #: something from the host -- unreadable in the evidence.
+                    "authorization": authorization,
+                    "authorization_kind": _classify_authorization(authorization),
                 }
+            )
+
+    @property
+    def observed_authorizations(self) -> tuple[str, ...]:
+        with self._lock:
+            return tuple(
+                entry["authorization"]
+                for entry in self._requests
+                if entry.get("authorization")
+            )
+
+    @property
+    def authorization_kinds(self) -> tuple[str, ...]:
+        with self._lock:
+            return tuple(
+                entry.get("authorization_kind", "absent") for entry in self._requests
             )

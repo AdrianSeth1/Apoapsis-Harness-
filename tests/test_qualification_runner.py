@@ -20,6 +20,7 @@ Nothing here starts a container, opens a socket or calls a model.
 from __future__ import annotations
 
 import inspect
+import json
 import shutil
 import tempfile
 import unittest
@@ -374,6 +375,245 @@ class SharedSessionLifecycleTests(unittest.TestCase):
                 )
         self.assertIsNot(
             by_stage["stage-2-containment"].outcome, StageOutcome.PASSED
+        )
+
+
+class DeclaredPlaceholderTests(unittest.TestCase):
+    """The one authentication-shaped value, and where it may live. ADR 0090.
+
+    Qwen 0.21.1 will not start without a non-empty key, so the property being
+    enforced is credential exclusion rather than the absence of all
+    authentication-shaped configuration. The placeholder is therefore permitted
+    -- in the settings file the manifest binds by digest, never in the
+    environment, and never sourced from the host.
+    """
+
+    def test_the_placeholder_is_in_settings_and_never_the_environment(self) -> None:
+        from apoapsis.qualification.slot_driver import (
+            LOCAL_PLACEHOLDER_API_KEY,
+            qwen_settings,
+        )
+
+        settings = qwen_settings(
+            model_alias="qwen3.6-27b",
+            loopback_port=8080,
+            context_window=65536,
+            max_output=16384,
+        )
+        self.assertEqual(
+            settings["security"]["auth"]["apiKey"], LOCAL_PLACEHOLDER_API_KEY
+        )
+        self.assertEqual(
+            settings["modelProviders"]["openai"][0]["baseUrl"],
+            "http://127.0.0.1:8080/v1",
+        )
+
+    def test_the_placeholder_is_a_literal_not_read_from_the_host(self) -> None:
+        """A value read from `os.environ` would be a host credential by
+        definition, whatever it happened to contain."""
+
+        from apoapsis.qualification import slot_driver
+
+        # Checked on the code rather than the text: the surrounding comment
+        # says "environment" for good reasons, and a substring search over
+        # comments would fail on prose that agrees with it.
+        import ast
+
+        tree = ast.parse(inspect.getsource(slot_driver.qwen_settings).strip())
+        reads = {
+            node.attr
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Attribute)
+        } | {
+            node.id for node in ast.walk(tree) if isinstance(node, ast.Name)
+        }
+        self.assertNotIn("environ", reads)
+        self.assertNotIn("getenv", reads)
+        self.assertEqual(
+            slot_driver.LOCAL_PLACEHOLDER_API_KEY,
+            "apoapsis-local-nonsecret-placeholder",
+        )
+        module = inspect.getsource(slot_driver)
+        assignment = [
+            line
+            for line in module.splitlines()
+            if line.startswith("LOCAL_PLACEHOLDER_API_KEY")
+        ]
+        self.assertEqual(
+            assignment,
+            ['LOCAL_PLACEHOLDER_API_KEY = "apoapsis-local-nonsecret-placeholder"'],
+        )
+
+    def test_the_environment_probe_is_unchanged(self) -> None:
+        """`no-token-environment` is not narrowed, exempted or special-cased."""
+
+        from apoapsis.workcell.containment import DEFAULT_CONTAINMENT_PROBES
+
+        probe = next(
+            item
+            for item in DEFAULT_CONTAINMENT_PROBES
+            if item.probe_id == "no-token-environment"
+        )
+        self.assertEqual(
+            probe.argv,
+            [
+                "sh",
+                "-c",
+                "env | grep -Eiq '(TOKEN|SECRET|PASSWORD|API_KEY|CREDENTIAL)='",
+            ],
+        )
+
+    def test_the_provider_classifies_the_placeholder_rather_than_redacting_it(
+        self,
+    ) -> None:
+        from apoapsis.qualification.fake_provider_server import _classify_authorization
+        from apoapsis.qualification.slot_driver import LOCAL_PLACEHOLDER_API_KEY
+
+        self.assertEqual(
+            _classify_authorization(f"Bearer {LOCAL_PLACEHOLDER_API_KEY}"),
+            "declared_placeholder",
+        )
+        self.assertEqual(_classify_authorization(None), "absent")
+        # The finding. A value this evidence has no account of is the only
+        # shape that could be a real credential.
+        self.assertEqual(_classify_authorization("Bearer sk-live-abc123"), "unrecognised")
+
+
+class WorkcellConfigurationCheckTests(unittest.TestCase):
+    """What the configuration check requires, without starting a container."""
+
+    class _Session:
+        def __init__(self, settings: dict, *, env_hits: str = "", routed: bool = False):
+            self.settings = settings
+            self.env_hits = env_hits
+            self.routed = routed
+            self.config = self._config()
+
+        def _config(self):
+            class _Relay:
+                upstream_base_url = "http://127.0.0.1:9999"
+                allowed_routes = ["/health", "/v1/chat/completions", "/v1/models"]
+
+            class _Egress:
+                relay = _Relay()
+
+            class _Config:
+                egress = _Egress()
+                pin = None
+
+            return _Config()
+
+        def exec(self, argv, timeout_seconds=300.0):
+            command = argv[-1]
+            if command.startswith("cat "):
+                return 0, json.dumps(self.settings), ""
+            if command.startswith("env |"):
+                return 0, self.env_hits, ""
+            if "ip route" in command:
+                return 0, ("1" if self.routed else "0"), ""
+            return 1, "", ""
+
+    def _settings(self, **overrides) -> dict:
+        from apoapsis.qualification.slot_driver import qwen_settings
+
+        settings = qwen_settings(
+            model_alias="qwen3.6-27b",
+            loopback_port=8080,
+            context_window=65536,
+            max_output=16384,
+        )
+        settings.update(overrides)
+        return settings
+
+    def _observe(self, session, **overrides):
+        import hashlib
+
+        from apoapsis.qualification.observation import observe_workcell_configuration
+        from apoapsis.qualification.slot_driver import LOCAL_PLACEHOLDER_API_KEY
+
+        digest = hashlib.sha256(json.dumps(session.settings).encode()).hexdigest()
+        arguments = {
+            "declared_placeholder": LOCAL_PLACEHOLDER_API_KEY,
+            "declared_base_url": "http://127.0.0.1:8080/v1",
+            "declared_settings_sha256": digest,
+            "declared_relay_upstream": "http://127.0.0.1:9999",
+            "declared_relay_routes": (
+                "/health",
+                "/v1/chat/completions",
+                "/v1/models",
+            ),
+        }
+        arguments.update(overrides)
+        return observe_workcell_configuration(session, **arguments)
+
+    def test_the_declared_configuration_is_satisfied(self) -> None:
+        observation = self._observe(self._Session(self._settings()))
+        self.assertTrue(observation.satisfied, observation.unsatisfied_categories)
+        self.assertEqual(observation.other_credential_sites, ())
+
+    def test_a_different_placeholder_is_refused(self) -> None:
+        settings = self._settings()
+        settings["security"]["auth"]["apiKey"] = "something-else"
+        observation = self._observe(self._Session(settings))
+        self.assertFalse(observation.satisfied)
+        self.assertIn("api_key_is_declared_placeholder", observation.unsatisfied_categories)
+
+    def test_a_second_credential_anywhere_is_refused(self) -> None:
+        for label, session in (
+            (
+                "settings",
+                self._Session(self._settings(githubToken="ghp_realtoken")),
+            ),
+            (
+                "environment",
+                self._Session(self._settings(), env_hits="AWS_SECRET_ACCESS_KEY=x"),
+            ),
+        ):
+            with self.subTest(site=label):
+                observation = self._observe(session)
+                self.assertFalse(observation.satisfied)
+                self.assertIn(
+                    "other_credential_sites", observation.unsatisfied_categories
+                )
+
+    def test_a_token_shaped_ceiling_is_not_a_credential(self) -> None:
+        """`max_tokens` contains "token" and is 16,384. A scanner that cannot
+        tell a ceiling from a secret trains readers to ignore it."""
+
+        observation = self._observe(self._Session(self._settings()))
+        self.assertEqual(observation.other_credential_sites, ())
+
+    def test_an_off_endpoint_base_url_is_refused(self) -> None:
+        settings = self._settings()
+        settings["modelProviders"]["openai"][0]["baseUrl"] = "https://api.openai.com/v1"
+        observation = self._observe(self._Session(settings))
+        self.assertFalse(observation.satisfied)
+        self.assertIn("base_url_is_bound_loopback", observation.unsatisfied_categories)
+
+    def test_a_routed_network_is_refused(self) -> None:
+        observation = self._observe(self._Session(self._settings(), routed=True))
+        self.assertFalse(observation.satisfied)
+        self.assertIn("network_is_none", observation.unsatisfied_categories)
+
+    def test_a_changed_relay_policy_is_refused(self) -> None:
+        observation = self._observe(
+            self._Session(self._settings()),
+            declared_relay_upstream="http://127.0.0.1:1234",
+        )
+        self.assertFalse(observation.satisfied)
+        self.assertIn("relay_policy_matches_bound", observation.unsatisfied_categories)
+
+    def test_changing_the_settings_invalidates_comparability(self) -> None:
+        """The digest is what makes the rest enforceable: any edit to the
+        settings changes it, and a changed controlled variable is a different
+        experiment rather than a quiet correction."""
+
+        observation = self._observe(
+            self._Session(self._settings()), declared_settings_sha256="0" * 64
+        )
+        self.assertFalse(observation.satisfied)
+        self.assertIn(
+            "settings_digest_matches_bound", observation.unsatisfied_categories
         )
 
 

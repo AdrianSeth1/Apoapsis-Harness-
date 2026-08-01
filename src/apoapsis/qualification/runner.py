@@ -57,6 +57,7 @@ from apoapsis.qualification.observation import (
     observe_egress_refusal,
     observe_mounts,
     observe_teardown,
+    observe_workcell_configuration,
 )
 from apoapsis.qualification.pilot import (
     ArmKind,
@@ -67,7 +68,13 @@ from apoapsis.qualification.pilot import (
 from apoapsis.qualification.real_probe import RealCasePackageProbe
 from apoapsis.qualification.relay_faults import run_all_relay_faults
 from apoapsis.qualification.session_factory import session_factory_from_manifest
-from apoapsis.qualification.slot_driver import WORKCELL_UID, execute_slot
+from apoapsis.qualification.slot_driver import (
+    LOCAL_PLACEHOLDER_API_KEY,
+    WORKCELL_UID,
+    execute_slot,
+    qwen_settings,
+    write_settings,
+)
 from apoapsis.qualification.rehearsal import (
     REQUIRED_DETECTORS,
     ArmSlotResult,
@@ -372,6 +379,45 @@ def stage_2_containment(
     mounts = observe_mounts(session)
     writer.write_json("stage-2/mounts.json", mounts.model_dump(mode="json"))
 
+    # The complementary question to `no-token-environment`, which stays exactly
+    # as it was. That probe asks whether a token-like variable is in the
+    # environment; this asks whether the one authentication-shaped value the
+    # pinned CLI requires is the declared placeholder, in the declared file,
+    # aimed at the declared loopback endpoint, with nothing else
+    # credential-shaped anywhere in the box. See ADR 0090.
+    egress_policy = getattr(getattr(session, "config", None), "egress", None)
+    loopback_port = getattr(egress_policy, "loopback_port", 8080)
+    relay_policy = getattr(egress_policy, "relay", None)
+    try:
+        write_settings(
+            session,
+            qwen_settings(
+                model_alias=manifest.model.model_alias,
+                loopback_port=loopback_port,
+                context_window=manifest.budgets.context_limit_tokens,
+                max_output=manifest.budgets.max_output_tokens,
+            ),
+        )
+    except Exception as exc:  # noqa: BLE001
+        # Recorded rather than raised. A settings write that failed leaves the
+        # configuration unobservable, and the check below says so; an exception
+        # here would take the whole rehearsal down over a stage result.
+        writer.write_json(
+            "stage-2/settings-write-error.json",
+            {"error": f"{type(exc).__name__}: {exc}"},
+        )
+    configuration = observe_workcell_configuration(
+        session,
+        declared_placeholder=LOCAL_PLACEHOLDER_API_KEY,
+        declared_base_url=f"http://127.0.0.1:{loopback_port}/v1",
+        declared_settings_sha256=manifest.qwen.effective_settings_sha256,
+        declared_relay_upstream=getattr(relay_policy, "upstream_base_url", None),
+        declared_relay_routes=tuple(getattr(relay_policy, "allowed_routes", ()) or ()),
+    )
+    writer.write_json(
+        "stage-2/workcell-configuration.json", configuration.model_dump(mode="json")
+    )
+
     egress_evidence = Path(writer.root) / "stage-2" / "web-fetch-egress"
     egress_evidence.mkdir(parents=True, exist_ok=True)
     try:
@@ -427,6 +473,14 @@ def stage_2_containment(
             "stage-2-containment",
             StageOutcome.FAILED,
             "web_fetch reached an external origin from inside --network none",
+        )
+    if not configuration.satisfied:
+        return _stage(
+            "stage-2-containment",
+            StageOutcome.FAILED,
+            "the workcell's authentication-shaped configuration is not the "
+            f"declared one ({list(configuration.unsatisfied_categories)}): "
+            f"{configuration.detail}",
         )
     if not egress.refused:
         return _stage(
