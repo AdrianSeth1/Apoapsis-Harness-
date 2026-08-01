@@ -1386,6 +1386,12 @@ command-scoped `safe.directory` setting for that exact path (ADR 0099). This
 handles the bind-mount UID difference without globally trusting the project,
 mount, parent directory, or a wildcard.
 
+Unix sockets and sibling-container workspaces live in a fresh short WSL ext4
+runtime mounted into the controller at the same path (ADR 0100). Durable
+authorization, logs, checkpoints, admitted snapshots, and the final response
+remain in the Windows project audit directory. The generated ext4 runtime is
+removed when the launcher exits.
+
 The workcell runs the real Qwen coding CLI's own native loop inside a
 disposable, hardened container. Apoapsis keeps every durable authority —
 admission, verification, checkpointing, promotion, delivery — outside it.

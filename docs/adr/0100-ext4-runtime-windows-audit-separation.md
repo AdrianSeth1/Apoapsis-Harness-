@@ -1,0 +1,39 @@
+# ADR 0100: Keep Unix runtime on ext4 and durable evidence on Windows
+
+## Status
+
+Accepted and implemented on 2026-08-01.
+
+## Context
+
+After the approved seed reached the product controller, live containment tried
+to create `model.sock` below the task's durable evidence directory. That
+directory is on Windows DrvFs. DrvFs cannot represent a Unix socket inode, so
+the relay correctly refused before inference.
+
+The controller is itself a container that launches sibling workcell
+containers through the host Docker socket. A private path inside the controller
+is therefore insufficient: sibling bind-mount sources must also exist at the
+same path on the WSL host.
+
+## Decision
+
+The WSL launcher creates one short, fresh runtime directory with `mktemp` under
+`/tmp`, clones the approved seed there, mounts the runtime into the controller
+at the identical absolute path, and passes a dedicated controller runtime root.
+The launcher removes that exact generated directory on exit.
+
+All socket directories, workcell workspaces, Qwen homes, forwarders, and other
+ephemeral sibling-container inputs use this ext4 runtime. Durable authorization,
+logs, observations, checkpoints, admitted snapshots, and the final response
+remain under the project task's Windows audit directory. A completed admitted
+snapshot is therefore available to the Windows promotion adapter after the
+ephemeral runtime is removed.
+
+## Consequences
+
+- Unix sockets are never placed on DrvFs.
+- The host Docker daemon can resolve every sibling-container bind source.
+- Durable evidence remains visible and persistent in the project.
+- Ephemeral model workspaces are removed even when the controller fails.
+- No model, filesystem, command, or completion authority moves into the model.

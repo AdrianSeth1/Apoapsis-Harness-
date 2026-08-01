@@ -59,13 +59,9 @@ fi
 
 COMMIT="$(git -C "${REPO}" rev-parse HEAD)"
 TAG="apoapsis-product-controller:${COMMIT:0:12}"
-RUNTIME="$(dirname "${RESPONSE}")/docker-runtime"
-mkdir -p "${RUNTIME}"
+RUNTIME="$(mktemp -d /tmp/apx-product-XXXXXXXX)"
+trap 'rm -rf "${RUNTIME}"' EXIT
 NORMALIZED_SEED="${RUNTIME}/seed"
-if test -e "${NORMALIZED_SEED}"; then
-  echo "Capability Sandbox normalized seed already exists: ${NORMALIZED_SEED}" >&2
-  exit 2
-fi
 SEED_COMMIT="$(git --git-dir="${SEED_GIT_DIR}" --work-tree="${SEED}" rev-parse HEAD)"
 SEED_COMMON_DIR="$(git --git-dir="${SEED_GIT_DIR}" rev-parse --git-common-dir)"
 git clone --quiet --no-local "${SEED_COMMON_DIR}" "${NORMALIZED_SEED}"
@@ -85,8 +81,10 @@ docker run --rm --pull never --network host --gpus all \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -v "${REPO}:${REPO}:ro" \
   -v "$(dirname "${RESPONSE}"):$(dirname "${RESPONSE}"):rw" \
+  -v "${RUNTIME}:${RUNTIME}:rw" \
   -v /home/arya/llama.cpp:/home/arya/llama.cpp:ro \
   -v /home/arya/models:/home/arya/models:ro \
   -v /usr/local/cuda:/usr/local/cuda:ro \
   "${TAG}" -m apoapsis.workcell.product_live \
-  --repo "${REPO}" --seed "${NORMALIZED_SEED}" --request "${REQUEST}" --response "${RESPONSE}"
+  --repo "${REPO}" --seed "${NORMALIZED_SEED}" --request "${REQUEST}" \
+  --response "${RESPONSE}" --runtime-root "${RUNTIME}/controller"
