@@ -695,13 +695,21 @@ def _stale_witness_fixture() -> "StructuredWitness":
     )
 
 
-def _orchestration_only_probe(package_root: Path):
+def _orchestration_only_probe(
+    package, *, seed_repository: Path, evidence_root: Path
+):
     """A probe that declares its evidence is orchestration-only.
 
     The point of the control is that declaring `ORCHESTRATION_ONLY` makes the
     result non-registerable no matter how many proofs pass -- which is the
     defect 7P.1b actually shipped, when a fake probe reported "eight proofs
     passed" and "registerable" together.
+
+    Returns an *instance*. R3 and R4 returned the class, and passed a
+    `ResolvedCasePackage` where `validate_case_package` wants a package root,
+    and omitted `workspace` entirely -- so the control the whole pilot is named
+    for raised `TypeError` the first time it was ever executed. Nothing caught
+    it, because nothing had ever executed it.
     """
 
     from apoapsis.qualification.case_package import EvidenceKind
@@ -710,7 +718,11 @@ def _orchestration_only_probe(package_root: Path):
     class _OrchestrationOnlyProbe(RealCasePackageProbe):
         evidence_kind = EvidenceKind.ORCHESTRATION_ONLY
 
-    return _OrchestrationOnlyProbe
+    return _OrchestrationOnlyProbe(
+        seed_repository=Path(seed_repository),
+        package_root=Path(package.package_root),
+        evidence_root=Path(evidence_root),
+    )
 
 
 def stage_6_negative_controls(
@@ -720,6 +732,7 @@ def stage_6_negative_controls(
     repo: Path,
     writer: EvidenceWriter,
     manifest_path: Path,
+    seed_repository: Path,
 ) -> tuple[StageResult, tuple[NegativeControlResult, ...]]:
     """Inject each fault and record which detector actually caught it.
 
@@ -970,8 +983,15 @@ def stage_6_negative_controls(
     # decision lives on the validation result, so it is read from there.
     from apoapsis.qualification.case_package import EvidenceKind, validate_case_package
 
+    orchestration_root = Path(writer.root) / "stage-6" / "orchestration-only"
     orchestration = validate_case_package(
-        package, probe=_orchestration_only_probe(package)
+        Path(package.package_root),
+        probe=_orchestration_only_probe(
+            package,
+            seed_repository=seed_repository,
+            evidence_root=orchestration_root / "evidence",
+        ),
+        workspace=orchestration_root / "workspace",
     )
     fake_caught = (
         orchestration.evidence_kind is EvidenceKind.ORCHESTRATION_ONLY
@@ -1276,7 +1296,12 @@ def run_rehearsal(
     stages.append(stage4)
 
     stage6, controls = stage_6_negative_controls(
-        manifest, lock, repo=repo, writer=writer, manifest_path=Path(manifest_path)
+        manifest,
+        lock,
+        repo=repo,
+        writer=writer,
+        manifest_path=Path(manifest_path),
+        seed_repository=seed,
     )
     stages.append(stage6)
 

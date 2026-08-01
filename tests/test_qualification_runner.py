@@ -20,16 +20,19 @@ Nothing here starts a container, opens a socket or calls a model.
 from __future__ import annotations
 
 import inspect
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
 
 from apoapsis.qualification import runner as runner_module
 from apoapsis.qualification.fake_pilot_provider import ScriptId
-from apoapsis.qualification.pilot import PilotManifest
+from apoapsis.qualification.pilot import PilotLock, PilotManifest
 from apoapsis.qualification.rehearsal import (
+    REQUIRED_DETECTORS,
     ArmSlotResult,
     EvidenceWriter,
+    NegativeControl,
     RehearsalVerdict,
     StageOutcome,
     StageResult,
@@ -43,6 +46,8 @@ from apoapsis.qualification.runner import (
     stage_6_negative_controls,
     stage_7_accounting,
 )
+
+QUALIFICATION_DIR_MARKER = "docs/qualification"
 
 REPO = Path(__file__).resolve().parents[1]
 QUALIFICATION = REPO / "docs" / "qualification"
@@ -181,6 +186,74 @@ class ControlsReadTheManifestUnderRehearsal(unittest.TestCase):
         parameter = signature.parameters.get("manifest_path")
         self.assertIsNotNone(parameter, "stage 6 does not take a manifest path")
         self.assertIs(parameter.default, inspect.Parameter.empty)
+
+
+class NegativeControlsAreExecutedNotDescribedTests(unittest.TestCase):
+    """Stage 6 must actually run. Reading it is not enough.
+
+    R3 and R4 shipped a control 14 -- orchestration-only evidence offered as
+    qualification evidence, the control this pilot is named for -- that raised
+    `TypeError` the first time it was ever executed: it passed a resolved
+    package where a package root was wanted, passed the probe class instead of
+    an instance, and omitted `workspace` entirely. No test called
+    `stage_6_negative_controls`, so three signature errors in the same call sat
+    behind a stage that read as implemented.
+
+    This test needs the Crisis Atlas seed to clone, which is an evaluation
+    fixture rather than repository content, so it skips rather than fails when
+    the seed is not present -- and says so, so a skip is not read as a pass.
+    """
+
+    def setUp(self) -> None:
+        if shutil.which("git") is None:
+            self.skipTest("git is required to clone the seed")
+        self.seed = self._seed()
+        if self.seed is None:
+            self.skipTest(
+                "the Crisis Atlas seed is not present; stage 6 clones it and "
+                "cannot substitute anything for it"
+            )
+        self.manifest = _manifest()
+        lock_path = QUALIFICATION / "slice7-crisis-atlas-pilot-lock-v3.json"
+        if not lock_path.exists():
+            self.skipTest("no lock yet; this is the manifest commit")
+        self.lock = PilotLock.model_validate_json(
+            lock_path.read_text(encoding="utf-8")
+        )
+        self.manifest_path = (
+            QUALIFICATION / "slice7-crisis-atlas-pilot-manifest-v3.json"
+        )
+
+    @staticmethod
+    def _seed():
+        for candidate in (
+            REPO / ".apoapsis-eval" / "slice-e-crisis-atlas-seed-2026-07-29",
+            Path("/root/crisis-atlas-seed"),
+        ):
+            if (candidate / ".git").is_dir():
+                return candidate
+        return None
+
+    def test_control_fourteen_is_injected_and_caught(self) -> None:
+        writer = EvidenceWriter(Path(tempfile.mkdtemp(prefix="stage-6-")))
+        stage, controls = stage_6_negative_controls(
+            self.manifest,
+            self.lock,
+            repo=REPO,
+            writer=writer,
+            manifest_path=self.manifest_path,
+            seed_repository=self.seed,
+        )
+
+        self.assertIs(stage.outcome, StageOutcome.PASSED, stage.detail)
+        self.assertEqual(len(controls), len(REQUIRED_DETECTORS))
+        by_control = {item.control: item for item in controls}
+        fake = by_control[NegativeControl.FAKE_EVIDENCE_AS_REAL_QUALIFICATION]
+        self.assertTrue(fake.refused)
+        self.assertEqual(fake.detector_fired, "CasePackageValidation.registerable")
+        for item in controls:
+            with self.subTest(control=str(item.control)):
+                self.assertTrue(item.correctly_detected, item.model_dump(mode="json"))
 
 
 if __name__ == "__main__":  # pragma: no cover
