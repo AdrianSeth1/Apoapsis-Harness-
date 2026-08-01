@@ -31,4 +31,15 @@ collect_ignore_glob = [
     # crossed one directory further along.
     "docs/evaluation/*/produced-worktree/*",
     "docs/evaluation/*/*/produced-worktree/*",
+    # The example projects are *fixtures*: `tests/test_vertical_slice.py` and
+    # friends copy them into a temporary directory, run a real task against the
+    # copy, and assert on the result. Their own suites are written for their own
+    # installed package and fail on import here, which says nothing about this
+    # harness. Collecting them also had a second-order cost that took a while to
+    # see: pytest's assertion rewriting wrote `__pycache__` into the example
+    # source tree, `copytree` carried those .pyc files into the fixture, and
+    # `test_agent_loop`'s review-surface assertions then failed on generated
+    # byproducts that no run had produced. The example is the input to a test,
+    # not a test.
+    "examples/*",
 ]
