@@ -1372,11 +1372,14 @@ before ADR 0097 retain the exact versioned-artifact fallback and fail closed if
 that legacy artifact is unavailable.
 
 Capability Sandbox launch accepts both ordinary Git checkouts and attached Git
-worktrees (whose `.git` metadata is a file). If infrastructure stops before a
-local session exists, Human Review offers **Run locally / retry fresh** instead
-of a continuation that cannot succeed. The retry is available only while the
-managed task worktree is unchanged; Apoapsis fingerprint-checks it, removes it
-without force, and recreates the run from the approved base (ADR 0098).
+worktrees. A Windows-created worktree's `.git` file points at Windows-only Git
+metadata, so the launcher resolves that pointer and creates an unchanged,
+detached, disposable Linux-readable seed without rewriting the operator's
+worktree. If infrastructure stops before a local session exists, Human Review
+offers **Run locally / retry fresh** instead of a continuation that cannot
+succeed. The retry is available only while the managed task worktree is
+unchanged; Apoapsis fingerprint-checks it, removes it without force, and
+recreates the run from the approved base (ADR 0098).
 
 The workcell runs the real Qwen coding CLI's own native loop inside a
 disposable, hardened container. Apoapsis keeps every durable authority —
