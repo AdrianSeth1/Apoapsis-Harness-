@@ -91,8 +91,21 @@ def _task_text(request: dict) -> str:
 
 def _base_tree(seed: Path, target: Path) -> None:
     shutil.copytree(seed, target)
-    subprocess.run(["git", "clean", "-xdff", "--quiet"], cwd=target, check=True)
-    subprocess.run(["git", "reset", "--hard", "--quiet", "HEAD"], cwd=target, check=True)
+    # The controller runs as root while a bind-mounted Windows/WSL seed may
+    # retain UID 1000 ownership. Trust only this exact disposable copy for each
+    # command; never mutate global/system Git configuration or broaden trust to
+    # the mount, repository parent, or wildcard (ADR 0099).
+    safe_directory = f"safe.directory={target}"
+    subprocess.run(
+        ["git", "-c", safe_directory, "clean", "-xdff", "--quiet"],
+        cwd=target,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-c", safe_directory, "reset", "--hard", "--quiet", "HEAD"],
+        cwd=target,
+        check=True,
+    )
     shutil.rmtree(target / ".git")
 
 
