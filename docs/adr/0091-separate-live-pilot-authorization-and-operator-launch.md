@@ -51,3 +51,14 @@ authorization, module, rehearsal, runtime file, live preflight, slot, telemetry
 record, or operator acknowledgement fails closed. The v8 rehearsal remains
 historical evidence for the zero-model system rather than being rewritten as a
 live authorization.
+
+## Observed verification
+
+Focused deterministic coverage passed 14/14 on CPython 3.12. The canonical
+native-ext4 full suite at runner commit `96653d0` passed 1,941 tests with 13
+skips in 343.782 seconds. Two earlier attempts are not evidence: one imported a
+previously installed package, and one found the Linux `rg` binary through its
+read-only Windows mount and failed before normal workflows; both causes were
+corrected before the recorded run. `compileall` and diff checking are recorded
+with the final authorization commit. No `llama-server` process was started and
+no inference occurred.

@@ -43,6 +43,22 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _llama_server_pids(proc_root: Path = Path("/proc")) -> tuple[int, ...]:
+    """Read Linux procfs directly; the pinned slim controller has no `pgrep`."""
+
+    found = []
+    for entry in proc_root.iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            command = (entry / "comm").read_text(encoding="utf-8").strip()
+        except (OSError, UnicodeError):
+            continue
+        if command == "llama-server":
+            found.append(int(entry.name))
+    return tuple(sorted(found))
+
+
 class BoundLiveModule(StrictModel):
     path: str = Field(min_length=1)
     sha256: str = Field(pattern=_SHA256)
@@ -117,7 +133,7 @@ def verify_runtime(manifest: PilotManifest) -> dict[str, object]:
         if actual != item.sha256 or size != item.size_bytes:
             raise LivePilotError(f"pinned runtime file drifted: {path}")
         observed.append({"path": str(path), "sha256": actual, "size_bytes": size})
-    if subprocess.run(["pgrep", "-x", "llama-server"], capture_output=True).returncode == 0:
+    if _llama_server_pids():
         raise LivePilotError("llama-server is already running; cold state is unproved")
     architecture = subprocess.run(
         ["uname", "-m"], capture_output=True, text=True, check=True
@@ -345,9 +361,7 @@ def run_live_pilot(
         if observation.kept_workspace.exists():
             raise LivePilotError(f"{label} worktree survived teardown")
         previous_workspaces.append(observation.kept_workspace)
-        server_stopped = subprocess.run(
-            ["pgrep", "-x", "llama-server"], capture_output=True
-        ).returncode != 0
+        server_stopped = not _llama_server_pids()
         if not server_stopped:
             raise LivePilotError(f"{label} server survived teardown")
         writer.write_json(f"live-arms/{label}/teardown.json", {

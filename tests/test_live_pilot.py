@@ -46,6 +46,21 @@ def authorization(module: Path) -> dict:
 
 
 class LiveAuthorizationTests(unittest.TestCase):
+    def test_server_detection_reads_procfs_without_external_tools(self):
+        from apoapsis.qualification.live_pilot import _llama_server_pids
+
+        with tempfile.TemporaryDirectory() as raw:
+            proc = Path(raw)
+            for pid, command in (("41", "python"), ("73", "llama-server")):
+                process = proc / pid
+                process.mkdir()
+                (process / "comm").write_text(command + "\n", encoding="utf-8")
+            (proc / "not-a-pid").mkdir()
+            unreadable = proc / "99"
+            unreadable.mkdir()
+
+            self.assertEqual(_llama_server_pids(proc), (73,))
+
     def test_no_acknowledgement_means_no_preflight_or_model_start(self):
         with self.assertRaisesRegex(LivePilotError, "not authorized"):
             run_live_pilot(
