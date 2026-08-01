@@ -14,9 +14,14 @@ to fail because no local agent session existed.
 
 ## Decision
 
-The launcher validates both repository paths with `git rev-parse
---is-inside-work-tree`, which accepts ordinary checkouts and attached Git
-worktrees. Every launcher preflight failure writes a specific diagnostic, and
+The launcher validates the harness with `git rev-parse`. For the task seed it
+accepts a normal `.git` directory or resolves an attached-worktree `.git`
+pointer, including the Windows absolute pointer produced by Windows Git. It
+requires the seed to be unchanged, resolves its exact commit and common object
+directory, and makes a disposable normal clone under the response runtime
+directory. Docker receives that clone; the operator's worktree is never
+rewritten to make its metadata Linux-readable. Every launcher preflight
+failure writes a specific diagnostic, and
 the Windows adapter records an exit-code diagnostic when a launcher produces
 neither output nor a result artifact.
 
@@ -29,7 +34,8 @@ the existing approved-task path, and invokes the ordinary execution operation.
 
 ## Consequences
 
-- A real attached Git worktree passes Capability Sandbox preflight.
+- A real Windows-created attached Git worktree becomes a normal disposable
+  Linux-readable seed and passes Capability Sandbox preflight.
 - The UI cannot promise to resume a session that does not exist.
 - Changed worktrees, existing sessions, fingerprint drift, and unrecognized
   paths still fail closed.
