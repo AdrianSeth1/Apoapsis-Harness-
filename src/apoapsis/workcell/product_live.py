@@ -110,11 +110,12 @@ def _base_tree(seed: Path, target: Path) -> None:
 
 
 def _live_preflight(
-    manifest: PilotManifest, *, repo: Path, seed: Path, evidence: Path, task_text: str
+    manifest: PilotManifest, *, repo: Path, seed: Path, evidence: Path,
+    runtime_root: Path, task_text: str
 ) -> dict:
     """Reobserve the manifest-declared tool and containment gates before inference."""
 
-    scratch = evidence / "scratch"
+    scratch = runtime_root / "scratch"
     scratch.mkdir(parents=True, exist_ok=False)
     writer = EvidenceWriter(evidence / "observations")
     identity = stage_1_runtime_identity(
@@ -280,7 +281,13 @@ class ProductSupervisor:
         )
 
 
-def run(request_path: Path, response_path: Path, repo: Path, seed: Path) -> int:
+def run(
+    request_path: Path,
+    response_path: Path,
+    repo: Path,
+    seed: Path,
+    runtime_root: Path,
+) -> int:
     request = json.loads(request_path.read_text(encoding="utf-8"))
     manifest = PilotManifest.model_validate_json(
         (repo / "docs/qualification/slice7-crisis-atlas-pilot-manifest-v8.json").read_text(encoding="utf-8")
@@ -295,6 +302,11 @@ def run(request_path: Path, response_path: Path, repo: Path, seed: Path) -> int:
     _base_tree(seed, base)
     evidence = response_path.parent / "evidence"
     evidence.mkdir(parents=True, exist_ok=True)
+    # Unix sockets and sibling-container workspaces must live on the WSL host's
+    # ext4 filesystem, not in the Windows audit directory. The launcher mounts
+    # this fresh runtime path into the controller at the identical absolute
+    # path so the host Docker daemon can resolve sibling bind sources.
+    runtime_root.mkdir(parents=True, exist_ok=False)
     runtime = verify_runtime(manifest)
     (evidence / "runtime-preflight.json").write_text(
         json.dumps(runtime, indent=2, sort_keys=True) + "\n", encoding="utf-8"
@@ -305,6 +317,7 @@ def run(request_path: Path, response_path: Path, repo: Path, seed: Path) -> int:
         repo=repo,
         seed=seed,
         evidence=evidence / "live-preflight",
+        runtime_root=runtime_root / "live-preflight",
         task_text=task_text,
     )
     control_record = None
@@ -317,7 +330,7 @@ def run(request_path: Path, response_path: Path, repo: Path, seed: Path) -> int:
                 manifest,
                 repo=repo,
                 seed_repository=seed,
-                base=run_root,
+                base=runtime_root / "slots",
                 repetition_id=request["run_id"],
                 arm="default-qwen-control",
                 script=None,
@@ -342,7 +355,7 @@ def run(request_path: Path, response_path: Path, repo: Path, seed: Path) -> int:
             manifest,
             repo=repo,
             seed_repository=seed,
-            base=run_root,
+            base=runtime_root / "slots",
             repetition_id=request["run_id"],
             arm="apoapsis-sandbox",
             script=None,
@@ -419,8 +432,9 @@ def main() -> int:
     parser.add_argument("--response", type=Path, required=True)
     parser.add_argument("--repo", type=Path, required=True)
     parser.add_argument("--seed", type=Path, required=True)
+    parser.add_argument("--runtime-root", type=Path, required=True)
     args = parser.parse_args()
-    return run(args.request, args.response, args.repo, args.seed)
+    return run(args.request, args.response, args.repo, args.seed, args.runtime_root)
 
 
 if __name__ == "__main__":

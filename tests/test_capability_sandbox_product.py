@@ -124,8 +124,11 @@ class ApprovedPlanPayloadTests(unittest.TestCase):
 
         self.assertIn('SEED_GIT_POINTER=', launcher)
         self.assertIn('wslpath -u "${SEED_GIT_POINTER}"', launcher)
+        self.assertIn('RUNTIME="$(mktemp -d /tmp/apx-product-XXXXXXXX)"', launcher)
         self.assertIn('NORMALIZED_SEED="${RUNTIME}/seed"', launcher)
         self.assertIn('git clone --quiet --no-local', launcher)
+        self.assertIn('-v "${RUNTIME}:${RUNTIME}:rw"', launcher)
+        self.assertIn('--runtime-root "${RUNTIME}/controller"', launcher)
         self.assertNotIn('test -d "${SEED}/.git"', launcher)
         self.assertIn("Capability Sandbox task path is not a Git worktree", launcher)
 
