@@ -1,0 +1,430 @@
+{
+  "arm_slots": [
+    {
+      "arm": "default_qwen_control",
+      "arm_visible_mounts_verified": true,
+      "candidate_fingerprint": "3e2eb91f7562b1882f581980e30e57245189045bf324c3bd154c7d7c05ac09c1",
+      "checkpoint_outcome": "CONTINUE",
+      "evaluator_only_absent": true,
+      "evidence_path": "/home/arya/apoapsis-evidence/slice7p3-official-rehearsal-v8/stage-4/crisis-atlas-rep-1-default_qwen_control",
+      "order_within_repetition": 1,
+      "provider_requests": 2,
+      "readiness_blocks": [
+        "CHANGED_BEHAVIOUR_UNEXERCISED",
+        "MISSING_REQUIRED_ARTIFACT",
+        "OBLIGATION_UNPROVED"
+      ],
+      "relay_observed_requests": 2,
+      "repetition_id": "crisis-atlas-rep-1",
+      "satisfied_criteria": [],
+      "script": "incomplete_proposal",
+      "seed_commit_verified": true,
+      "task_bytes_verified": true,
+      "teardown": {
+        "evidence_retained": true,
+        "next_slot_cannot_reach_previous": true,
+        "no_surviving_relay_stream": true,
+        "no_surviving_worker": true,
+        "qwen_home_removed": true,
+        "worktree_removed": true
+      }
+    },
+    {
+      "arm": "apoapsis_sandbox",
+      "arm_visible_mounts_verified": true,
+      "candidate_fingerprint": "3e2eb91f7562b1882f581980e30e57245189045bf324c3bd154c7d7c05ac09c1",
+      "checkpoint_outcome": "CONTINUE",
+      "evaluator_only_absent": true,
+      "evidence_path": "/home/arya/apoapsis-evidence/slice7p3-official-rehearsal-v8/stage-4/crisis-atlas-rep-1-apoapsis_sandbox",
+      "order_within_repetition": 2,
+      "provider_requests": 2,
+      "readiness_blocks": [
+        "CHANGED_BEHAVIOUR_UNEXERCISED",
+        "MISSING_REQUIRED_ARTIFACT",
+        "OBLIGATION_UNPROVED"
+      ],
+      "relay_observed_requests": 2,
+      "repetition_id": "crisis-atlas-rep-1",
+      "satisfied_criteria": [],
+      "script": "incomplete_proposal",
+      "seed_commit_verified": true,
+      "task_bytes_verified": true,
+      "teardown": {
+        "evidence_retained": true,
+        "next_slot_cannot_reach_previous": true,
+        "no_surviving_relay_stream": true,
+        "no_surviving_worker": true,
+        "qwen_home_removed": true,
+        "worktree_removed": true
+      }
+    },
+    {
+      "arm": "apoapsis_sandbox",
+      "arm_visible_mounts_verified": true,
+      "candidate_fingerprint": "4e0f9e51710ee4616dfe1d641c57daf90823f8f01aefc1574152990a0ff6bc0b",
+      "checkpoint_outcome": "COMPLETE",
+      "evaluator_only_absent": true,
+      "evidence_path": "/home/arya/apoapsis-evidence/slice7p3-official-rehearsal-v8/stage-4/crisis-atlas-rep-2-apoapsis_sandbox",
+      "order_within_repetition": 1,
+      "provider_requests": 2,
+      "readiness_blocks": [],
+      "relay_observed_requests": 2,
+      "repetition_id": "crisis-atlas-rep-2",
+      "satisfied_criteria": [
+        "AC-CHANGED-BEHAVIOUR-EXERCISED",
+        "AC-EXPORT-SERVICE",
+        "AC-INCIDENT-SERVICE"
+      ],
+      "script": "complete_proposal",
+      "seed_commit_verified": true,
+      "task_bytes_verified": true,
+      "teardown": {
+        "evidence_retained": true,
+        "next_slot_cannot_reach_previous": true,
+        "no_surviving_relay_stream": true,
+        "no_surviving_worker": true,
+        "qwen_home_removed": true,
+        "worktree_removed": true
+      }
+    },
+    {
+      "arm": "default_qwen_control",
+      "arm_visible_mounts_verified": true,
+      "candidate_fingerprint": "4e0f9e51710ee4616dfe1d641c57daf90823f8f01aefc1574152990a0ff6bc0b",
+      "checkpoint_outcome": "COMPLETE",
+      "evaluator_only_absent": true,
+      "evidence_path": "/home/arya/apoapsis-evidence/slice7p3-official-rehearsal-v8/stage-4/crisis-atlas-rep-2-default_qwen_control",
+      "order_within_repetition": 2,
+      "provider_requests": 2,
+      "readiness_blocks": [],
+      "relay_observed_requests": 2,
+      "repetition_id": "crisis-atlas-rep-2",
+      "satisfied_criteria": [
+        "AC-CHANGED-BEHAVIOUR-EXERCISED",
+        "AC-EXPORT-SERVICE",
+        "AC-INCIDENT-SERVICE"
+      ],
+      "script": "complete_proposal",
+      "seed_commit_verified": true,
+      "task_bytes_verified": true,
+      "teardown": {
+        "evidence_retained": true,
+        "next_slot_cannot_reach_previous": true,
+        "no_surviving_relay_stream": true,
+        "no_surviving_worker": true,
+        "qwen_home_removed": true,
+        "worktree_removed": true
+      }
+    },
+    {
+      "arm": "default_qwen_control",
+      "arm_visible_mounts_verified": true,
+      "candidate_fingerprint": "4e0f9e51710ee4616dfe1d641c57daf90823f8f01aefc1574152990a0ff6bc0b",
+      "checkpoint_outcome": "COMPLETE",
+      "evaluator_only_absent": true,
+      "evidence_path": "/home/arya/apoapsis-evidence/slice7p3-official-rehearsal-v8/stage-4/crisis-atlas-rep-3-default_qwen_control",
+      "order_within_repetition": 1,
+      "provider_requests": 2,
+      "readiness_blocks": [],
+      "relay_observed_requests": 2,
+      "repetition_id": "crisis-atlas-rep-3",
+      "satisfied_criteria": [
+        "AC-CHANGED-BEHAVIOUR-EXERCISED",
+        "AC-EXPORT-SERVICE",
+        "AC-INCIDENT-SERVICE"
+      ],
+      "script": "complete_proposal",
+      "seed_commit_verified": true,
+      "task_bytes_verified": true,
+      "teardown": {
+        "evidence_retained": true,
+        "next_slot_cannot_reach_previous": true,
+        "no_surviving_relay_stream": true,
+        "no_surviving_worker": true,
+        "qwen_home_removed": true,
+        "worktree_removed": true
+      }
+    },
+    {
+      "arm": "apoapsis_sandbox",
+      "arm_visible_mounts_verified": true,
+      "candidate_fingerprint": "4e0f9e51710ee4616dfe1d641c57daf90823f8f01aefc1574152990a0ff6bc0b",
+      "checkpoint_outcome": "COMPLETE",
+      "evaluator_only_absent": true,
+      "evidence_path": "/home/arya/apoapsis-evidence/slice7p3-official-rehearsal-v8/stage-4/crisis-atlas-rep-3-apoapsis_sandbox",
+      "order_within_repetition": 2,
+      "provider_requests": 2,
+      "readiness_blocks": [],
+      "relay_observed_requests": 2,
+      "repetition_id": "crisis-atlas-rep-3",
+      "satisfied_criteria": [
+        "AC-CHANGED-BEHAVIOUR-EXERCISED",
+        "AC-EXPORT-SERVICE",
+        "AC-INCIDENT-SERVICE"
+      ],
+      "script": "complete_proposal",
+      "seed_commit_verified": true,
+      "task_bytes_verified": true,
+      "teardown": {
+        "evidence_retained": true,
+        "next_slot_cannot_reach_previous": true,
+        "no_surviving_relay_stream": true,
+        "no_surviving_worker": true,
+        "qwen_home_removed": true,
+        "worktree_removed": true
+      }
+    }
+  ],
+  "authorises_live_inference": false,
+  "controller_image_id": "sha256:c6a511553cfe2f50a3a92eed3a90de0fa6ab3fc77d56ecc2887417348c043d0a",
+  "evidence_digest": "716f235699a0cf3bf826aa9b174ef9a5225b12b67005bf7732df9fa2b92df685",
+  "evidence_root": "/home/arya/apoapsis-evidence/slice7p3-official-rehearsal-v8",
+  "fake_provider_script_digest": "6bf3f4e513aa4148b3bb5cf053326470fdbdae4193e354eceed747a5b589bdda",
+  "lock_digest": "61b36743c43ec3afc932d956ad76fe1f2a320d41cff52356ab749746b6112867",
+  "manifest_digest": "f369760e438b6866b59fbecafa4b1d63cb8523aa726b3c9ba20a9699c26e4798",
+  "negative_controls": [
+    {
+      "control": "manifest_lock_mismatch",
+      "detector_fired": "PilotLock.verify_against",
+      "refused": true,
+      "required_detector": "PilotLock.verify_against"
+    },
+    {
+      "control": "evaluator_only_exposed",
+      "detector_fired": "ResolvedCasePackage.assert_arm_visible_set_is_contained",
+      "refused": true,
+      "required_detector": "ResolvedCasePackage.assert_arm_visible_set_is_contained"
+    },
+    {
+      "control": "changed_server_argument",
+      "detector_fired": "ServerIdentity.argv_sha256",
+      "refused": true,
+      "required_detector": "ServerIdentity.argv_sha256"
+    },
+    {
+      "control": "prior_arm_contamination",
+      "detector_fired": "TeardownProof",
+      "refused": true,
+      "required_detector": "TeardownProof"
+    },
+    {
+      "control": "regression_hidden_by_aggregate",
+      "detector_fired": "PairScore.aggregate_may_offset_pair_regression",
+      "refused": true,
+      "required_detector": "PairScore.aggregate_may_offset_pair_regression"
+    },
+    {
+      "control": "unclassified_stop_reason",
+      "detector_fired": "StopCondition.TELEMETRY_CANNOT_BE_CLASSIFIED",
+      "refused": true,
+      "required_detector": "StopCondition.TELEMETRY_CANNOT_BE_CLASSIFIED"
+    },
+    {
+      "control": "repair_entering_proposal_score",
+      "detector_fired": "RepairPolicy.repair_may_improve_proposal_score",
+      "refused": true,
+      "required_detector": "RepairPolicy.repair_may_improve_proposal_score"
+    },
+    {
+      "control": "absent_required_repetition",
+      "detector_fired": "decide_verdict:arm_slot_count",
+      "refused": true,
+      "required_detector": "decide_verdict:arm_slot_count"
+    },
+    {
+      "control": "workcell_profile_mismatch",
+      "detector_fired": "StopCondition.CODING_PROFILE_OR_REALISED_TOOLS_DIFFER",
+      "refused": true,
+      "required_detector": "StopCondition.CODING_PROFILE_OR_REALISED_TOOLS_DIFFER"
+    },
+    {
+      "control": "controlled_variable_mismatch",
+      "detector_fired": "StopCondition.REPETITION_CONFIGURATION_DIFFERS",
+      "refused": true,
+      "required_detector": "StopCondition.REPETITION_CONFIGURATION_DIFFERS"
+    },
+    {
+      "control": "missing_durable_evidence",
+      "detector_fired": "StopCondition.EVIDENCE_STORAGE_NOT_DURABLE",
+      "refused": true,
+      "required_detector": "StopCondition.EVIDENCE_STORAGE_NOT_DURABLE"
+    },
+    {
+      "control": "stale_witness_digest",
+      "detector_fired": "validate_witness",
+      "refused": true,
+      "required_detector": "validate_witness"
+    },
+    {
+      "control": "unmapped_obligation",
+      "detector_fired": "validate_criteria_mapping",
+      "refused": true,
+      "required_detector": "validate_criteria_mapping"
+    },
+    {
+      "control": "output_ceiling_truncation",
+      "detector_fired": "CeilingStopReason.OUTPUT_CEILING_TRUNCATION",
+      "refused": true,
+      "required_detector": "CeilingStopReason.OUTPUT_CEILING_TRUNCATION"
+    },
+    {
+      "control": "input_context_exhausted",
+      "detector_fired": "CeilingStopReason.INPUT_CONTEXT_EXHAUSTED",
+      "refused": true,
+      "required_detector": "CeilingStopReason.INPUT_CONTEXT_EXHAUSTED"
+    },
+    {
+      "control": "changed_task_bytes",
+      "detector_fired": "StopCondition.SEED_TASK_OR_CONTRACT_BYTES_DIFFER",
+      "refused": true,
+      "required_detector": "StopCondition.SEED_TASK_OR_CONTRACT_BYTES_DIFFER"
+    },
+    {
+      "control": "fake_evidence_as_real_qualification",
+      "detector_fired": "CasePackageValidation.registerable",
+      "refused": true,
+      "required_detector": "CasePackageValidation.registerable"
+    }
+  ],
+  "pair_scores": [
+    {
+      "aggregate_may_offset_pair_regression": false,
+      "comparable": true,
+      "control_proposal_quality": 0.0,
+      "incomparable_reason": null,
+      "repaired_quality_excluded_from_proposal": true,
+      "repetition_id": "crisis-atlas-rep-1",
+      "sandbox_detection_quality": 1.0,
+      "sandbox_proposal_quality": 0.0
+    },
+    {
+      "aggregate_may_offset_pair_regression": false,
+      "comparable": true,
+      "control_proposal_quality": 1.0,
+      "incomparable_reason": null,
+      "repaired_quality_excluded_from_proposal": true,
+      "repetition_id": "crisis-atlas-rep-2",
+      "sandbox_detection_quality": 1.0,
+      "sandbox_proposal_quality": 1.0
+    },
+    {
+      "aggregate_may_offset_pair_regression": false,
+      "comparable": true,
+      "control_proposal_quality": 1.0,
+      "incomparable_reason": null,
+      "repaired_quality_excluded_from_proposal": true,
+      "repetition_id": "crisis-atlas-rep-3",
+      "sandbox_detection_quality": 1.0,
+      "sandbox_proposal_quality": 1.0
+    }
+  ],
+  "reason": "every stage passed, six slots rehearsed, all injected controls caught by their mapped detector, relay stress met, accounting consistent. This authorises the live preflight only; live inference remains unauthorised and every live recheck still applies.",
+  "relay_stress_iterations": 20,
+  "relay_stress_passed": true,
+  "runner_authority_commit": "9db16f011ee5d3b0c94b8ab9545e52b3a405c8e9",
+  "runner_module_digests": {
+    "src/apoapsis/qualification/artifacts.py": "302a4723ddfbcfc903253ba9cae1b0a2c364b5c008904573c73cf3c027e724da",
+    "src/apoapsis/qualification/authority.py": "5e9a990f42782e1747a7ef5e99ec216d9ae4711c50129b25ead4b994b24c5c1e",
+    "src/apoapsis/qualification/case_package.py": "83a0bdf665497cea1d5f6e8aa22117816cad10a49d314100bef91648e112e908",
+    "src/apoapsis/qualification/fake_pilot_provider.py": "3d68285b760cbc3d87a7664fcf4adc5586bfb3e0637bb338719cbb3512e24598",
+    "src/apoapsis/qualification/fake_provider_server.py": "f40e6129cac2b2c0bd5b41a072e5968c0f9d04cb4dcfa630ef4f80aee00d8b87",
+    "src/apoapsis/qualification/negative_controls.py": "5ec5f636100ab9a7a1e740a4c3ebbcdc3d014389e02e60a599855b5f7ff96538",
+    "src/apoapsis/qualification/observation.py": "f9240fc9d9f20a0269b5316cd61ddee7c43f2d5bd5f47a4591b34fc4a5910958",
+    "src/apoapsis/qualification/pilot.py": "11977115ab6002c0e4bef595097c63c26ea21832e2179cf70791389b3e039d26",
+    "src/apoapsis/qualification/real_probe.py": "ac3a9977b8f470c8031f3b8f9f47c2ccc8a23c877457729020d1b6fdf1f797d3",
+    "src/apoapsis/qualification/rehearsal.py": "cf4c034aefd284047d5d526728318ac21e3ab5fb6be94be3f64be7cd0b6120c9",
+    "src/apoapsis/qualification/relay_faults.py": "53acb49c0c6a8b68ebcd3ea05a5896cba8065f5c363f2c46cf8844eccf70ae0f",
+    "src/apoapsis/qualification/runner.py": "2e51608c0c5599578f78678d88100cb729e7e0b14623370d258b12bb9a676f48",
+    "src/apoapsis/qualification/session_factory.py": "a3105f38d8bf29120e7f8919148eaf10ba3c009e7f49a3d277f450d4255ca0d6",
+    "src/apoapsis/qualification/slot_driver.py": "e466f6b95ea0c6cfd749f00865e56f3411fd378a80019bd2ce3f4ff88cf25940",
+    "src/apoapsis/workcell/acceptance.py": "af6637717aa4e96c1bbea1fef55d746c317ba7fdbc22b290aacaea9f347ff6d4",
+    "src/apoapsis/workcell/admission.py": "2e4daa186635d49789283250b2913d4efba03b739bcce31e63b0f716605dc2d0",
+    "src/apoapsis/workcell/checkpoint.py": "e62f91669ad3093d2dda05317ae16859cc84090641d7661bdb51c31bc09a9064",
+    "src/apoapsis/workcell/containment.py": "fa2e6553bed0dd4204d7cb091525f9f34270a54b1b34861fa3de7f1dba30b824",
+    "src/apoapsis/workcell/controller.py": "5023a4feef292c71e8e482401a1df3bfa89cd133b9f82f4209d8e7ab0c7ffd65",
+    "src/apoapsis/workcell/echo_provider.py": "4e93c39018597097a81d98abc43d18fbb67ba5f0238cce11949a4bf42005f752",
+    "src/apoapsis/workcell/emitters.py": "cba0299e937a3b69750275bc8de2ca160a30d9037e63f9eb93d175a716151d3b",
+    "src/apoapsis/workcell/forwarder.py": "93e000db44c18e1089c515a8e8a99185fcb9105486724d78528a8608c2ad042e",
+    "src/apoapsis/workcell/live_session.py": "bab3de4546e1e191697567d6c5c1fc58b963305de80e3a5680c44863e6e7dd07",
+    "src/apoapsis/workcell/pins.py": "c2c189683b950b4f110fa56e776f89a19beb16acae4335751ddfce3ca72f2a34",
+    "src/apoapsis/workcell/relay.py": "3b6336484c60da14a4455fe0ce65ce4447ad6c80961dc0b20aadbe89762f6b42",
+    "src/apoapsis/workcell/relay_policy.py": "d59edc0b3a6e55f6ac5eb6e680d778b627e9deb1f281b6f107aaba9564ad71ba",
+    "src/apoapsis/workcell/relay_preflight.py": "3fe56ec8bcfa184a4c09ec7ad79486b609d226daab8f0c6cda5fd68db0d66afd",
+    "src/apoapsis/workcell/witness.py": "452570b0b7dd7e44fb983553852aafebb85942440dea484d1f333ddeced01e17"
+  },
+  "schema_version": "1.0",
+  "stages": [
+    {
+      "detail": "manifest, lock, package and every bound executable recompute",
+      "evidence": {
+        "lock_digest": "61b36743c43ec3afc932d956ad76fe1f2a320d41cff52356ab749746b6112867",
+        "manifest_digest": "f369760e438b6866b59fbecafa4b1d63cb8523aa726b3c9ba20a9699c26e4798"
+      },
+      "outcome": "passed",
+      "stage": "stage-0-lock"
+    },
+    {
+      "detail": "26 tools observed on the wire matching the bound set exactly, schema digest d0d3891aa074f6ef matches, and read, write and shell were each demonstrated behaviourally",
+      "evidence": {
+        "observed_tool_count": "26",
+        "tool_schema_sha256": "d0d3891aa074f6efb9c7026cf83a5a4632ec8e7341dc40ec707d9145352e701d"
+      },
+      "outcome": "passed",
+      "stage": "stage-1-runtime-identity"
+    },
+    {
+      "detail": "22 probes with zero breaches and zero unproven, the arm-visible mount set read from inside the container, and a real web_fetch refused on every egress category",
+      "evidence": {
+        "probes": "22"
+      },
+      "outcome": "passed",
+      "stage": "stage-2-containment"
+    },
+    {
+      "detail": "20/20 readiness iterations, and all 5 injected faults (upstream disconnect, upstream timeout, dropped stream, backpressure, client cancellation) were recorded as failures rather than reported as complete answers",
+      "evidence": {
+        "faults_handled": "5",
+        "iterations": "20"
+      },
+      "outcome": "passed",
+      "stage": "stage-3-relay-stability"
+    },
+    {
+      "detail": "6 slots executed in the frozen order; 2 incomplete-shape slots all refused",
+      "evidence": {
+        "slots": "6"
+      },
+      "outcome": "passed",
+      "stage": "stage-4-arm-slots"
+    },
+    {
+      "detail": "17 controls injected; all caught by their mapped detector",
+      "evidence": {
+        "controls": "17"
+      },
+      "outcome": "passed",
+      "stage": "stage-6-negative-controls"
+    },
+    {
+      "detail": "aggregate 94626, exposed 83132, residual 11494; aggregate not counted as a call",
+      "evidence": {},
+      "outcome": "passed",
+      "stage": "stage-7-accounting"
+    },
+    {
+      "detail": "6 slots torn down with evidence retained in all of them",
+      "evidence": {},
+      "outcome": "passed",
+      "stage": "stage-8-cleanup"
+    }
+  ],
+  "token_accounting": {
+    "aggregate_counted_as_call": false,
+    "exposed_message_tokens": 83132,
+    "residual_tokens": 11494,
+    "session_aggregate_tokens": 94626,
+    "unmeasured_reason": null
+  },
+  "verdict": "pass_live_preflight_authorized",
+  "workcell_image_id": "sha256:80d6438472fcb3741fa76f3741a0bab07b18ed34f9cd83a44944aab44a5019f6"
+}

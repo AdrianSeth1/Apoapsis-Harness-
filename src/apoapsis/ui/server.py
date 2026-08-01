@@ -3,11 +3,13 @@ from __future__ import annotations
 import json
 import secrets
 import threading
+import traceback
+from collections import deque
 import webbrowser
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import unquote, urlsplit
 
 from apoapsis.architect.errors import (
@@ -28,6 +30,7 @@ from apoapsis.discovery.errors import (
     SessionNotFoundError,
 )
 from apoapsis.discovery.operation_store import DiscoveryOperationNotFoundError
+from apoapsis.repository.git import RepositoryHasNoCommitsError
 from apoapsis.execution.operation_errors import (
     ExecutionOperationError,
     ExecutionOperationNotFoundError,
@@ -60,7 +63,30 @@ _ASSET_FILES = {
     "/app.js": "app.js",
     "/styles.css": "styles.css",
 }
+# Ordinary control requests -- approvals, version-checked transitions, short
+# form submissions -- are small and bounded by design, so this stays tight.
 _MAX_REQUEST_BYTES = 64 * 1024
+
+# Routes whose body carries a whole model response pasted by the operator are
+# a different shape of request entirely and get their own ceiling, derived
+# from the configured domain limit (`discovery.max_response_bytes` /
+# `manual_frontier.max_response_bytes`, both 2 MB by default).
+#
+# ADR 0065: these routes previously shared the 64 KB control-request cap, so a
+# legitimate frontier plan was rejected by the transport with "request body
+# size is invalid" roughly thirty times below the size the harness's own
+# configuration said it would accept. The domain ceiling is the real policy;
+# the transport must be able to reach it, not silently undercut it.
+#
+# The pasted response travels JSON-escaped inside an envelope object, and
+# escaping can in the worst case double its size, so the transport ceiling is
+# twice the configured limit plus headroom for the surrounding fields.
+_ENVELOPE_OVERHEAD_BYTES = 64 * 1024
+_FALLBACK_PASTED_RESPONSE_BYTES = 2_000_000
+
+
+def _transport_ceiling(configured_bytes: int) -> int:
+    return configured_bytes * 2 + _ENVELOPE_OVERHEAD_BYTES
 
 
 class ApoapsisUIHTTPServer(ThreadingHTTPServer):
@@ -75,6 +101,10 @@ class ApoapsisUIHTTPServer(ThreadingHTTPServer):
         self.service = service
         self.session_token = session_token
         self.static_root = Path(__file__).with_name("static")
+        # Bounded ring of tracebacks for requests that reached the last-resort
+        # handler. Kept in memory only, and only so an operator who hit a 500
+        # can be handed the actual cause instead of "Failed to fetch".
+        self.service_error_log: deque[str] = deque(maxlen=50)
         super().__init__(server_address, ApoapsisUIRequestHandler)
 
     @property
@@ -86,7 +116,46 @@ class ApoapsisUIHTTPServer(ThreadingHTTPServer):
 class ApoapsisUIRequestHandler(BaseHTTPRequestHandler):
     server: ApoapsisUIHTTPServer
 
+    def _guarded(self, dispatch: Callable[[], None]) -> None:
+        """Run one request dispatch so no exception can ever escape into
+        `socketserver`'s default handler.
+
+        When an exception escapes, `BaseHTTPRequestHandler` closes the socket
+        without writing a response. The browser's `fetch` then rejects with
+        the bare message "Failed to fetch" -- no status, no text, nothing in
+        the UI to act on, and the operator is left at a dead end with a
+        server that is still running. Observed on a discovery session in a
+        repository with no commits: `GitRepository.snapshot()` raised
+        `GitCommandError`, which no per-route `except` clause listed, and
+        both "Run research" and "Skip research and continue" became silent
+        dead ends.
+
+        Every route keeps its specific, well-typed error mapping. This is the
+        last resort beneath them: it turns an unanticipated failure into a
+        legible 500 the operator can read and report, never into a dropped
+        connection. It is deliberately not a way to avoid classifying errors
+        properly -- an error arriving here is a defect, and it says so.
+        """
+
+        try:
+            dispatch()
+        except Exception as exc:  # noqa: BLE001 - deliberate last resort
+            self.server.service_error_log.append(traceback.format_exc())
+            try:
+                self._send_error(
+                    HTTPStatus.INTERNAL_SERVER_ERROR,
+                    f"unhandled {type(exc).__name__}: {exc}",
+                )
+            except Exception:  # noqa: BLE001 - the socket is already broken
+                pass
+
     def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+        self._guarded(self._dispatch_get)
+
+    def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+        self._guarded(self._dispatch_post)
+
+    def _dispatch_get(self) -> None:
         path = urlsplit(self.path).path
         if path == "/health":
             self._send_json(HTTPStatus.OK, {"status": "ok"}, authorize=False)
@@ -98,7 +167,7 @@ class ApoapsisUIRequestHandler(BaseHTTPRequestHandler):
             return
         self._serve_asset(path)
 
-    def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+    def _dispatch_post(self) -> None:
         path = urlsplit(self.path).path
         if not path.startswith("/api/") or not self._authorized():
             if not path.startswith("/api/"):
@@ -115,6 +184,9 @@ class ApoapsisUIRequestHandler(BaseHTTPRequestHandler):
             return
         if "/slices/" in path and path.endswith("/approve"):
             self._handle_plan_slice_approve(path)
+            return
+        if path.startswith("/api/plans/") and path.endswith("/run"):
+            self._handle_plan_run(path)
             return
         if path.startswith("/api/plans/") and path.endswith("/approve"):
             self._handle_plan_approve(path)
@@ -143,6 +215,12 @@ class ApoapsisUIRequestHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/intake/operations":
             self._handle_intake_operation_submit()
+            return
+        if path == "/api/config/local-power":
+            self._handle_local_power_toggle()
+            return
+        if path == "/api/config/capability-sandbox":
+            self._handle_capability_sandbox_toggle()
             return
         if path == "/api/discovery/sessions":
             self._handle_discovery_session_start()
@@ -221,6 +299,35 @@ class ApoapsisUIRequestHandler(BaseHTTPRequestHandler):
             self._send_error(HTTPStatus.BAD_REQUEST, str(exc))
         else:
             self._send_json(HTTPStatus.ACCEPTED, payload)
+
+    def _handle_local_power_toggle(self) -> None:
+        try:
+            body = self._read_json_body()
+            enabled = body.get("enabled")
+            if not isinstance(enabled, bool):
+                raise ValueError("enabled must be true or false")
+            payload = self.server.service.set_local_power_enabled(enabled=enabled)
+        except (TaskStoreError, ValueError, json.JSONDecodeError) as exc:
+            self._send_error(HTTPStatus.BAD_REQUEST, str(exc))
+        else:
+            self._send_json(HTTPStatus.OK, payload)
+
+    def _handle_capability_sandbox_toggle(self) -> None:
+        try:
+            body = self._read_json_body()
+            enabled = body.get("enabled")
+            parity = body.get("high_assurance_parity_guard")
+            if not isinstance(enabled, bool):
+                raise ValueError("enabled must be true or false")
+            if parity is not None and not isinstance(parity, bool):
+                raise ValueError("high_assurance_parity_guard must be true or false")
+            payload = self.server.service.set_capability_sandbox(
+                enabled=enabled, high_assurance_parity_guard=parity
+            )
+        except (TaskStoreError, ValueError, json.JSONDecodeError) as exc:
+            self._send_error(HTTPStatus.BAD_REQUEST, str(exc))
+        else:
+            self._send_json(HTTPStatus.OK, payload)
 
     def _handle_plan_approve(self, path: str) -> None:
         plan_id = unquote(path[len("/api/plans/") : -len("/approve")]).strip("/")
@@ -331,6 +438,30 @@ class ApoapsisUIRequestHandler(BaseHTTPRequestHandler):
         else:
             self._send_json(HTTPStatus.OK, payload)
 
+    def _handle_plan_run(self, path: str) -> None:
+        plan_id = unquote(path[len("/api/plans/") : -len("/run")]).strip("/")
+        try:
+            body = self._read_json_body()
+            expected_plan_version = body.get("expected_plan_version")
+            auto_advance = body.get("auto_advance")
+            if not isinstance(expected_plan_version, int) or isinstance(
+                expected_plan_version, bool
+            ):
+                raise ValueError("expected_plan_version must be an integer")
+            if not isinstance(auto_advance, bool):
+                raise ValueError("auto_advance must be true or false")
+            payload = self.server.service.start_plan_run(
+                plan_id,
+                expected_plan_version=expected_plan_version,
+                auto_advance=auto_advance,
+            )
+        except PlanNotFoundError:
+            self._send_error(HTTPStatus.NOT_FOUND, "plan not found")
+        except (PlanActionError, TaskStoreError, ValueError, json.JSONDecodeError) as exc:
+            self._send_error(HTTPStatus.CONFLICT, str(exc))
+        else:
+            self._send_json(HTTPStatus.ACCEPTED, payload)
+
     def _handle_review_operation_submit(self, path: str) -> None:
         task_id = unquote(
             path[len("/api/reviews/") : -len("/operations")]
@@ -423,7 +554,9 @@ class ApoapsisUIRequestHandler(BaseHTTPRequestHandler):
             path[len("/api/reviews/") : -len("/manual-frontier/import")]
         ).strip("/")
         try:
-            body = self._read_json_body()
+            body = self._read_json_body(
+                max_bytes=self._pasted_response_body_limit("manual_frontier")
+            )
             package_id = body.get("package_id")
             response_text = body.get("response_text")
             declared_model_name = body.get("declared_model_name")
@@ -577,7 +710,10 @@ class ApoapsisUIRequestHandler(BaseHTTPRequestHandler):
             )
         except SessionNotFoundError:
             self._send_error(HTTPStatus.NOT_FOUND, "session not found")
-        except DiscoveryError as exc:
+        except (DiscoveryError, RepositoryHasNoCommitsError) as exc:
+            # Building the planning package compiles repository context, which
+            # needs a base commit. In a repository with no commits that used to
+            # escape as an unhandled GitCommandError and drop the connection.
             self._send_error(HTTPStatus.CONFLICT, str(exc))
         except (TaskStoreError, ValueError, json.JSONDecodeError) as exc:
             self._send_error(HTTPStatus.BAD_REQUEST, str(exc))
@@ -587,7 +723,9 @@ class ApoapsisUIRequestHandler(BaseHTTPRequestHandler):
     def _handle_discovery_import_manual_response(self, path: str) -> None:
         session_id = self._discovery_session_id(path, "/import-manual-response")
         try:
-            body = self._read_json_body()
+            body = self._read_json_body(
+                max_bytes=self._pasted_response_body_limit("discovery")
+            )
             package_id = body.get("package_id")
             response_text = body.get("response_text")
             declared_model_name = body.get("declared_model_name")
@@ -672,6 +810,9 @@ class ApoapsisUIRequestHandler(BaseHTTPRequestHandler):
                 payload = self.server.service.evaluations()
             elif path == "/api/plans":
                 payload = self.server.service.plans()
+            elif path.startswith("/api/plan-runs/"):
+                run_id = unquote(path[len("/api/plan-runs/") :]).strip("/")
+                payload = self.server.service.plan_run_status(run_id)
             elif path.startswith("/api/tasks/"):
                 task_id = unquote(path[len("/api/tasks/") :]).strip("/")
                 payload = self.server.service.task_detail(task_id)
@@ -803,7 +944,28 @@ class ApoapsisUIRequestHandler(BaseHTTPRequestHandler):
             return False
         return True
 
-    def _read_json_body(self) -> dict[str, Any]:
+    def _pasted_response_body_limit(self, kind: str) -> int:
+        """Transport ceiling for a route that carries a pasted model response.
+
+        Derived from the configured domain limit so the two can never drift
+        apart again. Falls back to the schema default when configuration is
+        unreadable, rather than silently reverting to the control-request cap.
+        """
+
+        try:
+            config = self.server.service._config()
+        except Exception:  # noqa: BLE001 - a bad config must not shrink the cap
+            config = None
+        configured = _FALLBACK_PASTED_RESPONSE_BYTES
+        if config is not None:
+            section = getattr(config, kind, None)
+            configured = getattr(
+                section, "max_response_bytes", _FALLBACK_PASTED_RESPONSE_BYTES
+            )
+        return _transport_ceiling(configured)
+
+    def _read_json_body(self, *, max_bytes: int | None = None) -> dict[str, Any]:
+        limit = _MAX_REQUEST_BYTES if max_bytes is None else max_bytes
         content_type = self.headers.get("Content-Type", "").split(";", 1)[0]
         if content_type != "application/json":
             raise ValueError("Content-Type must be application/json")
@@ -811,8 +973,16 @@ class ApoapsisUIRequestHandler(BaseHTTPRequestHandler):
             content_length = int(self.headers.get("Content-Length", "0"))
         except ValueError as exc:
             raise ValueError("invalid Content-Length") from exc
-        if content_length < 1 or content_length > _MAX_REQUEST_BYTES:
-            raise ValueError("request body size is invalid")
+        if content_length < 1:
+            raise ValueError("request body must not be empty")
+        if content_length > limit:
+            # Name both numbers. "request body size is invalid" gave the
+            # operator no way to tell an oversized paste from a malformed
+            # header, or to judge how far over the limit they were.
+            raise ValueError(
+                f"request body is {content_length} bytes; this endpoint "
+                f"accepts at most {limit}"
+            )
         payload = json.loads(self.rfile.read(content_length).decode("utf-8"))
         if not isinstance(payload, dict):
             raise ValueError("request body must be a JSON object")

@@ -11,6 +11,11 @@ from apoapsis.review.store import ReviewOperationStore
 from apoapsis.workflow.engine import SQLiteTaskStore, TaskStoreError
 
 
+#: Queue sentinel meaning "stop after the work already queued ahead of me".
+#: A unique object rather than a string, so no operation id can impersonate it.
+_STOP = object()
+
+
 class ReviewWorker:
     """Runs authorized human-review operations on a background thread,
     outside any HTTP request (ADR 0020 Commit C2, hardened by ADR 0021).
@@ -42,12 +47,32 @@ class ReviewWorker:
     def __init__(self, project_root: str | Path) -> None:
         self.project_root = Path(project_root).resolve()
         self._queue: queue.Queue[str] = queue.Queue()
+        self._stopping = False
         self._recover_at_startup()
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
 
     def submit(self, operation_id: str) -> None:
         self._queue.put(operation_id)
+
+    def shutdown(self, timeout_seconds: float = 30.0) -> bool:
+        """Stop accepting work, drain what is queued, and join the thread.
+
+        Mirrors `IntakeWorker.shutdown` and exists for the same reason: the
+        worker had no way to stop, so a caller could only drop its reference
+        and leave a daemon thread writing into `.apoapsis` after the caller
+        believed it was finished. Returns whether the thread actually stopped,
+        because "no surviving background worker" is evidence a caller must be
+        able to check rather than assume.
+        """
+
+        if self._stopping:
+            self._thread.join(timeout_seconds)
+            return not self._thread.is_alive()
+        self._stopping = True
+        self._queue.put(_STOP)
+        self._thread.join(timeout_seconds)
+        return not self._thread.is_alive()
 
     def _recover_at_startup(self) -> None:
         try:
@@ -66,6 +91,8 @@ class ReviewWorker:
     def _run(self) -> None:
         while True:
             operation_id = self._queue.get()
+            if operation_id is _STOP:
+                return
             try:
                 self._execute(operation_id)
             except Exception:

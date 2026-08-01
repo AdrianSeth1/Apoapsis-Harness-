@@ -16,6 +16,8 @@ const store = {
   evaluations: null,
   plans: null,
   plan: null,
+  planRun: null,
+  planRunConfirmMode: null,
   planSlice: null,
   planSliceApprovalPending: false,
   reviews: null,
@@ -45,6 +47,8 @@ const store = {
   discoverManualImportForm: { packageId: "", responseText: "", declaredModelName: "" },
   discoverFrontierExportPaths: null,
   discoverBriefApprovePending: false,
+  localPowerConfirm: null,
+  capabilitySandboxConfirm: null,
   route: { name: "home" },
   busy: false,
   error: null,
@@ -227,6 +231,8 @@ async function syncRoute() {
       store.plans = await api("/api/plans");
     } else if (store.route.name === "plan") {
       if (!store.plan || store.plan.plan.plan_id !== store.route.planId) {
+        store.planRun = null;
+        store.planRunConfirmMode = null;
         store.plan = null;
         store.busy = true;
         render();
@@ -403,7 +409,7 @@ function homeView() {
           <span class="pill ${overview.project.initialized ? "good" : "warn"}">${overview.project.initialized ? "Project ready" : "Initialization required"}</span>
           <h2>${e(overview.project.name)}</h2>
           <p class="mono">${e(overview.project.root)}</p>
-          <p>${overview.repository.is_clean === true ? "The Git worktree is clean." : `${overview.repository.changed_files?.length || 0} local path(s) currently differ from HEAD.`} To use another repository, close this window and launch <span class="mono">OPEN_APOAPSIS.cmd "C:\\path\\to\\project"</span>. Run <span class="mono">apoapsis init</span> in that repository once if it has not been initialized.</p>
+          <p>${overview.repository.is_clean === true ? "The Git worktree is clean." : `${overview.repository.changed_files?.length || 0} local path(s) currently differ from HEAD.`} To use another project, close this window and launch <span class="mono">START_APOAPSIS.cmd</span>, then select the project folder. A new empty folder is okay; the launcher prepares it for you.</p>
         </div>
         <div class="stat-stack">
           <div class="stat"><span>Active tasks</span><strong>${activeTasks}</strong></div>
@@ -425,7 +431,7 @@ function homeView() {
               <div class="metric card"><span>Sandbox</span><strong class="metric-compact">${e(overview.execution?.verification_backend || "unconfigured")}</strong><small>Doctor confirms availability</small></div>
             </div>
             <p class="section-title">Last explicit model action</p>
-            ${lifecycle ? `<div class="constraint"><div class="constraint-head"><span class="constraint-id">${e(String(lifecycle.action || "recorded").toUpperCase())}</span><span class="pill ${lifecycle.action === "start" ? "good" : "purple"}">${e(lifecycle.recorded_at ? formatDate(lifecycle.recorded_at) : "Recorded")}</span></div><blockquote>${e(lifecycle.note || "Lifecycle action recorded.")}</blockquote></div>` : `<div class="notice">No model lifecycle action has been recorded yet. Use START_APOAPSIS.cmd when you want to load local models.</div>`}
+            ${lifecycle ? `<div class="constraint"><div class="constraint-head"><span class="constraint-id">${e(String(lifecycle.action || "recorded").toUpperCase())}</span><span class="pill ${lifecycle.action === "start" ? "good" : "purple"}">${e(lifecycle.recorded_at ? formatDate(lifecycle.recorded_at) : "Recorded")}</span></div><blockquote>${e(lifecycle.note || "Lifecycle action recorded.")}</blockquote></div>` : `<div class="notice">No model lifecycle action has been recorded yet. Use START_APOAPSIS.cmd to select a project, start the configured local model, and open the interface.</div>`}
           </div>
         </section>
       </div>
@@ -537,6 +543,8 @@ function modelsView() {
   const overview = store.overview;
   const configured = overview.models || [];
   const doctor = store.doctor;
+  const power = overview.execution?.local_power;
+  const capability = overview.execution?.capability_sandbox;
   return `<main class="content">
     <div class="page-heading"><div><p class="eyebrow">MODELS / ENVIRONMENT</p><h1>Know what is ready.</h1><p>Configured roles are separate from measured readiness. Running Doctor performs Apoapsis's existing deterministic checks and never sends a model prompt unless an explicit probe is requested from the CLI.</p></div><button class="button primary" data-action="doctor" ${store.busy ? "disabled" : ""}>${store.busy ? "Checking…" : "Run doctor"}</button></div>
     <div class="grid four">${configured.map(modelCard).join("")}</div>
@@ -548,11 +556,59 @@ function modelsView() {
       ${metric("Verify runs", overview.execution?.max_verification_runs ?? "—", "Hard ceiling")}
       ${metric("Completion policy", titleCase(overview.execution?.completion_policy || "—"), overview.execution?.completion_policy === "baseline" ? "No acceptance-coverage gate" : "Gates COMPLETE on proven acceptance criteria")}
     </div>
+    ${capabilitySandboxSettings(capability, power)}
     <p class="section-title">Doctor evidence</p>
     <section class="card card-pad">
       ${doctor ? doctorList(doctor) : `<div class="empty"><h2>Not run in this UI session</h2><p>Readiness is never inferred from configuration alone. Run Doctor to produce a fresh, timestamped diagnostic result.</p></div>`}
     </section>
   </main>`;
+}
+
+function capabilitySandboxSettings(capability, power) {
+  if (!capability) return "";
+  const enabled = Boolean(capability.enabled);
+  const parity = Boolean(capability.high_assurance_parity_guard);
+  const pending = store.capabilitySandboxConfirm;
+  if (pending) {
+    const selectingCapability = pending === "capability";
+    return `<section class="card card-pad mt-18" data-role="capability-sandbox-confirm">
+      <div class="card-header"><div><h2>${selectingCapability ? "Use Capability Sandbox?" : "Use compatibility mode?"}</h2><p>${selectingCapability ? "Future local slices use native Qwen inside the qualified workcell." : "Future local slices use the older typed Local Power loop."}</p></div><span class="pill ${selectingCapability ? "good" : "warn"}">${selectingCapability ? "Recommended" : "Compatibility"}</span></div>
+      <div class="notice mt-14">${selectingCapability ? e(capability.warning) : "Compatibility mode is one-action JSON with mediated whole-file and shell operations. It remains contained, but it is less capable than the qualified native Qwen interface."}</div>
+      <div class="approval-bar mt-16"><div><strong>This changes future runs only</strong><span>Apoapsis validates the configuration and never silently falls back between modes.</span></div><div class="approval-actions"><button class="button ghost" data-action="capability-sandbox-cancel">Cancel</button><button class="button primary" data-action="capability-sandbox-confirm" data-enabled="${selectingCapability ? "true" : "false"}">${selectingCapability ? "Use Capability Sandbox" : "Use compatibility mode"}</button></div></div>
+    </section>`;
+  }
+  return `<section class="card card-pad mt-18" data-role="capability-sandbox-settings">
+    <div class="card-header"><div><h2>Local coding mode</h2><p>Capability Sandbox is the qualified, recommended default. The compatibility option is always one click away.</p></div><span class="pill ${enabled ? "good" : "warn"}">${enabled ? "Capability Sandbox · On" : "Compatibility · On"}</span></div>
+    <div class="grid two mt-14">
+      <div class="metric card"><span>Selected mode</span><strong class="metric-compact">${enabled ? "Capability Sandbox" : "Local Power compatibility"}</strong><small>${enabled ? "Native Qwen tools in a network-contained workcell" : "Older typed action protocol"}</small></div>
+      <div class="metric card"><span>High-assurance parity</span><strong class="metric-compact">${parity ? "On" : "Off"}</strong><small>${parity ? "Also runs a matched control and refuses regression" : "One supervised candidate; lower resource use"}</small></div>
+    </div>
+    <div class="notice mt-14">${e(capability.resource_note)} No silent fallback: a failed workcell preflight stops for review.</div>
+    <div class="approval-bar mt-16"><div><strong>${enabled ? "Recommended mode is active" : "Compatibility mode is active"}</strong><span>${enabled ? "Apoapsis admits the complete delta and independently decides readiness." : "Return to the qualified native interface whenever you are ready."}</span></div><div class="approval-actions"><button class="button ghost" data-action="capability-parity-toggle" data-enabled="${parity ? "false" : "true"}" ${!enabled || store.busy ? "disabled" : ""}>Turn parity ${parity ? "off" : "on"}</button><button class="button ${enabled ? "ghost" : "primary"}" data-action="capability-sandbox-intent" data-intent="${enabled ? "compatibility" : "capability"}" ${store.busy ? "disabled" : ""}>${enabled ? "Use compatibility mode" : "Use Capability Sandbox"}</button></div></div>
+  </section>`;
+}
+
+function localPowerSettings(power) {
+  if (!power) return "";
+  const enabled = Boolean(power.enabled);
+  const pending = store.localPowerConfirm;
+  if (pending) {
+    const turningOn = pending === "enable";
+    return `<section class="card card-pad mt-18">
+      <div class="card-header"><div><h2>${turningOn ? "Turn on Local Power?" : "Turn off Local Power?"}</h2><p>${turningOn ? "Future local coding runs will use the experimental sandbox." : "Future local coding runs will return to the strict one-action loop."}</p></div><span class="pill ${turningOn ? "warn" : "good"}">${turningOn ? "Experimental" : "Strict mode"}</span></div>
+      <div class="notice mt-14">${turningOn ? "Local Power lets the local model write whole files and request allowlisted shell commands inside an isolated disposable copy. Apoapsis still blocks secrets, Git metadata, network by default, and decides completion only after verification." : "This only changes future runs. Existing task records and reports are unchanged."}</div>
+      <div class="approval-bar mt-16"><div><strong>${turningOn ? "Use for the next local run" : "Use strict mode for the next local run"}</strong><span>The config file is updated by Apoapsis and rechecked before it is kept.</span></div><div class="approval-actions"><button class="button ghost" data-action="local-power-cancel">Cancel</button><button class="button primary" data-action="local-power-confirm" data-enabled="${turningOn ? "true" : "false"}">${turningOn ? "Turn on Local Power" : "Turn off Local Power"}</button></div></div>
+    </section>`;
+  }
+  return `<section class="card card-pad mt-18">
+    <div class="card-header"><div><h2>Local Power Sandbox</h2><p>A friendly switch for the experimental Laguna mode.</p></div><span class="pill ${enabled ? "warn" : "purple"}">${enabled ? "On" : "Off"}</span></div>
+    <div class="grid two mt-14">
+      <div class="metric card"><span>Current mode</span><strong class="metric-compact">${enabled ? "Local Power" : "Strict loop"}</strong><small>${enabled ? "Whole-file writes in isolated sandbox" : "Typed one-action patch loop"}</small></div>
+      <div class="metric card"><span>Network</span><strong class="metric-compact">${power.allow_network ? "Allowed" : "Denied"}</strong><small>Shell: ${power.allow_shell ? "mediated allowlist" : "disabled"}</small></div>
+    </div>
+    <div class="mono mt-14">BUDGET: ${e(power.max_turns)} turns / ${e(power.max_shell_commands)} shell commands / ${e(power.max_changed_files)} files / ${e(power.max_changed_lines)} diff lines</div>
+    <div class="approval-bar mt-16"><div><strong>${enabled ? "Experimental mode is active" : "Strict mode is active"}</strong><span>${enabled ? "Use this when testing whether Laguna does better without hand-authored diffs." : "Turn this on when you want the next local run to use the new sandbox mode."}</span></div><div class="approval-actions"><button class="button ${enabled ? "ghost" : "primary"}" data-action="local-power-intent" data-intent="${enabled ? "disable" : "enable"}" ${store.busy ? "disabled" : ""}>${enabled ? "Turn off" : "Turn on Local Power"}</button></div></div>
+  </section>`;
 }
 
 function modelCard(model) {
@@ -584,7 +640,7 @@ function evalRow(run) {
 function plansView() {
   const plans = store.plans?.plans || [];
   return `<main class="content">
-    <div class="page-heading"><div><p class="eyebrow">LARGER PROJECTS / PLANS</p><h1>Approved work,<br>split into slices.</h1><p>Start in <a href="#/discover">Plan a larger change</a>. A local model clarifies the idea, optional Research can inform it, and either an API or a manual ChatGPT or Claude handoff proposes the plan. You still review and approve every plan and slice.</p></div><span class="pill ${plans.length ? "good" : "warn"}">${plans.length ? `${plans.length} recorded` : "No plans yet"}</span></div>
+    <div class="page-heading"><div><p class="eyebrow">LARGER PROJECTS / PLANS</p><h1>Approved work,<br>split into slices.</h1><p>Start in <a href="#/discover">Plan a larger change</a>. A local model clarifies the idea, optional Research can inform it, and either an API or a manual ChatGPT or Claude handoff proposes the plan. Review and approve the plan once, then choose automatic or slice-by-slice execution.</p></div><span class="pill ${plans.length ? "good" : "warn"}">${plans.length ? `${plans.length} recorded` : "No plans yet"}</span></div>
     <section class="card">
       ${plans.length ? `<div class="task-list">${plans.map(planRow).join("")}</div>` : `<div class="empty"><h2>No plans yet</h2><p>Begin with the guided planning flow. It supports both API access and a normal ChatGPT or Claude subscription.</p><a class="button primary" href="#/discover">Plan a larger change →</a></div>`}
     </section>
@@ -639,7 +695,7 @@ function planOverviewView(detail) {
   const canValidate = detail.available_actions?.includes("validate_plan");
   const delivery = detail.delivery;
   return `<main class="content narrow">
-    <div class="page-heading"><div><p class="eyebrow">ARCHITECTURE / DECISIONS</p><h1>Design record,<br>not an execution order.</h1><p>Architect Mode designs; it never runs a shell command, edits a file, or executes a slice. Approving this plan only records a reviewed status -- nothing executes as a result.</p></div><span class="pill ${planStatusClass(record.status)}">${e(titleCase(record.status))}</span></div>
+    <div class="page-heading"><div><p class="eyebrow">ARCHITECTURE / DECISIONS</p><h1>Review the design<br>before it runs.</h1><p>Architect Mode only proposes this plan. Approval records your decision but starts nothing; when you are ready, Implementation slices offers one controlled automatic run or the existing slice-by-slice path.</p></div><span class="pill ${planStatusClass(record.status)}">${e(titleCase(record.status))}</span></div>
     <article class="card card-pad"><p class="section-title mt-0">Idea</p><blockquote class="objective">${e(record.idea_text)}</blockquote></article>
     <p class="section-title">Architecture summary</p>
     <article class="card card-pad"><p class="objective">${e(plan.architecture_summary)}</p></article>
@@ -683,10 +739,57 @@ function planSlicesView(detail) {
   const byId = new Map(plan.slices.map((item) => [item.slice_id, item]));
   const orderedSlices = order.map((id) => byId.get(id)).filter(Boolean);
   const statusById = new Map((detail.slices || []).map((item) => [item.slice_id, item]));
+  if (detail.plan_run && (!store.planRun || store.planRun.run_id !== detail.plan_run.run_id)) {
+    store.planRun = detail.plan_run;
+  }
+  if (store.planRun && ["recorded", "running"].includes(store.planRun.status)) {
+    pollPlanRun(record.plan_id, store.planRun.run_id);
+  }
   return `<main class="content">
-    <div class="page-heading"><div><p class="eyebrow">IMPLEMENTATION SLICES / ONE AT A TIME</p><h1>Work through the plan.</h1><p>Open a Ready slice, package and approve it, then start coding. Packaging the next slice checkpoints completed earlier work on its isolated branch and inherits that exact commit. Your checked-out branch is never moved or merged automatically.</p></div><span class="pill purple">${orderedSlices.length} slice(s)</span></div>
+    <div class="page-heading"><div><p class="eyebrow">IMPLEMENTATION SLICES / VERIFIED IN ORDER</p><h1>Run the plan.</h1><p>Authorize once and Apoapsis will package, hash-bind, execute, verify, and advance through dependency-ready slices. It stops immediately for failed verification, human review, changed configuration, or an interrupted run.</p></div><span class="pill purple">${orderedSlices.length} slice(s)</span></div>
+    ${planRunPanel(detail)}
     ${orderedSlices.length ? orderedSlices.map((slice) => sliceCard(slice, record.plan_id, statusById.get(slice.slice_id))).join("") : emptyState("No slices in this plan", "The imported plan did not include any implementation slices.")}
   </main>`;
+}
+
+function planRunPanel(detail) {
+  const record = detail.plan;
+  const run = store.planRun || detail.plan_run;
+  const active = run && ["recorded", "running"].includes(run.status);
+  if (active) {
+    return `<section class="card card-pad plan-run-panel mt-16" aria-live="polite">
+      <div class="constraint-head"><span class="constraint-id">AUTO MODE</span><span class="pill purple">${e(titleCase(run.status))}</span></div>
+      <h2>${run.current_slice_id ? `Running ${e(run.current_slice_id)}` : "Preparing the first ready slice"}</h2>
+      <p>${e(run.detail)}</p>
+      <div class="mono">COMPLETED: ${e((run.completed_slice_ids || []).join(", ") || "none yet")}</div>
+      <div class="mono">RUN: ${e(run.run_id)}</div>
+    </section>`;
+  }
+  if (run) {
+    return `<section class="card card-pad plan-run-panel mt-16">
+      <div class="constraint-head"><span class="constraint-id">LAST PLAN RUN</span><span class="pill ${run.status === "succeeded" ? "good" : run.status === "failed" ? "bad" : "warn"}">${e(titleCase(run.status))}</span></div>
+      <p>${e(run.detail)}</p>
+      <div class="mono">COMPLETED: ${e((run.completed_slice_ids || []).join(", ") || "none")}</div>
+      ${detail.all_slices_complete ? "" : planRunActions(record)}
+    </section>`;
+  }
+  return `<section class="card card-pad plan-run-panel mt-16">
+    <div class="constraint-head"><span class="constraint-id">AUTOMATIC RUN</span><span class="pill ${record.status === "approved" ? "warn" : "purple"}">${record.status === "approved" ? "Not running" : "Waiting"}</span></div>
+    <h2>${record.status === "approved" ? "Automatic execution is off" : "One step remains before execution"}</h2>
+    <p>Auto mode is a run you start, not a setting or toggle. Once started, Apoapsis advances only after controller-owned verification marks each slice complete. It stops at the first dependency, verification, or review problem.</p>
+    ${planRunActions(record)}
+  </section>`;
+}
+
+function planRunActions(record) {
+  if (record.status === "proposed") return `<div class="approval-bar mt-14"><div><strong>Validate the plan first</strong><span>Apoapsis must check the plan against this project's configuration before it can be approved or run.</span></div><div class="approval-actions"><a class="button primary" href="#/plan/${encodeURIComponent(record.plan_id)}/overview">Validate plan →</a></div></div>`;
+  if (record.status === "validated") return `<div class="approval-bar mt-14"><div><strong>Validated — your approval is required</strong><span>Reviewing and approving the plan does not start any slice. After approval, this panel will show the automatic-run button.</span></div><div class="approval-actions"><a class="button primary" href="#/plan/${encodeURIComponent(record.plan_id)}/overview">Review &amp; approve plan →</a></div></div>`;
+  if (record.status !== "approved") return `<p class="muted">This plan cannot start from its current ${e(titleCase(record.status))} state.</p>`;
+  if (!store.planRunConfirmMode) {
+    return `<div class="approval-actions mt-14"><button class="button primary" data-action="plan-run-intent" data-mode="auto">Run all slices automatically →</button><button class="button ghost" data-action="plan-run-intent" data-mode="next">Run only the next slice</button></div>`;
+  }
+  const automatic = store.planRunConfirmMode === "auto";
+  return `<div class="approval-bar mt-14"><div><strong>Confirm ${automatic ? "automatic plan run" : "next slice"}</strong><span>${automatic ? "Apoapsis will continue across successful slices and stop at the first problem." : "Apoapsis will package, approve, execute, and verify one dependency-ready slice."}</span></div><div class="approval-actions"><button class="button ghost" data-action="plan-run-cancel">Cancel</button><button class="button primary" data-action="plan-run-confirm" data-plan-id="${e(record.plan_id)}" data-version="${e(record.version)}" data-auto-advance="${automatic}">Confirm &amp; run →</button></div></div>`;
 }
 
 function sliceRiskClass(risk) {
@@ -861,7 +964,8 @@ function sliceTaskLinksSection(detail) {
     <p class="section-title mt-0">Derived task · ${e(taskId)}</p>
     <p class="muted">${e(stateExplanation)}</p>
     ${preview ? `<div class="mt-14 mono">PREDICTED ROUTE: ${e(preview.predicted_route || "n/a")} · LOCAL MODEL: ${e(preview.local_model || "unknown")}${preview.frontier_available ? ` · FRONTIER MODEL: ${e(preview.frontier_model || "unknown")}` : " · FRONTIER: not configured"}</div>
-    <div class="mono">COMPLETION POLICY: ${e(preview.completion_policy)} · SANDBOX: ${e(preview.verification_backend)}</div>` : ""}
+    <div class="mono">COMPLETION POLICY: ${e(preview.completion_policy)} · SANDBOX: ${e(preview.verification_backend)}</div>
+    ${localPowerNotice(preview.local_power)}` : ""}
     <div class="approval-actions mt-14">
       <a class="button primary" href="${primaryHref}">${e(primaryLabel)}</a>
       <a class="button ghost" href="#/task/${encodeURIComponent(taskId)}/changes">Changes & verification</a>
@@ -1489,6 +1593,90 @@ function agentTurnItem(turn) {
   return `<div class="file-item"><span class="pill ${turn.accepted ? "good" : "bad"}">${e(turn.stage)} · turn ${e(turn.turn)}</span><code>${e(turn.action)}</code><span class="meta">${e((turn.summary || "").slice(0, 140))}</span></div>`;
 }
 
+// ADR 0059. Rendered wherever an execution is previewed or in flight, so the
+// experimental sandbox mode is never something an operator discovers only
+// after it has already run. Silent when the mode is off: the strict
+// one-action loop is the default and needs no banner.
+// ADR 0069. The strength of the configured evidence, stated before the run
+// rather than reconstructed afterwards. A weak contract is not an error and
+// does not block anything -- it changes what the word "complete" will mean,
+// and that is worth one paragraph on the confirmation the operator reads.
+function verificationContractNotice(contract) {
+  if (!contract) return "";
+  const proves = contract.evidence_level === "criterion_mapped";
+  const notable = (contract.findings || []).filter((item) => item.severity !== "info");
+  return `<div class="mt-14 mono" data-role="verification-contract-notice">
+    <strong>EVIDENCE LEVEL: ${e(String(contract.evidence_level || "").toUpperCase())}${proves ? "" : " · A PASS HERE PROVES LESS THAN IT SOUNDS"}</strong>
+    <div>${e(contract.qualification || "")}</div>
+    <div>ACCEPTANCE COMMANDS: ${e((contract.acceptance_command_names || []).join(", ") || "none")} · CRITERIA PROVEN BY ONE: ${e(contract.criteria_mapped_to_acceptance_command)} of ${e(contract.active_criteria)}</div>
+    ${notable.length ? `<div>${notable.map((item) => `<div>· ${e(item.detail)}</div>`).join("")}</div>` : ""}
+  </div>`;
+}
+
+function localPowerNotice(power) {
+  if (!power || !power.enabled) return "";
+  return `<div class="mt-14 mono" data-role="local-power-notice">
+    <strong>RUN LOCAL POWER SANDBOX · EXPERIMENTAL</strong>
+    <div>${e(power.warning || "")}</div>
+    <div>WORKSPACE: ${e(power.workspace)} · SHELL: ${power.allow_shell ? "mediated allowlist" : "disabled"} · NETWORK: ${power.allow_network ? "ENABLED" : "denied"}</div>
+    <div>BUDGET: ${e(power.max_turns)} turns / ${e(power.max_shell_commands)} shell commands / ${e(power.max_seconds)}s / ${e(power.max_changed_files)} files / ${e(power.max_changed_lines)} diff lines</div>
+    <div>FORBIDDEN: ${e((power.forbidden_paths || []).join(", "))}</div>
+    <div>Verification still decides the outcome. The model cannot accept its own work.</div>
+  </div>`;
+}
+
+function capabilitySandboxNotice(capability) {
+  if (!capability || !capability.enabled) return "";
+  if (!capability.active_for_task) return `<div class="mt-14 mono" data-role="capability-sandbox-notice"><strong>STRICT TYPED LOOP FOR THIS TASK</strong><div>${e(capability.eligibility_detail || "")}</div></div>`;
+  return `<div class="mt-14 mono" data-role="capability-sandbox-notice">
+    <strong>RUN CAPABILITY SANDBOX · RECOMMENDED</strong>
+    <div>${e(capability.warning || "")}</div>
+    <div>NETWORK: denied inside workcell · CONTINUATIONS: ${e(capability.max_native_continuations)} · PARITY GUARD: ${capability.high_assurance_parity_guard ? "ON" : "off"}</div>
+    <div>No silent fallback. A failed identity, containment, admission, or readiness check stops for review.</div>
+  </div>`;
+}
+
+// Live sandbox status during execution: current turn, the command running
+// right now, files changed so far, the latest verification result, and every
+// request the boundary refused. Refusals are shown rather than hidden -- a
+// model repeatedly probing `.apoapsis` is exactly what an operator needs to
+// see while deciding whether to keep this mode enabled.
+function localPowerProgress(progress) {
+  if (!progress) return "";
+  const latestCommand = (progress.commands_run || []).slice(-1)[0];
+  const rejections = progress.rejected_requests || [];
+  return `<section class="card card-pad mt-16" data-role="local-power-progress">
+    <p class="section-title mt-0">Local Power Sandbox · experimental</p>
+    <div class="mono">TURN: ${e(progress.turn ?? "—")} / ${e(progress.max_turns ?? "—")}</div>
+    <div class="mono">SHELL: ${latestCommand ? e(latestCommand.command) : "no command running"}${latestCommand && latestCommand.timed_out ? " · TIMED OUT" : ""}</div>
+    <div class="mono">FILES CHANGED: ${e((progress.changed_files || []).join(", ") || "none yet")}</div>
+    <div class="mono">LATEST VERIFICATION: ${e(progress.verification_status || "not run yet")}</div>
+    <div class="mono">REFUSED REQUESTS: ${rejections.length}</div>
+    ${rejections.length ? `<ul class="mono">${rejections.slice(-5).map((item) => `<li>${e(item.action)} ${e(item.detail)} — ${e(item.reason)}</li>`).join("")}</ul>` : ""}
+  </section>`;
+}
+
+// End-of-run review gate. `Apply` is offered only when the harness's own
+// verification passed; otherwise the only path forward is human review. The
+// model's `finish` summary is shown as a claim, never as a result.
+function localPowerReviewPanel(pkg) {
+  if (!pkg) return "";
+  const passed = Boolean(pkg.verification_passed);
+  return `<section class="card card-pad mt-16" data-role="local-power-review">
+    <p class="section-title mt-0">Local Power Sandbox result · experimental</p>
+    <div class="mono">VERIFICATION: ${passed ? "PASSED" : "DID NOT PASS"}</div>
+    <div class="mono">CHANGED FILES: ${e((pkg.changed_files || []).join(", ") || "none")}</div>
+    <div class="mono">COMMANDS RUN: ${(pkg.commands_run || []).length} · REFUSED: ${(pkg.rejected_requests || []).length}</div>
+    ${pkg.model_summary ? `<p class="muted">Model's own summary (a claim, not a verified result): ${e(pkg.model_summary)}</p>` : ""}
+    <pre class="mono diff-preview">${e((pkg.final_diff || "").slice(0, 20000) || "(no changes)")}</pre>
+    <div class="approval-actions mt-14">
+      ${passed
+        ? `<button class="button primary" data-action="local-power-accept">Accept changes →</button>`
+        : `<button class="button primary" data-action="local-power-human-review">Open human review →</button>`}
+    </div>
+  </section>`;
+}
+
 function executionStartPanel(detail) {
   const task = detail.task;
   const preview = detail.execution_preview || {};
@@ -1506,7 +1694,10 @@ function executionStartPanel(detail) {
       <div class="mt-14 mono">LOCAL BUDGET: ${e(localBudget?.max_turns ?? "—")} turns / ${e(localBudget?.max_patch_attempts ?? "—")} patch attempts / ${e(localBudget?.max_verification_runs ?? "—")} verify runs</div>
       ${preview.frontier_available ? `<div class="mt-14 mono">FRONTIER BUDGET: ${e(frontierBudget?.max_turns ?? "—")} turns / ${e(frontierBudget?.max_patch_attempts ?? "—")} patch attempts / ${e(frontierBudget?.max_verification_runs ?? "—")} verify runs</div>` : ""}
       <div class="mt-14 mono">COMPLETION POLICY: ${e(preview.completion_policy)} · SANDBOX: ${e(preview.verification_backend)}</div>
+      ${capabilitySandboxNotice(preview.capability_sandbox)}
+      ${localPowerNotice(preview.local_power)}
       <div class="mt-14 mono">VERIFICATION COMMANDS: ${e((preview.verification_commands || []).join(", ") || "none configured")}</div>
+      ${verificationContractNotice(preview.verification_contract)}
       <div class="mt-14 mono">AUTHORIZATION: ${e(preview.authorization_sha256 || "unavailable")}</div>
     </div>
     <div class="approval-actions">
@@ -1550,6 +1741,7 @@ function changesView(detail) {
       <section class="card"><div class="card-header"><div><h2>Files changed</h2><p>Accepted report paths</p></div></div><div class="card-body">${files.length ? `<div class="file-list">${files.map((file) => `<div class="file-item"><code>${e(file)}</code><span class="pill purple">changed</span></div>`).join("")}</div>` : `<p class="muted">No changed files are recorded.</p>`}</div></section>
       <section class="card"><div class="card-header"><div><h2>Constraint coverage</h2><p>Model disposition, not independent proof</p></div></div><div class="card-body">${coverage.length ? coverage.map((item) => `<div class="constraint"><div class="constraint-head"><span class="constraint-id">${e(item.constraint_id)}</span><span class="pill ${item.disposition === "included" ? "good" : "warn"}">${e(item.disposition)}</span></div><blockquote>${e(item.reason)}</blockquote></div>`).join("") : `<p class="muted">No coverage entries are recorded.</p>`}</div></section>
     </div>
+    ${report?.verification_contract ? `<p class="section-title">What this outcome proves</p><section class="card card-pad">${verificationContractNotice(report.verification_contract)}</section>` : ""}
     <p class="section-title">Acceptance coverage${completionPolicy ? ` · ${e(titleCase(completionPolicy))} completion policy` : ""}</p>
     <section class="card card-pad">${acceptanceCoverage.length ? `<div class="verification-list">${acceptanceCoverage.map(acceptanceCoverageItem).join("")}</div>` : `<p class="muted">${!report ? "No final report exists yet, so acceptance coverage has not been computed." : completionPolicy === "strict" ? "No active acceptance criteria are configured for this task." : "The baseline completion policy does not gate on acceptance coverage; this task recorded none."}</p>`}</section>
     <p class="section-title">Verification results</p>
@@ -1846,7 +2038,7 @@ function discoveryApiTransportPanel(detail) {
 function discoveryPlanImportedView(detail) {
   const session = detail.session;
   const plan = detail.plan_summary;
-  return `<section class="card result-hero mt-16"><div class="result-outcome"><span class="result-orb"></span><div><h2>Plan imported</h2><p>The frontier model returned a complete plan. It became an entirely ordinary Architect Mode plan -- review, validate, and approve it on the Plans page exactly as any other plan.</p></div></div></section>
+  return `<section class="card result-hero mt-16"><div class="result-outcome"><span class="result-orb"></span><div><h2>Plan imported and checked</h2><p>Apoapsis automatically ran its deterministic plan validation. Open the plan to review the result: a clean plan is ready for your approval, while any exact validation findings remain visible for correction. Approval is never automatic.</p></div></div></section>
   ${plan ? `<section class="card card-pad mt-16"><p class="section-title mt-0">${e(plan.architecture_summary)}</p><div class="mono">${e(plan.plan_id)} · ${e(titleCase(plan.status))} · ${e(plan.slice_count)} slice(s)</div><div class="mt-14"><a class="button primary" href="#/plan/${encodeURIComponent(session.plan_id)}/overview">Open plan →</a></div></section>` : ""}`;
 }
 
@@ -1906,6 +2098,52 @@ async function runDoctor() {
   }
 }
 
+async function setLocalPowerEnabled(enabled) {
+  store.busy = true;
+  store.error = null;
+  render();
+  try {
+    await api("/api/config/local-power", {
+      method: "POST",
+      body: JSON.stringify({ enabled }),
+    });
+    store.overview = await api("/api/overview");
+    store.localPowerConfirm = null;
+    if (store.task && store.route.name === "task") {
+      store.task = await api(`/api/tasks/${encodeURIComponent(store.route.taskId)}`);
+    }
+  } catch (error) {
+    store.error = error.message;
+  } finally {
+    store.busy = false;
+    render();
+  }
+}
+
+async function setCapabilitySandbox(enabled, parity = null) {
+  store.busy = true;
+  store.error = null;
+  render();
+  try {
+    const body = { enabled };
+    if (parity !== null) body.high_assurance_parity_guard = parity;
+    await api("/api/config/capability-sandbox", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+    store.overview = await api("/api/overview");
+    store.capabilitySandboxConfirm = null;
+    if (store.task && store.route.name === "task") {
+      store.task = await api(`/api/tasks/${encodeURIComponent(store.route.taskId)}`);
+    }
+  } catch (error) {
+    store.error = error.message;
+  } finally {
+    store.busy = false;
+    render();
+  }
+}
+
 async function approve(button) {
   const taskId = button.dataset.taskId;
   const version = Number(button.dataset.version);
@@ -1946,6 +2184,60 @@ async function approvePlan(button) {
     store.error = error.message;
   } finally {
     store.busy = false;
+    render();
+  }
+}
+
+let planRunPollHandle = null;
+let planRunPollingId = null;
+
+async function startPlanRun(button) {
+  const planId = button.dataset.planId;
+  const version = Number(button.dataset.version);
+  const autoAdvance = button.dataset.autoAdvance === "true";
+  store.busy = true;
+  store.error = null;
+  render();
+  try {
+    const record = await api(`/api/plans/${encodeURIComponent(planId)}/run`, {
+      method: "POST",
+      body: JSON.stringify({ expected_plan_version: version, auto_advance: autoAdvance }),
+    });
+    store.planRun = record;
+    store.planRunConfirmMode = null;
+    pollPlanRun(planId, record.run_id);
+  } catch (error) {
+    store.error = error.message;
+  } finally {
+    store.busy = false;
+    render();
+  }
+}
+
+async function pollPlanRun(planId, runId) {
+  if (planRunPollingId === runId && planRunPollHandle) return;
+  if (planRunPollHandle) clearTimeout(planRunPollHandle);
+  planRunPollingId = runId;
+  try {
+    const record = await api(`/api/plan-runs/${encodeURIComponent(runId)}`);
+    store.planRun = record;
+    if (store.route.name === "plan" && store.route.planId === planId) {
+      store.plan = await api(`/api/plans/${encodeURIComponent(planId)}`);
+    }
+    render();
+    if (["recorded", "running"].includes(record.status)) {
+      planRunPollHandle = setTimeout(() => {
+        planRunPollHandle = null;
+        pollPlanRun(planId, runId);
+      }, 2000);
+    } else {
+      planRunPollHandle = null;
+      planRunPollingId = null;
+    }
+  } catch (error) {
+    planRunPollHandle = null;
+    planRunPollingId = null;
+    store.error = error.message;
     render();
   }
 }
@@ -2381,6 +2673,31 @@ root.addEventListener("click", (event) => {
   const button = event.target.closest("[data-action]");
   if (!button) return;
   if (button.dataset.action === "doctor") runDoctor();
+  if (button.dataset.action === "local-power-intent") {
+    store.localPowerConfirm = button.dataset.intent;
+    render();
+  }
+  if (button.dataset.action === "local-power-cancel") {
+    store.localPowerConfirm = null;
+    render();
+  }
+  if (button.dataset.action === "local-power-confirm") {
+    setLocalPowerEnabled(button.dataset.enabled === "true");
+  }
+  if (button.dataset.action === "capability-sandbox-intent") {
+    store.capabilitySandboxConfirm = button.dataset.intent;
+    render();
+  }
+  if (button.dataset.action === "capability-sandbox-cancel") {
+    store.capabilitySandboxConfirm = null;
+    render();
+  }
+  if (button.dataset.action === "capability-sandbox-confirm") {
+    setCapabilitySandbox(button.dataset.enabled === "true");
+  }
+  if (button.dataset.action === "capability-parity-toggle") {
+    setCapabilitySandbox(true, button.dataset.enabled === "true");
+  }
   if (button.dataset.action === "approve-intent") {
     store.approvalPending = true;
     render();
@@ -2401,6 +2718,15 @@ root.addEventListener("click", (event) => {
   if (button.dataset.action === "plan-approve-confirm") approvePlan(button);
   if (button.dataset.action === "plan-validate") validatePlan(button);
   if (button.dataset.action === "plan-prepare-delivery") preparePlanDelivery(button);
+  if (button.dataset.action === "plan-run-intent") {
+    store.planRunConfirmMode = button.dataset.mode || "auto";
+    render();
+  }
+  if (button.dataset.action === "plan-run-cancel") {
+    store.planRunConfirmMode = null;
+    render();
+  }
+  if (button.dataset.action === "plan-run-confirm") startPlanRun(button);
   if (button.dataset.action === "plan-download-delivery") downloadPlanDelivery(button);
   if (button.dataset.action === "plan-download-frontier-handoff") downloadPlanFrontierHandoff(button);
   if (button.dataset.action === "slice-package") packagePlanSlice(button);

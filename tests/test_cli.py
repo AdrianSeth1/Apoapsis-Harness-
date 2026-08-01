@@ -10,7 +10,12 @@ from pathlib import Path
 
 from apoapsis import __version__
 from apoapsis.cli.app import _apply_context_profile, build_parser, main
-from apoapsis.config import FrontierProviderConfig, ApoapsisConfig
+from apoapsis.config import (
+    FrontierProviderConfig,
+    ApoapsisConfig,
+    ModelsConfig,
+)
+from apoapsis.verification.runner import VerificationConfig
 from apoapsis.workflow.engine import TaskStoreError
 
 
@@ -65,21 +70,31 @@ class CLITests(unittest.TestCase):
         gitignore_text = (self.root / ".gitignore").read_text(encoding="utf-8")
         self.assertIn(".apoapsis/", gitignore_text.splitlines())
         config = ApoapsisConfig.from_toml(self.root / ".apoapsis" / "config.toml")
-        self.assertEqual(config.models.frontier.provider, "ollama")
+        self.assertEqual(config.models.frontier.provider, "openai_compatible")
+        self.assertEqual(config.models.frontier.base_url, "http://127.0.0.1:8000/v1")
         self.assertEqual(
-            config.models.frontier.model, "qwen3-coder-next:q4_K_M"
+            config.models.frontier.model, "Laguna-S-2.1-UD-Q4_K_S"
         )
         self.assertEqual(config.models.frontier.temperature, 0.0)
-        self.assertEqual(config.models.frontier.context_window_tokens, 65536)
+        self.assertEqual(config.models.frontier.context_window_tokens, 32768)
         self.assertIsNotNone(config.models.local_coder)
         assert config.models.local_coder is not None
+        self.assertEqual(config.models.local_coder.provider, "openai_compatible")
         self.assertEqual(
-            config.models.local_coder.model, "qwen3-coder-next:q4_K_M"
+            config.models.local_coder.base_url, "http://127.0.0.1:8000/v1"
         )
-        self.assertEqual(config.models.local_coder.context_window_tokens, 65536)
+        self.assertEqual(
+            config.models.local_coder.model, "Laguna-S-2.1-UD-Q4_K_S"
+        )
+        self.assertEqual(config.models.local_coder.context_window_tokens, 32768)
         self.assertIsNone(config.models.frontier_coder)
         self.assertEqual(config.execution.mode.value, "agent")
         self.assertEqual(config.execution.route.value, "auto")
+        self.assertTrue(config.execution.capability_sandbox.enabled)
+        self.assertFalse(
+            config.execution.capability_sandbox.high_assurance_parity_guard
+        )
+        self.assertFalse(config.execution.local_power.enabled)
         # ADR 0049: coupled DEFAULT_CONFIG round-trip for the new
         # `max_criteria_per_slice` ceiling (now 20) and the local / frontier
         # coder budgets bumped in lockstep. Existing test overrides below
@@ -139,19 +154,96 @@ class CLITests(unittest.TestCase):
         self.assertEqual(approved["state"], "SPEC_APPROVED")
         self.assertEqual(approved["version"], 3)
 
+    def test_bare_config_construction_defaults_match_adr_0049(self) -> None:
+        # ADR 0049 raised `max_criteria_per_slice`/`max_work_brief_chars`
+        # to 20/3500 and coupled-bumped the local/frontier coder budgets.
+        # `apoapsis init`'s DEFAULT_CONFIG string is covered by
+        # `test_init_task_inspect_and_approve` above; this test instead
+        # guards the plain Pydantic class defaults on `ArchitectPlanCeilings`
+        # and `AgentLoopConfig` (what `ApoapsisConfig()` and
+        # `ArchitectPlanCeilings()` produce with no config.toml at all --
+        # the fallback used by library callers, tests, and any project
+        # whose config.toml omits these fields). These previously drifted
+        # from the ADR-0049 numbers even after `DEFAULT_CONFIG` was updated,
+        # silently reintroducing the pre-ADR-0049 ceilings/budgets for any
+        # caller that didn't go through `apoapsis init`.
+        config = ApoapsisConfig(
+            models=ModelsConfig(
+                frontier=FrontierProviderConfig(
+                    base_url="https://provider.invalid/v1", model="fake-coder-v1"
+                )
+            ),
+            verification=VerificationConfig(),
+        )
+        self.assertEqual(config.architect.ceilings.max_criteria_per_slice, 20)
+        self.assertEqual(config.architect.ceilings.max_work_brief_chars, 3500)
+        self.assertEqual(config.execution.agent.max_turns, 20)
+        self.assertEqual(config.execution.agent.max_patch_attempts, 14)
+        self.assertEqual(config.execution.agent.max_verification_runs, 7)
+        self.assertEqual(config.execution.agent.max_search_results, 24)
+        self.assertEqual(config.execution.agent.max_read_lines, 360)
+        self.assertEqual(config.execution.agent.max_observation_chars, 72_000)
+        self.assertEqual(
+            config.execution.agent.max_transmitted_observation_chars, 36_000
+        )
+        self.assertEqual(config.execution.frontier_agent.max_turns, 14)
+        self.assertEqual(config.execution.frontier_agent.max_patch_attempts, 9)
+        self.assertEqual(config.execution.frontier_agent.max_verification_runs, 5)
+        # Non-goal in ADR 0049: the frontier coder's search/read/observation
+        # caps are deliberately *not* widened and stay at their pre-0049
+        # values.
+        self.assertEqual(config.execution.frontier_agent.max_search_results, 20)
+        self.assertEqual(config.execution.frontier_agent.max_read_lines, 240)
+        self.assertEqual(
+            config.execution.frontier_agent.max_observation_chars, 48_000
+        )
+        self.assertEqual(
+            config.execution.frontier_agent.max_transmitted_observation_chars,
+            24_000,
+        )
+
     def test_init_appends_to_an_existing_gitignore_without_duplicating(self) -> None:
         (self.root / ".gitignore").write_text("node_modules/\n", encoding="utf-8")
         initialized = self.invoke("init")
         self.assertTrue(initialized["gitignore_updated"])
         lines = (self.root / ".gitignore").read_text(encoding="utf-8").splitlines()
-        self.assertEqual(lines, ["node_modules/", ".apoapsis/"])
+        # ADR 0063 added the Python cache entries; they are ergonomics for
+        # new projects only. Reviewer-facing changed-file output does not
+        # depend on them (see `repository.changed_paths`).
+        self.assertEqual(
+            lines,
+            [
+                "node_modules/",
+                ".apoapsis/",
+                "__pycache__/",
+                "*.py[cod]",
+                ".pytest_cache/",
+            ],
+        )
 
     def test_init_does_not_duplicate_an_already_present_gitignore_entry(self) -> None:
-        (self.root / ".gitignore").write_text(".apoapsis/\n", encoding="utf-8")
+        (self.root / ".gitignore").write_text(
+            ".apoapsis/\n__pycache__/\n*.pyc\n.pytest_cache/\n", encoding="utf-8"
+        )
         initialized = self.invoke("init")
         self.assertFalse(initialized["gitignore_updated"])
         lines = (self.root / ".gitignore").read_text(encoding="utf-8").splitlines()
-        self.assertEqual(lines, [".apoapsis/"])
+        # `*.pyc` already covers what `*.py[cod]` would add, in one of its
+        # recognized spellings, so nothing is appended.
+        self.assertEqual(
+            lines, [".apoapsis/", "__pycache__/", "*.pyc", ".pytest_cache/"]
+        )
+
+    def test_init_adds_only_the_gitignore_entries_that_are_missing(self) -> None:
+        (self.root / ".gitignore").write_text(
+            ".apoapsis\n__pycache__\n", encoding="utf-8"
+        )
+        initialized = self.invoke("init")
+        self.assertTrue(initialized["gitignore_updated"])
+        lines = (self.root / ".gitignore").read_text(encoding="utf-8").splitlines()
+        self.assertEqual(
+            lines, [".apoapsis", "__pycache__", "*.py[cod]", ".pytest_cache/"]
+        )
 
     def test_context_profiles_scale_frontier_and_repository_budgets(self) -> None:
         self.invoke("init")
@@ -189,7 +281,7 @@ class CLITests(unittest.TestCase):
 
         # explicit opt-in only: the default project config is untouched by
         # the mere existence of larger profiles.
-        self.assertEqual(config.models.frontier.context_window_tokens, 65536)
+        self.assertEqual(config.models.frontier.context_window_tokens, 32768)
         self.assertEqual(config.context.max_total_chars, 180000)
 
     def test_run_accepts_a_context_profile(self) -> None:
@@ -235,7 +327,7 @@ class CLITests(unittest.TestCase):
                 )
             }
         )
-        with self.assertRaisesRegex(TaskStoreError, "native Ollama"):
+        with self.assertRaisesRegex(TaskStoreError, "loopback local coding"):
             _apply_context_profile(config, "32k")
 
 

@@ -5,6 +5,7 @@ import os
 import urllib.error
 import urllib.request
 from typing import Any
+from urllib.parse import urlparse
 
 from apoapsis.config import FrontierProviderConfig
 from apoapsis.models.base import TokenUsage
@@ -34,7 +35,7 @@ class OpenAICompatibleFrontierProvider(ModelProvider):
 
     def complete(self, invocation: ProviderInvocation) -> ProviderOutput:
         api_key = os.environ.get(self.config.api_key_env)
-        if not api_key:
+        if not api_key and not _is_loopback_endpoint(self.config.base_url):
             raise ProviderError(
                 f"missing frontier credential environment variable: "
                 f"{self.config.api_key_env}"
@@ -58,14 +59,11 @@ class OpenAICompatibleFrontierProvider(ModelProvider):
                 },
             }
         payload = json.dumps(payload_object).encode("utf-8")
+        headers = {"Content-Type": "application/json"}
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
         request = urllib.request.Request(
-            url,
-            data=payload,
-            method="POST",
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-            },
+            url, data=payload, method="POST", headers=headers
         )
         try:
             with urllib.request.urlopen(
@@ -110,3 +108,9 @@ class OpenAICompatibleFrontierProvider(ModelProvider):
             )
         except (KeyError, IndexError, TypeError, ValueError) as exc:
             raise ProviderError("frontier response has an invalid shape") from exc
+
+
+def _is_loopback_endpoint(value: str) -> bool:
+    parsed = urlparse(value)
+    hostname = (parsed.hostname or "").lower()
+    return hostname in {"127.0.0.1", "::1", "localhost"}

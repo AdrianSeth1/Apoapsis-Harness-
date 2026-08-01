@@ -47,6 +47,15 @@ content hashes and worktree pointers are not corrupted; see
   explicit escalation—with no shell or arbitrary command access.
 - Unified-diff parsing, policy validation, safe worktree application, bounded
   iteration, and verifier-owned completion.
+- A `create_file` action for new files that lets local models provide literal
+  file content while Apoapsis builds, validates, applies, verifies, and audits
+  the patch; known llama.cpp tool-template residue on that action is normalized
+  without allowing extra model authority.
+- A default-on Capability Sandbox for approved plan slices (ADR 0095): genuine
+  Qwen Code runs with normal file/shell/test tools inside the qualified
+  network-none workcell, while Apoapsis admits the complete delta, gathers
+  current evidence, and alone decides promotion and completion. The older
+  typed Local Power path remains a one-action compatibility choice.
 - Deterministic risk routing across local-only, local-then-frontier,
   frontier-only, and human-review paths, with a reproducible escalation package
   and separate budgets for each coding stage.
@@ -63,9 +72,11 @@ content hashes and worktree pointers are not corrupted; see
   provider connectivity probe) and an `apoapsis eval` harness that runs every
   execution lane against a fresh copy of a controlled fixture and writes one
   comparison report.
-- Windows `START_APOAPSIS.cmd`/`STOP_APOAPSIS.cmd` controls that derive local
-  Ollama models from configuration, warm the coding model, and explicitly
-  release every configured local model's memory without touching hosted providers.
+- Windows `START_APOAPSIS.cmd`/`STOP_APOAPSIS.cmd` controls that let the
+  operator select one project folder, prepare an empty folder or initialize an
+  existing Git project for Apoapsis, start the configured loopback
+  local coding service (Ollama or `llama-server`), open the UI, and explicitly
+  release supported local model memory without touching hosted providers.
 - A bounded, local-first Architect Mode discovery workflow followed by an
   optional frontier planning stage (`apoapsis discover`, ADR 0032): a
   configured local model may propose a small, harness-capped set of
@@ -124,7 +135,25 @@ research stage, and
 [ADR 0036](docs/adr/0036-operational-hardening-and-documentation-compaction.md)
 records clarification source canonicalization, fair research-query allocation,
 known-impossible verification preflight, less brittle patch budgets, and the
-current-state documentation split. The
+current-state documentation split, and
+[ADR 0050](docs/adr/0050-native-desktop-shell-and-project-management.md)
+supersedes ADR 0034's native-wrapper deferral, adopting a Tauri 2 desktop
+shell around the existing unchanged Python backend and building only a
+disposable Phase 1 spike so far, and
+[ADR 0051](docs/adr/0051-native-project-registry-and-safe-import.md)
+implements that plan's Phase 2 (project registry) and Phase 3 (safe file
+import) as a Python service layer, not yet wired to a native picker or the
+browser UI, [ADR 0052](docs/adr/0052-reference-projects-and-desktop-home-menu.md) adds
+Phase 4 (read-only reference-project attachment) and Phase 5 (a Home-screen
+data service and an unbuilt native menu skeleton), and
+[ADR 0053](docs/adr/0053-privileged-desktop-local-ipc-channel.md) builds
+Phase 6's privileged local IPC channel connecting the two, and
+[ADR 0054](docs/adr/0054-native-picker-wiring-and-phase7-coverage.md) wires
+a native picker to the remaining menu actions and fills several Phase 7
+deterministic-coverage gaps, and
+[ADR 0062](docs/adr/0062-start-launcher-and-llama-server-lifecycle.md)
+records the Start launcher becoming the primary Windows path with loopback
+`llama-server` lifecycle support. The
 [Research Mode guide](docs/research-mode.md)
 covers setup and operation.
 
@@ -152,10 +181,23 @@ python -m unittest discover -s tests -v
 
 ## Start and stop local models on Windows
 
-Double-click `START_APOAPSIS.cmd` before a local session. It validates the
-configured loopback Ollama endpoint, starts the default local service if needed,
-checks that models are already installed, and warms the deduplicated coding model
-for 30 minutes at its configured context size. It never pulls a model.
+Double-click `START_APOAPSIS.cmd` to begin a local session. With no folder
+argument, it opens a Windows folder picker. Select an existing Git project or
+create/select an empty folder. The launcher prepares it automatically, then
+starts the configured loopback local coding service and opens the UI. You do
+not need to run `git init` or `apoapsis init` first.
+
+For safety, Apoapsis will not guess what to do with a non-empty folder that is
+not already a Git project, or with an uncommitted new Git project containing
+files. It explains the problem and leaves those files alone. Existing Git
+projects are initialized using repository-local exclusions, so opening one
+does not edit its tracked `.gitignore`.
+
+For the default Laguna `llama-server` configuration, set
+`APOAPSIS_LLAMA_SERVER_COMMAND` once to the explicit command that starts your
+local server. `START_APOAPSIS.cmd` will use it only when the configured
+loopback OpenAI-compatible endpoint is unavailable. It never pulls a model,
+installs software, adds existing files to Git, or manages hosted endpoints.
 
 The research-only model stays lazy by default because loading two large models
 can exceed available RAM/VRAM. Warm it explicitly when needed:
@@ -166,8 +208,11 @@ can exceed available RAM/VRAM. Warm it explicitly when needed:
 
 When finished, double-click `STOP_APOAPSIS.cmd`. It sends an explicit zero keep-
 alive to every configured local Ollama model, including research, and releases
-their memory. The shared Ollama service remains running intentionally; hosted
-providers, Docker, repositories, worktrees, and tasks are untouched.
+their memory. The shared Ollama service remains running intentionally. A
+`llama-server` process launched from `APOAPSIS_LLAMA_SERVER_COMMAND` remains a
+normal operator-owned process for this pass; close it the same way you would
+close any other local server. Hosted providers, Docker, repositories,
+worktrees, and tasks are untouched.
 
 For terminal automation, set `APOAPSIS_NO_PAUSE=1` so the command files do not
 wait for a keypress. The last lifecycle result is recorded under the ignored
@@ -181,24 +226,32 @@ Launch the offline interface from an initialized project:
 apoapsis ui
 ```
 
-On Windows, pass the Git project you want Apoapsis to manage to the launcher:
+On Windows, use the Start launcher as the primary path:
 
 ```powershell
-.\OPEN_APOAPSIS.cmd "C:\path\to\your-project"
+.\START_APOAPSIS.cmd
 ```
 
-The browser manages **one Git project per window**. To add another project,
-run `apoapsis init` once inside that repository, close the current launcher,
-and open the launcher with the other folder. The browser is deliberately not
-allowed to browse arbitrary folders or initialize repositories.
+You can also pass the Git project path explicitly:
 
-`OPEN_APOAPSIS.cmd` checks for the Python launcher, Git, and an initialized project
-(reporting any of those missing in plain language before doing anything
-else), then runs `apoapsis ui` from the checkout and opens your system
-browser. It never installs, downloads, or reconfigures anything, and never
+```powershell
+.\START_APOAPSIS.cmd "C:\path\to\your-project"
+```
+
+The browser manages **one Git project per window**. To use another project,
+close the current launcher and start again with the other folder; the launcher
+performs safe first-time setup automatically. Folder selection happens in the trusted
+launcher/native layer, not in browser JavaScript; the browser is deliberately
+not allowed to browse arbitrary folders or initialize repositories.
+
+`OPEN_APOAPSIS.cmd` checks for Python and Git, safely prepares the selected
+folder when needed, then runs `apoapsis ui` from the checkout and opens your
+system browser. It never installs, downloads, or changes existing project
+files, and never
 loads or unloads a model -- it manages only the one UI process it starts.
-Closing its window (or Ctrl+C) stops just that process; use
-`STOP_APOAPSIS.cmd` separately to release local model memory. See
+It remains available as a UI-only fallback if the local model service is already
+running. Closing its window (or Ctrl+C) stops just that process; use
+`STOP_APOAPSIS.cmd` separately to release supported local model memory. See
 [ADR 0034](docs/adr/0034-browser-launcher-and-native-wrapper-deferral.md)
 for why this stays a thin launcher around the existing browser surface
 rather than a native desktop window.
@@ -208,6 +261,74 @@ It opens a capability-protected loopback session at `127.0.0.1:7331`. Use
 a different loopback port. All HTML, CSS, and JavaScript assets ship with
 Apoapsis; the interface contacts no CDN and never calls a model provider
 directly.
+
+### Native desktop shell (spike only -- not a released feature)
+
+[ADR 0050](docs/adr/0050-native-desktop-shell-and-project-management.md)
+supersedes ADR 0034's deferral and adopts Tauri 2 as the future native
+desktop shell, rendering the same existing offline UI inside a real window
+instead of a browser tab, with the Python backend started as a managed child
+process behind an unchanged capability-token boundary. Only a disposable
+Phase 1 spike exists today (`spikes/native-shell-tauri/`, explicitly not
+wired into packaging); it has not been compiled or run on real Windows
+hardware. Native project selection/switching, a safe file-import workflow,
+and read-only reference-project attachment are designed in ADR 0050 but not
+yet implemented. Use `START_APOAPSIS.cmd`/`apoapsis ui` above until a later
+change reports real native-shell evidence.
+
+**Filesystem capability boundary:** even once built, the native shell may
+hold user-granted filesystem capability the browser-only surface never had
+(a native folder picker, reading a chosen project's Git state, copying files
+during an explicitly approved import). This is application-level control,
+never model control -- models remain untrusted typed proposers restricted to
+Apoapsis-supplied evidence from inside one bound project root, exactly as
+`HANDOFF.md`'s authority boundary already requires, with or without a native
+shell.
+
+[ADR 0051](docs/adr/0051-native-project-registry-and-safe-import.md) builds
+the Python side of that boundary now, ahead of the native picker:
+`src/apoapsis/desktop/` has a project registry (recent projects, explicit
+initialization only, never automatic), opaque window-scoped capability
+sessions (never a raw path), and a preview/approve/execute file-import
+workflow that hard-excludes `.git`/`.apoapsis`/`.sol`, dependency/build/
+virtual-environment directories, and secret-like filenames by default,
+never follows symlinks, requires a second confirmation before replacing any
+file (with an automatic backup), and writes a durable JSON audit manifest.
+None of this is reachable from the browser UI or a model yet -- it has no
+HTTP route and no menu entry; it is direct-Python-call-only until the
+native shell (or an HTTP boundary in front of it) is built.
+
+[ADR 0052](docs/adr/0052-reference-projects-and-desktop-home-menu.md) adds
+two more pieces on the same terms. **Attach reference project**
+(`DesktopReferenceService`) is a third, distinct operation from Open
+project and Import files: it grants read-only access to a second Git
+repository for inspection, and only ever copies evidence the operator
+explicitly selects one file at a time -- each captured piece records its
+exact source project, commit, path, and hash, and is cached under the
+*primary* project's own `.apoapsis/reference-evidence/`, never written
+into the reference project or the primary project's tracked source.
+**Home-screen data** (`DesktopHomeService`) assembles project identity, Git
+state, initialization state, verification readiness, and the recent-
+projects list into one deterministic payload for a future native Home
+screen. A real (but still unbuilt and never compiled) `File`/`View`/`Help`
+menu skeleton now exists in the disposable Tauri spike.
+
+[ADR 0053](docs/adr/0053-privileged-desktop-local-ipc-channel.md) builds
+the local-IPC channel that skeleton needed: a second loopback HTTP
+listener started alongside the existing browser-facing UI server, in the
+same process, on its own port, guarded by its own capability token the
+browser webview never receives (so `ProjectCapabilitySessions`' in-memory
+sessions survive across repeated calls, unlike a fresh-subprocess-per-click
+design would). Three menu handlers (recent projects, close project,
+environment diagnostics) make real calls over it, and
+[ADR 0054](docs/adr/0054-native-picker-wiring-and-phase7-coverage.md) wires
+the remaining four (open project, import files/folder, attach reference
+project) to a real native folder/file picker (`tauri-plugin-dialog`), so
+every File-menu action except "Show Project Folder" now has a real,
+end-to-end (if still uncompiled/unverified) path from a menu click to a
+Python service call. The existing browser-facing server and its
+`app.js`/HTTP surface remain completely untouched by any of this --
+verified by a static regression test that scans for exactly that.
 
 The first slice provides:
 
@@ -382,15 +503,19 @@ apoapsis discover call-api DISC-ABC123 --authorize-planning-spend-usd 1.00
 The frontier model may return a small, capped number of further
 clarification questions (`[discovery] max_frontier_clarification_rounds`,
 default 10 -- answer them with `apoapsis discover answer-frontier-questions`
-and export again) or a complete plan. A returned plan becomes an entirely
-ordinary Architect Mode plan -- inspect, validate, and approve it exactly
-as described below, through the same unmodified commands:
+and export again) or a complete plan. Apoapsis automatically runs its
+deterministic plan validation when a complete plan is imported. A clean plan
+arrives as **Validated**, ready for your review and approval; a plan with errors
+remains **Proposed** and shows the exact findings to correct. Import never
+approves the plan or starts work:
 
 ```bash
 apoapsis discover inspect DISC-ABC123
-apoapsis plan validate PLAN-...
 apoapsis plan approve PLAN-... --expected-version 2
 ```
+
+`apoapsis plan validate PLAN-...` remains available when configuration or a
+revised plan needs to be checked again.
 
 Neither model can approve a plan, invent a verification-command name,
 bypass a ceiling, execute a slice, or choose a workflow transition. The
@@ -399,6 +524,27 @@ a token count or cost (there is nothing to measure on a manual paste); the
 API transport shows the configured provider/model and a pessimistic
 worst-case cost before any call, requires an explicit spend ceiling, and
 persists real measured cost.
+
+### How big can a pasted plan be? (ADR 0065)
+
+Big. A frontier plan is *meant* to be substantial — the handoff explicitly
+tells the model that "a shallow list of coding tasks is not an acceptable
+plan" — so a real one with a dozen components, its integration contracts, a
+pre-mortem, and fifteen-plus slices runs to hundreds of kilobytes.
+
+The ceiling is `discovery.max_response_bytes` in `.apoapsis/config.toml`,
+2 MB by default (`manual_frontier.max_response_bytes` is the equivalent for
+repair handoffs). If you exceed it you get the numbers, not a shrug:
+
+```text
+request body is 214113 bytes; this endpoint accepts at most 4194304
+```
+
+You do **not** need to split a plan across several pastes. Paste it whole —
+one complete response is what gets hash-checked against the exported package.
+Keeping the coder's input small is what slices are for, and that happens later
+and automatically: each slice is executed on its own, and the coding model
+never sees the whole plan.
 
 ## Architect Mode: deterministic planning foundation (ADR 0019)
 
@@ -474,6 +620,9 @@ The local UI provides the routine path without terminal commands: proposed
 plans show **Verify plan**, and verification-failed Human Review cases show
 **Repair and verify** when bounded local continuation budget remains. These
 buttons call the same versioned, audited services as the CLI.
+Discovery accepts the bounded `<think>...</think>` wrapper emitted by some
+local reasoning models before their JSON response, then still applies strict
+JSON and schema validation.
 When deterministic risk routing stops a task before any coding agent or worktree
 exists, Human Review instead shows **Run locally**. Confirming it explicitly
 authorizes one fresh bounded local execution. It does not change the project's
@@ -747,12 +896,43 @@ agent produces them, then a usage/telemetry summary once the task finishes. A
 task that stops for a human decision links directly into the existing Human
 Review case view.
 
-## Approved-plan to single-slice execution (ADR 0027)
+## Approved-plan execution (ADRs 0027 and 0092)
 
-Once an Architect Mode plan (see below) is approved, one explicitly selected
-slice can become a real, running task through the exact same durable
-execution service above -- never automatically, and never more than one
-slice at a time:
+Once an Architect Mode plan is approved, the browser now offers **Run all
+slices automatically** as the recommended path. One confirmation authorizes
+the controller to package, hash-bind, approve, execute, and verify each
+dependency-ready slice in order. It advances only after the current slice is
+authoritatively `COMPLETE`; configuration drift, a dependency block, failed
+verification, Human Review, a superseded package, or an interrupted run stops
+the sequence. **Run only the next slice** gives the same one-click flow with
+manual pacing. Automatic approvals are audited as controller actions bound to
+the plan-run id, and any older manual package is rebuilt under the authorized
+configuration before it can run.
+
+The authorization is durable and bound to one exact plan version and effective
+configuration digest. A queued run can be reclaimed after restart. A run that
+may already have called a model is marked ambiguous and is never silently
+repeated. The plan worker shuts down with the app instead of surviving against
+the project directory. Final integrated verification and delivery remain
+separate actions.
+
+Auto mode is not a setting or toggle. On **Implementation slices**, the
+Automatic run panel says whether a run is active. Before approval it links to
+the exact remaining step; after approval it shows **Run all slices
+automatically** and **Run only the next slice**. Starting a run does not make a
+persistent mode change.
+
+A manual ChatGPT or Claude response saved in the project folder no longer
+blocks either button after that exact response has been successfully imported.
+At plan-run and ordinary execution preflight, Apoapsis recognizes only a
+top-level `apoapsis-plan-response…json` file whose parsed payload exactly
+matches the canonical response already retained in the discovery audit, then
+adds that exact filename to the repository-local Git exclusions. The response
+file is left in place. A renamed project file, an altered response, a tracked
+file, or any other uncommitted change still stops execution with the normal
+dirty-repository warning.
+
+The individual CLI workflow remains available for inspection and scripting:
 
 ```bash
 apoapsis plan slice list PLAN-ABC123
@@ -785,19 +965,123 @@ EXECUTED, and creates a downloadable source ZIP containing
 `FRONTIER-WHOLE-PROJECT-REVIEW-<plan-id>.md` can be uploaded with that ZIP for a
 full architecture, integration, security, operability, and verification-gap
 review. Preparing a delivery never moves or merges the checked-out branch.
+Each slice's delivered outcome and command results are read from the
+current-evidence projection described under
+[Original report versus current evidence](#original-report-versus-current-evidence),
+so a slice repaired after its first stop is reported as it stands now rather
+than as it first stopped; delivery refuses outright when a COMPLETE slice's
+deciding artifact can no longer be read.
+
+#### Whole-project verification before delivery
+
+Every slice is verified in isolation, in its own worktree, at the time it
+runs. That says nothing about the combined result — a plan can deliver four
+green slices and a product whose parts never talk to each other, and no
+per-slice check can catch it, because no individual slice is wrong.
+
+So before anything is archived, Apoapsis runs the plan's own
+`verification_strategy.whole_project_verification_commands` against the exact
+integrated commit (ADR 0074), binds the result to that commit and to the
+worktree fingerprint it measured, and writes
+`.apoapsis/plans/<plan-id>/final-project-verification.json`. Delivery is
+permitted only when that run passed.
+
+```toml
+[verification_strategy]              # in the approved plan, not config.toml
+whole_project_verification_commands = ["integration-check"]
+```
+
+If it fails, or the plan named no whole-project command, or the named
+commands are not configured in this project, delivery raises with the reason:
+**the plan stays APPROVED, no ZIP is written, and no `delivery.json` is
+recorded.** Fix the integrated project and prepare delivery again.
+
+A whole-project command usually needs `required = false` in `config.toml`,
+because the configured command set runs for *every* slice and an integration
+check cannot succeed inside the worktree of a slice whose counterpart does
+not exist yet. Delivery forces it required for the final run — naming it in
+the plan is your statement that it must pass before shipping.
+
+`delivery.json` therefore carries two separate sections, and they mean
+different things:
+
+| Field | Claim |
+| --- | --- |
+| `verification_summary` | Per-slice history. Scoped to one task each, with no commit or fingerprint binding. |
+| `final_project_verification` | The plan's own contract, executed once, bound to the integrated commit. |
+
+The frontier handoff and the ZIP's usage guide keep the same separation, and
+both name which acceptance criteria the integrated run did **not** prove.
+
+#### The operability contract
+
+A plan must say how the finished product is started, in a form Apoapsis can
+check (ADR 0076). In `delivery_contract`, set **exactly one** of:
+
+| Field | Meaning |
+| --- | --- |
+| `launch_verification_command` | The *name* of a configured verification command that launches or smoke-tests the product. It must also be in `whole_project_verification_commands`, so it runs against the integrated commit. |
+| `launch_not_runnable_reason` | An explicit statement of why no such command can exist — for a library, a data pipeline, anything with no long-running process. |
+
+It is a command name, never a shell string: Apoapsis does not execute
+`launch_or_usage_instructions` or any other prose field, and never will.
+
+`primary_documentation_path` must also be set, be a safe repository-relative
+path, and be named in some slice's `suggested_paths` — naming a README nobody
+is responsible for updating is how a seed README survives to delivery.
+
+At delivery, every `required_artifacts` entry and the documentation path must
+actually exist in the integrated commit. A missing one raises, leaving the plan
+`APPROVED` with no ZIP.
+
+The ZIP's usage guide then opens by stating whether the launch path was
+exercised, by which command, or why not; renders your plan's own install,
+launch, test, and readiness text; and puts the old filename-based guesses
+under a heading that says they are inferred. `delivery.json` carries the same
+facts under `operability`, separating "artifact present", "launch exercised",
+and "launch explicitly unmeasured".
+
+A whole-project launch command usually wants `required = false` in
+`config.toml`, for the same reason as any integration check — delivery forces
+it required for the final run.
+
+#### Plan consistency checks
+
+`apoapsis plan validate` rejects a plan that cannot be delivered coherently
+(ADR 0074): one that names no whole-project verification command, declares an
+integration contract no slice builds, requires a delivery artifact no slice
+produces, or writes an end-to-end scenario proven only by a command that runs
+inside a single slice.
+
+A contract whose `runtime_boundary` is `same_origin_http` or
+`cross_origin_http` additionally needs an `end_to_end_scenario` proven by a
+command that is both acceptance-designated and run against the integrated
+project. Apoapsis cannot detect seed data, a demo-only path, or an
+"offline mode" fallback — that would need exactly the prose guessing it refuses
+to do in a gate — so it instead refuses to let a networked integration exist
+with nothing but static evidence behind it.
+
+It also catches a plan that contradicts itself. Set
+`runtime_boundary` on an `IntegrationContract` — `same_origin_http`,
+`cross_origin_http`, `in_process`, `filesystem`, `subprocess`, or the default
+`unspecified` — and validation checks it against the flags of the commands
+that govern it. A contract declaring `same_origin_http` alongside a
+`--forbid-runtime-network-apis` check is an error: the plan cannot be
+satisfied and passed at the same time. This is a lookup of Apoapsis's own
+documented flags, not an inference from the contract's prose;
+`unspecified` asserts nothing and produces no finding.
 `approve` creates the derived task from that exact package (the normal
 specification-approval transitions, unchanged) but does not start it;
 `start` hands it to the same durable execution service `apoapsis execute
 start` uses. A slice's status is always read live from its derived task's
-real state, never a separate, independently-tracked copy of it. Nothing here ever
-starts a next slice or merges into the user's branch.
+real state, never a separate, independently-tracked copy of it. Auto mode may
+start the next dependency-ready slice under its one durable user authorization;
+it never merges into the user's branch.
 
-The same flow is available from the browser: a plan's Implementation Slices
-tab shows live per-slice status, an Inspect view renders the same immutable
-package preview, and a two-step Approve action creates the derived task --
-which then behaves exactly like any other task, including the existing
-control room's own "Start coding" confirmation. There is no "Run all"
-button and no scheduler in the UI.
+The browser still exposes every individual package and task for inspection,
+but the happy path no longer requires visiting each one. The plan page shows
+the active slice, completed slices, durable run id, and the exact reason an
+automatic run stopped.
 
 ## Diagnostics and evaluation
 
@@ -910,6 +1194,686 @@ metrics. Hosted rescue and savings remain explicitly `unmeasured` unless the
 loaded artifacts contain a paired real hosted-frontier run; fake providers test
 the formulas but never populate real-world hosted results.
 
+### Paired scoring: two scorecards, four gates (ADR 0077)
+
+A single evaluation score can hide a capability regression behind a cheap arm.
+The Crisis Atlas sliced run used about eight times *fewer* input tokens than the
+same model driven by its normal coding CLI, and produced a materially worse
+product. `eval-paired` refuses to let that read as a win:
+
+```bash
+# rescore an explicit corpus of PairedArmRecord files
+apoapsis eval-paired .apoapsis-eval/control.json .apoapsis-eval/sandbox.json \
+  --candidate-arm capability_sandbox \
+  --output-dir .apoapsis-eval/paired
+
+# or rescore the frozen historical Crisis Atlas arms, with no arguments
+apoapsis eval-paired
+```
+
+This writes `paired.json` and `paired.md` containing, kept strictly apart:
+
+- **Model proposal quality** — obligations implemented before any external
+  repair, independent checks passed at the first checkpoint, missing, wrong-path,
+  placeholder, and dead production artifacts, runtime defects, repair distance,
+  model-authored test relevance, ceiling events, calls, tokens, and latency. A
+  frontier or human repair is recorded on the *delivered* result and can never
+  improve this scorecard.
+- **Harness defect-detection quality** — defects detected, negative controls
+  caught, criteria with current-state evidence, structured witness coverage,
+  false completions, weak command-name-only claims refused, stale or inherited
+  evidence rejected, defects caught before delivery, and defects that escaped
+  acceptance.
+- **Four release gates** — capability preservation, proposal non-inferiority,
+  delivered superiority, and efficiency, each reported on its own row.
+
+There is deliberately no overall score. A gate reported `unmeasured` is an
+absence of evidence, never a pass, and `recommended_for_default` requires all
+four to pass independently.
+
+Two arms are only compared when their controlled variables — seed commit,
+worktree fingerprint, task and plan hashes, model file hash, quantization,
+endpoint, sampling seed, temperature, server flags, context and output caps,
+wall-clock ceiling, CPU/GPU allocation, network and mount policy, and verifier
+version — are recorded *and* equal. An unrecorded variable disqualifies the pair
+rather than counting as a match. Prompt hashes, CLI version, and image digest
+are recorded but excluded, because the two arms differ there by construction.
+
+Running it with no arguments rescores the two frozen historical arms and returns
+`incomparable`: the sliced arm's seed commit was never written down and its
+output cap changed mid-run. That is the correct answer, not a bug.
+
+Context and output ceilings are classified as first-class conditions
+(`INPUT_CONTEXT_PRESSURE`, `INPUT_CONTEXT_EXHAUSTED`, `OUTPUT_CEILING_TRUNCATION`,
+`TOOL_OUTPUT_TRUNCATION`, `PROVIDER_ERROR_AFTER_ROLLOVER`) and reported
+separately from model reasoning failures, so a response that filled the context
+window is never counted as the model failing to reason.
+
+### Qualification case packages (Slice 7P.1)
+
+A qualification case is a directory of artifacts, not a row in a manifest. The
+draft eight-case manifest recorded per-case identities as
+`sha256("slice7::<case-id>::seed")` — well-formed digests that referred to
+nothing — so `qualification/artifacts.py` (7P.1a) made a digest resolve only
+when bytes on disk produce it, and `qualification/case_package.py` (7P.1b)
+does the same for a whole package.
+
+Every package declares twelve components: seed locator/commit/tree, immutable
+task text, plan contract, mapped acceptance criteria, verification commands,
+evaluator-only oracle, expected witnesses, exactly three repetition
+identities, budget class, capability-discrimination rationale, a known-good
+reference candidate, and a deliberately incomplete one. All twelve are
+mandatory. None may default, because a package whose oracle quietly defaulted
+to empty would register while proving nothing.
+
+**Orchestration coverage is not qualification evidence.** A validation run
+declares which it is, and the probe must say so:
+
+```python
+class EvidenceKind(StrEnum):
+    ORCHESTRATION_ONLY = "orchestration_only"    # injected probe
+    REAL_QUALIFICATION = "real_qualification"    # clones, commands, witnesses
+```
+
+A run against an injected probe can pass every proof — that is worth having,
+because it shows each proof reports what its inputs imply — and it still cannot
+register a package, because nothing was cloned, no command ran and no witness
+was emitted. `all_proofs_passed` is the honest name for that result;
+`registerable` additionally requires `REAL_QUALIFICATION`. Slice 7P.1b reported
+a fake-probe pass as "registerable", and this is the correction.
+
+`validate_case_package` reports **eight separate proofs**, each `passed`,
+`failed`, `unrun` or `inconclusive`:
+
+1. a fresh clone reproduces the recorded seed commit and tree;
+2. the requested behaviour is absent from the seed;
+3. the inherited test state is recorded;
+4. the known-good reference satisfies every mapped criterion;
+5. removing a required artifact fails exactly its mapped criterion;
+6. the historical incomplete candidate cannot complete despite inherited green;
+7. verification emits witnesses bound to the admitted snapshot;
+8. a second fresh clone produces identical outcomes and evidence identities.
+
+Only eight distinct passes register a package. `unrun` and `inconclusive` both
+block it, and one proof never substitutes for another — eight results that are
+two copies of proof 1 and no containment proof do not register, however green
+they look.
+
+Commit and tree are recorded as separate objects **with their Git object
+types**. Both are forty hex characters, and an unquoted `HEAD^{tree}` on
+PowerShell prints the parent *commit* before failing, which is exactly the
+value the type check rejects.
+
+The one shipped package is `docs/qualification/pilot/crisis-atlas/`. Its
+incomplete candidate is the **actual historical Qwen Slice 2 bytes**; its
+known-good reference is **evaluator material, not a model achievement**, and
+says so. Crisis Atlas is a regression benchmark: its failure mode was known
+before these acceptance rules were written, so a result here cannot establish
+non-inferiority on anything else.
+
+The passed v8 rehearsal authorizes a live preflight, not inference. ADR 0091
+adds a separate, committed live authorization and the operator-launched WSL
+runner for the six frozen arms. The old lock remains unchanged and false for
+live inference. The runner rehashes the model/server closure, reobserves the
+real CLI surface and containment before spend, starts and stops the pinned
+server for every cold slot, keeps the control on Qwen Code's native loop, and
+allows the sandbox only controller-produced repair packets through native
+session continuation. It writes `live-pilot-result.json` as raw evidence
+pending separate scoring; it cannot declare its own pilot successful. Use
+`tools/run_crisis_atlas_live_pilot.sh` from Ubuntu-24.04 only after the
+committed authorization file exists. A new evidence directory is mandatory so
+a retry cannot overwrite a partial run. The launcher defaults to the
+operator-writable native-ext4 path
+`/home/arya/apoapsis-live-evidence/crisis-atlas-live-pilot-v4`; an explicit
+first argument replaces that destination. Disposable workspaces and Unix
+sockets use the separate short, host-mounted runtime root
+`/home/arya/apx-ca-live-v4` (overridden by the second argument), so Docker can
+resolve every bind source without exceeding the Unix-socket path limit.
+The controller base is Ubuntu 24.04, matching the pinned server build's glibc
+and libstdc++ ABI; the launcher mounts the frozen host CUDA runtime read-only,
+and preflight refuses unresolved dynamic libraries before server startup.
+
+`RealCasePackageProbe` (`qualification/real_probe.py`) is the real
+implementation. It clones the seed twice per checkpoint — base and candidate
+independently, so a defect in a copy cannot appear as a delta the checkpoint
+blames on the model — and drives the same `run_checkpoint`, `admit_candidate`
+and `emit_test_witness` the Capability Sandbox uses. Coverage is measured with
+the standard library `trace` module rather than `coverage.py`, so no proof
+reports `unrun` for want of an optional dependency, and the witness records
+`collection_method` accordingly. Nothing opens a socket; the environment is
+scrubbed of proxy variables and runs with `PYTHONDONTWRITEBYTECODE=1`.
+
+**Authority is read from Git objects, never the working tree.**
+`qualification/authority.py` answers "does this commit contain these exact
+bytes" with `git cat-file`, and imports nothing it checks. That distinction is
+not academic: a pilot lock once named an evaluator commit that did not contain
+the module defining the lock itself, and every test passed because every test
+imported that module from the checkout. A manifest binds each verdict-deciding
+executable by the digest of its committed bytes, and
+`package_authority_modules_unchanged` compares blobs to decide whether existing
+qualification evidence may be reused — comparing commits would be too strict,
+comparing behaviour too weak.
+
+Under real qualification the shipped package passes all eight proofs and is
+registerable. Raw evidence — the full `CheckpointRecord` per checkpoint, the
+inherited-suite result and its coverage artifact — is persisted outside the
+ephemeral clones, because a qualification that deleted its own evidence would
+leave the claim and remove the reason to believe it.
+
+## Capability Sandbox workcell (ADR 0077 and ADR 0095)
+
+The workcell runs the real Qwen coding CLI's own native loop inside a
+disposable, hardened container. Apoapsis keeps every durable authority —
+admission, verification, checkpointing, promotion, delivery — outside it.
+
+Live containment and relay readiness have now run. After sanitizing the
+sacrificial clone and image, all 22 containment probes passed. The complete
+container → loopback forwarder → Unix socket → controller relay → local
+`llama-server` path passed health, model listing, and a one-token completion,
+with three requests observed by the relay and clean teardown.
+
+The nine live conformance observations are produced by
+`workcell/conformance_driver.py`, driven through the real relay path by
+`apoapsis workcell-conformance`. In the 2026-07-30 **Slice 2C** live run,
+containment held 22/22, relay readiness passed, and **all nine conformance
+checks passed**. The two Slice 2B failures were fixed at their source:
+
+- `declared_limits_match_server` — a `generationConfig` override on the
+  selected `modelProviders` entry pins `contextWindowSize` to 65,536 and
+  `samplingParams.max_tokens` to 16,384. Qwen's bundled model table is
+  deliberately **not** patched and still reports 1,000,000 / 64,000; what the
+  CLI *resolves* is read back by executing its own `loadSettings` and
+  `resolveCliGenerationConfig` inside the image, and the whole effective
+  configuration is credential-redacted, hashed, and folded into the run
+  manifest digest.
+- `multiline_unicode_integrity` — ADR 0078 re-bases the check on a
+  deterministic echo provider reached through the real relay, socket, and
+  forwarder, comparing captured request bytes against parsed response bytes so
+  no model transcription is involved. Model transcription accuracy survives as
+  a separate non-gating metric.
+
+The relay additionally **refuses** — never clamps — any request whose output
+budget exceeds the run's pinned ceiling, and records the peak budget it
+observed.
+
+The corrected Crisis Atlas v4 pilot completed all six live slots on 2026-08-01.
+All three matched repetitions scored `1.0 / 1.0` for first-proposal quality,
+with no continuation required, so the Apoapsis arm was non-inferior in every
+pair. Detection remains separately established by the v8 rehearsal's 17/17
+mapped negative controls; no live sandbox proposal was incomplete, so the live
+run is not described as a live defect catch. See
+`docs/evaluation/slice-7p4-live-pilot-v4-2026-08-01.md`.
+
+The locked pilot qualified the frozen Crisis Atlas path. ADR 0095 now connects
+that native workcell to ordinary **approved plan-slice** execution. Before a
+model starts, the product controller re-hashes the pinned runtime and
+reobserves the genuine Qwen tool surface and containment gate. Each native turn
+ends at the same controller-owned admission/readiness checkpoint; only a
+COMPLETE admitted snapshot is copied into the normal task worktree, where the
+project's configured verification runs again. A failed preflight, unknown
+witness type, refused delta, incomplete readiness result, or relay truncation
+stops for review. There is no silent Local Power fallback.
+
+Open **Models & environment** to see the primary **Local coding mode** card.
+Capability Sandbox is selected by default. **Use compatibility mode** switches
+future local slices to the older typed Local Power path in one confirmed
+action; **Use Capability Sandbox** switches back. **Turn parity on** adds a
+fresh matched default-Qwen control and refuses a supervised proposal that
+proves fewer obligations. Parity is off by default because it approximately
+doubles inference time and local model resource use.
+
+The current product witness adapter supports Python `unittest` commands. A
+required command from another ecosystem stops at Human Review until a
+controller-owned structured witness adapter exists; a green exit code alone is
+not promoted into readiness evidence. Quick-change tasks continue to use the
+strict typed loop because they do not yet carry an approved slice-readiness
+contract.
+
+Run the ordered live gate, and decide whether Slice 3 may begin:
+
+```bash
+apoapsis workcell-conformance workcell.json \
+  --evidence-dir evidence/ --server-max-output-tokens 16384
+apoapsis slice3-gate evidence/spike-report.json
+```
+
+Validate a pinned configuration without starting a model:
+
+```bash
+apoapsis workcell-preflight workcell.json
+```
+
+The configuration must pin *everything* that could change a result — CLI
+version and bundle hash, model file hash and quantization, server version and
+flag hash, chat template hash, the CLI's own system prompt and tool-schema
+hashes, and the container image digest. There are no optional identity fields;
+a partially specified file is refused rather than producing an unidentifiable
+run. All of it folds into one manifest digest that travels into every evidence
+record.
+
+Containment is enforced by the runtime, not the prompt: `--network none`,
+`--cap-drop ALL`, `no-new-privileges`, non-root, pinned image by digest with
+`--pull=never`, and process, memory, CPU, disk, and wall-clock ceilings. The
+only mounts are the disposable clone (read-write, at `/workspace`) and the
+approved task document (read-only, at `/task/task.md`, deliberately outside the
+project tree so it can never be edited or committed as delivered content).
+
+The model endpoint is reached through a Unix domain socket the controller
+creates, owns, meters, and deletes, exposed inside the namespace on a loopback
+port by a read-only forwarder mounted outside the worktree. With no default
+route and no DNS, egress is a boundary rather than a policy — and every model
+request crosses something the controller can count and stop.
+
+The relay is **not a proxy**: it forwards to one configured upstream and
+ignores anything the client says about routing. `CONNECT`, absolute-form
+request URIs (`GET http://elsewhere/...`), unexpected methods, non-allowlisted
+paths, and redirects to any other origin are all refused. The permitted routes
+— `POST /v1/chat/completions`, `POST /v1/completions`, `GET /v1/models`,
+`GET /health` — are a module constant that configuration may narrow and can
+never widen. Request and response sizes, concurrency, idle time, streaming
+write deadlines, and a total session request budget are all capped, and a
+cancelled stream closes the upstream connection so the model server's slot is
+freed rather than left generating for nobody.
+
+**Platform note.** A Unix socket created on a *Windows host* cannot be
+bind-mounted into a Docker Desktop Linux container — `bind()` succeeds and the
+mount looks fine, but the shared filesystem does not carry socket inodes and
+the container's `connect()` fails at the first model request. Apoapsis detects
+this in preflight and refuses, rather than letting it surface as a confusing
+connection error. Run the controller inside WSL2 with the socket on the
+distribution's own filesystem (not under `/mnt/c`, which is the same Windows
+filesystem again), or on a Linux host. Do not substitute a TCP port: that would
+require giving the workcell a network route.
+
+Readiness is checked end to end, never in pieces: a one-token completion
+travels container → loopback forwarder → Unix socket → controller → model, and
+the result is cross-checked against the relay's own request counter. If every
+step passes but the relay saw no traffic, the workcell reached a model by some
+other path, and that is reported as a containment failure rather than as
+readiness.
+
+Before any quality is measured, two suites must pass and both fail closed:
+
+- **22 containment probes** across host filesystem, credentials, network,
+  container control, controller authority, privilege, and resource ceilings. A
+  probe that did not run, or that failed for an unrelated reason, is *not* a
+  pass — "it errored, so we must be safe" is how a hole stays open.
+- **Nine conformance checks** on role round-trip, single and parallel tool
+  calls, multiline Unicode integrity, thinking-block idempotence, stop-reason
+  fidelity, usage accounting, replay protection, and declared-versus-actual
+  limits. A malformed tool envelope is an adapter defect until these pass.
+
+The capability spike then compares observed behaviour against the frozen
+unrestricted control. Capability is derived from what the session actually did,
+never from configuration: a workcell allowed a shell that never ran one records
+`unproven`, and unproven counts as lost. The spike performs no acceptance
+repair — that is a later slice, and changing the interface and the acceptance
+rules at once would make the result unreadable.
+
+## Slice readiness and structured witnesses (ADR 0079)
+
+Under the Capability Sandbox, a slice is **not** complete because its
+configured commands went green. Crisis Atlas Slice 2 completed that way: one
+partial file at the wrong package path, no export service, no tests, and an
+inherited suite that stayed green *because it never imported the new file*.
+
+Completion is now readiness against a `SliceAcceptanceContract`, compiled from
+the approved plan **before the first model call** — from the slice's declared
+paths, declared symbols, acceptance criteria, integration contracts, and
+verification commands. A slice naming no acceptance criteria will not compile a
+contract, and a contract whose criterion no obligation could prove is refused
+at construction.
+
+A verification command's *name* is not evidence. Each run is wrapped into a
+versioned `StructuredWitness` recording the process launched, its readiness
+condition, the address it actually bound, the routes exercised with methods and
+assertions, mutations and the reads that followed them, cleanup, coverage, and
+artifact hashes. A witness is refused if it carries only a name and an exit
+code, if its worktree fingerprint is stale, if a launched process was not
+cleaned up, or if a mutation was never read back.
+
+**Coverage comes from an artifact Apoapsis produced and hashed**, never from a
+model's description of what it ran. The controller deletes the artifact, tells
+the command where to write it, then reads and hashes that file itself. A run
+that produces no artifact yields no witness at all.
+
+The rule covers changed *behaviour*, not changed files: a whole added
+production file, a new top-level symbol inside a modified file, or a new route
+— each checked against line-level coverage. Routes may also be satisfied by a
+witness that actually called them.
+
+Interface and integration obligations are gated only when the **owner** asks
+for them, via `required_interfaces` and `required_integration_routes`. The
+planner's `suggested_symbols` and `integration_contract_ids` are advisory by
+their own schema and are never promoted into completion gates. Whether a
+required command passed is derived from the witnesses themselves, so a stale
+run cannot open the gate.
+
+At a checkpoint the loop freezes the workcell, admits the delta atomically,
+emits witnesses against the admitted snapshot, and decides one of four
+outcomes. **`CONTINUE`** is the important one: the work was admitted,
+obligations remain, and the agent gets another turn to finish its own stated
+plan rather than the harness declaring the slice done on its behalf.
+
+## Context, compaction, and budgets (handoff slice 5, not yet wired)
+
+The agent's prompt is assembled in a fixed order — system prompt, sorted tool
+schemas, task kernel, compacted history, latest observation — so the first
+three are byte-identical between calls and the provider's prefix cache can hit.
+The task kernel **refuses** to contain a timestamp, a UUID, or a request id:
+those change between otherwise identical calls, and the resulting cost is
+invisible because the run still works and every answer is still correct.
+
+**Qwen manages its own conversation history, and Apoapsis does not.** The
+pinned CLI compacts at `context.autoCompactThreshold` — resolved default 0.85,
+a ceiling on an internal warn/auto/hard ladder that fires earlier on small
+windows — and restores the five most recently touched files afterwards. Both
+values are pinned so a comparison cannot silently span two different upstream
+behaviours, and neither is reimplemented.
+
+What Apoapsis builds is a bounded **session-handoff capsule**, injected as a
+user turn between native invocations. Its own 0.70 trigger is deliberately
+below the native threshold so the capsule exists before the model's compaction
+fires. Earlier documentation here said 0.70 "matched Qwen Code" — that was
+wrong: the setting it matched is REMOVED in this version and silently ignored.
+
+The capsule — outstanding obligations, interface ledger, changed paths,
+witnesses already observed, latest failures, refused and no-progress actions —
+carries no transcript, and the model's own notes in it are rendered as
+advisory.
+
+Nothing is dropped irreversibly. Truncation keeps the head and the tail, names
+the artifact holding the rest, and is refused outright if there is nowhere to
+spill.
+
+Budgets are wall time, in-workcell process time, tokens, and no-progress
+detection — not turn counts. Progress means a changed worktree fingerprint, not
+that a turn happened. The call ceiling remains only as a high emergency stop.
+
+A session coordinator owns all of this and drives the checkpoint loop. It
+evaluates the budget *before* each model call, records every ending as a state
+transition with one of seven named outcomes, and stops rather than continuing
+over a context it knows is too full. An agent that falls silent without
+requesting a checkpoint ends as `agent_stopped`, never as complete.
+
+Two things governing that loop rest on provenance rather than appearance. The
+kernel is rendered once and read back from disk on every call, so a value that
+would have changed cannot — a fixed UUID or historical timestamp in the
+objective is fine, and an edit to the artifact mid-session is named rather than
+absorbed. And compaction and the token ceilings read only the provider's own
+usage accounting; the controller's estimate is kept for diagnosis and is not
+allowed to compact or stop anything. Missing telemetry leaves those ceilings
+reported as unenforced, not as passing.
+
+Progress means the worktree changed, an obligation was newly discharged, or the
+controller produced a new evidence artifact. A debugging turn that edits nothing
+and produces a new diagnosis counts. What the model says about its own turn does
+not.
+
+This was qualified live on 2026-07-30. Qwen compacted its own history three
+times, and the work continued across the boundary: a function written after
+compaction, built on one written before it, with the tests run by the harness
+rather than reported by the model. That result stands — though the harness had
+predicted compaction would start at 85% of the context window, and it actually
+starts at about half. The CLI subtracts two fixed reserves before applying the
+percentage, so the percentage stops describing the behaviour at this window
+size. The harness now runs the CLI's own calculation instead of guessing from
+one number, and refuses to guess when it has not run it. A byte-identical prompt prefix earned
+**2,173 additional cached input tokens** from the second call onward, where a
+prefix perturbed by one early value earned none.
+
+That number is one workload, at one prefix size, on one local server. It shows
+the mechanism works and is observable here; it is not a general saving.
+
+Two things that run qualified are still open. The threshold Qwen compacted
+against was never read back from the CLI, and the settings Apoapsis installed
+never set it — so the run used the CLI build's own default and the harness's
+recorded 0.85 was a belief about that default rather than a measurement. The
+capture that reads it back now exists and reports "not checked" rather than a
+plausible number when it cannot resolve a field.
+
+Separately, the run's own token totals do not add up, and the retained evidence
+shows why the earlier description of that was wrong. What looked like one
+oversized call is the session total, and every invocation in the control spends
+roughly a third of its input tokens on provider traffic the CLI never reports
+individually. One invocation spends nearly three times as much of it as the
+others. Those tokens are accounted for as a named residual now rather than
+hidden inside a total, and no explanation is offered for them, because the
+evidence does not contain one. The measured cache saving is unaffected — it was
+taken on the part of the run that is reported.
+
+When something needs fixing — by the local model, by a stronger reviewer, or by
+a person — the fix goes through the same door. It is checked against the exact
+state it was written for, applied only in the harness's own copy, and then put
+through the whole inspection again from scratch. A fix that does not pass
+changes nothing; the project stays where it was. A fix made by a person gets no
+shortcut, because who made a change is not evidence that it works.
+
+This matters because of what happened before it existed. The best result the
+project ever produced came from a stronger model repairing the local model's
+work, and it still could not be shipped: the repair was made off to the side,
+so later work inherited the repaired files without inheriting the record that
+they had been repaired, and the final report went on describing the run that had
+failed. Delivery now reads the current state and refuses anything else.
+
+Before any of that is measured, the measurement itself is written down and
+locked. The comparison — harnessed model against the same model running
+normally — has its rules fixed in advance: which tasks, how many repetitions,
+what counts as a pass, what counts as no answer at all, and what must be
+identical between the two sides for a comparison to mean anything. The file is
+immutable and carries its own fingerprint, so adjusting it mid-experiment is
+visible rather than quiet.
+
+That lock had a flaw worth describing, because it is the kind that survives
+review. Each task in the plan was identified by a fingerprint, and the
+fingerprints were computed from the task's *name* rather than from any actual
+files. They looked exactly like real ones — same length, same characters — and
+referred to nothing at all. The system would have reported itself ready to run
+while most of the work it planned to measure did not exist. Fingerprints are
+now only accepted after the file is found, read, and re-fingerprinted, and a
+file that points outside its own package is refused.
+
+The comparison has also been narrowed for now to a single demanding workload
+rather than the full set, and that workload helped shape the tool being tested
+— so a good result there shows no regression on familiar ground, not general
+superiority.
+
+Two things it deliberately makes impossible. There is no single combined score,
+because one number lets a cheap saving cancel a real regression. And a run that
+produced no usable evidence is not a pass — missing evidence, an unreadable
+truncation, an infrastructure failure, and a mismatched pair are each recorded
+as their own outcome, and none of them counts in favour.
+
+## Local Power Sandbox (ADR 0059, compatibility mode)
+
+The retained compatibility path for **local models only**. It originally
+tested one hypothesis: that small local models fail the strict one-action loop on protocol
+mechanics — hand-authored unified diffs, tool-call wrapper residue,
+cross-action fields — rather than on coding ability. In this mode the model
+writes **whole files** and Apoapsis computes the diff.
+
+The unrestricted Crisis Atlas control showed that even atomic multi-file JSON
+actions do not preserve all of a normal coding CLI's useful behavior. The
+baseline-preserving Capability Sandbox is therefore the recommended product
+mode; Local Power is retained for compatibility rather than renamed.
+
+It is not selected by default. In the UI, open **Models & environment** and
+choose **Use compatibility mode**. Apoapsis atomically turns Capability Sandbox
+off and Local Power on, reloads and validates `.apoapsis/config.toml`, and
+refreshes the execution preview. Choose **Use Capability Sandbox** for the
+one-action rollback to the recommended mode.
+
+The equivalent manual config is:
+
+```toml
+[execution]
+mode = "agent"             # required; the sandbox has no one-shot equivalent
+
+[execution.capability_sandbox]
+enabled = false            # explicit compatibility selection
+
+[execution.local_power]
+enabled = true             # opt in explicitly
+workspace = "isolated_worktree"
+allow_shell = true
+allow_network = false
+max_turns = 8
+max_seconds = 1800
+max_shell_commands = 40
+max_changed_files = 100
+max_changed_lines = 10000
+require_final_diff_review = true
+require_verification = true
+atomic_change_sets = true  # ADR 0071; false restores the one-file-per-turn protocol
+max_change_set_files = 20
+verify_after_change_set = true
+```
+
+The model's action vocabulary becomes:
+
+```json
+{"action":"read_file","path":"src/app.py"}
+{"action":"search","query":"AppConfig"}
+{"action":"write_file","path":"src/config.py","content":"...full file..."}
+{"action":"delete_file","path":"src/old.py"}
+{"action":"propose_change_set","summary":"...","changes":[{"operation":"write","path":"index.html","content":"...full file..."}]}
+{"action":"run_shell","command":"python -m unittest discover -s tests -v"}
+{"action":"run_verification","command_name":"unit-tests"}
+{"action":"finish","summary":"..."}
+```
+
+### Proposing a whole slice at once (ADR 0071)
+
+A working web page is `index.html`, `styles.css`, and `app.js` agreeing with
+each other. Asked to state that one file per turn, a live local model spent six
+consecutive turns rewriting `index.html` and ended its session with no `app.js`
+at all. `propose_change_set` lets one turn state the whole increment:
+
+```json
+{"action":"propose_change_set",
+ "summary":"focus orbit timer",
+ "changes":[
+   {"operation":"write","path":"index.html","content":"...full file..."},
+   {"operation":"write","path":"styles.css","content":"...full file..."},
+   {"operation":"write","path":"app.js","content":"...full file..."},
+   {"operation":"delete","path":"old.js"}
+ ],
+ "verification_commands":["unit-tests"],
+ "base_worktree_digest":"...as given in the prompt..."}
+```
+
+What Apoapsis guarantees about it:
+
+- **All or nothing.** Every path, ceiling, and operation is validated before a
+  byte is written. If anything is wrong, nothing is written, the sandbox is
+  left exactly as it was, and the model is told *every* problem at once rather
+  than the first one.
+- **The same boundary.** Each operation passes through the guard that governs a
+  single `write_file`. A forbidden path anywhere refuses the whole proposal.
+- **No patch operation.** There is no diff syntax anywhere in this mode; that
+  is the point of it.
+- **Ceilings.** At most `min(max_change_set_files, max_changed_files)` files per
+  proposal, and the session's changed-line budget still applies — crossing it
+  rolls the entire set back byte-for-byte.
+- **Optimistic concurrency.** `base_worktree_digest` is optional; when sent, the
+  proposal is refused if the sandbox has changed since. `WORKTREE_DIGEST` is
+  stated in the prompt.
+- **Checks are not deleted to make them pass.** A `delete` naming a path a
+  configured verification command points at is refused.
+- **The harness verifies it.** Once a set applies, Apoapsis runs the required
+  commands itself and the session ends as soon as they all pass, so a
+  successful change-set session runs verification once.
+
+When the sandbox already contains work, the prompt says so, lists the changed
+paths, and asks for an atomic *repair* set covering only the files the repair
+needs — rather than restating the objective, which is what produced the six
+rewrites.
+
+Set `atomic_change_sets = false` to reproduce the one-file-per-turn protocol
+exactly: the action disappears from both the prompt and the structured-output
+grammar.
+
+### When the session ends (ADR 0069)
+
+The harness ends the session itself the moment every required configured
+command has passed **for the current state of the sandbox**. The model is never
+asked whether a passing result is sufficient, because on a live run it answered
+that question by re-requesting the same passing check on every remaining turn
+until its budget ran out.
+
+Two consequences you will see in a transcript:
+
+- A repeated identical `run_verification` at an unchanged sandbox state is
+  **refused**, not executed, and appears in the refused-requests record. The
+  answer cannot change until a file does.
+- Finalization **reuses** a current passing result instead of running the same
+  full check again. If the model finished early, verified only part of the
+  contract, or edited something after verifying, the harness-owned final
+  verification runs exactly as before.
+
+Turn, time, command, file, and diff-line ceilings are unchanged; this is a stop
+condition, not a relaxed budget.
+
+### What the model is told about failures (ADR 0070)
+
+Every check that does not pass is normalized, written to the audit as
+`local-power-verification-failure-NNN.json`, and put in front of the model as
+`<verification:COMMAND_NAME>` evidence — including across a resume, so a
+repair continuation starts knowing what it is repairing. Two prompt blocks
+state the position explicitly:
+
+- `VERIFICATION_STATE_JSON` — per command, one of `passing_for_current_code`,
+  `failed_for_current_code`, `passed_earlier_but_the_code_has_changed_since`,
+  or `never_run`.
+- `OUTSTANDING_REQUIRED_COMMANDS_JSON` — the required commands that do not
+  currently pass.
+
+`finish` is refused, at most twice, while a required command has no result for
+the current state and nothing has been edited since the last check. Making any
+edit, or simply running that command, lifts the refusal — the model does not
+have to succeed. A session that changed nothing is never held open.
+
+### What it still cannot do
+
+Widening the protocol is not widening authority. Every action is executed by the
+harness against the disposable task worktree, and the model cannot:
+
+- read, write, or delete anything matching `forbidden_paths` — which always
+  includes `.apoapsis/**`, `.git/**`, `.env`, and `.env.*`, plus key and
+  certificate material by default. A local override may widen this list; a
+  validator refuses any list that drops those four.
+- use an absolute path, a drive letter, `~`, or any `..` traversal, or reach
+  outside the sandbox through a symlink.
+- run anything but allowlisted program prefixes (`python -m unittest`,
+  `python -m pytest`, `python -m compileall`, `pytest`, `npm test`, …). `git`,
+  `curl`, `rm`, PowerShell, and `cmd` are denied by construction, and a command
+  containing shell metacharacters is refused rather than reinterpreted.
+- see credentials: the command environment is built from a short allowlist with
+  anything key/token/secret-shaped removed.
+- reach the network unless `allow_network = true`.
+- mutate workflow state or the audit log.
+- **complete the task.** `finish` ends the model's turns and nothing more.
+  Apoapsis then computes the final diff and runs the configured verification;
+  that result, not the model's summary, decides between a normal report package
+  and Human Review.
+
+### What you get back
+
+A `local-power-review-package.json` in the task's audit directory containing the
+harness-computed final diff, changed files, every command actually run, every
+refused request, every change set proposed — applied or refused, with the
+worktree digest the harness observed beside the one the model claimed, also
+written individually as `local-power-change-set-NNN.json` — the full
+transcript, verification results, and the model's own summary — explicitly labelled as a claim rather than a finding. The UI shows the
+experimental warning before the run, live turn/command/changed-file/refusal
+status during it, and offers an accept action only when verification passed.
+
+Run its deterministic boundary tests with:
+
+```bash
+python -m unittest tests.test_local_power_session -v
+```
+
 ## Planning comparison: monolithic versus plan-then-slices (ADR 0028)
 
 A separate, deterministic comparison between doing a substantial, multi-part
@@ -986,18 +1950,19 @@ alongside the one it's isolating.
 
 ## Complete all-local agent flow
 
-`apoapsis init` creates a 64K agent configuration for the installed Coder-Next Q4
-model:
+`apoapsis init` creates a 32K agent configuration for Laguna S 2.1 served by a
+local `llama-server` OpenAI-compatible endpoint on `127.0.0.1:8000`:
 
 ```toml
 [models.frontier]
-provider = "ollama"
-base_url = "http://127.0.0.1:11434"
-model = "qwen3-coder-next:q4_K_M"
+provider = "openai_compatible"
+base_url = "http://127.0.0.1:8000/v1"
+model = "Laguna-S-2.1-UD-Q4_K_S"
+api_key_env = "APOAPSIS_LOCAL_CODER_API_KEY"
 timeout_seconds = 900
 max_output_tokens = 8192
 temperature = 0.0
-context_window_tokens = 65536
+context_window_tokens = 32768
 think = false
 specification_think = false
 
@@ -1007,13 +1972,14 @@ output_per_million_usd = 0
 cached_input_per_million_usd = 0
 
 [models.local_coder]
-provider = "ollama"
-base_url = "http://127.0.0.1:11434"
-model = "qwen3-coder-next:q4_K_M"
+provider = "openai_compatible"
+base_url = "http://127.0.0.1:8000/v1"
+model = "Laguna-S-2.1-UD-Q4_K_S"
+api_key_env = "APOAPSIS_LOCAL_CODER_API_KEY"
 timeout_seconds = 900
 max_output_tokens = 8192
 temperature = 0.0
-context_window_tokens = 65536
+context_window_tokens = 32768
 think = false
 
 [models.local_coder.pricing]
@@ -1059,15 +2025,41 @@ max_total_chars = 180000
 max_import_depth = 2
 ```
 
-Both native Ollama endpoints must be loopback URLs. No fake API key is needed.
-`models.frontier` remains the backwards-compatible specification/one-shot
-provider; `models.local_coder` is the first agent stage. Then run one command:
+The default coding endpoint is local and loopback-only in normal use. No fake API
+key is needed for loopback OpenAI-compatible endpoints such as `llama-server`;
+hosted OpenAI-compatible endpoints still require the configured credential
+environment variable. `models.frontier` remains the backwards-compatible
+specification/one-shot provider; `models.local_coder` is the first agent stage.
+To let `START_APOAPSIS.cmd` launch Laguna for you, set one operator-owned
+environment variable to the same command you would otherwise run by hand. For
+example:
 
 ```bash
-apoapsis run "Add resumable downloads without changing the public API"
+export APOAPSIS_LLAMA_SERVER_COMMAND='/home/arya/llama.cpp/build/bin/llama-server \
+  -m /home/arya/models/laguna-q4s/UD-Q4_K_S/Laguna-S-2.1-UD-Q4_K_S-00001-of-00003.gguf \
+  --parallel 1 \
+  --ctx-size 32768 \
+  --flash-attn on \
+  --cache-type-k q8_0 \
+  --cache-type-v q8_0 \
+  --fit on \
+  --fit-target 512 \
+  --load-mode none \
+  --jinja \
+  --reasoning off \
+  --reasoning-budget 0 \
+  --reasoning-format none \
+  --threads 16 \
+  --host 127.0.0.1 \
+  --port 8000'
 ```
 
-The generated default is the `64k` working profile. A run can select a reproducible
+On Windows with a WSL-hosted build, point the variable at the explicit `wsl`
+command that starts the same server. Apoapsis does not invent this command and
+does not download the model; it only runs the operator-provided command when the
+configured loopback endpoint is down.
+
+The generated default is the `32k` working profile. A run can select a reproducible
 comparison profile without editing the project configuration:
 
 | Profile | Ollama window | Files | Lines per excerpt | Total excerpt characters |
@@ -1082,11 +2074,11 @@ comparison profile without editing the project configuration:
 apoapsis run "Add resumable downloads without changing the public API" --context-profile 64k
 ```
 
-`128k`/`256k` exist to be explicitly measured, not assumed safe because a
-model or GPU happens to have the VRAM for them (ADR 0010) — `64k` remains
-the default. `apoapsis doctor` checks a configured `context_window_tokens`
-against the installed Ollama model's actually reported native context
-length (`context_window_support:<role>`) before you rely on a wider
+`64k`/`128k`/`256k` exist to be explicitly measured, not assumed safe because a
+model or GPU happens to have the VRAM for them (ADR 0010) — `32k` is the Laguna
+default. `apoapsis doctor` checks configured native Ollama windows against the
+installed model's reported context length; for `llama-server`, confirm the
+server was started with the matching `--ctx-size` before relying on a wider
 profile. Every model call also writes a `ContextMeasurement` (model window,
 file/excerpt limits, transmitted chars, estimated tokens, window
 utilization, composition, and stable-versus-newly-introduced evidence) as
@@ -1185,6 +2177,41 @@ budget. If it cannot verify the task, Apoapsis stops for human review.
 Every task writes `.apoapsis/tasks/<task-id>/report.json`. `apoapsis inspect <task-id>`
 returns the persisted state/events and embeds that report when present.
 
+### Original report versus current evidence
+
+`report.json` is written **once**, when the task first stops, and is never
+updated afterwards. If you then continue the task, retry verification, or
+apply a manual-frontier patch, the repair reaches `COMPLETE` while the report
+on disk still describes the original stop. That is intentional -- the original
+stop is an audit record -- but it means the report alone must not be read as
+the task's current outcome.
+
+Apoapsis therefore computes a separate **current-evidence projection** (ADR
+0072) from persisted task state, the append-only event history, and the
+operation artifact the deciding stage actually wrote. `apoapsis inspect`
+returns it under `current_evidence` alongside the untouched `report`; the
+Report page, the task list, the plan slice status, and `delivery.json` all
+label the task from the projection.
+
+The projection reports where its evidence came from:
+
+| Field | Meaning |
+| --- | --- |
+| `outcome` | Current outcome, from workflow state. `null` while a task is mid-flight or rolled back. |
+| `original_report_outcome` | What the preserved `report.json` says, kept beside the current outcome rather than replacing it. |
+| `evidence_generation` | Which artifact family the current result came from: `original_report`, `verification_retry`, `manual_frontier_apply`, `local_stage_session`, or `frontier_stage_session`. |
+| `evidence_sources` | Repository-relative path of that artifact. |
+| `evidence_integrity` | `intact`, or `missing`/`malformed` when the artifact the event history points at cannot be read. |
+
+If a task's deciding artifact is missing or malformed, the projection reports
+empty verification results rather than falling back to the older report. This
+is deliberate: substituting a superseded pass for unreadable current evidence
+is exactly how a stale green result survives. **Preparing a finished project
+refuses in that case** -- the slice is named in the error along with the
+generation and the integrity problem, the plan stays `APPROVED`, and no ZIP or
+`delivery.json` is written. Restore the task's audit directory, or re-run the
+verification, and prepare delivery again.
+
 The controlled download-service fixture and direct-versus-Apoapsis procedure are in
 [`examples/download-service`](examples/download-service) and
 [`docs/evaluation/direct-vs-apoapsis.md`](docs/evaluation/direct-vs-apoapsis.md). The first
@@ -1192,6 +2219,14 @@ measured local Qwen smoke results are in
 [`docs/evaluation/local-qwen-smoke.md`](docs/evaluation/local-qwen-smoke.md).
 The installed Coder-Next Q4 evaluation is in
 [`docs/evaluation/qwen3-coder-next-smoke.md`](docs/evaluation/qwen3-coder-next-smoke.md).
+The Crisis Atlas 64K Qwen-plus-Codex checkpoint trial and the isolated
+unrestricted-Qwen CLI control are recorded separately in
+[`docs/evaluation/crisis-atlas-64k-codex-frontier-trial-2026-07-30.md`](docs/evaluation/crisis-atlas-64k-codex-frontier-trial-2026-07-30.md)
+and
+[`docs/evaluation/crisis-atlas-qwen-cli-control-2026-07-30.md`](docs/evaluation/crisis-atlas-qwen-cli-control-2026-07-30.md).
+The control built substantially more coherent code than raw sliced Qwen, but
+used about eight times as many input tokens and still falsely claimed full
+acceptance while browser filtering was broken.
 The first bounded-agent run to complete the controlled fixture used ten agent
 turns and three verification runs; all three tests passed with one source file
 changed. The earlier one-shot failures remain documented as the comparison
@@ -1223,6 +2258,28 @@ Configure `[models.local_research]` in `.apoapsis/config.toml` with a locally
 available Ollama model. GitHub and configured official documentation are enabled
 by default. Reddit remains disabled until its approved API credentials and
 applicable terms are configured.
+
+Official documentation research is direct-URL-only by default and only ever
+reaches domains explicitly listed in **both**
+`[research.sources.official_docs].allowed_domains` and
+`[research.security].allow_domains` — add every vendor you need (for example
+`developers.google.com`, `www.twilio.com`, `developer.vonage.com`) to both
+lists, or that research question is reported as an unusable query rather than
+silently producing nothing. A harness-owned seam for real official-document
+search exists (`OfficialDocumentSearchProvider`, ADR 0055), and Tavily
+is the one concrete, owner-authorized provider implemented behind it (ADR
+0056; Brave Search was the initial pick but was dropped after its free tier
+turned out to require a credit card and metered billing) — set
+`search_provider = "tavily"`, add `api.tavily.com` to
+`[research.security].allow_domains`, and provide an API key via
+`TAVILY_API_KEY` (or your own `search_credentials_env` name) to enable
+it. This integration has deterministic fake-fetcher test coverage only; no
+live call to the real Tavily API has been made. Any other `search_provider`
+value still fails clearly rather than guessing at another vendor. When a research task
+retrieves sources but genuinely finds nothing relevant, Apoapsis runs exactly
+one bounded, audited recovery pass over the same sources before reporting a
+classified, actionable failure (for example: "5 sources were retrieved and
+all 5 produced no relevant findings") instead of a generic provenance error.
 
 Research can also be run independently for an already approved task:
 
@@ -1303,6 +2360,64 @@ apoapsis doctor
 The Docker backend materially improves isolation but is not a defense
 against container-runtime or kernel vulnerabilities; see ADR 0009's threat
 model for exactly what it does and does not cover.
+
+### The verification environment (ADR 0063)
+
+Commands run with a restricted environment: the keys in
+`environment_allowlist` copied from your shell, plus a small set Apoapsis
+imposes itself. Today that set is `PYTHONDONTWRITEBYTECODE=1`, so a Python
+check does not scatter `__pycache__` into the worktree it is measuring — a
+verification run should not change the thing it is reporting on. If a command
+genuinely needs bytecode written, set it explicitly on that command:
+
+```toml
+[[verification.commands]]
+name = "unit-tests"
+category = "tests"
+argv = ["python", "-m", "unittest", "discover", "-s", "tests", "-v"]
+
+[verification.commands.environment]
+PYTHONDONTWRITEBYTECODE = "0"
+```
+
+Per-command `environment` is the only thing that overrides a harness default.
+
+### Your project needs at least one commit (ADR 0064)
+
+`apoapsis init` works in a brand-new repository, but almost everything after
+it — context compilation, worktree isolation, fingerprints, planning packages,
+audit records — is anchored to a base commit. In a repository with no commits,
+Apoapsis refuses up front and tells you so:
+
+```text
+repository <path> has no commits yet, so there is no base commit to anchor
+planning to. Make one commit (for example `git add -A` then
+`git commit -m "initial commit"`) and retry.
+```
+
+Make that commit and retry. Apoapsis will not create it for you — writing
+history in your repository is your decision, not the harness's.
+
+### What "changed files" means in a report (ADR 0063)
+
+`files_changed` in a task report, and `changed_files` in a Local Power review
+package, answer exactly one question: **what did the model change?** Build and
+test byproducts — `__pycache__/`, `*.pyc`, `.pytest_cache/`, coverage and
+build caches, `node_modules/` — are reported separately as
+`generated_byproducts` rather than mixed in, so the list you review is the
+list you can act on.
+
+Two things worth knowing about how that split is decided:
+
+- It does **not** read your `.gitignore`. The classification is by path name,
+  so the report is correct even in a repository that was never run through
+  `apoapsis init` and has no ignore rules at all.
+- A file already tracked in Git is always treated as your work, whatever it is
+  named. If you deliberately committed something under `vendor/node_modules/`,
+  a change to it shows up for review.
+
+Nothing is silently discarded. The audit trail still records every path in the
+worktree that changed, including byproducts.
 
 ## Acceptance coverage and the completion policy (ADR 0015, 0016, 0017, 0018)
 
@@ -1386,6 +2501,123 @@ across runs -- this is recorded on every persisted report and as a
 "Completion Policy" column in the comparison Markdown, not silent
 inheritance. The Pydantic configuration default (for code that builds a
 config directly, bypassing `apoapsis init`) remains `"baseline"`.
+
+## What a passing contract actually proves (ADR 0069)
+
+A contract can pass completely and still say almost nothing. Live task
+`TASK-33E0EB6476C4` built a browser application whose seven configured checks
+all passed and which did not run: `app.js` attached listeners to four element
+ids `index.html` never defined, and `styles.css` styled five classes the markup
+never carried. Every check asked whether a fragment existed. None asked whether
+the fragments referred to one another.
+
+Apoapsis now grades the configured contract's **evidence level** — computed
+from structure only, never from guessing what a command does:
+
+| Level | Meaning |
+| --- | --- |
+| `none` | Nothing configured, or nothing required. A success would rest on no deterministic evidence. |
+| `development_only` | Required commands exist; none carries `acceptance = true`. Passing means the commands exited zero, nothing more. |
+| `acceptance_designated` | Acceptance commands exist but do not cover every active criterion. |
+| `criterion_mapped` | Every active criterion maps to an owner-approved acceptance command. |
+
+You see it in `apoapsis doctor` before spending anything, on the start-coding
+confirmation, in `report.json` (`verification_contract`), in the Local Power
+review package, and beside the outcome in the UI. Below `criterion_mapped`, a
+`COMPLETE` carries the qualification in its recorded stop reason.
+
+**This never blocks a run.** Baseline completion is unchanged, and a blank
+repository with no product yet is a legitimate state. What changed is that
+`COMPLETE` no longer arrives unqualified from a contract that cannot support
+it. Apoapsis deliberately does not inspect a command's `argv` to guess whether
+it "really" tests the product — a command that greps a file and one that drives
+a browser look identical from here, and a confident wrong answer would be the
+same kind of error it is trying to surface.
+
+### A real check for browser products
+
+If your product is dependency-free HTML/CSS/JavaScript, configure this and the
+above failure becomes impossible to reach:
+
+```toml
+[[verification.commands]]
+name = "web-product-integrity"
+category = "acceptance"
+description = "Cross-references the product's HTML, CSS, and JavaScript."
+argv = ["python", "-m", "apoapsis", "verify-web-product",
+        "--forbid-external-resources", "--treat-warnings-as-errors"]
+timeout_seconds = 60
+required = true
+acceptance = true
+```
+
+Or run it directly:
+
+```bash
+apoapsis verify-web-product --root ./site --entry index.html
+```
+
+It checks that every id and class a script looks up is provided by the markup
+or created by a script; that every CSS rule can match something; that ids are
+unique and top-level function names do not collide; that referenced local files
+exist; and, optionally, that the product depends on no third-party origin.
+Selectors too complex to analyze with confidence are counted and reported as
+unchecked rather than assumed fine. Use `--optional-element NAME` (repeatable)
+for an element the product genuinely creates at runtime — an explicit statement
+rather than a silent exception.
+
+It is stdlib-only, offline, and deterministic, and exits non-zero on error
+findings. Dead style rules are warnings by default; `--treat-warnings-as-errors`
+promotes them.
+
+#### Two different request policies
+
+These are separate options because they are separate requirements (ADR 0073):
+
+| Option | Means |
+| --- | --- |
+| `--forbid-external-resources` | No third-party origin. Cross-origin URLs, protocol-relative URLs, WebSockets, absolute loopback URLs like `http://localhost:8000/x`, and external `<script src>`/`<link href>` assets are errors. **A same-origin request such as `fetch('/incidents')` is allowed** — talking to the server that served the page is not an external dependency. |
+| `--forbid-runtime-network-apis` | No runtime request of any kind, same-origin included: `fetch`, `XMLHttpRequest`, `WebSocket`, `EventSource`, `sendBeacon`. |
+
+Before ADR 0073 the first option did both jobs, which meant a product
+forbidden to depend on a CDN was equally forbidden to call its own backend.
+A plan requiring UI-to-API integration could then only go green by deleting
+the integration. **If you were relying on `--forbid-external-resources` as a
+blanket ban on requests, add `--forbid-runtime-network-apis` to keep that
+behaviour.**
+
+A request whose target is computed at runtime (`fetch(`${base}/x`)`) is
+reported as unproven, not as compliant: the check cannot show it stays on
+your origin. Under `--forbid-external-resources` that is a warning.
+
+#### What the check actually examined
+
+Every run prints its evidence counts and a one-sentence ceiling:
+
+```text
+web product check: 1 document(s), 1 script(s), 1 stylesheet(s), 2 element reference(s) cross-checked
+  evidence: 2 element reference(s), 2 CSS selector(s), 2 local asset(s) resolved,
+            1 same-origin API reference(s), 0 cross-origin API reference(s), 0 reference(s) unproven
+  ceiling: Static cross-reference only: ... end-to-end browser behavior was NOT measured;
+           nothing here executes the product.
+```
+
+A check can legitimately pass having cross-referenced *nothing* — a product
+whose markup is driven entirely by data attributes gives it nothing to
+resolve. That is a valid static result and a nearly worthless one, so it is
+reported as a warning and its ceiling says so plainly.
+`--treat-warnings-as-errors` turns it into a failure.
+
+When an acceptance criterion is about persistence, browser/API integration,
+or interaction behavior, `apoapsis doctor` and the contract report now raise
+a warning naming the criterion: configure a project-specific acceptance
+command that exercises the behavior, because no check that never executes the
+product can prove it.
+
+`--behavior` asks for real in-browser verification. **No browser probe provider
+is implemented**, so it fails rather than passing. That is deliberate: a
+requested behavioral check that quietly degrades into a pass would recreate the
+exact problem this feature exists to prevent.
 
 ## Repository layout
 

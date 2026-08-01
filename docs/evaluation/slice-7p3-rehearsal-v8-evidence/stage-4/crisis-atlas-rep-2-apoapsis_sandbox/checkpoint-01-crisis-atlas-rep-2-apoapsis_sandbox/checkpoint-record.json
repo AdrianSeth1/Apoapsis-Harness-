@@ -1,0 +1,119 @@
+{
+  "admission": {
+    "admitted": true,
+    "candidate_fingerprint": "4e0f9e51710ee4616dfe1d641c57daf90823f8f01aefc1574152990a0ff6bc0b",
+    "changed_lines": 67,
+    "counts_by_class": {
+      "documentation": 1,
+      "production": 3,
+      "test": 1
+    },
+    "counts_by_kind": {
+      "added": 5
+    },
+    "detail": "the candidate is admitted: 5 file(s), 67 changed line(s), no policy violations",
+    "file_count": 5,
+    "schema_version": "1.0",
+    "snapshot_path": "/tmp/tmppcthqzp5/snapshot",
+    "violations": []
+  },
+  "behaviour_units": [
+    {
+      "end_line": 1,
+      "heuristic": false,
+      "kind": "new_file",
+      "name": "crisis_atlas/services/__init__.py",
+      "path": "crisis_atlas/services/__init__.py",
+      "start_line": 1
+    },
+    {
+      "end_line": 10,
+      "heuristic": false,
+      "kind": "new_file",
+      "name": "crisis_atlas/services/export_service.py",
+      "path": "crisis_atlas/services/export_service.py",
+      "start_line": 1
+    },
+    {
+      "end_line": 11,
+      "heuristic": false,
+      "kind": "new_file",
+      "name": "crisis_atlas/services/incident_service.py",
+      "path": "crisis_atlas/services/incident_service.py",
+      "start_line": 1
+    }
+  ],
+  "candidate_fingerprint": "4e0f9e51710ee4616dfe1d641c57daf90823f8f01aefc1574152990a0ff6bc0b",
+  "contract_digest": "d2e7f4b33211fadd007e0c2acc1523c5060302e0b9e3e55483756cbb729d7d82",
+  "decision": {
+    "admitted": true,
+    "detail": "slice SLICE-crisis-atlas-services is ready: all 2 obligation(s) discharged by current-state evidence, and 3 behaviour unit(s) are exercised",
+    "outcome": "complete",
+    "ready": true,
+    "repair_packet": "",
+    "schema_version": "1.0"
+  },
+  "diagnostics": null,
+  "emitter_error": null,
+  "readiness": {
+    "behaviour_units": [
+      {
+        "end_line": 1,
+        "heuristic": false,
+        "kind": "new_file",
+        "name": "crisis_atlas/services/__init__.py",
+        "path": "crisis_atlas/services/__init__.py",
+        "start_line": 1
+      },
+      {
+        "end_line": 10,
+        "heuristic": false,
+        "kind": "new_file",
+        "name": "crisis_atlas/services/export_service.py",
+        "path": "crisis_atlas/services/export_service.py",
+        "start_line": 1
+      },
+      {
+        "end_line": 11,
+        "heuristic": false,
+        "kind": "new_file",
+        "name": "crisis_atlas/services/incident_service.py",
+        "path": "crisis_atlas/services/incident_service.py",
+        "start_line": 1
+      }
+    ],
+    "contract_digest": "d2e7f4b33211fadd007e0c2acc1523c5060302e0b9e3e55483756cbb729d7d82",
+    "detail": "slice SLICE-crisis-atlas-services is ready: all 2 obligation(s) discharged by current-state evidence, and 3 behaviour unit(s) are exercised",
+    "findings": [],
+    "obligations": [
+      {
+        "detail": "discharged by current-state evidence",
+        "kind": "production_artifact",
+        "obligation_id": "incident-service",
+        "status": "proved",
+        "supporting_witnesses": [
+          "tests-3ddbb01af6e1"
+        ]
+      },
+      {
+        "detail": "discharged by current-state evidence",
+        "kind": "production_artifact",
+        "obligation_id": "export-service",
+        "status": "proved",
+        "supporting_witnesses": [
+          "tests-3ddbb01af6e1"
+        ]
+      }
+    ],
+    "ready": true,
+    "rejected_witnesses": [],
+    "schema_version": "1.0",
+    "slice_id": "SLICE-crisis-atlas-services",
+    "unexercised_behaviour": []
+  },
+  "schema_version": "1.0",
+  "slice_id": "SLICE-crisis-atlas-services",
+  "witness_ids": [
+    "tests-3ddbb01af6e1"
+  ]
+}

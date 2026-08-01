@@ -1,0 +1,11 @@
+{
+  "collection_method": "stdlib trace module",
+  "command": "python tracing_runner.py (unittest discover -s tests)",
+  "coverage_artifact": "inherited-coverage.json",
+  "covered_paths": [
+    "crisis_atlas/__init__.py",
+    "tests/__init__.py",
+    "tests/test_smoke.py"
+  ],
+  "exit_code": 0
+}

@@ -86,15 +86,85 @@ sources. A mode never enables an adapter disabled in configuration.
 
 Official documentation uses a separate `allowed_domains` list under
 `[research.sources.official_docs]`; it does not inherit the broader network
-allowlist or accept arbitrary model-selected sites as authoritative.
+allowlist or accept arbitrary model-selected sites as authoritative. A domain
+must be present in **both** this list and the lower-level
+`[research.security].allow_domains` for official-doc research to reach it --
+add every ecosystem the project actually needs to both lists, for example
+`developers.google.com` for Gmail, `www.twilio.com` for Twilio, and
+`developer.vonage.com` for Vonage. `apoapsis init`'s generated configuration
+still defaults to `["docs.python.org"]` only; this is deliberate (research
+never gets unrestricted internet access by default), and the comments in the
+generated file point at these examples rather than silently widening any
+existing project's allowlist.
+
+`OfficialDocumentationSource` was, until ADR 0055, a direct-URL-to-candidate
+converter only: it performed no discovery. It still supports direct URLs
+identically with no further configuration, and this remains the only way it
+produces candidates when no official-document search provider is
+configured. ADR 0055 added the seam for real discovery --
+`OfficialDocumentSearchProvider` in `research/sources/search_provider.py`
+-- and ADR 0056 records the owner's explicit authorization of Tavily as
+the one concrete, implemented provider
+(`TavilyOfficialDocumentSearchProvider` in `research/sources/tavily.py`;
+Brave Search was the initial pick but was dropped after its free tier
+turned out to require a credit card and metered billing, unlike Tavily's
+1,000-query/month no-card free tier). Set `search_provider = "tavily"` and
+`search_credentials_env` (or accept the `TAVILY_API_KEY` default) under
+`[research.sources.official_docs]`, add `api.tavily.com` to
+`[research.security].allow_domains`, and provide the API key via that
+environment variable to enable it. Any other `search_provider` value still
+fails clearly in `research/factory.py` rather than guessing at Bing, Brave,
+Serper, or another vendor -- only Tavily is implemented. **No live call to
+the real Tavily API has been made or verified**; the integration has
+deterministic fake-fetcher test coverage
+only. Every result a configured provider returns is re-validated against
+`allowed_domains` before it can become a candidate -- search results are
+untrusted external content, not pre-approved URLs. A provider's credential
+is read only from the one environment variable named in
+`search_credentials_env`, at the moment of each call, never cached, and
+never placed in a prompt, cache key, or audit artifact; the seam's `search`
+method has no credential parameter at all, so a credential structurally
+cannot reach a prompt through it.
+
+Before any query is searched, the engine checks whether its selected adapter
+can actually produce candidates given current configuration (today: whether
+an `official_docs` query has usable URLs or a configured search provider,
+and whether its URLs are covered by `allowed_domains`). Infeasible queries
+are recorded in `unusable-queries.jsonl` with a reason and excluded from
+retrieval rather than silently contributing nothing. If literally no
+planned query is viable, research fails immediately with an actionable
+reason instead of proceeding with an unrelated adapter; if at least one
+query is viable, execution proceeds with that subset, and the unusable ones
+are still visible in the audit trail.
 
 The global candidate ceiling is divided across all validated planned queries,
 so one broad first query cannot prevent later, more specific questions from
 being searched. When only one source adapter actually returns candidates, it
 may fill the fetch budget; cross-source balancing applies when multiple sources
-are present. A retrieved source from which the local model extracts no relevant
-finding is written to `rejected-evidence.jsonl` with that reason instead of
-disappearing behind a generic empty-evidence error.
+are present, and, since ADR 0055, so does cross-question balancing at the
+final source-selection/ranking step -- a broad query for one research
+question cannot consume the entire fetch allowance meant to be shared with
+every other viable question, even when they share a source adapter.
+
+A retrieved source from which the local model extracts no relevant finding is
+written to `rejected-evidence.jsonl` with that reason instead of disappearing
+behind a generic empty-evidence error. If every retrieved source's first
+extraction pass found nothing relevant, the engine runs exactly one bounded
+recovery pass over the same already-fetched sources (no new fetch, no larger
+budget, never a second recovery round), giving the model a concise summary
+of why the first pass failed and one more chance; `recovery.json` in the
+task's research audit directory always records whether recovery was
+attempted and what it found. The final failure message, when evidence still
+cannot be produced, distinguishes at least: no source candidates at all;
+every planned query being unusable for its adapter; sources retrieved but
+nothing relevant extracted; findings proposed but rejected by
+provenance/security validation; and evidence present but below the
+configured source-diversity minimum -- for example, a run where five sources
+were retrieved and all five produced no relevant findings now ends with
+"No relevant research evidence was extracted: 5 sources were retrieved and
+all 5 produced no relevant findings," not a generic provenance error. See
+ADR 0055 for the full classification and the discovery operation's
+resulting recommended-action text.
 
 Enable Reddit only after configuring approved API access:
 
@@ -141,15 +211,27 @@ Each triggered task writes:
 .apoapsis/tasks/<task-id>/research/
   research-spec.json
   queries.jsonl
+  unusable-queries.jsonl
   candidates.jsonl
   retrieved-source-manifest.jsonl
   evidence.jsonl
   rejected-evidence.jsonl
+  recovery.json
   synthesis.json
   research-brief.md
   security-warnings.json
   telemetry.json
 ```
+
+`unusable-queries.jsonl` (ADR 0055) records every planned query excluded
+before retrieval, with its research question, source, and reason.
+`candidates.jsonl` and `retrieved-source-manifest.jsonl` both carry
+`research_question_id`, so candidate and selected-source counts per
+question (as well as per source) can be read directly from these files.
+`recovery.json` always records whether the one bounded recovery attempt was
+triggered, why, and how much evidence (if any) it found; these files are
+written even when the task ultimately fails, so the audit trail explains
+the failure without needing to re-run anything.
 
 The retrieved-source manifest contains metadata and a digest, not source text.
 Cached fetched content is sanitized before storage. Reddit cache entries use a
@@ -171,8 +253,21 @@ python -m unittest discover -s tests -v
 
 It includes malicious source fixtures, fake GitHub and Reddit adapters, cache and
 budget assertions, a fake local research model, and an end-to-end verified patch
-for the task-report example. Optional bounded live smoke tests require explicit
-flags and never run by default:
+for the task-report example. `tests/test_research_units.py` also covers the
+official-doc search-provider seam (no-URL/no-provider fail-closed behavior,
+the still-supported direct-URL path, provider results filtered to
+`allowed_domains`, and the credential-name-only config shape) and
+cross-question fair allocation in `SourceRanker`; `tests/test_research_integration.py`
+adds `ResearchFailureClassificationTests`, which reproduces the exact
+unusable-official-doc-query/irrelevant-GitHub-results scenario end to end,
+plus separate cases for a domain-outside-allowlist unusable query, a
+successful bounded recovery, and provenance-rejected findings (ADR 0055).
+`TavilySearchProviderTests` (ADR 0056) covers the one implemented search
+provider against a fake fetcher: missing-credential failure, response
+parsing, credential non-leakage, and allowlist filtering through the full
+`OfficialDocumentationSource` path. None of this is exercised against the
+real Tavily API -- it is deterministic fake-provider coverage only. Optional
+bounded live smoke tests require explicit flags and never run by default:
 
 ```bash
 APOAPSIS_RUN_LIVE_GITHUB_TESTS=1 python -m unittest tests.test_research_live -v

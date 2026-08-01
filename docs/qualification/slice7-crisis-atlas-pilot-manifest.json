@@ -1,0 +1,475 @@
+{
+  "budgets": {
+    "context_limit_tokens": 65536,
+    "continuation_limit": 2,
+    "emergency_call_policy": "none; an arm that exhausts its budget stops and is recorded as budget-exhausted rather than extended",
+    "equivalent_model_spend_opportunity": true,
+    "harness_verification_cost_recorded_separately": true,
+    "launch_timeout_seconds": 120.0,
+    "max_output_tokens": 16384,
+    "no_progress_limit": 2,
+    "per_arm_wall_clock_seconds": 1800.0,
+    "per_provider_call_output_cap": 16384,
+    "repair_budget_calls": 0,
+    "total_token_budget": 2500000,
+    "verification_timeout_seconds": 300.0
+  },
+  "cold_warm": {
+    "cold_load_and_warm_timings_recorded_separately": true,
+    "incomparable_if_state_not_equivalent": true,
+    "readiness_request_executed_in_this_phase": false,
+    "readiness_request_is_inference": true,
+    "steps": [
+      "1. cold model-service start for each arm",
+      "2. one fixed readiness request (INFERENCE; not executed in 7P.2)",
+      "3. first experimental request begins from the declared warm state",
+      "4. stop the service between arms",
+      "5. clear only the explicitly declared session and cache state",
+      "6. verify the next arm cannot reach the previous worktree, Qwen home or evidence directory",
+      "7. record cold-load and warm-experiment timings separately"
+    ]
+  },
+  "combined_score_defined": false,
+  "controller_image": {
+    "build_command": "docker/pilot-controller/build.sh ad13cf0 apoapsis-pilot-controller:ad13cf0 (run on this host via the PowerShell sibling build.ps1, because Docker Desktop WSL integration is disabled for Ubuntu-24.04)",
+    "build_context_sha256": "324731292cf3fd3714b8561a75537e6516494d1f22116065d81541c4cd15986b",
+    "dockerfile_path": "docker/pilot-controller/Dockerfile",
+    "dockerfile_sha256": "934c36b09275d213763d8c518f0140a513756c453f8d4e428c86044235a2da8f",
+    "image": "apoapsis-pilot-controller:ad13cf0",
+    "image_id": "sha256:d997bd0101a8f55ce3aa415e7b7dd0ee4b8274cbbbffe4f126b83d45d7894449",
+    "labels": {
+      "org.apoapsis.build-context-sha256": "324731292cf3fd3714b8561a75537e6516494d1f22116065d81541c4cd15986b",
+      "org.apoapsis.pilot": "crisis-atlas",
+      "org.apoapsis.role": "pilot-controller",
+      "org.apoapsis.source-commit": "ad13cf0f6b4013aa5b014394fc6d33f88b29312b",
+      "org.apoapsis.source-tree": "53bbf5d196cd32f0a5b8416ae933fd51cee176bb"
+    },
+    "note": "Replaces apoapsis-live-controller:slice5c, which was built FROM slice2c with a COPY from a working tree and carries no labels at all, so no commit could be attributed to it.",
+    "provenance_proven": true,
+    "source_commit": "ad13cf0f6b4013aa5b014394fc6d33f88b29312b",
+    "source_tree": "53bbf5d196cd32f0a5b8416ae933fd51cee176bb"
+  },
+  "created_utc": "2026-07-31T00:00:00Z",
+  "crisis_atlas": {
+    "acceptance_criteria_sha256": "0f7b86326433eb46154b2ce5ed02437b77baa419fa3338c075be983a01cac437",
+    "authoritative_checkpoint_policy": "run_checkpoint over the admitted snapshot; COMPLETE only when every mapped obligation is proved by a witness bound to that snapshot. A passing command proves nothing by itself.",
+    "evaluator_only_assets_remain_evaluator_only": true,
+    "expected_witness_sha256": "58de296c795d8b5a24e855f92a7108fa61ea053ddba4980a727fb3d3b5c6047b",
+    "package_digest": "d7c4b195ef505975c90f21892a17f633dce6d943dc4224ef3fd01010aef25d22",
+    "package_registerable": true,
+    "package_root": "docs/qualification/pilot/crisis-atlas",
+    "plan_contract_sha256": "d402211cf2c5eafa0e457825a21aab8bf85db9cee5b75f9ba93b3ba78beaa4eb",
+    "qualification_evidence_root": "docs/evaluation/slice-7p1c-evidence",
+    "qualification_evidence_sha256": "d6c67ce643977c938c9486069100f2b3d02f12c8e49b1c983ae65176f6da52fa",
+    "seed_commit": "197b3610e5720cf36718c548fa19c05fe784a978",
+    "seed_tree": "02fb45efeb4e19c619e3f730bd05a1f70bef9f13",
+    "task_sha256": "bf28df2ff091e6757c1d701a8772a537860ec1ea185577c4654c1b09f3bfe63e",
+    "verification_commands_sha256": "cfc68066ebbd128e24ae6ab365d649f7d7827d236b446691aa9999af071e71f5"
+  },
+  "evaluator_framework_commit": "22cd8afe36d360ca841521ed7c1700801c651ca0",
+  "live_execution_authorised_by_manifest": false,
+  "manifest_id": "slice7-crisis-atlas-pilot",
+  "model": {
+    "absolute_path": "/home/arya/models/qwen3.6-27b/Qwen3.6-27B-Q4_K_M.gguf",
+    "digest_source": "recomputed_from_file",
+    "gguf_magic": "GGUF",
+    "gguf_version": 3,
+    "metadata_kv_count": 51,
+    "model_alias": "qwen3.6-27b",
+    "quantization": "Q4_K_M",
+    "sha256": "5ed60d0af4650a854b1755bd392f9aef4872643dc25a254bc68043fa638392a0",
+    "size_bytes": 16817244384,
+    "tensor_count": 851
+  },
+  "network_and_mounts": {
+    "arm_specific_supervisor_internals": {
+      "apoapsis_sandbox": "checkpoint loop, admission policy and repair packet. The repair packet names unmet obligations and unreached paths; it carries no solution text, no reference candidate and no oracle content.",
+      "default_qwen_control": "no Apoapsis supervisor; the CLI's own loop runs to completion"
+    },
+    "direct_upstream_route": false,
+    "durable_evaluator_side_evidence": true,
+    "egress": "controller_owned_unix_socket_relay",
+    "hardened_workcell": true,
+    "mounts": [
+      {
+        "destination": "/workspace",
+        "mode": "rw",
+        "purpose": "the project worktree the arm edits",
+        "source_identity": "fresh clone of 197b3610e5720cf36718c548fa19c05fe784a978",
+        "visibility": "both_arms"
+      },
+      {
+        "destination": "/opt/apoapsis/task.md",
+        "mode": "ro",
+        "purpose": "the immutable task text, identical for both arms",
+        "source_identity": "docs/qualification/pilot/crisis-atlas/task.md",
+        "visibility": "both_arms"
+      },
+      {
+        "destination": "/opt/apoapsis/forwarder.py",
+        "mode": "ro",
+        "purpose": "the only egress path, outside the worktree",
+        "source_identity": "controller forwarder",
+        "visibility": "both_arms"
+      },
+      {
+        "destination": "(never mounted)",
+        "mode": "ro",
+        "purpose": "oracle, expected witnesses, reference candidate and the historical incomplete candidate; evaluator-side only",
+        "source_identity": "docs/qualification/pilot/crisis-atlas/evaluator-only",
+        "visibility": "controller_only"
+      },
+      {
+        "destination": "(host-side, outside every container)",
+        "mode": "rw",
+        "purpose": "durable evidence that outlives the workcell",
+        "source_identity": "evaluator evidence store",
+        "visibility": "controller_only"
+      }
+    ],
+    "network": "none",
+    "separate_qwen_homes": true,
+    "separate_worktrees": true,
+    "supervisor_internals_carry_no_solution_information": true
+  },
+  "paired_executions": [
+    {
+      "executions": [
+        {
+          "arm": "default_qwen_control",
+          "evidence_directory": "/evidence/crisis-atlas-rep-1/default_qwen_control/evidence",
+          "fresh_clone_of_seed_commit": "197b3610e5720cf36718c548fa19c05fe784a978",
+          "order_within_repetition": 1,
+          "qwen_home": "/evidence/crisis-atlas-rep-1/default_qwen_control/qwen-home",
+          "worktree": "/evidence/crisis-atlas-rep-1/default_qwen_control/worktree"
+        },
+        {
+          "arm": "apoapsis_sandbox",
+          "evidence_directory": "/evidence/crisis-atlas-rep-1/apoapsis_sandbox/evidence",
+          "fresh_clone_of_seed_commit": "197b3610e5720cf36718c548fa19c05fe784a978",
+          "order_within_repetition": 2,
+          "qwen_home": "/evidence/crisis-atlas-rep-1/apoapsis_sandbox/qwen-home",
+          "worktree": "/evidence/crisis-atlas-rep-1/apoapsis_sandbox/worktree"
+        }
+      ],
+      "repetition": {
+        "repetition_id": "crisis-atlas-rep-1",
+        "repetition_identity": 1,
+        "session_identity": "crisis-atlas/rep-1"
+      }
+    },
+    {
+      "executions": [
+        {
+          "arm": "apoapsis_sandbox",
+          "evidence_directory": "/evidence/crisis-atlas-rep-2/apoapsis_sandbox/evidence",
+          "fresh_clone_of_seed_commit": "197b3610e5720cf36718c548fa19c05fe784a978",
+          "order_within_repetition": 1,
+          "qwen_home": "/evidence/crisis-atlas-rep-2/apoapsis_sandbox/qwen-home",
+          "worktree": "/evidence/crisis-atlas-rep-2/apoapsis_sandbox/worktree"
+        },
+        {
+          "arm": "default_qwen_control",
+          "evidence_directory": "/evidence/crisis-atlas-rep-2/default_qwen_control/evidence",
+          "fresh_clone_of_seed_commit": "197b3610e5720cf36718c548fa19c05fe784a978",
+          "order_within_repetition": 2,
+          "qwen_home": "/evidence/crisis-atlas-rep-2/default_qwen_control/qwen-home",
+          "worktree": "/evidence/crisis-atlas-rep-2/default_qwen_control/worktree"
+        }
+      ],
+      "repetition": {
+        "repetition_id": "crisis-atlas-rep-2",
+        "repetition_identity": 2,
+        "session_identity": "crisis-atlas/rep-2"
+      }
+    },
+    {
+      "executions": [
+        {
+          "arm": "default_qwen_control",
+          "evidence_directory": "/evidence/crisis-atlas-rep-3/default_qwen_control/evidence",
+          "fresh_clone_of_seed_commit": "197b3610e5720cf36718c548fa19c05fe784a978",
+          "order_within_repetition": 1,
+          "qwen_home": "/evidence/crisis-atlas-rep-3/default_qwen_control/qwen-home",
+          "worktree": "/evidence/crisis-atlas-rep-3/default_qwen_control/worktree"
+        },
+        {
+          "arm": "apoapsis_sandbox",
+          "evidence_directory": "/evidence/crisis-atlas-rep-3/apoapsis_sandbox/evidence",
+          "fresh_clone_of_seed_commit": "197b3610e5720cf36718c548fa19c05fe784a978",
+          "order_within_repetition": 2,
+          "qwen_home": "/evidence/crisis-atlas-rep-3/apoapsis_sandbox/qwen-home",
+          "worktree": "/evidence/crisis-atlas-rep-3/apoapsis_sandbox/worktree"
+        }
+      ],
+      "repetition": {
+        "repetition_id": "crisis-atlas-rep-3",
+        "repetition_identity": 3,
+        "session_identity": "crisis-atlas/rep-3"
+      }
+    }
+  ],
+  "qwen": {
+    "approval_mode": "yolo",
+    "computer_use_enabled": false,
+    "effective_settings_bytes": 687,
+    "effective_settings_sha256": "516caa2a92c3f090d8c314b208b558be77c990de89dfe27d795c64bd79612833",
+    "entry_point_path": "/usr/local/lib/node_modules/@qwen-code/qwen-code/cli-entry.js",
+    "entry_point_sha256": "1db9709bf1753611ca2fec234cf5adf517376efeb1540fcf9e309da010f9ed38",
+    "expected_native_tool_count": 13,
+    "expected_tool_names": [
+      "agent",
+      "edit",
+      "glob",
+      "grep_search",
+      "list_agents",
+      "list_directory",
+      "notebook_edit",
+      "read_file",
+      "run_shell_command",
+      "skill",
+      "todo_write",
+      "tool_search",
+      "write_file"
+    ],
+    "expected_tool_names_sha256": "295e8d1d75805a6e9b646e82b8be8f56f38f81121a50a88a033746f6bd2b6156",
+    "image": "apoapsis-qwen-workcell:0.21.1",
+    "image_digest": "sha256:7419b0da604682974fe1d1fb1b8e1b27f8b7c8675c7cac249a038a54e59ab1b5",
+    "package_metadata_sha256": "acc4c718b6a414aa65077e1de5842c60a04d151dbe8d32bc549531180fd0d924",
+    "package_name": "@qwen-code/qwen-code",
+    "package_version": "0.21.1",
+    "qwen_home": "/tmp/qwen-home",
+    "requires_live_preflight_reobservation": true,
+    "tool_search_enabled": false,
+    "tool_surface_evidence": ".apoapsis-eval/slice2b-runtime-2026-07-30/evidence/spike-report.json wire capture, 13 names. Slice 2C separately observed an image whose CLI exposed 57 tools with no write_file at all, which is why static package presence is insufficient and live preflight must reobserve."
+  },
+  "repair": {
+    "enumerated_repair_routes": [
+      "qwen_native_continuation_within_budget",
+      "post_score_authoritative_checkpoint"
+    ],
+    "first_proposal_scored_before_repair": true,
+    "frontier_repair_allowed_during_scored_phase": false,
+    "human_repair_allowed_during_scored_phase": false,
+    "post_score_repair_allowed": true,
+    "post_score_repair_recorded_as_separate_checkpoint": true,
+    "proposal_quality_separate_from_delivered_quality": true,
+    "qwen_native_continuation_allowed": true,
+    "qwen_native_continuation_budget": 2,
+    "repair_may_improve_proposal_score": false,
+    "unrecorded_repair_path_permitted": false
+  },
+  "sampling": {
+    "audited_paths": [
+      {
+        "finding": "no seed field; payload is model/messages/stream/options",
+        "path": "apoapsis provider request body",
+        "source": "src/apoapsis/models/local.py, frontier.py"
+      },
+      {
+        "finding": "no --seed argument",
+        "path": "llama-server launch argv",
+        "source": ".apoapsis-eval/slice2c-2026-07-30/serve.sh"
+      },
+      {
+        "finding": "samplingParams is {max_tokens: 16384}; no seed key",
+        "path": "qwen resolved generation config",
+        "source": ".apoapsis-eval/slice2c-2026-07-30/effective-raw.json"
+      }
+    ],
+    "comparability_policy": "paired_within_repetition_only",
+    "model_sampling": "stochastic",
+    "provider_request_field": null,
+    "sampling_params_observed": {
+      "max_tokens": 16384
+    },
+    "seed_reaches_provider_request": false,
+    "temperature": null,
+    "temperature_state": "unset_provider_default"
+  },
+  "schema_version": "1.0",
+  "scope": {
+    "broad_non_inferiority_claimed": false,
+    "case_ids": [
+      "crisis-atlas"
+    ],
+    "default_rollout_prohibited": true,
+    "deferred_corpus_cases": [
+      "focus-orbit",
+      "small-backend-change",
+      "cross-file-refactor",
+      "test-repair",
+      "launch-operability",
+      "misleading-inherited-suite",
+      "held-out-repository"
+    ],
+    "held_out_qualification_claimed": false,
+    "optin_slice8_pilot_eligible_after_live_gates": true,
+    "scope": "crisis_atlas_regression_pilot",
+    "statement": "One case, three repetitions, two arms. A passing result supports only: Apoapsis preserved or improved Qwen's performance on the Crisis Atlas workload while adding measurable protection against false completion. Crisis Atlas influenced the acceptance rules it is being used to test, so it is a regression benchmark and cannot be held-out evidence. Seven corpus cases remain deferred, not deleted, and default rollout stays prohibited."
+  },
+  "server": {
+    "absolute_path": "/home/arya/llama.cpp/build/bin/llama-server",
+    "accepted_implicit_defaults": {
+      "api_key": "not passed; the relay is the only reachable client",
+      "cont_batching": "not passed; build default applies at --parallel 1",
+      "mlock": "not passed; disabled",
+      "n_batch": "not passed; build default applies",
+      "seed": "not passed; llama-server chooses its own, so no seed is pinned",
+      "temperature": "not passed; provider default applies",
+      "top_p": "not passed; provider default applies"
+    },
+    "argv": [
+      "/home/arya/llama.cpp/build/bin/llama-server",
+      "-m",
+      "/home/arya/models/qwen3.6-27b/Qwen3.6-27B-Q4_K_M.gguf",
+      "--alias",
+      "qwen3.6-27b",
+      "--parallel",
+      "1",
+      "--ctx-size",
+      "65536",
+      "-n",
+      "16384",
+      "--flash-attn",
+      "on",
+      "--cache-type-k",
+      "q8_0",
+      "--cache-type-v",
+      "q8_0",
+      "--n-gpu-layers",
+      "999",
+      "--jinja",
+      "--threads",
+      "16",
+      "--host",
+      "0.0.0.0",
+      "--port",
+      "8080"
+    ],
+    "argv_sha256": "f5967deb61bac1c32140610ca825a4223d2fb75da59a1a9f5466585eb7fa59b9",
+    "build_commit": "c0bc8591e",
+    "build_version": "10107",
+    "built_with": "GNU 13.3.0 for Linux x86_64",
+    "elf_build_id": "f567a72dad46d975ac49f12106c28176a5a65ef0",
+    "sha256": "e864afb983444e2b2d9f94e902ce8cc06275c1b54c99c96a8598428321a919bf",
+    "size_bytes": 17920,
+    "started_during_this_phase": false
+  },
+  "server_dependency_closure": {
+    "architecture": "x86_64",
+    "cuda_runtime_versions": {
+      "cuda_cudart": "13.3.29",
+      "cuda_nvrtc": "13.3.33",
+      "libcublas": "13.6.0.2"
+    },
+    "cuda_sdk_version": "13.3.1",
+    "gpu_driver_version": "610.74",
+    "gpu_memory_total_mib": 24564,
+    "gpu_name": "NVIDIA GeForce RTX 4090",
+    "hashed_libraries": [
+      {
+        "absolute_path": "/home/arya/llama.cpp/build/bin/libllama-server-impl.so",
+        "sha256": "f08d3f6eb650cf4fd28cba3d9f324d6245c8802b3c3d3c878047d5acc3f072d0",
+        "size_bytes": 7200464
+      },
+      {
+        "absolute_path": "/home/arya/llama.cpp/build/bin/libllama.so.0.0.10107",
+        "sha256": "d51c1a492bfdae3f39b18b4f12b26a1f6395a75e5e8c01fa402f9afd28e6b2b0",
+        "size_bytes": 4136032
+      },
+      {
+        "absolute_path": "/home/arya/llama.cpp/build/bin/libllama-common.so.0.0.10107",
+        "sha256": "cd73ef37e0e99bdecdb619261045a98121fe1e95d12385b69310da0ef95743b1",
+        "size_bytes": 5866896
+      },
+      {
+        "absolute_path": "/home/arya/llama.cpp/build/bin/libggml.so.0.17.0",
+        "sha256": "7ee33932f726f6cffd968b3c63dcb8e41ce00c2f11c1bbc1371c3b7400c0fc87",
+        "size_bytes": 56016
+      },
+      {
+        "absolute_path": "/home/arya/llama.cpp/build/bin/libggml-base.so.0.17.0",
+        "sha256": "bc747da6b4308ac605b7cfd132daf7dfb741200dc8ba34e1d9354f236d613579",
+        "size_bytes": 918056
+      },
+      {
+        "absolute_path": "/home/arya/llama.cpp/build/bin/libggml-cpu.so.0.17.0",
+        "sha256": "66808a6fee4bb2de3ca999e3d4721037f42ba4dde58d48b8ec3155bf0fee4740",
+        "size_bytes": 1362752
+      },
+      {
+        "absolute_path": "/home/arya/llama.cpp/build/bin/libggml-cuda.so.0.17.0",
+        "sha256": "07d5fd499edaab1e8a2f0be5625d34ba11672e543427730e6150c858b9ef2d54",
+        "size_bytes": 63403272
+      },
+      {
+        "absolute_path": "/home/arya/llama.cpp/build/bin/libmtmd.so.0.0.10107",
+        "sha256": "a25a0be6899a49cd198f05793bb88d30a7c6a746064132062506809aca5ae5bd",
+        "size_bytes": 1432176
+      }
+    ],
+    "launcher": {
+      "absolute_path": "/home/arya/llama.cpp/build/bin/llama-server",
+      "sha256": "e864afb983444e2b2d9f94e902ce8cc06275c1b54c99c96a8598428321a919bf",
+      "size_bytes": 17920
+    },
+    "recheck_at_live_preflight": true,
+    "system_libraries": {
+      "glibc": "2.39-0ubuntu8.8",
+      "libcuda.so.1": "supplied by the Windows host via /usr/lib/wsl/lib",
+      "libgomp1": "14.2.0-4ubuntu2~24.04.1",
+      "libstdc++6": "14.2.0-4ubuntu2~24.04.1"
+    },
+    "wsl_distribution": "Ubuntu 24.04.4 LTS (noble)",
+    "wsl_kernel": "6.6.114.1-microsoft-standard-WSL2"
+  },
+  "stop_conditions": [
+    "model_server_or_qwen_identity_differs",
+    "coding_profile_or_realised_tools_differ",
+    "containment_or_relay_readiness_fails",
+    "provider_protocol_conformance_fails",
+    "package_no_longer_registerable",
+    "manifest_or_lock_digest_differs",
+    "seed_task_or_contract_bytes_differ",
+    "task_visible_information_differs_between_arms",
+    "required_artifact_unresolved",
+    "evidence_storage_not_durable",
+    "evaluator_only_material_exposed",
+    "cold_warm_state_differs",
+    "prior_arm_contamination_detected",
+    "telemetry_cannot_be_classified",
+    "repetition_configuration_differs",
+    "execution_image_not_built_from_pinned_source",
+    "acceptance_obligations_unmapped",
+    "dependency_closure_differs"
+  ],
+  "subject_implementation_commit": "ad13cf0f6b4013aa5b014394fc6d33f88b29312b",
+  "threshold_ladder": {
+    "auto_tokens": 32536,
+    "autocompact_buffer_tokens": 13000,
+    "builtin_pct": 0.85,
+    "configured_pct": null,
+    "context_window": 65536,
+    "effective_window_tokens": 45536,
+    "governing_term": "absolute_ceiling",
+    "hard_tokens": 42536,
+    "source": "pinned CLI computeThresholds, executed (ADR 0082)",
+    "source_chunk_sha256": "634214ecb16ef3ab8e6e4046413c965606fd7c7c1194f6db93cd707cb5381c5c",
+    "summary_reserve_tokens": 20000,
+    "warn_tokens": 12536
+  },
+  "workcell_image": {
+    "build_command": null,
+    "build_context_sha256": null,
+    "dockerfile_path": null,
+    "dockerfile_sha256": null,
+    "image": "apoapsis-qwen-workcell:0.21.1",
+    "image_id": "sha256:7419b0da604682974fe1d1fb1b8e1b27f8b7c8675c7cac249a038a54e59ab1b5",
+    "labels": {},
+    "note": "Carries no labels; its build commit is not recoverable from the image. Both arms use this same image, so it cannot bias the comparison, and its interior is pinned by the entry-point and package-metadata digests recorded under `qwen`. Live preflight must reobserve the realised tool surface before any experiment inference. Rebuilding it with provenance labels is 7P.3 work.",
+    "provenance_proven": false,
+    "source_commit": null,
+    "source_tree": null
+  }
+}

@@ -1,0 +1,737 @@
+[
+  {
+    "authorization": null,
+    "authorization_kind": "absent",
+    "body": null,
+    "index": 0,
+    "method": "GET",
+    "path": "/health"
+  },
+  {
+    "authorization": null,
+    "authorization_kind": "absent",
+    "body": null,
+    "index": 1,
+    "method": "GET",
+    "path": "/v1/models"
+  },
+  {
+    "authorization": null,
+    "authorization_kind": "absent",
+    "body": {
+      "max_tokens": 1,
+      "messages": [
+        {
+          "content": "ping",
+          "role": "user"
+        }
+      ],
+      "model": "qwen3.6-27b",
+      "stream": false,
+      "temperature": 0
+    },
+    "index": 2,
+    "method": "POST",
+    "path": "/v1/chat/completions"
+  },
+  {
+    "authorization": null,
+    "authorization_kind": "absent",
+    "body": null,
+    "index": 3,
+    "method": "GET",
+    "path": "/health"
+  },
+  {
+    "authorization": null,
+    "authorization_kind": "absent",
+    "body": null,
+    "index": 4,
+    "method": "GET",
+    "path": "/v1/models"
+  },
+  {
+    "authorization": null,
+    "authorization_kind": "absent",
+    "body": {
+      "max_tokens": 1,
+      "messages": [
+        {
+          "content": "ping",
+          "role": "user"
+        }
+      ],
+      "model": "qwen3.6-27b",
+      "stream": false,
+      "temperature": 0
+    },
+    "index": 5,
+    "method": "POST",
+    "path": "/v1/chat/completions"
+  },
+  {
+    "authorization": null,
+    "authorization_kind": "absent",
+    "body": null,
+    "index": 6,
+    "method": "GET",
+    "path": "/health"
+  },
+  {
+    "authorization": null,
+    "authorization_kind": "absent",
+    "body": null,
+    "index": 7,
+    "method": "GET",
+    "path": "/v1/models"
+  },
+  {
+    "authorization": null,
+    "authorization_kind": "absent",
+    "body": {
+      "max_tokens": 1,
+      "messages": [
+        {
+          "content": "ping",
+          "role": "user"
+        }
+      ],
+      "model": "qwen3.6-27b",
+      "stream": false,
+      "temperature": 0
+    },
+    "index": 8,
+    "method": "POST",
+    "path": "/v1/chat/completions"
+  },
+  {
+    "authorization": null,
+    "authorization_kind": "absent",
+    "body": null,
+    "index": 9,
+    "method": "GET",
+    "path": "/health"
+  },
+  {
+    "authorization": null,
+    "authorization_kind": "absent",
+    "body": null,
+    "index": 10,
+    "method": "GET",
+    "path": "/v1/models"
+  },
+  {
+    "authorization": null,
+    "authorization_kind": "absent",
+    "body": {
+      "max_tokens": 1,
+      "messages": [
+        {
+          "content": "ping",
+          "role": "user"
+        }
+      ],
+      "model": "qwen3.6-27b",
+      "stream": false,
+      "temperature": 0
+    },
+    "index": 11,
+    "method": "POST",
+    "path": "/v1/chat/completions"
+  },
+  {
+    "authorization": null,
+    "authorization_kind": "absent",
+    "body": null,
+    "index": 12,
+    "method": "GET",
+    "path": "/health"
+  },
+  {
+    "authorization": null,
+    "authorization_kind": "absent",
+    "body": null,
+    "index": 13,
+    "method": "GET",
+    "path": "/v1/models"
+  },
+  {
+    "authorization": null,
+    "authorization_kind": "absent",
+    "body": {
+      "max_tokens": 1,
+      "messages": [
+        {
+          "content": "ping",
+          "role": "user"
+        }
+      ],
+      "model": "qwen3.6-27b",
+      "stream": false,
+      "temperature": 0
+    },
+    "index": 14,
+    "method": "POST",
+    "path": "/v1/chat/completions"
+  },
+  {
+    "authorization": null,
+    "authorization_kind": "absent",
+    "body": null,
+    "index": 15,
+    "method": "GET",
+    "path": "/health"
+  },
+  {
+    "authorization": null,
+    "authorization_kind": "absent",
+    "body": null,
+    "index": 16,
+    "method": "GET",
+    "path": "/v1/models"
+  },
+  {
+    "authorization": null,
+    "authorization_kind": "absent",
+    "body": {
+      "max_tokens": 1,
+      "messages": [
+        {
+          "content": "ping",
+          "role": "user"
+        }
+      ],
+      "model": "qwen3.6-27b",
+      "stream": false,
+      "temperature": 0
+    },
+    "index": 17,
+    "method": "POST",
+    "path": "/v1/chat/completions"
+  },
+  {
+    "authorization": null,
+    "authorization_kind": "absent",
+    "body": null,
+    "index": 18,
+    "method": "GET",
+    "path": "/health"
+  },
+  {
+    "authorization": null,
+    "authorization_kind": "absent",
+    "body": null,
+    "index": 19,
+    "method": "GET",
+    "path": "/v1/models"
+  },
+  {
+    "authorization": null,
+    "authorization_kind": "absent",
+    "body": {
+      "max_tokens": 1,
+      "messages": [
+        {
+          "content": "ping",
+          "role": "user"
+        }
+      ],
+      "model": "qwen3.6-27b",
+      "stream": false,
+      "temperature": 0
+    },
+    "index": 20,
+    "method": "POST",
+    "path": "/v1/chat/completions"
+  },
+  {
+    "authorization": null,
+    "authorization_kind": "absent",
+    "body": null,
+    "index": 21,
+    "method": "GET",
+    "path": "/health"
+  },
+  {
+    "authorization": null,
+    "authorization_kind": "absent",
+    "body": null,
+    "index": 22,
+    "method": "GET",
+    "path": "/v1/models"
+  },
+  {
+    "authorization": null,
+    "authorization_kind": "absent",
+    "body": {
+      "max_tokens": 1,
+      "messages": [
+        {
+          "content": "ping",
+          "role": "user"
+        }
+      ],
+      "model": "qwen3.6-27b",
+      "stream": false,
+      "temperature": 0
+    },
+    "index": 23,
+    "method": "POST",
+    "path": "/v1/chat/completions"
+  },
+  {
+    "authorization": null,
+    "authorization_kind": "absent",
+    "body": null,
+    "index": 24,
+    "method": "GET",
+    "path": "/health"
+  },
+  {
+    "authorization": null,
+    "authorization_kind": "absent",
+    "body": null,
+    "index": 25,
+    "method": "GET",
+    "path": "/v1/models"
+  },
+  {
+    "authorization": null,
+    "authorization_kind": "absent",
+    "body": {
+      "max_tokens": 1,
+      "messages": [
+        {
+          "content": "ping",
+          "role": "user"
+        }
+      ],
+      "model": "qwen3.6-27b",
+      "stream": false,
+      "temperature": 0
+    },
+    "index": 26,
+    "method": "POST",
+    "path": "/v1/chat/completions"
+  },
+  {
+    "authorization": null,
+    "authorization_kind": "absent",
+    "body": null,
+    "index": 27,
+    "method": "GET",
+    "path": "/health"
+  },
+  {
+    "authorization": null,
+    "authorization_kind": "absent",
+    "body": null,
+    "index": 28,
+    "method": "GET",
+    "path": "/v1/models"
+  },
+  {
+    "authorization": null,
+    "authorization_kind": "absent",
+    "body": {
+      "max_tokens": 1,
+      "messages": [
+        {
+          "content": "ping",
+          "role": "user"
+        }
+      ],
+      "model": "qwen3.6-27b",
+      "stream": false,
+      "temperature": 0
+    },
+    "index": 29,
+    "method": "POST",
+    "path": "/v1/chat/completions"
+  },
+  {
+    "authorization": null,
+    "authorization_kind": "absent",
+    "body": null,
+    "index": 30,
+    "method": "GET",
+    "path": "/health"
+  },
+  {
+    "authorization": null,
+    "authorization_kind": "absent",
+    "body": null,
+    "index": 31,
+    "method": "GET",
+    "path": "/v1/models"
+  },
+  {
+    "authorization": null,
+    "authorization_kind": "absent",
+    "body": {
+      "max_tokens": 1,
+      "messages": [
+        {
+          "content": "ping",
+          "role": "user"
+        }
+      ],
+      "model": "qwen3.6-27b",
+      "stream": false,
+      "temperature": 0
+    },
+    "index": 32,
+    "method": "POST",
+    "path": "/v1/chat/completions"
+  },
+  {
+    "authorization": null,
+    "authorization_kind": "absent",
+    "body": null,
+    "index": 33,
+    "method": "GET",
+    "path": "/health"
+  },
+  {
+    "authorization": null,
+    "authorization_kind": "absent",
+    "body": null,
+    "index": 34,
+    "method": "GET",
+    "path": "/v1/models"
+  },
+  {
+    "authorization": null,
+    "authorization_kind": "absent",
+    "body": {
+      "max_tokens": 1,
+      "messages": [
+        {
+          "content": "ping",
+          "role": "user"
+        }
+      ],
+      "model": "qwen3.6-27b",
+      "stream": false,
+      "temperature": 0
+    },
+    "index": 35,
+    "method": "POST",
+    "path": "/v1/chat/completions"
+  },
+  {
+    "authorization": null,
+    "authorization_kind": "absent",
+    "body": null,
+    "index": 36,
+    "method": "GET",
+    "path": "/health"
+  },
+  {
+    "authorization": null,
+    "authorization_kind": "absent",
+    "body": null,
+    "index": 37,
+    "method": "GET",
+    "path": "/v1/models"
+  },
+  {
+    "authorization": null,
+    "authorization_kind": "absent",
+    "body": {
+      "max_tokens": 1,
+      "messages": [
+        {
+          "content": "ping",
+          "role": "user"
+        }
+      ],
+      "model": "qwen3.6-27b",
+      "stream": false,
+      "temperature": 0
+    },
+    "index": 38,
+    "method": "POST",
+    "path": "/v1/chat/completions"
+  },
+  {
+    "authorization": null,
+    "authorization_kind": "absent",
+    "body": null,
+    "index": 39,
+    "method": "GET",
+    "path": "/health"
+  },
+  {
+    "authorization": null,
+    "authorization_kind": "absent",
+    "body": null,
+    "index": 40,
+    "method": "GET",
+    "path": "/v1/models"
+  },
+  {
+    "authorization": null,
+    "authorization_kind": "absent",
+    "body": {
+      "max_tokens": 1,
+      "messages": [
+        {
+          "content": "ping",
+          "role": "user"
+        }
+      ],
+      "model": "qwen3.6-27b",
+      "stream": false,
+      "temperature": 0
+    },
+    "index": 41,
+    "method": "POST",
+    "path": "/v1/chat/completions"
+  },
+  {
+    "authorization": null,
+    "authorization_kind": "absent",
+    "body": null,
+    "index": 42,
+    "method": "GET",
+    "path": "/health"
+  },
+  {
+    "authorization": null,
+    "authorization_kind": "absent",
+    "body": null,
+    "index": 43,
+    "method": "GET",
+    "path": "/v1/models"
+  },
+  {
+    "authorization": null,
+    "authorization_kind": "absent",
+    "body": {
+      "max_tokens": 1,
+      "messages": [
+        {
+          "content": "ping",
+          "role": "user"
+        }
+      ],
+      "model": "qwen3.6-27b",
+      "stream": false,
+      "temperature": 0
+    },
+    "index": 44,
+    "method": "POST",
+    "path": "/v1/chat/completions"
+  },
+  {
+    "authorization": null,
+    "authorization_kind": "absent",
+    "body": null,
+    "index": 45,
+    "method": "GET",
+    "path": "/health"
+  },
+  {
+    "authorization": null,
+    "authorization_kind": "absent",
+    "body": null,
+    "index": 46,
+    "method": "GET",
+    "path": "/v1/models"
+  },
+  {
+    "authorization": null,
+    "authorization_kind": "absent",
+    "body": {
+      "max_tokens": 1,
+      "messages": [
+        {
+          "content": "ping",
+          "role": "user"
+        }
+      ],
+      "model": "qwen3.6-27b",
+      "stream": false,
+      "temperature": 0
+    },
+    "index": 47,
+    "method": "POST",
+    "path": "/v1/chat/completions"
+  },
+  {
+    "authorization": null,
+    "authorization_kind": "absent",
+    "body": null,
+    "index": 48,
+    "method": "GET",
+    "path": "/health"
+  },
+  {
+    "authorization": null,
+    "authorization_kind": "absent",
+    "body": null,
+    "index": 49,
+    "method": "GET",
+    "path": "/v1/models"
+  },
+  {
+    "authorization": null,
+    "authorization_kind": "absent",
+    "body": {
+      "max_tokens": 1,
+      "messages": [
+        {
+          "content": "ping",
+          "role": "user"
+        }
+      ],
+      "model": "qwen3.6-27b",
+      "stream": false,
+      "temperature": 0
+    },
+    "index": 50,
+    "method": "POST",
+    "path": "/v1/chat/completions"
+  },
+  {
+    "authorization": null,
+    "authorization_kind": "absent",
+    "body": null,
+    "index": 51,
+    "method": "GET",
+    "path": "/health"
+  },
+  {
+    "authorization": null,
+    "authorization_kind": "absent",
+    "body": null,
+    "index": 52,
+    "method": "GET",
+    "path": "/v1/models"
+  },
+  {
+    "authorization": null,
+    "authorization_kind": "absent",
+    "body": {
+      "max_tokens": 1,
+      "messages": [
+        {
+          "content": "ping",
+          "role": "user"
+        }
+      ],
+      "model": "qwen3.6-27b",
+      "stream": false,
+      "temperature": 0
+    },
+    "index": 53,
+    "method": "POST",
+    "path": "/v1/chat/completions"
+  },
+  {
+    "authorization": null,
+    "authorization_kind": "absent",
+    "body": null,
+    "index": 54,
+    "method": "GET",
+    "path": "/health"
+  },
+  {
+    "authorization": null,
+    "authorization_kind": "absent",
+    "body": null,
+    "index": 55,
+    "method": "GET",
+    "path": "/v1/models"
+  },
+  {
+    "authorization": null,
+    "authorization_kind": "absent",
+    "body": {
+      "max_tokens": 1,
+      "messages": [
+        {
+          "content": "ping",
+          "role": "user"
+        }
+      ],
+      "model": "qwen3.6-27b",
+      "stream": false,
+      "temperature": 0
+    },
+    "index": 56,
+    "method": "POST",
+    "path": "/v1/chat/completions"
+  },
+  {
+    "authorization": null,
+    "authorization_kind": "absent",
+    "body": null,
+    "index": 57,
+    "method": "GET",
+    "path": "/health"
+  },
+  {
+    "authorization": null,
+    "authorization_kind": "absent",
+    "body": null,
+    "index": 58,
+    "method": "GET",
+    "path": "/v1/models"
+  },
+  {
+    "authorization": null,
+    "authorization_kind": "absent",
+    "body": {
+      "max_tokens": 1,
+      "messages": [
+        {
+          "content": "ping",
+          "role": "user"
+        }
+      ],
+      "model": "qwen3.6-27b",
+      "stream": false,
+      "temperature": 0
+    },
+    "index": 59,
+    "method": "POST",
+    "path": "/v1/chat/completions"
+  },
+  {
+    "authorization": null,
+    "authorization_kind": "absent",
+    "body": null,
+    "index": 60,
+    "method": "GET",
+    "path": "/health"
+  },
+  {
+    "authorization": null,
+    "authorization_kind": "absent",
+    "body": null,
+    "index": 61,
+    "method": "GET",
+    "path": "/v1/models"
+  },
+  {
+    "authorization": null,
+    "authorization_kind": "absent",
+    "body": {
+      "max_tokens": 1,
+      "messages": [
+        {
+          "content": "ping",
+          "role": "user"
+        }
+      ],
+      "model": "qwen3.6-27b",
+      "stream": false,
+      "temperature": 0
+    },
+    "index": 62,
+    "method": "POST",
+    "path": "/v1/chat/completions"
+  }
+]

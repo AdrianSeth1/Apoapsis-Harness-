@@ -1,0 +1,7 @@
+The two working clones this control made were removed before committing.
+
+They are `git clone`s of the Crisis Atlas seed at
+197b3610e5720cf36718c548fa19c05fe784a978, and a git repository committed inside
+this one is not retrievable by anyone who clones it -- the evidence would look
+present and be empty. The control's result is in ../controls.json, and the
+clones are reproducible from the seed commit the manifest binds.

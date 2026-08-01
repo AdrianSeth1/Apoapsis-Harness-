@@ -1,0 +1,29 @@
+{
+  "detail": "the full path is live: container to loopback forwarder to Unix socket to controller relay to model, with 3 request(s) observed by the relay",
+  "ready": true,
+  "relay_requests_observed": 3,
+  "schema_version": "1.0",
+  "steps": [
+    {
+      "detail": "",
+      "duration_seconds": 0.2228001769999537,
+      "http_status": 200,
+      "status": "passed",
+      "step": "forwarder_listening"
+    },
+    {
+      "detail": "",
+      "duration_seconds": 0.19066188499982673,
+      "http_status": 200,
+      "status": "passed",
+      "step": "health_round_trip"
+    },
+    {
+      "detail": "",
+      "duration_seconds": 0.20324905500001478,
+      "http_status": 200,
+      "status": "passed",
+      "step": "one_token_completion"
+    }
+  ]
+}

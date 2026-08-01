@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import ast
+import json
+import re
 import sys
 import tomllib
 from pathlib import Path
@@ -30,6 +32,207 @@ class VerificationContractError(RuntimeError):
     """Raised when configured verification cannot possibly run as written."""
 
 
+_PLAN_RESPONSE_TRANSFER_NAME = re.compile(
+    r"^apoapsis-plan-response(?:[-_ .][A-Za-z0-9._ -]+)?\.json$",
+    re.IGNORECASE,
+)
+_MAX_PLAN_RESPONSE_TRANSFER_BYTES = 16 * 1024 * 1024
+
+
+def _registered_plan_response_payloads(root: Path) -> list[object]:
+    """Load only canonical responses already accepted into discovery audit."""
+
+    from pydantic import ValidationError
+
+    from apoapsis.discovery.schema import FrontierPlanningResponseEnvelope
+
+    discovery_root = root / ".apoapsis" / "discovery"
+    if not discovery_root.is_dir():
+        return []
+    payloads: list[object] = []
+    for artifact in sorted(discovery_root.glob("*/frontier-response-FPKG-*.json")):
+        try:
+            if artifact.stat().st_size > _MAX_PLAN_RESPONSE_TRANSFER_BYTES:
+                continue
+            payload = json.loads(artifact.read_text(encoding="utf-8"))
+            FrontierPlanningResponseEnvelope.model_validate(payload)
+            payloads.append(payload)
+        except (OSError, UnicodeError, json.JSONDecodeError, ValidationError):
+            # An unreadable audit artifact proves nothing. The ordinary dirty
+            # repository refusal remains in force for the transfer file.
+            continue
+    return payloads
+
+
+def exclude_registered_plan_response_transfers(
+    project_root: str | Path,
+) -> list[str]:
+    """Locally exclude exact, already-imported manual planning responses.
+
+    A manual frontier response is transport material, not project source. A
+    user can naturally save it in the selected project folder before uploading
+    it through the browser, which used to make the next execution fail its
+    dirty-parent guard. This recovery is deliberately narrow: the candidate
+    must be an untracked top-level JSON file using Apoapsis's transfer filename
+    convention, and its parsed payload must exactly equal a canonical response
+    already retained in the discovery audit. The user file is never moved,
+    rewritten, or deleted; only its exact root-relative name is appended to
+    ``.git/info/exclude``.
+    """
+
+    from apoapsis.specification.pasted_json import PastedJsonError, parse_pasted_json
+
+    root = Path(project_root).resolve()
+    repository = GitRepository(root)
+    registered = _registered_plan_response_payloads(root)
+    if not registered:
+        return []
+    raw_untracked = repository.run(
+        ["ls-files", "-z", "--others", "--exclude-standard"]
+    ).stdout
+    matched: list[str] = []
+    for relative in sorted(item for item in raw_untracked.split("\0") if item):
+        candidate_relative = Path(relative)
+        if len(candidate_relative.parts) != 1:
+            continue
+        if not _PLAN_RESPONSE_TRANSFER_NAME.fullmatch(candidate_relative.name):
+            continue
+        candidate = root / candidate_relative
+        try:
+            if candidate.stat().st_size > _MAX_PLAN_RESPONSE_TRANSFER_BYTES:
+                continue
+            payload = parse_pasted_json(
+                candidate.read_text(encoding="utf-8"), what="plan response transfer"
+            )
+        except (OSError, UnicodeError, PastedJsonError):
+            continue
+        if any(payload == accepted for accepted in registered):
+            matched.append(candidate_relative.as_posix())
+    if not matched:
+        return []
+
+    raw_exclude = repository.run(
+        ["rev-parse", "--git-path", "info/exclude"]
+    ).stdout.strip()
+    exclude_path = Path(raw_exclude)
+    if not exclude_path.is_absolute():
+        exclude_path = root / exclude_path
+    exclude_path = exclude_path.resolve()
+    exclude_path.parent.mkdir(parents=True, exist_ok=True)
+    existing = (
+        exclude_path.read_text(encoding="utf-8") if exclude_path.is_file() else ""
+    )
+    existing_lines = set(existing.splitlines())
+    additions = [
+        f"/{relative}"
+        for relative in matched
+        if f"/{relative}" not in existing_lines
+    ]
+    if additions:
+        separator = "" if not existing or existing.endswith("\n") else "\n"
+        heading = "# Imported Apoapsis planning response transfer files"
+        heading_line = "" if heading in existing_lines else f"{heading}\n"
+        exclude_path.write_text(
+            existing
+            + separator
+            + heading_line
+            + "".join(f"{line}\n" for line in additions),
+            encoding="utf-8",
+        )
+    return matched
+
+
+def _has_testcase_class(tree: ast.AST) -> bool:
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ClassDef):
+            continue
+        for base in node.bases:
+            base_name = ""
+            if isinstance(base, ast.Attribute):
+                base_name = base.attr
+            elif isinstance(base, ast.Name):
+                base_name = base.id
+            if "TestCase" in base_name:
+                return True
+    return False
+
+
+def _imports_pytest(tree: ast.AST) -> bool:
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import) and any(
+            item.name.split(".", 1)[0] == "pytest" for item in node.names
+        ):
+            return True
+        if (
+            isinstance(node, ast.ImportFrom)
+            and node.module
+            and node.module.split(".", 1)[0] == "pytest"
+        ):
+            return True
+    return False
+
+
+def _unittest_discovery_pitfalls(
+    root: Path, start_directory: Path, pattern: str, command_name: str
+) -> list[str]:
+    """Deterministic, live-worktree checks for the two ways a
+    ``python -m unittest discover`` command silently collects zero tests
+    from files that do exist: a package directory in the discovered tree
+    missing its own ``__init__.py`` (discover skips non-package
+    subdirectories without raising), and a test file written for pytest
+    (bare ``assert``, ``pytest.raises``, plain classes) instead of a
+    ``unittest.TestCase`` subclass unittest's loader can actually find.
+    Both were observed together in a live local-coder run that repeatedly
+    failed verification with ``NO TESTS RAN`` and never diagnosed why."""
+
+    findings: list[str] = []
+    missing_init_dirs: set[Path] = set()
+    pytest_style_files: list[Path] = []
+    for match in start_directory.rglob(pattern):
+        if not match.is_file():
+            continue
+        directory = match.parent
+        while True:
+            if not (directory / "__init__.py").is_file():
+                missing_init_dirs.add(directory)
+            if directory == start_directory:
+                break
+            directory = directory.parent
+        try:
+            tree = ast.parse(match.read_text(encoding="utf-8"))
+        except (OSError, SyntaxError, UnicodeError):
+            continue
+        if _imports_pytest(tree) and not _has_testcase_class(tree):
+            pytest_style_files.append(match)
+    if missing_init_dirs:
+        relative = sorted(
+            directory.relative_to(root).as_posix() for directory in missing_init_dirs
+        )
+        findings.append(
+            f"Required check {command_name!r} uses unittest discovery, which "
+            "silently collects zero tests from a package directory missing its "
+            "own __init__.py rather than raising an error. Add __init__.py to: "
+            + ", ".join(relative)
+            + "."
+        )
+    if pytest_style_files:
+        relative = sorted(
+            path.relative_to(root).as_posix() for path in pytest_style_files
+        )
+        findings.append(
+            f"Required check {command_name!r} runs stdlib unittest discovery, "
+            "which only collects unittest.TestCase subclasses. The following "
+            "test file(s) import pytest and use plain classes/bare assert/"
+            "pytest.raises instead, so unittest discovers zero tests from them "
+            "even though they exist: "
+            + ", ".join(relative)
+            + ". Rewrite them as unittest.TestCase subclasses using "
+            "self.assertEqual/self.assertRaises, or add a configured "
+            "pytest-based verification command instead."
+        )
+    return findings
+
+
 def required_verification_scaffolding(
     project_root: str | Path,
     verification: VerificationConfig,
@@ -52,14 +255,21 @@ def required_verification_scaffolding(
         except (ValueError, IndexError):
             continue
         resolved = start_directory if start_directory.is_absolute() else root / start_directory
-        if resolved.is_dir():
+        if not resolved.is_dir():
+            obligations.append(
+                f"Required check {command.name!r} discovers from missing directory "
+                f"{start_directory.as_posix()!r}. Because test changes are allowed, "
+                "create that importable directory and meaningful task-focused tests "
+                "before verification. This repair is part of implementation; the "
+                "missing scaffold alone is not a reason to request escalation."
+            )
             continue
-        obligations.append(
-            f"Required check {command.name!r} discovers from missing directory "
-            f"{start_directory.as_posix()!r}. Because test changes are allowed, "
-            "create that importable directory and meaningful task-focused tests "
-            "before verification. This repair is part of implementation; the "
-            "missing scaffold alone is not a reason to request escalation."
+        try:
+            pattern = argv[argv.index("-p") + 1]
+        except (ValueError, IndexError):
+            pattern = "test*.py"
+        obligations.extend(
+            _unittest_discovery_pitfalls(root, resolved, pattern, command.name)
         )
     requirement_manifests = [
         path
@@ -160,6 +370,7 @@ def require_viable_verification_contract(
 
 
 def require_clean_parent_repository(project_root: str | Path) -> None:
+    exclude_registered_plan_response_transfers(project_root)
     snapshot = GitRepository(project_root).snapshot()
     if snapshot.is_clean:
         return
@@ -182,6 +393,7 @@ def require_clean_parent_repository(project_root: str | Path) -> None:
 __all__ = [
     "DirtyParentRepositoryError",
     "VerificationContractError",
+    "exclude_registered_plan_response_transfers",
     "required_verification_scaffolding",
     "require_clean_parent_repository",
     "require_viable_verification_contract",

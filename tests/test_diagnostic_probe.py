@@ -9,6 +9,7 @@ from apoapsis.agent.session import (
     AgentTurnRecord,
     BoundedAgentSession,
 )
+from apoapsis.architect.schema import VerificationStrategy
 from apoapsis.architect.store import SQLitePlanStore
 from apoapsis.architect.slice_store import PlanSliceExecutionStore
 from apoapsis.audit.store import TaskAuditStore
@@ -446,6 +447,13 @@ class _SingleSlicePlanMixin:
                     verification_method="v2-jobs-tests",
                 )
             ],
+            # ADR 0074: a plan naming no whole-project verification command
+            # is invalid, because nothing would ever run against the
+            # integrated result. This fixture is deliberately the smallest
+            # approvable plan, so it declares the one command it has.
+            verification_strategy=VerificationStrategy(
+                whole_project_verification_commands=["v2-jobs-tests"],
+            ),
         )
 
     def _approve_plan(self, root: Path):
@@ -603,7 +611,17 @@ class RunSingleSliceDiagnosticProbeTests(_SingleSlicePlanMixin, PlanningEvaluati
         self.assertFalse(result.behavior.invoked_run_check)
         self.assertFalse(result.behavior.invoked_submit_for_verification)
         self.assertIsNotNone(result.behavior.first_no_progress_turn)
-        self.assertGreaterEqual(result.behavior.max_identical_action_streak, 4)
+        # Was `>= 4`, which is now structurally unreachable rather than merely
+        # unmet. The harness stops this session itself, with the stop reason
+        # "coding model repeated prohibited no-progress repository observations
+        # **three times** without making progress" -- so a fourth identical turn
+        # cannot be recorded, by the product's own rule. The old bound was
+        # written when the loop ran to the turn cap.
+        #
+        # Pinned to exactly 3 rather than relaxed to `>= 3`: the number is the
+        # three-strikes rule, and a test that tolerated 4 would stop noticing if
+        # the stop ever regressed to firing late.
+        self.assertEqual(result.behavior.max_identical_action_streak, 3)
         self.assertEqual(result.report.outcome, TaskOutcome.HUMAN_REVIEW_REQUIRED)
 
 

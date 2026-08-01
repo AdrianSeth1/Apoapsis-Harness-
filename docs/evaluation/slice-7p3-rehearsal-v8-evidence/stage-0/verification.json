@@ -1,0 +1,121 @@
+{
+  "authority_commit": "9db16f011ee5d3b0c94b8ab9545e52b3a405c8e9",
+  "bound_modules": [
+    {
+      "path": "src/apoapsis/qualification/pilot.py",
+      "sha256": "11977115ab6002c0e4bef595097c63c26ea21832e2179cf70791389b3e039d26"
+    },
+    {
+      "path": "src/apoapsis/qualification/authority.py",
+      "sha256": "5e9a990f42782e1747a7ef5e99ec216d9ae4711c50129b25ead4b994b24c5c1e"
+    },
+    {
+      "path": "src/apoapsis/qualification/rehearsal.py",
+      "sha256": "cf4c034aefd284047d5d526728318ac21e3ab5fb6be94be3f64be7cd0b6120c9"
+    },
+    {
+      "path": "src/apoapsis/qualification/fake_pilot_provider.py",
+      "sha256": "3d68285b760cbc3d87a7664fcf4adc5586bfb3e0637bb338719cbb3512e24598"
+    },
+    {
+      "path": "src/apoapsis/qualification/runner.py",
+      "sha256": "2e51608c0c5599578f78678d88100cb729e7e0b14623370d258b12bb9a676f48"
+    },
+    {
+      "path": "src/apoapsis/qualification/session_factory.py",
+      "sha256": "a3105f38d8bf29120e7f8919148eaf10ba3c009e7f49a3d277f450d4255ca0d6"
+    },
+    {
+      "path": "src/apoapsis/qualification/slot_driver.py",
+      "sha256": "e466f6b95ea0c6cfd749f00865e56f3411fd378a80019bd2ce3f4ff88cf25940"
+    },
+    {
+      "path": "src/apoapsis/qualification/observation.py",
+      "sha256": "f9240fc9d9f20a0269b5316cd61ddee7c43f2d5bd5f47a4591b34fc4a5910958"
+    },
+    {
+      "path": "src/apoapsis/qualification/relay_faults.py",
+      "sha256": "53acb49c0c6a8b68ebcd3ea05a5896cba8065f5c363f2c46cf8844eccf70ae0f"
+    },
+    {
+      "path": "src/apoapsis/qualification/fake_provider_server.py",
+      "sha256": "f40e6129cac2b2c0bd5b41a072e5968c0f9d04cb4dcfa630ef4f80aee00d8b87"
+    },
+    {
+      "path": "src/apoapsis/qualification/negative_controls.py",
+      "sha256": "5ec5f636100ab9a7a1e740a4c3ebbcdc3d014389e02e60a599855b5f7ff96538"
+    },
+    {
+      "path": "src/apoapsis/qualification/case_package.py",
+      "sha256": "83a0bdf665497cea1d5f6e8aa22117816cad10a49d314100bef91648e112e908"
+    },
+    {
+      "path": "src/apoapsis/qualification/real_probe.py",
+      "sha256": "ac3a9977b8f470c8031f3b8f9f47c2ccc8a23c877457729020d1b6fdf1f797d3"
+    },
+    {
+      "path": "src/apoapsis/qualification/artifacts.py",
+      "sha256": "302a4723ddfbcfc903253ba9cae1b0a2c364b5c008904573c73cf3c027e724da"
+    },
+    {
+      "path": "src/apoapsis/workcell/checkpoint.py",
+      "sha256": "e62f91669ad3093d2dda05317ae16859cc84090641d7661bdb51c31bc09a9064"
+    },
+    {
+      "path": "src/apoapsis/workcell/acceptance.py",
+      "sha256": "af6637717aa4e96c1bbea1fef55d746c317ba7fdbc22b290aacaea9f347ff6d4"
+    },
+    {
+      "path": "src/apoapsis/workcell/admission.py",
+      "sha256": "2e4daa186635d49789283250b2913d4efba03b739bcce31e63b0f716605dc2d0"
+    },
+    {
+      "path": "src/apoapsis/workcell/witness.py",
+      "sha256": "452570b0b7dd7e44fb983553852aafebb85942440dea484d1f333ddeced01e17"
+    },
+    {
+      "path": "src/apoapsis/workcell/emitters.py",
+      "sha256": "cba0299e937a3b69750275bc8de2ca160a30d9037e63f9eb93d175a716151d3b"
+    },
+    {
+      "path": "src/apoapsis/workcell/relay.py",
+      "sha256": "3b6336484c60da14a4455fe0ce65ce4447ad6c80961dc0b20aadbe89762f6b42"
+    },
+    {
+      "path": "src/apoapsis/workcell/live_session.py",
+      "sha256": "bab3de4546e1e191697567d6c5c1fc58b963305de80e3a5680c44863e6e7dd07"
+    },
+    {
+      "path": "src/apoapsis/workcell/relay_policy.py",
+      "sha256": "d59edc0b3a6e55f6ac5eb6e680d778b627e9deb1f281b6f107aaba9564ad71ba"
+    },
+    {
+      "path": "src/apoapsis/workcell/containment.py",
+      "sha256": "fa2e6553bed0dd4204d7cb091525f9f34270a54b1b34861fa3de7f1dba30b824"
+    },
+    {
+      "path": "src/apoapsis/workcell/controller.py",
+      "sha256": "5023a4feef292c71e8e482401a1df3bfa89cd133b9f82f4209d8e7ab0c7ffd65"
+    },
+    {
+      "path": "src/apoapsis/workcell/relay_preflight.py",
+      "sha256": "3fe56ec8bcfa184a4c09ec7ad79486b609d226daab8f0c6cda5fd68db0d66afd"
+    },
+    {
+      "path": "src/apoapsis/workcell/forwarder.py",
+      "sha256": "93e000db44c18e1089c515a8e8a99185fcb9105486724d78528a8608c2ad042e"
+    },
+    {
+      "path": "src/apoapsis/workcell/echo_provider.py",
+      "sha256": "4e93c39018597097a81d98abc43d18fbb67ba5f0238cce11949a4bf42005f752"
+    },
+    {
+      "path": "src/apoapsis/workcell/pins.py",
+      "sha256": "c2c189683b950b4f110fa56e776f89a19beb16acae4335751ddfce3ca72f2a34"
+    }
+  ],
+  "fake_provider_script_sha256": "6bf3f4e513aa4148b3bb5cf053326470fdbdae4193e354eceed747a5b589bdda",
+  "lock_digest": "61b36743c43ec3afc932d956ad76fe1f2a320d41cff52356ab749746b6112867",
+  "manifest_digest": "f369760e438b6866b59fbecafa4b1d63cb8523aa726b3c9ba20a9699c26e4798",
+  "package_digest": "d7c4b195ef505975c90f21892a17f633dce6d943dc4224ef3fd01010aef25d22"
+}

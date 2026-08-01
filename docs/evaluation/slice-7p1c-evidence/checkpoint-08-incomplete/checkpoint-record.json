@@ -1,0 +1,118 @@
+{
+  "admission": {
+    "admitted": true,
+    "candidate_fingerprint": "f1a0451d03e85fa9664842f5486f5461504f23add10576ef1c78a1c46851dbaa",
+    "changed_lines": 147,
+    "counts_by_class": {
+      "production": 1
+    },
+    "counts_by_kind": {
+      "added": 1
+    },
+    "detail": "the candidate is admitted: 1 file(s), 147 changed line(s), no policy violations",
+    "file_count": 1,
+    "schema_version": "1.0",
+    "snapshot_path": "/tmp/tmph3eejfmq/snapshot",
+    "violations": []
+  },
+  "behaviour_units": [
+    {
+      "end_line": 147,
+      "heuristic": false,
+      "kind": "new_file",
+      "name": "services/incident_service.py",
+      "path": "services/incident_service.py",
+      "start_line": 1
+    }
+  ],
+  "candidate_fingerprint": "f1a0451d03e85fa9664842f5486f5461504f23add10576ef1c78a1c46851dbaa",
+  "contract_digest": "d2e7f4b33211fadd007e0c2acc1523c5060302e0b9e3e55483756cbb729d7d82",
+  "decision": {
+    "admitted": true,
+    "detail": "the candidate was admitted and the slice is not yet ready; the agent gets another turn. slice SLICE-crisis-atlas-services is not ready: 5 unmet condition(s). incident-service requires crisis_atlas/services/incident_service.py, which the candidate does not contain at that path; incident-service: missing artifact(s): crisis_atlas/services/incident_service.py; never exercised: crisis_atlas/services/incident_service.py; export-service requires crisis_atlas/services/export_service.py, which the candidate does not contain at that path; export-service: missing artifact(s): crisis_atlas/services/export_service.py; never exercised: crisis_atlas/services/export_service.py; services/incident_service.py::services/incident_service.py (new_file) is new in this candidate and no current-state witness proves it is reached. Inherited tests staying green is not evidence: they stay green because they never reach it.",
+    "outcome": "continue",
+    "ready": false,
+    "repair_packet": "Slice SLICE-crisis-atlas-services is not ready. 5 unmet condition(s):\n\n- missing_required_artifact [crisis_atlas/services/incident_service.py]: incident-service requires crisis_atlas/services/incident_service.py, which the candidate does not contain at that path\n- obligation_unproved [incident-service]: incident-service: missing artifact(s): crisis_atlas/services/incident_service.py; never exercised: crisis_atlas/services/incident_service.py\n- missing_required_artifact [crisis_atlas/services/export_service.py]: export-service requires crisis_atlas/services/export_service.py, which the candidate does not contain at that path\n- obligation_unproved [export-service]: export-service: missing artifact(s): crisis_atlas/services/export_service.py; never exercised: crisis_atlas/services/export_service.py\n- changed_behaviour_unexercised [services/incident_service.py]: services/incident_service.py::services/incident_service.py (new_file) is new in this candidate and no current-state witness proves it is reached. Inherited tests staying green is not evidence: they stay green because they never reach it.",
+    "schema_version": "1.0"
+  },
+  "diagnostics": null,
+  "emitter_error": null,
+  "readiness": {
+    "behaviour_units": [
+      {
+        "end_line": 147,
+        "heuristic": false,
+        "kind": "new_file",
+        "name": "services/incident_service.py",
+        "path": "services/incident_service.py",
+        "start_line": 1
+      }
+    ],
+    "contract_digest": "d2e7f4b33211fadd007e0c2acc1523c5060302e0b9e3e55483756cbb729d7d82",
+    "detail": "slice SLICE-crisis-atlas-services is not ready: 5 unmet condition(s). incident-service requires crisis_atlas/services/incident_service.py, which the candidate does not contain at that path; incident-service: missing artifact(s): crisis_atlas/services/incident_service.py; never exercised: crisis_atlas/services/incident_service.py; export-service requires crisis_atlas/services/export_service.py, which the candidate does not contain at that path; export-service: missing artifact(s): crisis_atlas/services/export_service.py; never exercised: crisis_atlas/services/export_service.py; services/incident_service.py::services/incident_service.py (new_file) is new in this candidate and no current-state witness proves it is reached. Inherited tests staying green is not evidence: they stay green because they never reach it.",
+    "findings": [
+      {
+        "block": "missing_required_artifact",
+        "detail": "incident-service requires crisis_atlas/services/incident_service.py, which the candidate does not contain at that path",
+        "obligation_id": "incident-service",
+        "path": "crisis_atlas/services/incident_service.py"
+      },
+      {
+        "block": "obligation_unproved",
+        "detail": "incident-service: missing artifact(s): crisis_atlas/services/incident_service.py; never exercised: crisis_atlas/services/incident_service.py",
+        "obligation_id": "incident-service",
+        "path": null
+      },
+      {
+        "block": "missing_required_artifact",
+        "detail": "export-service requires crisis_atlas/services/export_service.py, which the candidate does not contain at that path",
+        "obligation_id": "export-service",
+        "path": "crisis_atlas/services/export_service.py"
+      },
+      {
+        "block": "obligation_unproved",
+        "detail": "export-service: missing artifact(s): crisis_atlas/services/export_service.py; never exercised: crisis_atlas/services/export_service.py",
+        "obligation_id": "export-service",
+        "path": null
+      },
+      {
+        "block": "changed_behaviour_unexercised",
+        "detail": "services/incident_service.py::services/incident_service.py (new_file) is new in this candidate and no current-state witness proves it is reached. Inherited tests staying green is not evidence: they stay green because they never reach it.",
+        "obligation_id": null,
+        "path": "services/incident_service.py"
+      }
+    ],
+    "obligations": [
+      {
+        "detail": "missing artifact(s): crisis_atlas/services/incident_service.py; never exercised: crisis_atlas/services/incident_service.py",
+        "kind": "production_artifact",
+        "obligation_id": "incident-service",
+        "status": "unproved",
+        "supporting_witnesses": [
+          "tests-54ef3d31b8eb"
+        ]
+      },
+      {
+        "detail": "missing artifact(s): crisis_atlas/services/export_service.py; never exercised: crisis_atlas/services/export_service.py",
+        "kind": "production_artifact",
+        "obligation_id": "export-service",
+        "status": "unproved",
+        "supporting_witnesses": [
+          "tests-54ef3d31b8eb"
+        ]
+      }
+    ],
+    "ready": false,
+    "rejected_witnesses": [],
+    "schema_version": "1.0",
+    "slice_id": "SLICE-crisis-atlas-services",
+    "unexercised_behaviour": [
+      "services/incident_service.py::services/incident_service.py"
+    ]
+  },
+  "schema_version": "1.0",
+  "slice_id": "SLICE-crisis-atlas-services",
+  "witness_ids": [
+    "tests-54ef3d31b8eb"
+  ]
+}

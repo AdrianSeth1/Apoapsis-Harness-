@@ -1,0 +1,19 @@
+{
+  "commands": [
+    {
+      "covered_paths": [],
+      "exit_code": 0,
+      "name": "unit-tests",
+      "worktree_fingerprint": "30ba22d0261a71cdfd3aaafec8380210b295508791c1cce7dc6d2f0ada83ba47"
+    }
+  ],
+  "emitter_failed": false,
+  "outcome": "CONTINUE",
+  "readiness_blocks": [
+    "CHANGED_BEHAVIOUR_UNEXERCISED",
+    "MISSING_REQUIRED_ARTIFACT",
+    "OBLIGATION_UNPROVED"
+  ],
+  "repair_packet": "Slice SLICE-crisis-atlas-services is not ready. 5 unmet condition(s):\n\n- obligation_unproved [incident-service]: incident-service: never exercised: crisis_atlas/services/incident_service.py; unproved criteria: AC-INCIDENT-SERVICE\n- missing_required_artifact [crisis_atlas/services/export_service.py]: export-service requires crisis_atlas/services/export_service.py, which the candidate does not contain at that path\n- obligation_unproved [export-service]: export-service: missing artifact(s): crisis_atlas/services/export_service.py; never exercised: crisis_atlas/services/export_service.py; unproved criteria: AC-EXPORT-SERVICE\n- changed_behaviour_unexercised [crisis_atlas/services/__init__.py]: crisis_atlas/services/__init__.py::crisis_atlas/services/__init__.py (new_file) is new in this candidate and no current-state witness proves it is reached. Inherited tests staying green is not evidence: they stay green because they never reach it.\n- changed_behaviour_unexercised [crisis_atlas/services/incident_service.py]: crisis_atlas/services/incident_service.py::crisis_atlas/services/incident_service.py (new_file) is new in this candidate and no current-state witness proves it is reached. Inherited tests staying green is not evidence: they stay green because they never reach it.",
+  "satisfied_criteria": []
+}

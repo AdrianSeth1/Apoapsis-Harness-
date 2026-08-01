@@ -1,0 +1,19 @@
+{
+  "authorises_live_inference": false,
+  "authorises_zero_token_rehearsal": true,
+  "created_utc": "2026-07-31T00:00:00Z",
+  "crisis_atlas_package_digest": "d7c4b195ef505975c90f21892a17f633dce6d943dc4224ef3fd01010aef25d22",
+  "evaluator_framework_commit": "c3a61e6700999dd56b12066bbb71410c60a94fa1",
+  "lock_id": "slice7-crisis-atlas-pilot-lock-v4",
+  "manifest_commit": "42882597d15abed397443d4f32f0608f6e1398ed",
+  "manifest_digest": "a582ee2a227ac9890b99cbb721c0a0976509493b00cb654d2aa889d702d7762f",
+  "manifest_path": "docs/qualification/slice7-crisis-atlas-pilot-manifest-v4.json",
+  "paired_execution_identities": [
+    "crisis-atlas-rep-1",
+    "crisis-atlas-rep-2",
+    "crisis-atlas-rep-3"
+  ],
+  "qualification_evidence_sha256": "7b2d702ebd5d333bf9f6960023849d1334572e0fac08f8cc0750e668caabfba8",
+  "schema_version": "1.0",
+  "subject_implementation_commit": "c3a61e6700999dd56b12066bbb71410c60a94fa1"
+}

@@ -1,0 +1,84 @@
+{
+  "arm": "apoapsis_sandbox",
+  "checkpoint": {
+    "commands": [
+      {
+        "covered_paths": [],
+        "exit_code": 0,
+        "name": "unit-tests",
+        "worktree_fingerprint": "4e0f9e51710ee4616dfe1d641c57daf90823f8f01aefc1574152990a0ff6bc0b"
+      }
+    ],
+    "emitter_failed": false,
+    "outcome": "COMPLETE",
+    "readiness_blocks": [],
+    "repair_packet": "",
+    "satisfied_criteria": [
+      "AC-CHANGED-BEHAVIOUR-EXERCISED",
+      "AC-EXPORT-SERVICE",
+      "AC-INCIDENT-SERVICE"
+    ]
+  },
+  "created_paths": [
+    ".gitignore",
+    "README.md",
+    "TASK.md",
+    "app.js",
+    "crisis_atlas/__init__.py",
+    "crisis_atlas/services/__init__.py",
+    "crisis_atlas/services/export_service.py",
+    "crisis_atlas/services/incident_service.py",
+    "index.html",
+    "styles.css",
+    "tests/__init__.py",
+    "tests/test_services.py",
+    "tests/test_smoke.py"
+  ],
+  "mounts": {
+    "entries": [
+      "overlay / overlay rw,relatime,lowerdir=/var/lib/desktop-containerd/daemon/io.containerd.snapshotter.v1.overlayfs/snapshots/1735/fs:/var/lib/desktop-containerd/daemon/io.containerd.snapshotter.v1.overlayfs/snapshots/1642/fs:/var/lib/desktop-containerd/daemon/io.containerd.snapshotter.v1.overlayfs/snapshots/1641/fs:/var/lib/desktop-containerd/daemon/io.containerd.snapshotter.v1.overlayfs/snapshots/410/fs:/var/lib/desktop-containerd/daemon/io.containerd.snapshotter.v1.overlayfs/snapshots/409/fs:/var/lib/desktop-containerd/daemon/io.containerd.snapshotter.v1.overlayfs/snapshots/407/fs:/var/lib/desktop-containerd/daemon/io.containerd.snapshotter.v1.overlayfs/snapshots/403/fs:/var/lib/desktop-containerd/daemon/io.containerd.snapshotter.v1.overlayfs/snapshots/401/fs,upperdir=/var/lib/desktop-containerd/daemon/io.containerd.snapshotter.v1.overlayfs/snapshots/1736/fs,workdir=/var/lib/desktop-containerd/daemon/io.containerd.snapshotter.v1.overlayfs/snapshots/1736/work 0 0",
+      "proc /proc proc rw,nosuid,nodev,noexec,relatime 0 0",
+      "tmpfs /dev tmpfs rw,nosuid,size=65536k,mode=755 0 0",
+      "devpts /dev/pts devpts rw,nosuid,noexec,relatime,gid=5,mode=620,ptmxmode=666 0 0",
+      "sysfs /sys sysfs ro,nosuid,nodev,noexec,relatime 0 0",
+      "cgroup /sys/fs/cgroup cgroup2 ro,nosuid,nodev,noexec,relatime,nsdelegate 0 0",
+      "mqueue /dev/mqueue mqueue rw,nosuid,nodev,noexec,relatime 0 0",
+      "shm /dev/shm tmpfs rw,nosuid,nodev,noexec,relatime,size=65536k 0 0",
+      "tmpfs /tmp tmpfs rw,nosuid,nodev,noexec,relatime,size=524288k 0 0",
+      "/dev/sdf /workspace ext4 rw,relatime,discard,errors=remount-ro,data=ordered 0 0",
+      "/dev/sdf /task/task.md ext4 ro,relatime,discard,errors=remount-ro,data=ordered 0 0",
+      "/dev/sdf /run/apoapsis ext4 rw,relatime,discard,errors=remount-ro,data=ordered 0 0",
+      "/dev/sdd /etc/resolv.conf ext4 rw,relatime 0 0",
+      "/dev/sdd /etc/hostname ext4 rw,relatime 0 0",
+      "/dev/sdd /etc/hosts ext4 rw,relatime 0 0",
+      "/dev/sdf /opt/apoapsis/forwarder.py ext4 ro,relatime,discard,errors=remount-ro,data=ordered 0 0",
+      "proc /proc/bus proc ro,nosuid,nodev,noexec,relatime 0 0",
+      "proc /proc/fs proc ro,nosuid,nodev,noexec,relatime 0 0",
+      "proc /proc/irq proc ro,nosuid,nodev,noexec,relatime 0 0",
+      "proc /proc/sys proc ro,nosuid,nodev,noexec,relatime 0 0",
+      "proc /proc/sysrq-trigger proc ro,nosuid,nodev,noexec,relatime 0 0",
+      "tmpfs /proc/acpi tmpfs ro,relatime 0 0",
+      "tmpfs /proc/interrupts tmpfs rw,nosuid,size=65536k,mode=755 0 0",
+      "tmpfs /proc/kcore tmpfs rw,nosuid,size=65536k,mode=755 0 0",
+      "tmpfs /proc/keys tmpfs rw,nosuid,size=65536k,mode=755 0 0",
+      "tmpfs /proc/latency_stats tmpfs rw,nosuid,size=65536k,mode=755 0 0",
+      "tmpfs /proc/scsi tmpfs ro,relatime 0 0",
+      "tmpfs /proc/timer_list tmpfs rw,nosuid,size=65536k,mode=755 0 0",
+      "tmpfs /sys/firmware tmpfs ro,relatime 0 0"
+    ],
+    "evaluator_only_paths_present": [],
+    "forwarder_present": true,
+    "read_failed": null,
+    "socket_directory_present": true,
+    "task_artifact_present": true,
+    "workspace_present": true
+  },
+  "order": 2,
+  "provider_requests": 2,
+  "relay_observed_requests": 2,
+  "repetition": "crisis-atlas-rep-3",
+  "script": "complete_proposal",
+  "seed_commit_observed": "197b3610e5720cf36718c548fa19c05fe784a978",
+  "settings_sha256": "c5a7d909839f147faf807abfc8d116f3f6d33510d0c33554e6f095ac2f1b3e82",
+  "task_bytes_sha256": "bf28df2ff091e6757c1d701a8772a537860ec1ea185577c4654c1b09f3bfe63e"
+}

@@ -6,6 +6,7 @@ from typing import Any
 
 from apoapsis.architect.audit import PlanAuditStore
 from apoapsis.architect.store import SQLitePlanStore
+from apoapsis.architect.validation import validate_and_record_plan
 from apoapsis.config import ApoapsisConfig
 from apoapsis.discovery.errors import (
     ClarificationRoundCeilingExceededError,
@@ -40,11 +41,10 @@ def apply_frontier_planning_response(
     configured round ceiling is already reached at this package's round --
     this is a bounded planning workflow, never an unbounded conversation;
     the frontier model must return a complete plan instead. A ``plan``
-    response continues through the existing, completely unmodified
-    Architect Mode import machinery (``SQLitePlanStore.create_plan``, the
-    same function ``architect.importer.import_planner_response`` calls) --
-    the same ``apoapsis plan validate``/``apoapsis plan approve`` commands
-    then work on the resulting plan exactly as they always have.
+    response enters the ordinary Architect Mode store and immediately runs
+    the same deterministic validation used by the CLI and UI. A clean plan
+    becomes ``VALIDATED``; a plan with errors remains ``PROPOSED`` with its
+    findings recorded. Human approval always remains a separate action.
     """
 
     root_path = Path(root).resolve()
@@ -86,7 +86,16 @@ def apply_frontier_planning_response(
     audit = PlanAuditStore(root_path, plan_id)
     audit.write_json("response.json", raw_payload, kind="planner_response")
     audit.write_json("plan-v1.json", envelope.plan, kind="architecture_plan")
-    plan_store.create_plan(plan_id, package.package_id, package.idea_text, envelope.plan)
+    created = plan_store.create_plan(
+        plan_id, package.package_id, package.idea_text, envelope.plan
+    )
+    validate_and_record_plan(
+        root_path,
+        plan_store,
+        config,
+        plan_id,
+        expected_version=created.version,
+    )
     return discovery_store.record_frontier_plan(
         session.session_id, plan_id, expected_version=session.version
     )

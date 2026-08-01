@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import sys
 import uuid
 from pathlib import Path
+from urllib.parse import urlparse
 
 from pydantic import ValidationError
 
@@ -15,8 +17,7 @@ from apoapsis.architect.importer import import_planner_response
 from apoapsis.architect.package import build_planner_request_package
 from apoapsis.architect.audit import PlanAuditStore, write_package_artifact
 from apoapsis.architect.store import SQLitePlanStore
-from apoapsis.architect.validation import validate_plan
-from apoapsis.architect.schema import PlanValidationResult, ValidationSeverity
+from apoapsis.architect.validation import validate_and_record_plan
 from apoapsis.architect.slice_service import (
     approve_slice,
     package_slice,
@@ -65,6 +66,7 @@ from apoapsis.manual_frontier.package import (
     write_handoff_artifacts,
 )
 from apoapsis.manual_frontier.store import ManualFrontierPreviewStore
+from apoapsis.reporting.current_state import project_current_task_evidence
 from apoapsis.review.case import build_review_case
 from apoapsis.review.errors import ReviewError
 from apoapsis.review.execution import execute_review_action, run_review_operation
@@ -105,6 +107,13 @@ from apoapsis.evaluation.planning_schemas import (
     PlannerProvenance,
     PlanningComparisonReport,
 )
+from apoapsis.evaluation.crisis_atlas_facts import crisis_atlas_records
+from apoapsis.evaluation.paired import (
+    PairedArmKind,
+    PairedArmRecord,
+    score_paired_corpus,
+)
+from apoapsis.evaluation.paired_report import write_paired_corpus
 from apoapsis.evaluation.report import write_aggregate, write_comparison
 from apoapsis.evaluation.spend_ceiling import (
     HostedSpendCeilingExceededError,
@@ -157,13 +166,14 @@ DEFAULT_CONFIG = """# Apoapsis Harness project configuration
 language = "python"
 
 [models.frontier]
-provider = "ollama"
-base_url = "http://127.0.0.1:11434"
-model = "qwen3-coder-next:q4_K_M"
+provider = "openai_compatible"
+base_url = "http://127.0.0.1:8000/v1"
+model = "Laguna-S-2.1-UD-Q4_K_S"
+api_key_env = "APOAPSIS_LOCAL_CODER_API_KEY"
 timeout_seconds = 900
 max_output_tokens = 8192
 temperature = 0.0
-context_window_tokens = 65536
+context_window_tokens = 32768
 think = false
 specification_think = false
 
@@ -173,14 +183,14 @@ output_per_million_usd = 0
 cached_input_per_million_usd = 0
 
 [models.local_coder]
-provider = "ollama"
-base_url = "http://127.0.0.1:11434"
-model = "qwen3-coder-next:q4_K_M"
+provider = "openai_compatible"
+base_url = "http://127.0.0.1:8000/v1"
+model = "Laguna-S-2.1-UD-Q4_K_S"
 api_key_env = "APOAPSIS_LOCAL_CODER_API_KEY"
 timeout_seconds = 900
 max_output_tokens = 8192
 temperature = 0.0
-context_window_tokens = 65536
+context_window_tokens = 32768
 think = false
 specification_think = false
 
@@ -193,6 +203,14 @@ cached_input_per_million_usd = 0
 mode = "agent"
 route = "auto"
 completion_policy = "baseline"
+
+[execution.capability_sandbox]
+enabled = true
+runtime_profile = "crisis-atlas-v8-qwen3.6-27b"
+qualified_model_alias = "qwen3.6-27b"
+high_assurance_parity_guard = false
+max_native_continuations = 2
+runtime_root = "/tmp/apoapsis-capability-sandbox"
 
 [execution.agent]
 max_turns = 20
@@ -271,7 +289,19 @@ max_seconds = 300
 [research.sources.official_docs]
 enabled = true
 priority = 1
+# Official documentation research is impossible for a vendor/domain that is
+# not listed here -- add every ecosystem this project actually needs before
+# relying on official-doc research (ADR 0055). Examples:
+#   Google/Gmail API docs:  "developers.google.com"
+#   Twilio docs:            "www.twilio.com"
+#   Vonage docs:            "developer.vonage.com"
 allowed_domains = ["docs.python.org"]
+# No search provider ships in this repository yet (ADR 0055): with no
+# provider configured, official_docs can only use URLs the local model
+# names explicitly, and every one of those still has to pass
+# allowed_domains above. Research questions needing discovery of a URL you
+# have not listed here will be reported as unusable, not silently dropped.
+search_provider = "none"
 
 [research.sources.github]
 enabled = true
@@ -288,6 +318,12 @@ user_agent = "apoapsis-harness-research/1.0"
 purposes = ["user_pain_points", "product_expectations", "failure_discovery"]
 
 [research.security]
+# This is the lower-level network allowlist every research fetch is checked
+# against, in addition to (not instead of) [research.sources.official_docs]
+# allowed_domains above -- a domain must be present in BOTH lists for
+# official-doc research to reach it (ADR 0055). Add any domain you add above
+# to this list too, e.g. "developers.google.com", "www.twilio.com",
+# "developer.vonage.com".
 allow_domains = [
   "docs.python.org", "github.com", "api.github.com", "reddit.com",
   "www.reddit.com", "oauth.reddit.com"
@@ -334,6 +370,31 @@ required = true
 # this command is strong enough product proof, then map each criterion's
 # verification_method to "unit-tests" (or another acceptance command).
 acceptance = false
+
+# For a dependency-free browser product, uncomment this. Tests that assert
+# fragments exist in index.html, styles.css, and app.js can all pass while
+# the three files describe different applications -- a script wired to ids
+# the markup never defines, styles aimed at classes nothing carries. This
+# command cross-references them against each other and fails when they
+# disagree. See ADR 0069.
+#
+# [[verification.commands]]
+# name = "web-product-integrity"
+# category = "acceptance"
+# description = "Cross-references the product's HTML, CSS, and JavaScript."
+# argv = ["python", "-m", "apoapsis", "verify-web-product",
+#         "--forbid-external-resources", "--treat-warnings-as-errors"]
+# timeout_seconds = 60
+# required = true
+# acceptance = true
+#
+# ADR 0073: --forbid-external-resources bans third-party origins only. A
+# product that talks to its own backend with fetch('/incidents') passes it.
+# Add --forbid-runtime-network-apis only for a product that must make no
+# runtime request of any kind. This check is a static cross-reference and
+# prints the evidence it examined; when a criterion is about persistence,
+# browser/API integration, or interaction behavior, configure a
+# project-specific acceptance command as well.
 
 [architect.ceilings]
 max_slices = 40
@@ -465,6 +526,77 @@ def build_parser() -> argparse.ArgumentParser:
     verify = subparsers.add_parser("verify", help="run configured checks")
     verify.add_argument("task_id")
     verify.add_argument("--path", type=Path)
+
+    # ADR 0069. Deliberately a plain subcommand rather than something the
+    # harness configures for a project on its own: what proves a product is
+    # an owner decision, and this is a check an owner can choose to require,
+    # not one Apoapsis silently imposes.
+    verify_web = subparsers.add_parser(
+        "verify-web-product",
+        help=(
+            "cross-reference a dependency-free browser product's HTML, CSS, "
+            "and JavaScript against each other"
+        ),
+    )
+    verify_web.add_argument(
+        "--root",
+        type=Path,
+        default=None,
+        help="product directory (defaults to the current directory)",
+    )
+    verify_web.add_argument(
+        "--entry", default="index.html", help="the document the product opens from"
+    )
+    verify_web.add_argument(
+        "--optional-element",
+        action="append",
+        default=[],
+        metavar="NAME",
+        help=(
+            "an id or class the product creates at runtime; repeatable, and "
+            "an explicit owner statement rather than an inferred exception"
+        ),
+    )
+    # ADR 0073 narrowed this flag and added the one below it. Before 0073
+    # this single flag also failed on `fetch('/incidents')`, which made a
+    # product forbidden to depend on a CDN equally forbidden to talk to its
+    # own backend.
+    verify_web.add_argument(
+        "--forbid-external-resources",
+        action="store_true",
+        help=(
+            "fail on third-party origins: cross-origin and protocol-relative "
+            "URLs, WebSockets, absolute loopback URLs, and external assets. "
+            "Same-origin requests such as fetch('/incidents') are allowed "
+            "and reported; use --forbid-runtime-network-apis to ban those too"
+        ),
+    )
+    verify_web.add_argument(
+        "--forbid-runtime-network-apis",
+        action="store_true",
+        help=(
+            "fail on any runtime request API at all, same-origin included "
+            "(fetch, XMLHttpRequest, WebSocket, EventSource, sendBeacon); "
+            "this is the pre-ADR-0073 meaning of "
+            "--forbid-external-resources"
+        ),
+    )
+    verify_web.add_argument(
+        "--treat-warnings-as-errors",
+        action="store_true",
+        help="fail on dead style rules as well as unresolved references",
+    )
+    verify_web.add_argument(
+        "--behavior",
+        action="store_true",
+        help=(
+            "additionally require real in-browser behavioral verification; "
+            "fails until a browser probe provider exists"
+        ),
+    )
+    verify_web.add_argument(
+        "--json", action="store_true", help="emit the full report as JSON"
+    )
 
     rollback = subparsers.add_parser(
         "rollback", help="remove a task worktree and mark it rolled back"
@@ -1083,7 +1215,181 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         help="directory for aggregate.json and aggregate.md",
     )
+
+    paired = subparsers.add_parser(
+        "eval-paired",
+        help=(
+            "score a paired corpus: two scorecards and four separately reported "
+            "release gates, with no provider calls"
+        ),
+    )
+    paired.add_argument(
+        "records",
+        nargs="*",
+        type=Path,
+        help=(
+            "PairedArmRecord JSON files, or a JSON array of them. Omit to rescore "
+            "the frozen Crisis Atlas arms."
+        ),
+    )
+    paired.add_argument(
+        "--candidate-arm",
+        default=PairedArmKind.CAPABILITY_SANDBOX.value,
+        choices=[item.value for item in PairedArmKind],
+        help="arm compared against the default-Qwen control",
+    )
+    paired.add_argument(
+        "--output-dir",
+        type=Path,
+        help="directory for paired.json and paired.md",
+    )
+
+    workcell = subparsers.add_parser(
+        "workcell-preflight",
+        help=(
+            "validate a pinned Capability Sandbox workcell configuration and "
+            "check the container runtime, without starting a model"
+        ),
+    )
+    workcell.add_argument(
+        "config",
+        type=Path,
+        help="JSON file containing a fully pinned WorkcellConfig",
+    )
+
+    conformance = subparsers.add_parser(
+        "workcell-conformance",
+        help=(
+            "run the ordered live gate against a real endpoint: containment "
+            "probes, relay readiness, then the nine conformance checks"
+        ),
+    )
+    conformance.add_argument(
+        "config",
+        type=Path,
+        help="JSON file containing a fully pinned WorkcellConfig",
+    )
+    conformance.add_argument(
+        "--evidence-dir",
+        type=Path,
+        required=True,
+        help="directory to write the raw containment, readiness, and check records to",
+    )
+    conformance.add_argument(
+        "--cli-bundle-path",
+        default="/usr/local/lib/node_modules/@qwen-code/qwen-code",
+        help=(
+            "path to the agent CLI bundle inside the workcell image; its "
+            "declared token limits are read from it by executing its own module"
+        ),
+    )
+    conformance.add_argument(
+        "--server-max-output-tokens",
+        type=int,
+        required=True,
+        help=(
+            "the output ceiling the model server was actually launched with; "
+            "llama-server does not report one, so it is supplied and hashed "
+            "into the pin's server_flags_sha256 rather than guessed"
+        ),
+    )
+    conformance.add_argument(
+        "--cli-settings",
+        type=Path,
+        default=None,
+        help=(
+            "JSON settings file to install into the agent CLI's home inside "
+            "the workcell before anything is captured. This is where a "
+            "provider-specific generationConfig override lives; the file is "
+            "installed, and then what the CLI *resolved* from it is captured "
+            "and hashed, because the two are not the same object"
+        ),
+    )
+    conformance.add_argument(
+        "--cli-home",
+        default="/tmp/qwen-home",
+        help="the agent CLI's HOME inside the workcell image",
+    )
+    conformance.add_argument(
+        "--skip-containment",
+        action="store_true",
+        help=(
+            "run readiness and conformance only. For re-running the checks "
+            "after a containment pass in the same session; never for reporting "
+            "containment as held"
+        ),
+    )
+
+    gate = subparsers.add_parser(
+        "slice3-gate",
+        help=(
+            "decide whether candidate delta admission may begin, by "
+            "re-deriving the verdict from a capability spike report"
+        ),
+    )
+    gate.add_argument(
+        "report",
+        type=Path,
+        help="JSON file containing a CapabilitySpikeReport",
+    )
+
+    rehearse = subparsers.add_parser(
+        "rehearse-pilot",
+        help=(
+            "execute the locked Crisis Atlas pilot rehearsal end to end "
+            "against a scripted provider; no model is contacted"
+        ),
+    )
+    rehearse.add_argument("--manifest", type=Path, required=True)
+    rehearse.add_argument("--lock", type=Path, required=True)
+    rehearse.add_argument("--evidence-root", type=Path, required=True)
+    rehearse.add_argument(
+        "--seed-repository",
+        type=Path,
+        default=None,
+        help="Crisis Atlas seed; defaults to the in-repository evaluation fixture",
+    )
+    rehearse.add_argument(
+        "--relay-iterations",
+        type=int,
+        default=20,
+        help="consecutive relay readiness iterations required by stage 3",
+    )
     return parser
+
+
+def _rehearse_pilot_command(args) -> str:
+    """A shell around `run_rehearsal`, and nothing more.
+
+    Deliberately thin. Any decision made here would be a decision made outside
+    the module the manifest binds, which is exactly the gap that made lock v2
+    bind ingredients rather than a runner.
+    """
+
+    from apoapsis.qualification.runner import run_rehearsal
+
+    report = run_rehearsal(
+        args.manifest,
+        args.lock,
+        args.evidence_root,
+        seed_repository=args.seed_repository,
+        relay_iterations=args.relay_iterations,
+    )
+    lines = [
+        f"verdict:        {report.verdict}",
+        f"reason:         {report.reason}",
+        f"arm slots:      {len(report.arm_slots)}",
+        f"controls:       {len(report.negative_controls)}",
+        f"relay stress:   {report.relay_stress_iterations} iterations, "
+        f"passed={report.relay_stress_passed}",
+        f"evidence root:  {report.evidence_root}",
+        f"evidence digest:{report.evidence_digest}",
+        f"report digest:  {report.digest()}",
+        f"live inference: {report.authorises_live_inference}",
+    ]
+    for stage in report.stages:
+        lines.append(f"  {stage.outcome.value.upper():<13} {stage.stage}")
+    return "\n".join(lines)
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -1156,8 +1462,37 @@ def _dispatch(args: argparse.Namespace) -> dict[str, object] | None:
         )
     if args.command == "eval-aggregate":
         return _aggregate_eval_reports(root, args.comparisons, args.output_dir)
+    if args.command == "workcell-preflight":
+        return _workcell_preflight_command(args.config)
+    if args.command == "workcell-conformance":
+        return _workcell_conformance_command(
+            args.config,
+            args.evidence_dir,
+            cli_bundle_path=args.cli_bundle_path,
+            server_max_output_tokens=args.server_max_output_tokens,
+            skip_containment=args.skip_containment,
+            cli_settings_path=args.cli_settings,
+            cli_home=args.cli_home,
+        )
+    if args.command == "slice3-gate":
+        return _slice3_gate_command(args.report)
+    # Deliberately before the task store is opened. The rehearsal runs against
+    # frozen artifacts and a scripted provider; it needs no project database,
+    # and requiring one would couple the bound entry point to state the
+    # rehearsal does not use.
+    if args.command == "rehearse-pilot":
+        return _rehearse_pilot_command(args)
+    if args.command == "eval-paired":
+        return _score_paired_corpus_command(
+            root, args.records, args.output_dir, args.candidate_arm
+        )
     if args.command == "plan":
         return _plan_command(root, args)
+    # Runs before the task store is opened: this check is meant to be
+    # configured as a verification command and executed inside a disposable
+    # worktree, where no Apoapsis database exists and none should be needed.
+    if args.command == "verify-web-product":
+        return _verify_web_product(root, args)
     if args.command == "discover":
         return _discover_command(root, args)
     store = _store(root)
@@ -1194,9 +1529,16 @@ def _dispatch(args: argparse.Namespace) -> dict[str, object] | None:
         return _manual_frontier_command(root, store, args)
     if args.command == "inspect":
         record = store.get_task(args.task_id)
+        events = store.events(args.task_id)
         result: dict[str, object] = {
             "task": record.model_dump(mode="json"),
-            "events": [event.model_dump(mode="json") for event in store.events(args.task_id)],
+            "events": [event.model_dump(mode="json") for event in events],
+            # The original-stop snapshot below is preserved verbatim; this
+            # is the current projection that labels the task's outcome
+            # (ADR 0072). Both are emitted, distinctly named.
+            "current_evidence": project_current_task_evidence(
+                root, store, args.task_id, record=record, events=events
+            ).model_dump(mode="json"),
         }
         report_path = root / ".apoapsis" / "tasks" / args.task_id / "report.json"
         if report_path.is_file():
@@ -1223,6 +1565,51 @@ def _dispatch(args: argparse.Namespace) -> dict[str, object] | None:
     raise AssertionError(f"unhandled command: {args.command}")
 
 
+# Entries `apoapsis init` ensures a project ignores, each paired with the
+# spellings that already cover it.
+#
+# The Python cache entries are ergonomics only (ADR 0063). Reviewer-facing
+# changed-file output is made correct by `repository.changed_paths`'
+# classifier, which does not consult `.gitignore` at all -- existing projects
+# cannot be assumed to have been initialized with this template, and the
+# harness must report the right thing for them too.
+_GITIGNORE_ENTRIES: tuple[tuple[str, frozenset[str]], ...] = (
+    (
+        ".apoapsis/",
+        frozenset({".apoapsis", ".apoapsis/", "/.apoapsis", "/.apoapsis/"}),
+    ),
+    (
+        "__pycache__/",
+        frozenset({"__pycache__", "__pycache__/", "/__pycache__", "/__pycache__/"}),
+    ),
+    ("*.py[cod]", frozenset({"*.py[cod]", "*.pyc", "*.pyo", "*.pyd"})),
+    (".pytest_cache/", frozenset({".pytest_cache", ".pytest_cache/"})),
+)
+
+
+def _ensure_ignore_entries(ignore_file: Path) -> bool:
+    """Add Apoapsis runtime exclusions to one Git ignore file."""
+
+    ignore_file.parent.mkdir(parents=True, exist_ok=True)
+    existing = (
+        ignore_file.read_text(encoding="utf-8") if ignore_file.is_file() else ""
+    )
+    present = {line.strip() for line in existing.splitlines()}
+    missing = [
+        entry
+        for entry, covered in _GITIGNORE_ENTRIES
+        if not (present & covered)
+    ]
+    if not missing:
+        return False
+    separator = "" if existing == "" or existing.endswith("\n") else "\n"
+    ignore_file.write_text(
+        existing + separator + "".join(f"{entry}\n" for entry in missing),
+        encoding="utf-8",
+    )
+    return True
+
+
 def _ensure_apoapsis_gitignored(root: Path) -> bool:
     """Ensures ``.apoapsis/`` (Apoapsis's own runtime state -- task, plan,
     and discovery databases, caches, and audit artifacts, never project
@@ -1235,23 +1622,32 @@ def _ensure_apoapsis_gitignored(root: Path) -> bool:
     real uncommitted change to the user's project, so it refuses either
     way. Idempotent: returns ``False`` and leaves the file untouched if an
     existing ``.gitignore`` already has an entry covering ``.apoapsis/``,
-    in whichever of its common spellings."""
+    in whichever of its common spellings. The same idempotent treatment is
+    applied to the Python cache entries in ``_GITIGNORE_ENTRIES``, so a
+    freshly initialized project does not present verification byproducts as
+    working-tree changes at all."""
 
-    gitignore = root / ".gitignore"
-    entry = ".apoapsis/"
-    already_covered = {".apoapsis", ".apoapsis/", "/.apoapsis", "/.apoapsis/"}
-    if gitignore.is_file():
-        existing = gitignore.read_text(encoding="utf-8")
-        if any(line.strip() in already_covered for line in existing.splitlines()):
-            return False
-        separator = "" if existing == "" or existing.endswith("\n") else "\n"
-        gitignore.write_text(f"{existing}{separator}{entry}\n", encoding="utf-8")
-        return True
-    gitignore.write_text(f"{entry}\n", encoding="utf-8")
-    return True
+    return _ensure_ignore_entries(root / ".gitignore")
 
 
-def _init(root: Path) -> dict[str, object]:
+def _ensure_apoapsis_locally_ignored(root: Path) -> bool:
+    """Ignore runtime state without changing a project's tracked files.
+
+    The friendly launcher uses the repository-local Git exclude file so
+    selecting an established clean project does not immediately make it dirty.
+    The explicit CLI ``apoapsis init`` command retains its documented
+    ``.gitignore`` behavior.
+    """
+
+    repository = GitRepository(root)
+    raw_path = repository.run(["rev-parse", "--git-path", "info/exclude"]).stdout.strip()
+    exclude = Path(raw_path)
+    if not exclude.is_absolute():
+        exclude = root / exclude
+    return _ensure_ignore_entries(exclude.resolve())
+
+
+def _init(root: Path, *, local_git_exclude: bool = False) -> dict[str, object]:
     GitRepository(root)
     metadata = root / ".apoapsis"
     metadata.mkdir(parents=True, exist_ok=True)
@@ -1261,12 +1657,18 @@ def _init(root: Path) -> dict[str, object]:
         config.write_text(DEFAULT_CONFIG, encoding="utf-8")
         created_config = True
     SQLiteTaskStore(metadata / "apoapsis.db")
-    gitignore_updated = _ensure_apoapsis_gitignored(root)
+    gitignore_updated = (
+        False if local_git_exclude else _ensure_apoapsis_gitignored(root)
+    )
+    local_git_exclude_updated = (
+        _ensure_apoapsis_locally_ignored(root) if local_git_exclude else False
+    )
     return {
         "initialized": True,
         "metadata_directory": str(metadata),
         "config_created": created_config,
         "gitignore_updated": gitignore_updated,
+        "local_git_exclude_updated": local_git_exclude_updated,
     }
 
 
@@ -1336,23 +1738,12 @@ def _plan_validate(
 ) -> dict[str, object]:
     config = ApoapsisConfig.from_toml(root / ".apoapsis" / "config.toml")
     record = plan_store.get_plan(plan_id)
-    configured_names = {command.name for command in config.verification.commands}
-    findings = validate_plan(
-        record.plan,
-        configured_verification_commands=configured_names,
-        ceilings=config.architect.ceilings,
-    )
-    result = PlanValidationResult(
-        plan_id=plan_id,
-        plan_version=record.version,
-        valid=not any(item.severity == ValidationSeverity.ERROR for item in findings),
-        findings=findings,
-    )
-    updated = plan_store.record_validation(
-        plan_id, result, expected_version=record.version
-    )
-    PlanAuditStore(root, plan_id).write_json(
-        f"validation-v{record.version}.json", result, kind="plan_validation_result"
+    updated, result = validate_and_record_plan(
+        root,
+        plan_store,
+        config,
+        plan_id,
+        expected_version=record.version,
     )
     return {"plan": updated.model_dump(mode="json"), "validation": result.model_dump(mode="json")}
 
@@ -2053,16 +2444,20 @@ def _apply_context_profile(config: ApoapsisConfig, profile_name: str) -> Apoapsi
     """Apply a deterministic coding-context profile without mutating config files."""
 
     coding = config.models.local_coder or config.models.frontier
-    if coding.provider != "ollama":
+    if coding.provider == "openai_compatible" and not _is_loopback_endpoint(
+        coding.base_url
+    ):
         raise TaskStoreError(
-            "context profiles require the native Ollama local coding provider"
+            "context profiles require a loopback local coding provider"
         )
     try:
         profile = _CONTEXT_PROFILES[profile_name]
     except KeyError as exc:
         raise TaskStoreError(f"unsupported context profile: {profile_name}") from exc
     model_updates = {}
-    if config.models.frontier.provider == "ollama":
+    if config.models.frontier.provider == "ollama" or _is_loopback_endpoint(
+        config.models.frontier.base_url
+    ):
         model_updates["frontier"] = config.models.frontier.model_copy(
             update={"context_window_tokens": profile["context_window_tokens"]}
         )
@@ -2079,6 +2474,12 @@ def _apply_context_profile(config: ApoapsisConfig, profile_name: str) -> Apoapsi
         }
     )
     return config.model_copy(update={"models": models, "context": context})
+
+
+def _is_loopback_endpoint(value: str) -> bool:
+    parsed = urlparse(value)
+    hostname = (parsed.hostname or "").lower()
+    return hostname in {"127.0.0.1", "::1", "localhost"}
 
 
 def _build_frontier_adapter(config: FrontierProviderConfig) -> ModelProvider:
@@ -2679,6 +3080,465 @@ def _aggregate_eval_reports(
     return report.model_dump(mode="json")
 
 
+def _score_paired_corpus_command(
+    root: Path,
+    record_paths: list[Path],
+    output_dir: Path | None,
+    candidate_arm: str,
+) -> dict[str, object]:
+    """Rescore a paired corpus. Never calls a provider.
+
+    With no paths, this rescores the frozen Crisis Atlas arms, which is the
+    Slice 0 exit condition: the old arms must be re-evaluable without inference.
+    """
+
+    records: list[PairedArmRecord] = []
+    if record_paths:
+        for path in record_paths:
+            resolved = path.resolve()
+            if not resolved.is_file():
+                raise TaskStoreError(f"paired arm record not found: {resolved}")
+            try:
+                payload = json.loads(resolved.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                raise TaskStoreError(
+                    f"failed to read paired arm record {resolved}: {exc}"
+                ) from exc
+            entries = payload if isinstance(payload, list) else [payload]
+            records.extend(
+                PairedArmRecord.model_validate(entry) for entry in entries
+            )
+    else:
+        records = crisis_atlas_records()
+
+    seen: set[tuple[str, str]] = set()
+    for record in records:
+        key = (record.arm.value, record.case_id)
+        if key in seen:
+            raise TaskStoreError(
+                f"duplicate arm/case pair would double-count results: {key}"
+            )
+        seen.add(key)
+
+    corpus_id = f"EVAL-PAIRED-{uuid.uuid4().hex[:12].upper()}"
+    report = score_paired_corpus(
+        records,
+        corpus_id=corpus_id,
+        candidate_arm=PairedArmKind(candidate_arm),
+    )
+    resolved_output = (
+        output_dir if output_dir is not None else root / ".apoapsis-eval" / corpus_id
+    )
+    write_paired_corpus(resolved_output, report)
+    return report.model_dump(mode="json")
+
+
+def _workcell_conformance_command(
+    config_path: Path,
+    evidence_dir: Path,
+    *,
+    cli_bundle_path: str,
+    server_max_output_tokens: int,
+    skip_containment: bool = False,
+    cli_settings_path: Path | None = None,
+    cli_home: str = "/tmp/qwen-home",
+) -> dict[str, object]:
+    """Run the ordered live gate and write every observation to disk.
+
+    The order is the handoff's -- containment, then readiness, then the nine
+    checks -- and each stage stops the ones after it. That is not tidiness: the
+    conformance suite spends real tokens, and spending them inside a box that
+    already failed containment would measure an experiment that is invalid
+    before it starts.
+
+    Nothing here decides whether the run was good. It records what happened and
+    hands the observations to the fail-closed evaluators, so a stage that could
+    not be run stays `NOT_RUN` rather than becoming an absence nobody notices.
+    """
+
+    from apoapsis.workcell.conformance_driver import DeclaredCliLimits
+    from apoapsis.workcell.controller import load_workcell_config
+    from apoapsis.workcell.live_session import LiveWorkcellSession, write_evidence
+    from apoapsis.workcell.relay_policy import RelayRejection
+    from apoapsis.workcell.pin_capture import (
+        PinCaptureError,
+        cli_declared_limits_argv,
+        cli_effective_config_argv,
+        cli_export_discovery_argv,
+        cli_native_context_argv,
+        extract_resolved_limits,
+        native_context_pin_from_resolved,
+        parse_declared_limits,
+        parse_discovered_module,
+        parse_effective_config,
+        parse_native_context,
+    )
+
+    resolved = config_path.resolve()
+    if not resolved.is_file():
+        raise TaskStoreError(f"workcell configuration not found: {resolved}")
+    config = load_workcell_config(resolved)
+    evidence = evidence_dir.resolve()
+
+    payload: dict[str, object] = {
+        "workcell_manifest_digest": config.pin.manifest_digest(),
+        "evidence_dir": str(evidence),
+        "containment": None,
+        "readiness": None,
+        "conformance": None,
+        "declared_cli_limits": None,
+        "stopped_at": None,
+    }
+
+    with LiveWorkcellSession(config) as session:
+        if skip_containment:
+            payload["stopped_at"] = None
+        else:
+            containment = session.run_containment()
+            payload["containment"] = containment.model_dump(mode="json")
+            write_evidence(evidence, "containment.json", containment)
+            if not containment.contained:
+                payload["stopped_at"] = "containment"
+                return payload
+
+        if cli_settings_path is not None:
+            # Installed before readiness and before any capture, because
+            # everything downstream is supposed to observe the configured CLI
+            # rather than the image's default one. Written through `exec` with
+            # the content passed on stdin: a mount would have had to exist at
+            # container creation, and shell-quoting a JSON document into an
+            # argv is how a stray quote becomes an unexplained parse failure.
+            settings_text = cli_settings_path.resolve().read_text(encoding="utf-8")
+            install = session.controller.exec(
+                [
+                    "sh",
+                    "-c",
+                    f'mkdir -p "{cli_home}/.qwen" && cat > "{cli_home}/.qwen/settings.json"',
+                ],
+                timeout_seconds=60.0,
+                stdin=settings_text,
+            )
+            payload["cli_settings_installed"] = install.exit_code == 0
+            payload["cli_settings_sha256"] = hashlib.sha256(
+                settings_text.encode("utf-8")
+            ).hexdigest()
+            if install.exit_code != 0:
+                payload["stopped_at"] = "cli_settings"
+                payload["cli_settings_error"] = install.stderr[:2000]
+                return payload
+
+        started, stderr = session.start_forwarder()
+        if started != 0:
+            payload["stopped_at"] = "forwarder"
+            payload["forwarder_error"] = stderr[:2000]
+            return payload
+
+        readiness = session.run_readiness()
+        payload["readiness"] = readiness.model_dump(mode="json")
+        write_evidence(evidence, "readiness.json", readiness)
+        if not readiness.ready:
+            payload["stopped_at"] = "readiness"
+            return payload
+
+        # Two captures, and the distinction between them is the whole Slice 2C
+        # finding.
+        #
+        # The *table* capture asks the CLI's bundled token-limit module what it
+        # believes about this model name. For `qwen3.6-27b` it answers
+        # 1,000,000 / 64,000, because a broad `qwen3.x` rule in that table
+        # matches a self-hosted model it was never written for. It still
+        # answers that after Slice 2C, and recording it is the point: the table
+        # was not patched.
+        #
+        # The *effective* capture asks the CLI's own resolver what the assembled
+        # configuration actually produces, which is what the CLI uses when it
+        # decides whether to compact. That is the number the check compares.
+        declared: DeclaredCliLimits | None = None
+        modules: dict[str, str] = {}
+        effective_stderr = ""
+        exit_code: int | None = 0
+        for symbol in ("loadSettings", "resolveCliGenerationConfig"):
+            code, out, err = session.exec(
+                cli_export_discovery_argv(cli_bundle_path, symbol),
+                timeout_seconds=180.0,
+            )
+            if code != 0:
+                exit_code, effective_stderr = code, err
+                break
+            try:
+                modules[symbol] = parse_discovered_module(out, symbol=symbol)
+            except PinCaptureError as exc:
+                exit_code, effective_stderr = 3, str(exc)
+                break
+        if exit_code == 0:
+            exit_code, stdout, effective_stderr = session.exec(
+                cli_effective_config_argv(
+                    settings_module=modules["loadSettings"],
+                    resolve_module=modules["resolveCliGenerationConfig"],
+                    workspace="/workspace",
+                ),
+                timeout_seconds=180.0,
+            )
+        if exit_code == 0:
+            try:
+                effective = parse_effective_config(
+                    stdout,
+                    source=(
+                        "loadSettings + resolveCliGenerationConfig, executed "
+                        "inside the workcell image"
+                    ),
+                )
+                resolved_limits = extract_resolved_limits(effective)
+            except PinCaptureError as exc:
+                payload["effective_cli_config_error"] = str(exc)
+            else:
+                payload["effective_config_sha256"] = effective.effective_config_sha256
+                payload["resolved_cli_limits"] = resolved_limits.model_dump(mode="json")
+                write_evidence(evidence, "effective-cli-config.json", effective)
+                write_evidence(evidence, "resolved-cli-limits.json", resolved_limits)
+                declared = DeclaredCliLimits(
+                    context_limit_tokens=resolved_limits.context_window_size,
+                    max_output_tokens=resolved_limits.max_output_tokens,
+                    source=effective.source,
+                )
+                if (
+                    effective.effective_config_sha256
+                    != config.pin.agent_cli.effective_config_sha256
+                ):
+                    # A pin that disagrees with the configuration the CLI just
+                    # resolved is not a warning: it means the manifest identifies
+                    # a different experiment from the one that ran.
+                    payload["effective_config_pin_mismatch"] = {
+                        "pinned": config.pin.agent_cli.effective_config_sha256,
+                        "observed": effective.effective_config_sha256,
+                    }
+        else:
+            payload["effective_cli_config_error"] = effective_stderr[:2000]
+
+        # The native context capture, separate from the effective-config one
+        # above and asking a different question.
+        #
+        # `resolveCliGenerationConfig` produces the *generation* config -- the
+        # window size and the sampling params. It says nothing about
+        # `context.autoCompactThreshold`, which is what the CLI compacts
+        # against and which Option B delegates to rather than reimplements.
+        # Slice 5C left that value at this model's declared 0.85 with
+        # `resolved_from_cli = False`, and the settings file Apoapsis installs
+        # writes no `context` block at all -- so the run compacted against
+        # whatever the CLI build's own default is, and nothing had ever
+        # compared that to the 0.85 the pin asserts.
+        if modules.get("loadSettings"):
+            defaults_module = ""
+            for symbol in (
+                "DEFAULT_AUTO_COMPACT_THRESHOLD",
+                "AUTO_COMPACT_THRESHOLD",
+            ):
+                code, out, _ = session.exec(
+                    cli_export_discovery_argv(cli_bundle_path, symbol),
+                    timeout_seconds=180.0,
+                )
+                if code == 0 and out.strip():
+                    try:
+                        defaults_module = parse_discovered_module(out, symbol=symbol)
+                    except PinCaptureError:
+                        continue
+                    break
+            # A missing defaults chunk is not fatal: a settings-configured value
+            # still resolves without it. It is recorded so an unresolved
+            # threshold is attributable to the right cause.
+            payload["native_context_defaults_module"] = defaults_module or None
+            code, out, err = session.exec(
+                cli_native_context_argv(
+                    settings_module=modules["loadSettings"],
+                    defaults_module=defaults_module or modules["loadSettings"],
+                    workspace="/workspace",
+                ),
+                timeout_seconds=180.0,
+            )
+            if code != 0:
+                payload["native_context_error"] = err[:2000]
+            else:
+                try:
+                    native = parse_native_context(
+                        out,
+                        source=(
+                            "loadSettings merged settings plus the CLI's own "
+                            "default exports, executed inside the workcell image"
+                        ),
+                    )
+                except PinCaptureError as exc:
+                    payload["native_context_error"] = str(exc)
+                else:
+                    observed_pin = native_context_pin_from_resolved(native)
+                    payload["native_context"] = native.model_dump(mode="json")
+                    payload["native_context_resolved_from_cli"] = (
+                        observed_pin.resolved_from_cli
+                    )
+                    write_evidence(evidence, "native-context.json", native)
+                    if not native.fully_resolved:
+                        # Degrades to "not checked", never to a clean
+                        # all-clear carrying plausible numbers.
+                        payload["native_context_unresolved_fields"] = (
+                            native.unresolved_fields()
+                        )
+                    elif observed_pin != config.pin.native_context:
+                        # Same severity as the effective-config mismatch: the
+                        # manifest describes a run that compacted at a
+                        # different threshold from the one that actually ran.
+                        payload["native_context_pin_mismatch"] = {
+                            "pinned": config.pin.native_context.model_dump(mode="json"),
+                            "observed": observed_pin.model_dump(mode="json"),
+                        }
+
+        argv = cli_declared_limits_argv(cli_bundle_path, config.pin.model.model_name)
+        exit_code, stdout, limits_stderr = session.exec(argv, timeout_seconds=120.0)
+        if exit_code == 0:
+            try:
+                captured = parse_declared_limits(
+                    stdout,
+                    source=(
+                        f"{cli_bundle_path} token-limit module, executed inside "
+                        "the workcell image"
+                    ),
+                )
+            except PinCaptureError as exc:
+                payload["declared_cli_limits_error"] = str(exc)
+            else:
+                payload["declared_cli_limits"] = captured.model_dump(mode="json")
+                write_evidence(evidence, "declared-cli-limits.json", captured)
+                # Deliberately not assigned to `declared`. The table is recorded
+                # as evidence of what the unoverridden CLI would have believed;
+                # it is not what this run's CLI uses, and using it here would
+                # re-fail a check that the provider override has fixed.
+                if declared is None:
+                    payload["declared_cli_limits_note"] = (
+                        "the effective-configuration capture failed, so no "
+                        "resolved limits were available; the table values are "
+                        "recorded but are not a substitute and the check will "
+                        "report NOT_RUN"
+                    )
+        else:
+            payload["declared_cli_limits_error"] = limits_stderr[:2000]
+
+        report, runner = session.run_conformance(
+            supports_parallel_tool_calls=True,
+            declared_cli_limits=declared,
+            mutating_tool_runner=None,
+        )
+        payload["conformance"] = report.model_dump(mode="json")
+        payload["observed_stop_signals"] = {
+            reason.value: signal for reason, signal in runner.stop_signals.items()
+        }
+        write_evidence(evidence, "conformance.json", report)
+        write_evidence(
+            evidence,
+            "stop-signals.json",
+            {reason.value: signal for reason, signal in runner.stop_signals.items()},
+        )
+        # Measured whatever conformance said, and never consulted by it. This
+        # is the signal ADR 0078 moved off the gate; deleting it would have
+        # thrown away a real observation about the model, and gating on it is
+        # what produced the Slice 2B misattribution.
+        transcription = session.run_transcription_fidelity(runner)
+        payload["model_transcription_fidelity"] = transcription.model_dump(mode="json")
+        write_evidence(evidence, "model-transcription-fidelity.json", transcription)
+
+        # Deliverable 3, stated affirmatively. The relay sees every request by
+        # construction, so this is the one place that can say what was actually
+        # asked for rather than what a config file intended. `requests_observed`
+        # is reported alongside the peak because "nothing exceeded the cap" is
+        # vacuous if nothing carried a budget at all.
+        relay_stats = session.relay.stats
+        payload["outbound_output_budget"] = {
+            "relay_requests_total": relay_stats.total_requests,
+            "requests_carrying_a_budget": relay_stats.requests_with_output_budget,
+            "peak_output_budget_tokens": relay_stats.peak_output_budget_tokens,
+            "configured_cap_tokens": session.config.egress.relay.max_output_tokens,
+            "refused_above_cap": sum(
+                1
+                for record in relay_stats.records
+                if record.rejection == RelayRejection.OUTPUT_BUDGET_ABOVE_CAP
+            ),
+        }
+        write_evidence(
+            evidence, "outbound-output-budget.json", payload["outbound_output_budget"]
+        )
+
+        if not report.conformant:
+            payload["stopped_at"] = "conformance"
+
+    # `server_max_output_tokens` is echoed rather than used to judge anything:
+    # it is part of how the run was launched, and the evidence should say so.
+    payload["server_max_output_tokens"] = server_max_output_tokens
+    return payload
+
+
+def _slice3_gate_command(report_path: Path) -> dict[str, object]:
+    """Re-derive the Slice 3 admission decision from a spike report."""
+
+    from apoapsis.workcell.gate import evaluate_slice3_gate, load_spike_report
+
+    resolved = report_path.resolve()
+    if not resolved.is_file():
+        raise TaskStoreError(f"capability spike report not found: {resolved}")
+    decision = evaluate_slice3_gate(load_spike_report(resolved))
+    return decision.model_dump(mode="json")
+
+
+def _workcell_preflight_command(config_path: Path) -> dict[str, object]:
+    """Validate the pins and the runtime. Never starts a model.
+
+    Preflight is separated from the spike on purpose: the most common way to
+    waste a live local run is to discover after the model is warm that the
+    image digest is wrong or a pin is missing.
+    """
+
+    from apoapsis.execution.backend import SandboxUnavailableError
+    from apoapsis.workcell.containment import DEFAULT_CONTAINMENT_PROBES
+    from apoapsis.workcell.controller import WorkcellController, load_workcell_config
+    from apoapsis.workcell.platform_support import assess_socket_support
+
+    resolved = config_path.resolve()
+    if not resolved.is_file():
+        raise TaskStoreError(f"workcell configuration not found: {resolved}")
+    try:
+        config = load_workcell_config(resolved)
+    except SandboxUnavailableError as exc:
+        raise TaskStoreError(str(exc)) from exc
+
+    controller = WorkcellController(config)
+    # Reported even when the runtime is missing: a Windows host can never mount
+    # the relay socket, and the owner should learn that from preflight rather
+    # than from a confusing connection refusal at the first model request.
+    platform = assess_socket_support(config.egress.model_socket_host_path)
+    payload: dict[str, object] = {
+        "workcell_manifest_digest": config.pin.manifest_digest(),
+        "image_reference": controller.image_reference,
+        "create_argv": controller.build_create_argv(),
+        "containment_probe_count": len(DEFAULT_CONTAINMENT_PROBES),
+        "network": config.network,
+        "model_egress": config.egress.base_url,
+        "relay_upstream": config.egress.relay.upstream_base_url,
+        "relay_allowed_routes": sorted(config.pin.relay.allowed_routes),
+        "socket_platform": platform.host_platform.value,
+        "socket_support": platform.support.value,
+        "socket_detail": platform.detail,
+        "socket_remedies": platform.remedies,
+        "runtime_available": False,
+        "runtime_error": None,
+    }
+    try:
+        controller.preflight()
+    except SandboxUnavailableError as exc:
+        # Reported rather than raised: the pins are still worth validating on a
+        # machine with no container runtime, and an honest "not available" is
+        # more useful than an exception that hides the digest.
+        payload["runtime_error"] = str(exc)
+        return payload
+    payload["runtime_available"] = True
+    return payload
+
+
 def _build_research_engine(
     root: Path, config: ApoapsisConfig
 ) -> tuple[ResearchEngine, ResearchFetchProcess]:
@@ -2769,6 +3629,102 @@ def _research_command(
     finally:
         fetch_process.close()
     return execution.model_dump(mode="json")
+
+
+def _verify_web_product(root: Path, args: argparse.Namespace) -> dict[str, object] | None:
+    """Run the static cross-reference check and exit non-zero on failure.
+
+    Exits rather than returning a payload for the failing case because the
+    intended caller is `VerificationRunner`, which reads an exit code and
+    captured output -- a check that reported failure in JSON while exiting
+    zero would be worse than no check at all.
+    """
+
+    from apoapsis.verification.web_product import (
+        BrowserProbeUnavailableError,
+        WebProductFindingSeverity,
+        run_behavioral_probe,
+        verify_web_product,
+    )
+
+    product_root = (args.root or root).resolve()
+    report = verify_web_product(
+        product_root,
+        entry=args.entry,
+        optional_elements=set(args.optional_element),
+        forbid_external_resources=args.forbid_external_resources,
+        forbid_runtime_network_apis=args.forbid_runtime_network_apis,
+    )
+    behavioral_error: str | None = None
+    if args.behavior:
+        try:
+            run_behavioral_probe(product_root, entry=args.entry)
+        except BrowserProbeUnavailableError as exc:
+            behavioral_error = str(exc)
+    report = report.model_copy(
+        update={
+            "behavioral_probe": (
+                "not requested"
+                if not args.behavior
+                else (behavioral_error or "passed")
+            )
+        }
+    )
+    passed = report.passed(
+        treat_warnings_as_errors=args.treat_warnings_as_errors
+    ) and behavioral_error is None
+
+    if args.json:
+        print(json.dumps(report.model_dump(mode="json"), indent=2, sort_keys=True))
+    else:
+        evidence = report.evidence
+        print(
+            f"web product check: {len(report.documents)} document(s), "
+            f"{len(report.scripts)} script(s), {len(report.stylesheets)} "
+            f"stylesheet(s), {report.checked_references} element reference(s) "
+            "cross-checked"
+        )
+        # ADR 0073: the counts and the ceiling are printed on every run,
+        # pass or fail. A green line with no statement of what was examined
+        # is precisely how a check that cross-referenced nothing came to
+        # look equivalent to one that verified a whole UI.
+        print(
+            f"  evidence: {evidence.element_references_checked} element "
+            f"reference(s), {evidence.css_selectors_checked} CSS selector(s), "
+            f"{evidence.local_assets_resolved} local asset(s) resolved, "
+            f"{evidence.same_origin_api_references} same-origin API "
+            f"reference(s), {evidence.cross_origin_api_references} "
+            f"cross-origin API reference(s), "
+            f"{evidence.dynamic_references_unproven} reference(s) unproven"
+        )
+        print(f"  ceiling: {evidence.ceiling_statement()}")
+        for finding in report.findings:
+            if (
+                finding.severity == WebProductFindingSeverity.INFO
+                and not args.treat_warnings_as_errors
+            ):
+                continue
+            label = finding.severity.value.upper()
+            symbol = f" [{finding.symbol}]" if finding.symbol else ""
+            print(f"{label} {finding.path}{symbol}: {finding.detail}")
+            print(f"      fix: {finding.remediation}")
+        if behavioral_error:
+            print(f"ERROR behavioral: {behavioral_error}")
+        # The closing line is written for `FailureNormalizer` as much as for
+        # a human (ADR 0070): it looks for `FAILED` to pick a root error out
+        # of captured output, and a bare "FAIL" gave it nothing to find.
+        if passed:
+            print("PASSED: the product's files agree with each other")
+        else:
+            counts = (
+                f"{len(report.errors)} error finding(s), "
+                f"{len(report.warnings)} warning(s)"
+            )
+            print(f"FAILED: web product integrity check -- {counts}")
+
+    if not passed:
+        raise SystemExit(1)
+    return None
 
 
 def _verify(

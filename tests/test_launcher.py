@@ -1,12 +1,10 @@
 from __future__ import annotations
 
-import shutil
-import subprocess
-import sys
 import unittest
 from pathlib import Path
 
 LAUNCHER = Path(__file__).resolve().parents[1] / "OPEN_APOAPSIS.cmd"
+START_LAUNCHER = Path(__file__).resolve().parents[1] / "START_APOAPSIS.cmd"
 
 _FORBIDDEN_SNIPPETS = (
     "pip install",
@@ -28,8 +26,7 @@ class LauncherStaticContentTests(unittest.TestCase):
     """Deterministic checks on OPEN_APOAPSIS.cmd's text -- no shell
     required. Mirrors the D5c decision (ADR 0034): the launcher is a thin
     wrapper around the existing `apoapsis ui` CLI entry point, never a new
-    packaging surface, and must never install, download, or reconfigure
-    anything."""
+    packaging surface, and must never install or download anything."""
 
     def setUp(self) -> None:
         self.source = LAUNCHER.read_text(encoding="utf-8")
@@ -64,8 +61,8 @@ class LauncherStaticContentTests(unittest.TestCase):
         self.assertGreater(ui_launch_index, -1)
         self.assertLess(git_check_index, ui_launch_index)
 
-    def test_checks_project_initialization_before_launching_the_ui(self) -> None:
-        init_check_index = self.source.find(".apoapsis\\config.toml")
+    def test_prepares_the_selected_project_before_launching_the_ui(self) -> None:
+        init_check_index = self.source.find("apoapsis.project_setup")
         ui_launch_index = self.source.find("apoapsis.cli.app")
         self.assertGreater(init_check_index, -1)
         self.assertGreater(ui_launch_index, -1)
@@ -75,13 +72,10 @@ class LauncherStaticContentTests(unittest.TestCase):
         self.assertIn("apoapsis.cli.app", self.source)
         self.assertIn(" ui", self.source)
 
-    def test_accepts_an_explicit_project_folder_without_installing_or_initializing_it(self) -> None:
+    def test_accepts_and_prepares_an_explicit_project_folder(self) -> None:
         self.assertIn('set "APOAPSIS_PROJECT=%~1"', self.source)
+        self.assertIn("apoapsis.project_setup", self.source)
         self.assertIn('--project-root "%APOAPSIS_PROJECT%"', self.source)
-        self.assertNotIn(
-            '-m apoapsis.cli.app --project-root "%APOAPSIS_PROJECT%" init',
-            self.source,
-        )
 
     def test_points_to_stop_apoapsis_for_model_memory_release(self) -> None:
         self.assertIn("STOP_APOAPSIS.cmd", self.source)
@@ -95,57 +89,42 @@ class LauncherStaticContentTests(unittest.TestCase):
         self,
     ) -> None:
         self.assertIn("APOAPSIS_NO_PAUSE", self.source)
-        start_script = LAUNCHER.parent / "START_APOAPSIS.cmd"
-        self.assertIn("APOAPSIS_NO_PAUSE", start_script.read_text(encoding="utf-8"))
+        self.assertIn("APOAPSIS_NO_PAUSE", START_LAUNCHER.read_text(encoding="utf-8"))
 
 
-@unittest.skipUnless(sys.platform == "win32", "OPEN_APOAPSIS.cmd is a Windows batch file")
-@unittest.skipUnless(shutil.which("cmd"), "cmd.exe is not available on this machine")
-class LauncherLiveGuardTests(unittest.TestCase):
-    """Runs the real launcher script (copied into an isolated, uninitialized
-    temp directory containing no `.apoapsis/`) to prove its fail-closed
-    initialization guard actually fires, rather than only asserting it in
-    the source text."""
-
+class StartLauncherStaticContentTests(unittest.TestCase):
     def setUp(self) -> None:
-        import tempfile
+        self.source = START_LAUNCHER.read_text(encoding="utf-8")
 
-        self.tempdir = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tempdir.cleanup)
-        target = Path(self.tempdir.name) / "OPEN_APOAPSIS.cmd"
-        shutil.copy(LAUNCHER, target)
-        self.target = target
-        subprocess.run(
-            ["git", "init", "-b", "main"],
-            cwd=self.tempdir.name,
-            check=True,
-            capture_output=True,
-            text=True,
-        )
+    def test_start_launcher_file_exists(self) -> None:
+        self.assertTrue(START_LAUNCHER.is_file())
 
-    def test_reports_uninitialized_project_and_exits_nonzero(self) -> None:
-        result = subprocess.run(
-            ["cmd", "/c", str(self.target)],
-            capture_output=True,
-            text=True,
-            cwd=self.tempdir.name,
-            env={"APOAPSIS_NO_PAUSE": "1", **_inherited_path_env()},
-            timeout=30,
-        )
-        self.assertEqual(
-            result.returncode,
-            1,
-            f"expected a non-zero exit for an uninitialized project.\n"
-            f"stdout: {result.stdout}\nstderr: {result.stderr}",
-        )
-        self.assertIn("has not been initialized", result.stdout)
-        self.assertIn("apoapsis init", result.stdout)
+    def test_selects_project_when_no_project_argument_is_supplied(self) -> None:
+        self.assertIn("FolderBrowserDialog", self.source)
+        self.assertIn("Select a project folder", self.source)
+        self.assertIn("ShowNewFolderButton = $true", self.source)
 
+    def test_starts_configured_local_service_for_selected_project(self) -> None:
+        self.assertIn("apoapsis.operator_lifecycle start", self.source)
+        self.assertIn('--project-root "%APOAPSIS_PROJECT%"', self.source)
+        self.assertIn("APOAPSIS_LLAMA_SERVER_COMMAND", self.source)
 
-def _inherited_path_env() -> dict:
-    import os
+    def test_opens_ui_after_lifecycle_start(self) -> None:
+        lifecycle_index = self.source.find("apoapsis.operator_lifecycle start")
+        ui_index = self.source.find("apoapsis.cli.app")
+        self.assertGreater(lifecycle_index, -1)
+        self.assertGreater(ui_index, -1)
+        self.assertLess(lifecycle_index, ui_index)
 
-    return {"PATH": os.environ.get("PATH", ""), "SystemRoot": os.environ.get("SystemRoot", "")}
+    def test_prepares_project_before_launching(self) -> None:
+        setup_index = self.source.find("apoapsis.project_setup")
+        lifecycle_index = self.source.find("apoapsis.operator_lifecycle start")
+        self.assertGreater(setup_index, -1)
+        self.assertLess(setup_index, lifecycle_index)
+
+    def test_does_not_install_or_download(self) -> None:
+        for snippet in _FORBIDDEN_SNIPPETS:
+            self.assertNotIn(snippet, self.source)
 
 
 if __name__ == "__main__":

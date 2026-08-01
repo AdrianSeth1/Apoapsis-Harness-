@@ -1,0 +1,9 @@
+# Qualification case packages are digest-backed. Every artifact's declared
+# sha256 was computed from the exact bytes committed here, and
+# `resolve_artifact` recomputes it from the bytes on disk.
+#
+# End-of-line conversion would therefore break the package on checkout rather
+# than at authoring time: a clone with `core.autocrlf=true` would rewrite these
+# files, every digest would stop matching, and the failure would look like
+# tampering. `-text` disables all EOL translation for this subtree.
+docs/qualification/pilot/** -text

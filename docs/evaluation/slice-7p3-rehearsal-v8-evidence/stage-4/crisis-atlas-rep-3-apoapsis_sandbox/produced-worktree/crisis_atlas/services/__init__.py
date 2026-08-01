@@ -1,0 +1,1 @@
+"""Crisis Atlas service layer."""
