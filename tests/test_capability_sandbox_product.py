@@ -3,8 +3,10 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 from apoapsis.workcell.acceptance import CheckpointOutcome
+from apoapsis.workcell.product import CapabilitySandboxError, _approved_plan_payload
 from apoapsis.workcell.product_live import ProductSupervisor
 from tests.architect_helpers import make_plan
 
@@ -81,6 +83,35 @@ class ProductSupervisorTests(unittest.TestCase):
 
         self.assertEqual(record.decision.outcome, CheckpointOutcome.CANDIDATE_REFUSED)
         self.assertFalse(record.admission.admitted)
+
+
+class ApprovedPlanPayloadTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+
+    def test_hash_bound_embedded_plan_needs_no_version_named_artifact(self) -> None:
+        plan = make_plan()
+        package = SimpleNamespace(
+            approved_plan=plan,
+            plan_id="PLAN-EMBEDDED",
+            plan_version=5,
+        )
+
+        payload = _approved_plan_payload(self.root, package)
+
+        self.assertEqual(payload, plan.model_dump(mode="json"))
+
+    def test_legacy_package_fails_closed_without_exact_artifact(self) -> None:
+        package = SimpleNamespace(
+            approved_plan=None,
+            plan_id="PLAN-LEGACY",
+            plan_version=5,
+        )
+
+        with self.assertRaisesRegex(CapabilitySandboxError, "plan v5 artifact"):
+            _approved_plan_payload(self.root, package)
 
 
 if __name__ == "__main__":

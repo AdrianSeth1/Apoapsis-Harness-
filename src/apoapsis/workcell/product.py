@@ -33,6 +33,43 @@ class CapabilitySandboxError(RuntimeError):
     """The product workcell failed before it could return an honest result."""
 
 
+def _approved_plan_payload(
+    project_root: Path, package: PlanSliceExecutionPackage
+) -> dict[str, object]:
+    """Resolve the exact plan authorized by a slice package.
+
+    ADR 0097 packages carry the plan inside their own hash boundary. Older
+    packages retain the former exact-version artifact fallback so already
+    approved work remains readable without silently substituting current DB
+    state.
+    """
+
+    if package.approved_plan is not None:
+        return package.approved_plan.model_dump(mode="json")
+    plan_artifact = (
+        project_root
+        / ".apoapsis"
+        / "plans"
+        / package.plan_id
+        / f"plan-v{package.plan_version}.json"
+    )
+    if not plan_artifact.is_file():
+        raise CapabilitySandboxError(
+            f"exact approved plan v{package.plan_version} artifact is missing"
+        )
+    try:
+        payload = json.loads(plan_artifact.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise CapabilitySandboxError(
+            f"exact approved plan v{package.plan_version} artifact is unreadable"
+        ) from exc
+    if not isinstance(payload, dict):
+        raise CapabilitySandboxError(
+            f"exact approved plan v{package.plan_version} artifact is invalid"
+        )
+    return payload
+
+
 class CapabilitySandboxExecutor(Protocol):
     def run(
         self,
@@ -154,15 +191,12 @@ class NativeQwenWorkcellExecutor:
         )
         if slice_package.package_sha256 != package_sha:
             return self._review("the approved slice package hash no longer matches")
-        plan_artifact = (
-            Path(audit.project_root)
-            / ".apoapsis" / "plans" / plan_id
-            / f"plan-v{slice_package.plan_version}.json"
-        )
-        if not plan_artifact.is_file():
-            return self._review(
-                f"exact approved plan v{slice_package.plan_version} artifact is missing"
+        try:
+            approved_plan = _approved_plan_payload(
+                Path(audit.project_root), slice_package
             )
+        except CapabilitySandboxError as exc:
+            return self._review(str(exc))
         request = {
             "schema_version": "1.0",
             "run_id": run_id,
@@ -173,7 +207,7 @@ class NativeQwenWorkcellExecutor:
             "context_sha256": context.context_sha256,
             "plan_version": slice_package.plan_version,
             "slice_package_sha256": slice_package.package_sha256,
-            "plan": json.loads(plan_artifact.read_text(encoding="utf-8")),
+            "plan": approved_plan,
             "verification_commands": [
                 {
                     "name": item.name,

@@ -622,6 +622,7 @@ def build_plan_slice_execution_package(
         plan_id=plan_id,
         plan_version=expected_plan_version,
         plan_package_id=record.package_id,
+        approved_plan=record.plan,
         slice_id=slice_id,
         idea_text=record.idea_text,
         architecture_summary=record.plan.architecture_summary,

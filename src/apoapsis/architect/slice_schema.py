@@ -5,7 +5,7 @@ from enum import StrEnum
 
 from pydantic import ConfigDict, Field
 
-from apoapsis.architect.schema import ArchitectureDecision
+from apoapsis.architect.schema import ArchitectureDecision, ArchitecturePlan
 from apoapsis.specification.schema import (
     AcceptanceCriterion,
     HardConstraint,
@@ -74,6 +74,11 @@ class PlanSliceExecutionPackage(StrictModel):
     # plan's ``ArchitecturePlan`` shape is identical either way, only the
     # originating request package's id prefix differs.
     plan_package_id: str = Field(pattern=r"^(PKG|FPKG)-[A-Za-z0-9._-]+$")
+    # The exact approved plan is carried inside the hash-bound package so a
+    # consumer never has to infer a content-snapshot filename from the plan
+    # record's optimistic workflow version. Optional only for reading packages
+    # written before ADR 0097; all newly built packages populate it.
+    approved_plan: ArchitecturePlan | None = None
     slice_id: str = Field(pattern=r"^SLICE-[A-Za-z0-9._-]+$")
     idea_text: str = Field(min_length=1)
     architecture_summary: str = Field(min_length=1)

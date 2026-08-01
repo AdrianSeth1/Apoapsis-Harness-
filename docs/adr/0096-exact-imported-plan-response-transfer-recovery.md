@@ -34,10 +34,17 @@ hold:
    bounded transfer-name character set.
 3. Its size is within the bounded transfer ceiling.
 4. Its JSON, after the same BOM/code-fence normalization permitted by the
-   importer, exactly equals a canonical `frontier-response-FPKG-*.json`
-   payload already present in a discovery audit.
-5. That canonical payload independently validates as a
-   `FrontierPlanningResponseEnvelope`.
+   importer, independently validates as a `FrontierPlanningResponseEnvelope`.
+5. Its schema version, package ID, cryptographic package hash, session ID, and
+   response kind equal those of a schema-valid canonical
+   `frontier-response-FPKG-*.json` payload already present in discovery audit.
+
+The response body itself need not be equal. An operator may save a second
+valid revision for the same planning package after the first response was
+imported; both are transfer material cryptographically bound to the same
+request, and neither is project source. Requiring full payload equality was the
+initial implementation and failed against the real
+`apoapsis-plan-response-remade.json` case that motivated this ADR.
 
 Only the exact root-relative filename is appended. The source file is not
 opened for writing, moved, deleted, staged, or committed. Tracked files are
@@ -66,11 +73,17 @@ covering direct task starts and plan runs created before this decision.
 
 Observed on Windows, 2026-08-01:
 
-- `tests.test_plan_auto_run`: 8/8 passed, including an end-to-end automatic
-  controller/fake-executor branch for an exact, code-fenced response recovery
-  and a negative control for an altered lookalike.
+- `tests.test_plan_auto_run`: covers an end-to-end automatic
+  controller/fake-executor branch for a distinct, code-fenced response revision
+  bound to the imported package, plus a negative control whose package hash is
+  different.
 - `tests.test_execution_authorization`: 11/11 passed, preserving tracked and
   unrelated-untracked drift refusals.
 - `python -m compileall -q src tests` and `git diff --check` passed.
 - No full suite was run, by explicit owner request.
 - No model, provider, container, network, or live inference was used.
+
+Correction rerun on 2026-08-01: the combined focused set passed 19/19 after
+the alternate-revision regression replaced the equality-only positive control.
+The real `C:\Users\aryam\coding stuff\test project 6` response is now locally
+excluded and `require_clean_parent_repository` passes there.

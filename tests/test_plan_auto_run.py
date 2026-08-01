@@ -61,7 +61,7 @@ class PlanRunStoreTests(unittest.TestCase):
 
 class PlanAutoRunTests(PlanSliceExecutionTestsBase):
     def _write_imported_plan_response_transfer(
-        self, plan, *, altered=False, wrapped=False
+        self, plan, *, altered=False, alternate_revision=False, wrapped=False
     ) -> Path:
         payload = {
             "schema_version": "1.0",
@@ -78,6 +78,10 @@ class PlanAutoRunTests(PlanSliceExecutionTestsBase):
         )
         if altered:
             payload["package_sha256"] = "b" * 64
+        if alternate_revision:
+            payload["plan"]["architecture_summary"] = (
+                "A second valid response revision for the same planning package."
+            )
         transfer = self.root / "apoapsis-plan-response-remade.json"
         transfer_text = json.dumps(payload)
         if wrapped:
@@ -161,7 +165,9 @@ class PlanAutoRunTests(PlanSliceExecutionTestsBase):
 
     def test_auto_mode_locally_excludes_exact_imported_plan_response_transfer(self) -> None:
         plan, config = self._approved_plan()
-        transfer = self._write_imported_plan_response_transfer(plan.plan, wrapped=True)
+        transfer = self._write_imported_plan_response_transfer(
+            plan.plan, alternate_revision=True, wrapped=True
+        )
         store = PlanRunStore(self.root / ".apoapsis" / "plan-runs.db")
         run = store.create(
             run_id="PLANRUN-TRANSFER",
