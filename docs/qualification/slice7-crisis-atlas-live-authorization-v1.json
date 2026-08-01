@@ -1,0 +1,27 @@
+{
+  "authorization_id": "slice7-crisis-atlas-live-authorization-v1",
+  "authorises_live_inference": true,
+  "bound_live_modules": [
+    {
+      "path": "src/apoapsis/qualification/live_pilot.py",
+      "sha256": "0905cc05f332d716479ff5590f773b6a122a8f7ef29002f6fda23618e57cb34c"
+    },
+    {
+      "path": "src/apoapsis/qualification/slot_driver.py",
+      "sha256": "f8cde15daa4aaeb87a64c8f1bf81f6909514442d4dc3820bf897ca39f4efa104"
+    }
+  ],
+  "controller_image_id": "sha256:41f592a7ee680358c177b4eda7fd9c4382d737120bcac268da608f53325b5b0f",
+  "exactly_six_slots": true,
+  "live_runner_commit": "ef2905bd5be5b00d7e209654475ba55a0fdbd01d",
+  "local_model_only": true,
+  "lock_digest": "61b36743c43ec3afc932d956ad76fe1f2a320d41cff52356ab749746b6112867",
+  "lock_path": "docs/qualification/slice7-crisis-atlas-pilot-lock-v8.json",
+  "manifest_digest": "f369760e438b6866b59fbecafa4b1d63cb8523aa726b3c9ba20a9699c26e4798",
+  "manifest_path": "docs/qualification/slice7-crisis-atlas-pilot-manifest-v8.json",
+  "operator_acknowledgement": "I-AUTHORIZE-SIX-LOCAL-INFERENCE-ARMS",
+  "rehearsal_report_path": "docs/evaluation/slice-7p3-rehearsal-v8-evidence/rehearsal-report.json",
+  "rehearsal_report_sha256": "7a97a927038b894cae3015aa78031df7b02ab4c8f21079fa3dee3ff54eaa800e",
+  "rehearsal_verdict": "pass_live_preflight_authorized",
+  "schema_version": "1.0"
+}

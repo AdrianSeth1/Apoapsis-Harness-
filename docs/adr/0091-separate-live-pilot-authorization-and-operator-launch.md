@@ -55,8 +55,8 @@ live authorization.
 ## Observed verification
 
 Focused deterministic coverage passed 14/14 on CPython 3.12. The canonical
-native-ext4 full suite at runner commit `96653d0` passed 1,941 tests with 13
-skips in 343.782 seconds. Two earlier attempts are not evidence: one imported a
+native-ext4 full suite at runner commit `ef2905b` passed 1,942 tests with 13
+skips in 348.348 seconds. Earlier invalid attempts are not evidence: one imported a
 previously installed package, and one found the Linux `rg` binary through its
 read-only Windows mount and failed before normal workflows; both causes were
 corrected before the recorded run. `compileall` and diff checking are recorded
