@@ -102,6 +102,15 @@ class RelayRejection(StrEnum):
     CONCURRENCY_LIMIT = "concurrency_limit"
     CROSS_ORIGIN_REDIRECT = "cross_origin_redirect"
     UPSTREAM_UNAVAILABLE = "upstream_unavailable"
+    #: The upstream closed, or errored, before delivering the body it promised.
+    #: Distinct from UPSTREAM_UNAVAILABLE, which means it never answered at all:
+    #: here it answered, and then stopped part-way through.
+    UPSTREAM_DISCONNECT = "upstream_disconnect"
+    #: An SSE response that ended without its terminal event. Kept apart from
+    #: UPSTREAM_DISCONNECT because the two are diagnosed differently -- a short
+    #: body is a transport fact, a missing `[DONE]` is a protocol one -- and
+    #: because Stage 3 injects them as separate faults.
+    DROPPED_STREAM = "dropped_stream"
     IDLE_TIMEOUT = "idle_timeout"
     #: The request asked for more output tokens than the run is pinned to.
     OUTPUT_BUDGET_ABOVE_CAP = "output_budget_above_cap"
@@ -121,6 +130,12 @@ _REJECTION_STATUS: dict[RelayRejection, int] = {
     RelayRejection.CONCURRENCY_LIMIT: 429,
     RelayRejection.CROSS_ORIGIN_REDIRECT: 502,
     RelayRejection.UPSTREAM_UNAVAILABLE: 502,
+    # Recorded as 502 for taxonomy purposes. Both are discovered *after* the
+    # response line has gone out, so the status the client actually saw is
+    # whatever the upstream sent -- usually 200. The record says what happened;
+    # it does not claim the status was retroactively changed.
+    RelayRejection.UPSTREAM_DISCONNECT: 502,
+    RelayRejection.DROPPED_STREAM: 502,
     RelayRejection.IDLE_TIMEOUT: 504,
     # 400, not 413: the body is not too large, it asks for something the run is
     # not pinned to. A distinct status keeps the two apart in the audit trail.

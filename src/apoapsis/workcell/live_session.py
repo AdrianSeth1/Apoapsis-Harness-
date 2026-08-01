@@ -142,6 +142,21 @@ class LiveWorkcellSession:
     def relay_request_count(self) -> int:
         return self.relay.stats.total_requests
 
+    def incomplete_relay_responses(self) -> tuple[str, ...]:
+        """Turns whose bytes are a fragment, as the relay recorded them.
+
+        A controller must consult this before treating anything the agent
+        produced as a proposal. A stream that ended without its terminal event
+        carries a 200 and a partial body, and by inspection that is
+        indistinguishable from a short answer -- so the distinction has to come
+        from the relay, which watched the transfer end.
+        """
+
+        return tuple(
+            f"{item.method} {item.raw_path}: {item.detail or 'response incomplete'}"
+            for item in self.relay.stats.incomplete_records
+        )
+
     def start_forwarder(self, *, settle_seconds: float = 2.0) -> tuple[int | None, str]:
         """Launch the in-container forwarder and leave it running.
 

@@ -286,27 +286,14 @@ class RelayFaultsAreInjectedAgainstARealRelayTests(unittest.TestCase):
                 self.assertTrue(outcome.recorded)
                 self.assertTrue(outcome.no_worker_leaked)
 
-    @unittest.expectedFailure
     def test_no_fault_is_reported_to_the_client_as_a_complete_answer(self) -> None:
-        """Known open defect, kept under test rather than described in prose.
+        """The defect this revision closes, as the property it violated.
 
-        Injecting the five faults for the first time -- Stage 3 had never run --
-        showed the relay converting two of them into apparent successes:
-
-        * `upstream_disconnect`: the upstream closes mid-stream and the client
-          receives HTTP 200 with a truncated body. No cancellation is recorded
-          and `upstream_failures` stays 0.
-        * `dropped_stream`: same shape. 200, half an answer, nothing recorded.
-
-        `upstream_timeout`, `backpressure` and `client_cancellation` are handled
-        correctly, so this is specific rather than a relay that records nothing.
-
-        A truncated answer presented as a complete one is the exact failure the
-        pilot's telemetry classification exists to prevent, and it would be
-        indistinguishable from a short model reply in a live run. Marked
-        expected-failure rather than deleted or weakened, so it starts passing
-        by itself when the relay records these two as failures -- and so an
-        unexpected success is reported rather than silently absorbed.
+        Before R6 the relay converted two of the five faults into apparent
+        successes: `upstream_disconnect` and `dropped_stream` each returned
+        HTTP 200 with a truncated body, no recorded cancellation and
+        `upstream_failures` at 0. This was an `expectedFailure` for exactly as
+        long as that was true.
         """
 
         from apoapsis.qualification.relay_faults import run_all_relay_faults
@@ -314,6 +301,153 @@ class RelayFaultsAreInjectedAgainstARealRelayTests(unittest.TestCase):
         sockets = Path(tempfile.mkdtemp(prefix="relay-faults-")) / "sockets"
         report = run_all_relay_faults(socket_directory=sockets)
         self.assertTrue(report.all_handled, list(report.unhandled))
+
+    def test_the_two_truncating_faults_are_recorded_as_upstream_failures(self) -> None:
+        """Each of the two, individually, and by the right name.
+
+        `all_handled` is a conjunction and would be satisfied by the relay
+        refusing everything for some unrelated reason. These assert the specific
+        observations: an upstream failure counted, a terminal absent, the
+        response marked incomplete -- and, for the stream, that the failure is
+        *not* also booked as a cancellation, which would blame the reader for
+        the upstream's behaviour.
+        """
+
+        from apoapsis.qualification.relay_faults import (
+            RelayFault,
+            run_relay_fault,
+        )
+
+        for fault, expects_terminal_question in (
+            (RelayFault.UPSTREAM_DISCONNECT, False),
+            (RelayFault.DROPPED_STREAM, True),
+        ):
+            with self.subTest(fault=str(fault)):
+                sockets = Path(tempfile.mkdtemp(prefix="relay-fault-")) / "sockets"
+                outcome = run_relay_fault(fault, socket_directory=sockets)
+
+                self.assertIsNone(outcome.error)
+                # 1. the upstream failure is recorded, and by that name
+                self.assertEqual(outcome.upstream_failures, 1)
+                # 2. terminal completion is absent
+                self.assertEqual(outcome.incomplete_responses, 1)
+                if expects_terminal_question:
+                    self.assertIs(outcome.terminal_observed, False)
+                # 3. the result is incomplete rather than a success
+                self.assertFalse(outcome.response_complete_recorded)
+                self.assertTrue(outcome.not_reported_as_success)
+                # 4. and the upstream is not blamed on the reader
+                self.assertEqual(outcome.cancellations, 0)
+
+    def test_a_well_formed_stream_is_still_recorded_complete(self) -> None:
+        """Normal streaming must be unaffected.
+
+        The cheapest way to satisfy every assertion above would be a relay that
+        calls everything incomplete. This is the other half of the property, and
+        it uses the same terminal the fault cases lack.
+        """
+
+        import http.client
+        import socket as socket_module
+        import threading
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+        from apoapsis.workcell.relay import ModelRelay
+        from apoapsis.workcell.relay_policy import ModelRelayConfig
+
+        class _GoodUpstream(BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def log_message(self, *_args) -> None:  # noqa: A002
+                return
+
+            def do_POST(self) -> None:  # noqa: N802
+                length = int(self.headers.get("Content-Length") or 0)
+                if length:
+                    self.rfile.read(length)
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.end_headers()
+                self.wfile.write(
+                    b'data: {"choices":[{"delta":{"content":"all"},"index":0}]}\n\n'
+                )
+                self.wfile.write(b"data: [DONE]\n\n")
+                self.wfile.flush()
+                self.close_connection = True
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), _GoodUpstream)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        sockets = Path(tempfile.mkdtemp(prefix="relay-good-")) / "sockets"
+        sockets.mkdir(parents=True, exist_ok=True)
+        host, port = server.server_address[:2]
+        relay = ModelRelay(
+            ModelRelayConfig(
+                upstream_base_url=f"http://{host}:{port}",
+                socket_path=str(sockets / "model.sock"),
+                allowed_routes=["/v1/chat/completions"],
+            )
+        )
+        relay.start()
+        try:
+            connection = http.client.HTTPConnection("localhost", timeout=15)
+            sock = socket_module.socket(socket_module.AF_UNIX, socket_module.SOCK_STREAM)
+            sock.settimeout(15)
+            sock.connect(str(sockets / "model.sock"))
+            connection.sock = sock
+            connection.request(
+                "POST",
+                "/v1/chat/completions",
+                body=b'{"model":"probe","messages":[],"stream":true}',
+                headers={"Content-Type": "application/json"},
+            )
+            response = connection.getresponse()
+            body = response.read()
+            connection.close()
+            self.assertEqual(response.status, 200)
+            self.assertIn(b"[DONE]", body)
+            self.assertTrue(relay.wait_for_records(1))
+
+            record = relay.stats.records[-1]
+            self.assertTrue(record.response_complete)
+            self.assertIs(record.terminal_observed, True)
+            self.assertIsNone(record.rejection)
+            self.assertEqual(relay.stats.upstream_failures, 0)
+            self.assertEqual(relay.stats.incomplete_responses, 0)
+            self.assertTrue(relay.stats.every_response_complete)
+        finally:
+            relay.stop()
+            server.shutdown()
+            server.server_close()
+
+    def test_a_slot_with_an_incomplete_response_produces_no_candidate(self) -> None:
+        """The controller-side half: an incomplete turn cannot be scored.
+
+        `execute_slot` consults the relay before anything reads the worktree, so
+        a truncated stream ends the slot with an error rather than handing files
+        to the checkpoint. Asserted against the real wiring -- the session's own
+        accessor and the slot's error field -- rather than by starting a
+        container, which this test has no need of.
+        """
+
+        from apoapsis.qualification import slot_driver
+
+        source = inspect.getsource(slot_driver.execute_slot)
+        self.assertIn("incomplete_relay_responses", source)
+        self.assertIn("observation.error", source)
+
+        class _Stub:
+            def __init__(self, records):
+                self._records = records
+
+            def incomplete_relay_responses(self):
+                return self._records
+
+        from apoapsis.workcell.live_session import LiveWorkcellSession
+
+        self.assertTrue(hasattr(LiveWorkcellSession, "incomplete_relay_responses"))
+        stub = _Stub(("POST /v1/chat/completions: the event stream ended",))
+        self.assertEqual(len(stub.incomplete_relay_responses()), 1)
 
 
 if __name__ == "__main__":  # pragma: no cover

@@ -157,6 +157,9 @@ class SlotObservation:
         #: Read off the wire, from the `tools` array the CLI itself sent.
         self.observed_tool_names: tuple[str, ...] = ()
         self.observed_tool_schema: list | None = None
+        #: Relay records for this slot whose transfer never completed. Any entry
+        #: disqualifies the slot's candidate.
+        self.incomplete_relay_responses: tuple[str, ...] = ()
         self.kept_workspace: Path | None = None
         self.error: str | None = None
 
@@ -313,6 +316,21 @@ def execute_slot(
             observation.qwen_stdout = stdout
             observation.qwen_stderr = stderr_log
             observation.relay_after = session.relay_request_count()
+
+            # A turn whose response never completed cannot have produced a
+            # proposal, whatever appeared in the worktree. Recorded as a slot
+            # error so the checkpoint is never reached: scoring a candidate
+            # assembled from a truncated stream is the substitution the whole
+            # telemetry taxonomy exists to refuse, and it would look exactly
+            # like a short answer to anyone reading the files afterwards.
+            observation.incomplete_relay_responses = session.incomplete_relay_responses()
+            if observation.incomplete_relay_responses:
+                observation.error = (
+                    "the relay recorded "
+                    f"{len(observation.incomplete_relay_responses)} incomplete "
+                    "response(s), so no candidate from this slot may be scored: "
+                    + "; ".join(observation.incomplete_relay_responses[:3])
+                )
             (evidence_dir / "qwen-stdout.log").write_text(stdout, encoding="utf-8")
             (evidence_dir / "qwen-stderr.log").write_text(stderr_log, encoding="utf-8")
 

@@ -67,6 +67,14 @@ class FaultOutcome(StrictModel):
     observed_detail: str = ""
     cancellations: int = 0
     upstream_failures: int = 0
+    #: What the relay recorded about the *end* of the exchange. A fault that
+    #: leaves `response_complete` true has been recorded as a finished answer,
+    #: which is the failure mode Stage 3 exists to catch.
+    response_complete_recorded: bool = True
+    #: `None` when the response was not an event stream, so an inapplicable
+    #: question is not answered "no".
+    terminal_observed: bool | None = None
+    incomplete_responses: int = 0
     duration_seconds: float = 0.0
     threads_before: int = 0
     threads_after: int = 0
@@ -334,11 +342,15 @@ def run_relay_fault(
     records = list(stats.records)
     relevant = [item for item in records if item.raw_path.endswith("chat/completions")]
 
-    # "Reported as success" means a clean 200 that the caller would treat as a
-    # complete answer. Every fault here must produce something else: an error
-    # status, a recorded cancellation, or a recorded upstream failure.
+    # "Reported as success" means an exchange the caller would treat as a
+    # complete answer. The status line alone cannot decide that: for a stream
+    # the 200 is sent before anything is known, so a truncated stream and a
+    # finished one carry the identical status. What separates them is whether
+    # the relay recorded the response as *complete*.
+    incomplete = any(not item.response_complete for item in relevant)
     clean_success = (
         status == 200
+        and not incomplete
         and not any(item.client_cancelled for item in relevant)
         and stats.upstream_failures == 0
         and fault is not RelayFault.BACKPRESSURE
@@ -357,6 +369,11 @@ def run_relay_fault(
         observed_detail=detail[:400],
         cancellations=stats.cancellations,
         upstream_failures=stats.upstream_failures,
+        response_complete_recorded=not incomplete,
+        terminal_observed=(
+            relevant[-1].terminal_observed if relevant else None
+        ),
+        incomplete_responses=stats.incomplete_responses,
         duration_seconds=round(duration, 3),
         threads_before=threads_before,
         threads_after=threads_after,

@@ -58,8 +58,40 @@ from apoapsis.workcell.relay_policy import (
     sanitise_headers,
 )
 
-RELAY_VERSION = "1.0"
+RELAY_VERSION = "1.1"
 _CHUNK = 65_536
+
+#: The terminal event of an OpenAI-shaped SSE stream. A stream that ends
+#: without it is a fragment, whatever its status line said.
+SSE_TERMINAL = b"data: [DONE]"
+
+#: Rejections that mean the *upstream* failed, as opposed to the request being
+#: refused at the boundary. All three increment `upstream_failures`, because
+#: "the model side broke" is one question and "which way" is another.
+_UPSTREAM_FAILURES = frozenset(
+    {
+        RelayRejection.UPSTREAM_UNAVAILABLE,
+        RelayRejection.UPSTREAM_DISCONNECT,
+        RelayRejection.DROPPED_STREAM,
+    }
+)
+
+
+class _Completion(StrictModel):
+    """What the pump observed about the end of a response.
+
+    Separate from the byte count because "how much arrived" and "did it finish"
+    are different facts, and the whole defect this closes was reading the first
+    as an answer to the second.
+    """
+
+    total_bytes: int = 0
+    streamed: bool = False
+    client_cancelled: bool = False
+    complete: bool = True
+    terminal_observed: bool | None = None
+    rejection: RelayRejection | None = None
+    detail: str = ""
 
 
 class RelayRequestRecord(StrictModel):
@@ -76,6 +108,15 @@ class RelayRequestRecord(StrictModel):
     duration_seconds: float = Field(default=0.0, ge=0)
     streamed: bool = False
     client_cancelled: bool = False
+    #: Whether the upstream delivered a *complete* response: an SSE stream that
+    #: reached its terminal event, or a non-streaming body that reached its
+    #: declared length. `False` means the bytes the client received are a
+    #: fragment, however successful the status line looked.
+    response_complete: bool = True
+    #: Whether an SSE terminal (`data: [DONE]`) was observed. `None` for
+    #: responses that are not event streams, where the question does not apply
+    #: -- deliberately not `False`, which would read as a missing terminal.
+    terminal_observed: bool | None = None
     detail: str = ""
     #: The explicit output budget this request carried, or `None` if it named
     #: none. `None` and `0` are different findings; see `observed_output_budget`.
@@ -92,6 +133,11 @@ class RelayStats(StrictModel):
     peak_output_budget_tokens: int | None = Field(default=None, ge=0)
     requests_with_output_budget: int = Field(default=0, ge=0)
     upstream_failures: int = Field(default=0, ge=0)
+    #: Responses that began and did not finish. Counted separately from
+    #: `cancellations`: a client that hung up and an upstream that stopped
+    #: talking are different events with different owners, and merging them
+    #: would let an upstream failure be explained away as the reader's doing.
+    incomplete_responses: int = Field(default=0, ge=0)
     bytes_to_upstream: int = Field(default=0, ge=0)
     bytes_from_upstream: int = Field(default=0, ge=0)
     cancellations: int = Field(default=0, ge=0)
@@ -101,6 +147,24 @@ class RelayStats(StrictModel):
     @property
     def total_requests(self) -> int:
         return self.requests_served + self.requests_refused
+
+    @property
+    def incomplete_records(self) -> tuple[RelayRequestRecord, ...]:
+        """Every exchange whose body the client must not treat as an answer."""
+
+        return tuple(item for item in self.records if not item.response_complete)
+
+    @property
+    def every_response_complete(self) -> bool:
+        """The question a controller must ask before scoring anything.
+
+        A turn whose bytes are a fragment cannot yield a candidate, and the
+        fragment is indistinguishable from a short answer by inspection -- which
+        is exactly why this is a counter the relay keeps rather than a judgement
+        the reader makes.
+        """
+
+        return not self.incomplete_records
 
 
 class RelayStartupError(RuntimeError):
@@ -138,8 +202,10 @@ class _RelayState:
                 self.stats.requests_served += 1
             else:
                 self.stats.requests_refused += 1
-            if entry.rejection == RelayRejection.UPSTREAM_UNAVAILABLE:
+            if entry.rejection in _UPSTREAM_FAILURES:
                 self.stats.upstream_failures += 1
+            if not entry.response_complete:
+                self.stats.incomplete_responses += 1
             if entry.client_cancelled:
                 self.stats.cancellations += 1
             self.stats.bytes_to_upstream += entry.request_bytes
@@ -357,27 +423,74 @@ class _RelayHandler(BaseHTTPRequestHandler):
         except OSError:
             pass
         try:
-            entry.response_bytes, entry.streamed, entry.client_cancelled = self._pump(
-                response, config.max_response_bytes
-            )
+            completion = self._pump(response, config.max_response_bytes)
         finally:
             _close(connection)
+
+        entry.response_bytes = completion.total_bytes
+        entry.streamed = completion.streamed
+        entry.client_cancelled = completion.client_cancelled
+        entry.response_complete = completion.complete
+        entry.terminal_observed = completion.terminal_observed
+        if completion.detail:
+            entry.detail = completion.detail
+        if completion.rejection is not None:
+            entry.rejection = completion.rejection
+
         if entry.response_bytes >= config.max_response_bytes:
             entry.rejection = RelayRejection.RESPONSE_TOO_LARGE
             entry.detail = (
                 f"upstream response reached the {config.max_response_bytes:,}-byte "
                 "ceiling and was cut off"
             )
+
+        # The response line went out before any of this was knowable, so the
+        # status is left exactly as the upstream sent it. Pretending it could be
+        # changed retroactively would put a number in the record that no client
+        # ever saw. What the client gets instead is a transfer that ends without
+        # a valid terminal, and what the controller gets is this record.
+        self.close_connection = True
         entry.duration_seconds = time.monotonic() - started
         state.record(entry)
 
     def _pump(
         self, response: http.client.HTTPResponse, max_bytes: int
-    ) -> tuple[int, bool, bool]:
-        """Stream the upstream response through, bounded and cancellable."""
+    ) -> _Completion:
+        """Stream the upstream response through, bounded and cancellable.
+
+        This used to return only "how many bytes" and "did the reader leave",
+        and treated EOF as the end of a response. EOF is not the end of a
+        response; it is the end of a *connection*. The two coincide exactly when
+        the upstream behaved, which is the case this relay was only ever tested
+        against.
+
+        Completion is therefore asked explicitly, and differently by shape:
+
+        * an event stream is complete when it delivers `data: [DONE]`;
+        * a non-streaming body is complete when it delivers the `Content-Length`
+          it promised;
+        * a body with neither -- no terminal and no declared length -- is
+          complete at EOF, because connection close is genuinely its framing.
+
+        Anything short of that is a fragment. The status line has already gone
+        out by then and cannot be retracted, so this reports the failure and
+        lets the caller record it; what it will not do is invent a terminal to
+        make the fragment parse.
+        """
+
+        is_event_stream = "text/event-stream" in (
+            response.getheader("Content-Type") or ""
+        ).lower()
+        declared_length = _content_length(response.getheader("Content-Length"))
 
         total = 0
         chunks = 0
+        terminal_seen = False
+        # The terminal can be split across two reads, so a window of the tail
+        # is kept rather than testing each chunk in isolation.
+        tail = b""
+        truncated_at_ceiling = False
+
         while True:
             try:
                 # `read1`, not `read`: `read` blocks until it has filled the
@@ -385,15 +498,34 @@ class _RelayHandler(BaseHTTPRequestHandler):
                 # stream until 64 KiB had accumulated. `read1` returns whatever
                 # has arrived, which is what streaming means.
                 chunk = response.read1(_CHUNK)
-            except (OSError, http.client.HTTPException):
-                break
+            except (OSError, http.client.HTTPException) as exc:
+                # A read error mid-body is an upstream disconnect, not an
+                # ending. Previously this `break` was indistinguishable from a
+                # clean finish.
+                return _Completion(
+                    total_bytes=total,
+                    streamed=chunks > 1,
+                    complete=False,
+                    terminal_observed=terminal_seen if is_event_stream else None,
+                    rejection=(
+                        RelayRejection.DROPPED_STREAM
+                        if is_event_stream
+                        else RelayRejection.UPSTREAM_DISCONNECT
+                    ),
+                    detail=(
+                        "the upstream connection failed after "
+                        f"{total} byte(s): {type(exc).__name__}: {exc}"
+                    ),
+                )
             if not chunk:
                 break
             remaining = max_bytes - total
             if remaining <= 0:
+                truncated_at_ceiling = True
                 break
             if len(chunk) > remaining:
                 chunk = chunk[:remaining]
+                truncated_at_ceiling = True
             try:
                 self.wfile.write(chunk)
                 self.wfile.flush()
@@ -401,12 +533,72 @@ class _RelayHandler(BaseHTTPRequestHandler):
                 # The workcell hung up. Returning here closes the upstream
                 # connection in the caller's `finally`, which frees the model
                 # server's slot instead of generating into a closed pipe.
-                return total, chunks > 1, True
+                #
+                # This is the reader's doing, so it is a cancellation and not an
+                # upstream failure. The response is still incomplete -- nobody
+                # may score it -- but it is not counted against the upstream.
+                return _Completion(
+                    total_bytes=total,
+                    streamed=chunks > 1,
+                    client_cancelled=True,
+                    complete=False,
+                    terminal_observed=terminal_seen if is_event_stream else None,
+                    detail="the workcell closed the connection mid-response",
+                )
             total += len(chunk)
             chunks += 1
+            if is_event_stream and not terminal_seen:
+                tail = (tail + chunk)[-len(SSE_TERMINAL) * 4 :]
+                terminal_seen = SSE_TERMINAL in tail
             if total >= max_bytes:
+                truncated_at_ceiling = True
                 break
-        return total, chunks > 1, False
+
+        if truncated_at_ceiling:
+            # The ceiling is the relay's own doing and already has its own
+            # rejection, applied by the caller. It is still not a complete
+            # response, and saying so here keeps one meaning for the word.
+            return _Completion(
+                total_bytes=total,
+                streamed=chunks > 1,
+                complete=False,
+                terminal_observed=terminal_seen if is_event_stream else None,
+                detail="the response was cut off at the configured ceiling",
+            )
+
+        if is_event_stream and not terminal_seen:
+            return _Completion(
+                total_bytes=total,
+                streamed=chunks > 1,
+                complete=False,
+                terminal_observed=False,
+                rejection=RelayRejection.DROPPED_STREAM,
+                detail=(
+                    f"the event stream ended after {total} byte(s) without its "
+                    "terminal event; the bytes delivered are a fragment and "
+                    "must not be read as an answer"
+                ),
+            )
+
+        if declared_length is not None and total < declared_length:
+            return _Completion(
+                total_bytes=total,
+                streamed=chunks > 1,
+                complete=False,
+                terminal_observed=None,
+                rejection=RelayRejection.UPSTREAM_DISCONNECT,
+                detail=(
+                    f"the upstream promised {declared_length} byte(s) and "
+                    f"delivered {total} before closing"
+                ),
+            )
+
+        return _Completion(
+            total_bytes=total,
+            streamed=chunks > 1,
+            complete=True,
+            terminal_observed=True if is_event_stream else None,
+        )
 
     def _drain(self, count: int) -> None:
         remaining = count
