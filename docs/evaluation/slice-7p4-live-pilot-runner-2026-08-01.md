@@ -67,3 +67,13 @@ explicitly, places scratch under the identically mounted evidence root,
 transfers that ownership before containment, and changes the default evidence location
 from the root-owned rehearsal directory to an operator-writable native-ext4
 path. The failed v1 evidence is retained and must not be reused.
+
+The first corrected image was not authorized. A scripted-provider-only
+diagnostic retained at `/home/arya/apoapsis-live-preflight-diagnostic-v2`
+proved all 22 containment probes, including writable workspace, but refused
+the overall preflight. Stage 1's relay socket path exceeded the Linux Unix
+socket limit, and mount observation correctly rejected the containment
+session's controller-private task and forwarder sources; its egress probe was
+therefore also unobserved. No server or model request occurred. The next
+correction separates durable evidence from a short host-mounted runtime root
+and copies both manual-session mount inputs into that root.

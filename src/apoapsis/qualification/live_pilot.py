@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import signal
 import subprocess
 import time
@@ -69,13 +70,13 @@ def _prepare_containment_workspace(path: Path) -> None:
     os.chown(path, WORKCELL_UID, WORKCELL_UID)
 
 
-def _prepare_preflight_scratch(evidence_root: Path) -> Path:
+def _prepare_preflight_scratch(runtime_root: Path) -> Path:
     """Create scratch where both controller and host Docker daemon can see it."""
 
-    scratch = evidence_root / "live-preflight" / "scratch"
-    if scratch.exists():
-        raise LivePilotError("live preflight scratch already exists; evidence is not fresh")
-    scratch.mkdir(parents=True)
+    if not runtime_root.is_dir() or any(runtime_root.iterdir()):
+        raise LivePilotError("live runtime root is missing or not fresh")
+    scratch = runtime_root / "preflight"
+    scratch.mkdir()
     return scratch
 
 
@@ -256,7 +257,7 @@ def _trace(stdout: str, manifest: PilotManifest) -> dict[str, object]:
 
 def run_live_pilot(
     *, repo: Path, authorization_path: Path, evidence_root: Path,
-    seed_repository: Path, acknowledgement: str,
+    seed_repository: Path, acknowledgement: str, runtime_root: Path | None = None,
 ) -> Path:
     if acknowledgement != OPERATOR_ACKNOWLEDGEMENT:
         raise LivePilotError(
@@ -275,7 +276,9 @@ def run_live_pilot(
     # The controller is itself a container. Docker bind sources for sibling
     # workcells are resolved by the host daemon, so private controller `/tmp`
     # is not a valid source even though it exists from Python's perspective.
-    scratch = _prepare_preflight_scratch(evidence_root)
+    if runtime_root is None:
+        raise LivePilotError("a short host-mounted runtime root is required")
+    scratch = _prepare_preflight_scratch(runtime_root)
     preflight_writer = EvidenceWriter(evidence_root / "live-preflight" / "observations")
     identity = stage_1_runtime_identity(
         manifest, repo=repo, seed_repository=seed_repository, scratch=scratch,
@@ -289,10 +292,20 @@ def run_live_pilot(
     try:
         port = provider.base_url.rsplit(":", 1)[1]
         _prepare_containment_workspace(scratch / "containment-workspace")
+        containment_forwarder = scratch / "forwarder.py"
+        containment_task = scratch / "task.md"
+        shutil.copyfile(
+            repo / "src/apoapsis/workcell/forwarder.py", containment_forwarder
+        )
+        shutil.copyfile(
+            repo / manifest.crisis_atlas.package_root / "task.md", containment_task
+        )
         session = session_factory_from_manifest(
             manifest, repo=repo, workspace=scratch / "containment-workspace",
             socket_directory=scratch / "containment-sockets",
             upstream_base_url=f"http://{controller_address()}:{port}",
+            forwarder_path=containment_forwarder,
+            task_artifact_path=containment_task,
         )
         with session:
             exit_code, stderr = session.start_forwarder()
@@ -342,7 +355,7 @@ def run_live_pilot(
             writer.write_json(f"live-arms/{label}/readiness.json", readiness)
             observation = execute_slot(
                 manifest, repo=repo, seed_repository=seed_repository,
-                base=evidence_root / "live-workspaces", repetition_id=repetition,
+                base=runtime_root / "arms", repetition_id=repetition,
                 arm=arm, script=None, evidence_dir=slot_evidence,
                 previous_slot_paths=tuple(previous_workspaces),
                 max_output_tokens=manifest.budgets.max_output_tokens,
@@ -379,7 +392,6 @@ def run_live_pilot(
         slot_records.append(record)
         # The worktree is retained until its result is durable, then removed so
         # the next slot cannot inherit it.
-        import shutil
         shutil.rmtree(observation.kept_workspace, ignore_errors=True)
         if observation.kept_workspace.exists():
             raise LivePilotError(f"{label} worktree survived teardown")
@@ -412,12 +424,14 @@ def main() -> int:
     parser.add_argument("--repo", type=Path, required=True)
     parser.add_argument("--authorization", type=Path, required=True)
     parser.add_argument("--evidence-root", type=Path, required=True)
+    parser.add_argument("--runtime-root", type=Path, required=True)
     parser.add_argument("--seed-repository", type=Path, required=True)
     parser.add_argument("--operator-acknowledgement", required=True)
     args = parser.parse_args()
     result = run_live_pilot(
         repo=args.repo.resolve(), authorization_path=args.authorization.resolve(),
         evidence_root=args.evidence_root.resolve(),
+        runtime_root=args.runtime_root.resolve(),
         seed_repository=args.seed_repository.resolve(),
         acknowledgement=args.operator_acknowledgement,
     )

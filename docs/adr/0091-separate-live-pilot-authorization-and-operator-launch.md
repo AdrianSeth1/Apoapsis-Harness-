@@ -83,7 +83,16 @@ transfers ownership of the freshly created containment workspace to pinned
 workcell UID 65532; without that transfer, the
 capability-preserving writable-workspace probe correctly reported a breach.
 
-The correction does not relax either gate. It makes the observed topology
-match the declared one and restores the workcell's intended editing
-capability. The failed evidence directory is retained, and a retry must use a
-new evidence root and a newly built and bound controller image.
+The first correction's zero-model diagnostic then found two more consequences
+of that boundary: an evidence-derived relay socket exceeded the kernel's Unix
+socket path limit, and the manually constructed containment session still
+named controller-private task and forwarder paths. Disposable workspaces,
+mount sources, and sockets therefore use a separate short host-mounted runtime
+root; durable evidence remains at its descriptive path. The containment task
+and forwarder are copied into that runtime root before the sibling workcell is
+created.
+
+These corrections do not relax either gate. They make the observed topology
+match the declared one and restore the workcell's intended editing capability.
+Failed evidence is retained, and a retry must use new evidence/runtime roots
+and a newly built and bound controller image.

@@ -1284,7 +1284,10 @@ committed authorization file exists. A new evidence directory is mandatory so
 a retry cannot overwrite a partial run. The launcher defaults to the
 operator-writable native-ext4 path
 `/home/arya/apoapsis-live-evidence/crisis-atlas-live-pilot-v2`; an explicit
-first argument replaces that destination.
+first argument replaces that destination. Disposable workspaces and Unix
+sockets use the separate short, host-mounted runtime root
+`/home/arya/apx-ca-live-v2` (overridden by the second argument), so Docker can
+resolve every bind source without exceeding the Unix-socket path limit.
 
 `RealCasePackageProbe` (`qualification/real_probe.py`) is the real
 implementation. It clones the seed twice per checkpoint — base and candidate

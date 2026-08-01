@@ -62,20 +62,23 @@ class LiveAuthorizationTests(unittest.TestCase):
 
         chown.assert_called_once_with(workspace, WORKCELL_UID, WORKCELL_UID)
 
-    def test_preflight_scratch_is_inside_the_host_mounted_evidence_root(self):
+    def test_preflight_scratch_uses_a_short_fresh_host_mounted_runtime_root(self):
         with tempfile.TemporaryDirectory() as raw:
-            evidence = Path(raw) / "evidence"
-            scratch = _prepare_preflight_scratch(evidence)
+            runtime = Path(raw) / "run"
+            runtime.mkdir()
+            scratch = _prepare_preflight_scratch(runtime)
 
-            self.assertEqual(scratch, evidence / "live-preflight" / "scratch")
+            self.assertEqual(scratch, runtime / "preflight")
             with self.assertRaisesRegex(LivePilotError, "not fresh"):
-                _prepare_preflight_scratch(evidence)
+                _prepare_preflight_scratch(runtime)
 
     def test_operator_launcher_mounts_bound_docs_read_only(self):
         launcher = (REPO / "tools/run_crisis_atlas_live_pilot.sh").read_text(
             encoding="utf-8"
         )
         self.assertIn('${REPO}/docs:/opt/apoapsis/docs:ro', launcher)
+        self.assertIn('${RUNTIME}:${RUNTIME}:rw', launcher)
+        self.assertIn('--runtime-root "${RUNTIME}"', launcher)
 
     def test_server_detection_reads_procfs_without_external_tools(self):
         from apoapsis.qualification.live_pilot import _llama_server_pids
