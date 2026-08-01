@@ -35,13 +35,25 @@ REPO = Path(__file__).resolve().parents[1]
 #: evidence digest, and rewriting it to match would destroy the record of what
 #: was actually locked when.
 MANIFEST_PATH = (
+    REPO / "docs" / "qualification" / "slice7-crisis-atlas-pilot-manifest-v3.json"
+)
+LOCK_PATH = REPO / "docs" / "qualification" / "slice7-crisis-atlas-pilot-lock-v3.json"
+#: The pair v3 supersedes. Preserved unedited: v2 expected a 13-tool surface
+#: the image never had, bound none of the modules that sequence a rehearsal, and
+#: could no longer verify its own manifest once the schema gained a field.
+SUPERSEDED_MANIFEST_PATH = (
     REPO / "docs" / "qualification" / "slice7-crisis-atlas-pilot-manifest-v2.json"
 )
-LOCK_PATH = REPO / "docs" / "qualification" / "slice7-crisis-atlas-pilot-lock-v2.json"
-SUPERSEDED_MANIFEST_PATH = (
+SUPERSEDED_LOCK_PATH = (
+    REPO / "docs" / "qualification" / "slice7-crisis-atlas-pilot-lock-v2.json"
+)
+#: v1, superseded by v2 and still preserved. Two supersessions deep is the
+#: record; collapsing it would delete the reason anyone can say what was locked
+#: when.
+V1_MANIFEST_PATH = (
     REPO / "docs" / "qualification" / "slice7-crisis-atlas-pilot-manifest.json"
 )
-SUPERSEDED_LOCK_PATH = (
+V1_LOCK_PATH = (
     REPO / "docs" / "qualification" / "slice7-crisis-atlas-pilot-lock.json"
 )
 PACKAGE = REPO / "docs" / "qualification" / "pilot" / "crisis-atlas"
@@ -106,15 +118,41 @@ class ManifestResolutionTests(unittest.TestCase):
             fingerprint.hexdigest(), self.manifest.crisis_atlas.package_digest
         )
 
-        evidence = hashlib.sha256()
-        for path in sorted(EVIDENCE.rglob("*")):
-            if path.is_file():
-                relative = path.relative_to(EVIDENCE).as_posix()
-                digest = hashlib.sha256(path.read_bytes()).hexdigest()
-                evidence.update(f"{relative}\0{digest}\0".encode("utf-8"))
+        # The evidence root is whatever the manifest says it is, and the two
+        # shapes are digested differently on purpose. v1 and v2 named a
+        # directory tree; v3 names the single R3 proofs document, whose digest
+        # is over its own bytes. Recomputing a tree fingerprint for a file, or
+        # the reverse, would produce a mismatch that looks like tampering.
+        root = REPO / self.manifest.crisis_atlas.qualification_evidence_root
+        self.assertTrue(root.exists(), f"the evidence root is missing at {root}")
+        if root.is_file():
+            observed = hashlib.sha256(root.read_bytes()).hexdigest()
+        else:
+            evidence = hashlib.sha256()
+            for path in sorted(root.rglob("*")):
+                if path.is_file():
+                    relative = path.relative_to(root).as_posix()
+                    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+                    evidence.update(f"{relative}\0{digest}\0".encode("utf-8"))
+            observed = evidence.hexdigest()
         self.assertEqual(
-            evidence.hexdigest(),
-            self.manifest.crisis_atlas.qualification_evidence_sha256,
+            observed, self.manifest.crisis_atlas.qualification_evidence_sha256
+        )
+
+    def test_the_bound_evidence_is_a_real_qualification_run(self) -> None:
+        """A digest match is not enough: orchestration-only evidence would
+        also digest cleanly. What is bound must claim real qualification and
+        must have passed all eight proofs."""
+
+        root = REPO / self.manifest.crisis_atlas.qualification_evidence_root
+        if not root.is_file():
+            self.skipTest("the bound evidence is a directory tree, not a document")
+        payload = json.loads(root.read_text(encoding="utf-8"))
+        self.assertEqual(payload["evidence_kind"], "real_qualification")
+        self.assertEqual(len(payload["results"]), 8)
+        self.assertTrue(all(item["state"] == "passed" for item in payload["results"]))
+        self.assertEqual(
+            payload["package_digest"], self.manifest.crisis_atlas.package_digest
         )
 
     def test_the_package_is_still_registerable(self) -> None:
@@ -493,7 +531,7 @@ class LockGateTests(unittest.TestCase):
 
 
 class SupersessionTests(unittest.TestCase):
-    """The v1 pair is preserved, marked, and never rehearsed."""
+    """The v2 pair is preserved, marked, and never rehearsed."""
 
     def setUp(self) -> None:
         self.current = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
@@ -502,8 +540,14 @@ class SupersessionTests(unittest.TestCase):
         self.assertTrue(SUPERSEDED_MANIFEST_PATH.is_file())
         self.assertTrue(SUPERSEDED_LOCK_PATH.is_file())
         old = json.loads(SUPERSEDED_MANIFEST_PATH.read_text(encoding="utf-8"))
-        self.assertEqual(old["manifest_id"], "slice7-crisis-atlas-pilot")
-        self.assertEqual(old["schema_version"], "1.0")
+        self.assertEqual(old["manifest_id"], "slice7-crisis-atlas-pilot-v2")
+        self.assertEqual(old["schema_version"], "2.0")
+        # v1 is still there behind v2. Supersession is a chain, not a swap.
+        self.assertTrue(V1_MANIFEST_PATH.is_file())
+        self.assertTrue(V1_LOCK_PATH.is_file())
+        v1 = json.loads(V1_MANIFEST_PATH.read_text(encoding="utf-8"))
+        self.assertEqual(v1["manifest_id"], "slice7-crisis-atlas-pilot")
+        self.assertEqual(v1["schema_version"], "1.0")
 
     def test_the_new_manifest_records_why_the_old_one_was_invalid(self) -> None:
         block = self.current["supersedes"]
@@ -511,9 +555,13 @@ class SupersessionTests(unittest.TestCase):
         self.assertFalse(block["ever_rehearsed"])
         self.assertFalse(block["ever_authorized_for_live_inference"])
         self.assertTrue(block["preserved_not_edited"])
+        self.assertEqual(
+            block["manifest_path"],
+            "docs/qualification/slice7-crisis-atlas-pilot-manifest-v2.json",
+        )
         reasons = " ".join(block["invalid_because"])
-        self.assertIn("runner authority was absent", reasons)
-        self.assertIn("22cd8af", reasons)
+        self.assertIn("13", reasons)
+        self.assertIn("runner", reasons)
 
     def test_the_old_lock_cannot_authorise_the_new_manifest(self) -> None:
         old_lock = PilotLock.model_validate_json(
@@ -557,6 +605,155 @@ class SupersessionTests(unittest.TestCase):
             "src/apoapsis/qualification/case_package.py", reuse["changed_modules"]
         )
         self.assertTrue(reuse["all_eight_proofs_passed"])
+
+
+class SupersededV2CannotAuthoriseAnythingTests(unittest.TestCase):
+    """v2 is history. History must not be able to authorise a run.
+
+    Every assertion here is about the *superseded* pair. They exist because the
+    v2 documents are still on disk, still parse, and would still look like a
+    valid manifest and lock to anything that did not check which pair it was
+    holding.
+    """
+
+    def setUp(self) -> None:
+        self.v2_manifest = PilotManifest.model_validate_json(
+            SUPERSEDED_MANIFEST_PATH.read_text(encoding="utf-8")
+        )
+        self.v2_lock = PilotLock.model_validate_json(
+            SUPERSEDED_LOCK_PATH.read_text(encoding="utf-8")
+        )
+        self.manifest = load_manifest()
+
+    def test_v2_is_superseded_by_this_manifest(self) -> None:
+        block = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))["supersedes"]
+        self.assertEqual(block["manifest_digest"], self.v2_manifest.digest())
+        self.assertEqual(block["lock_digest"], self.v2_lock.digest())
+
+    def test_the_v2_lock_cannot_authorise_the_r4_runner(self) -> None:
+        decision = authorize_rehearsal(self.manifest, self.v2_lock)
+        self.assertFalse(decision.authorized)
+        self.assertIn("changed since it was locked", decision.reason)
+
+    def test_the_v2_lock_could_not_even_verify_its_own_manifest(self) -> None:
+        """Not a v3 problem: the v2 pair never agreed with itself.
+
+        `expected_tool_schema_sha256` was added to `QwenIdentity` after the v2
+        lock was written, so the manifest's digest moved underneath a lock that
+        had already recorded the old value. A lock that cannot verify the
+        document it names never authorised anything.
+        """
+
+        with self.assertRaises(ValueError):
+            self.v2_lock.verify_against(self.v2_manifest)
+
+    def test_the_v2_thirteen_tool_expectation_is_rejected(self) -> None:
+        self.assertEqual(self.v2_manifest.qwen.expected_native_tool_count, 13)
+        self.assertIsNone(self.v2_manifest.qwen.expected_tool_schema_sha256)
+
+        self.assertEqual(self.manifest.qwen.expected_native_tool_count, 26)
+        self.assertEqual(len(self.manifest.qwen.expected_tool_names), 26)
+        self.assertIsNotNone(self.manifest.qwen.expected_tool_schema_sha256)
+        # Same image, different surface: the count was wrong, the image was not.
+        self.assertEqual(
+            self.v2_manifest.qwen.image_digest, self.manifest.qwen.image_digest
+        )
+        # `tool_search` is disabled in settings and absent from the wire.
+        self.assertNotIn("tool_search", self.manifest.qwen.expected_tool_names)
+        self.assertFalse(self.manifest.qwen.tool_search_enabled)
+        # `web_fetch` is present, and its presence is not the containment claim.
+        self.assertIn("web_fetch", self.manifest.qwen.expected_tool_names)
+
+    def test_v3_binds_the_modules_v2_left_unbound(self) -> None:
+        v2_paths = {item["path"] for item in self.v2_manifest.pilot_authority.bound_modules}
+        v3_paths = {item["path"] for item in self.manifest.pilot_authority.bound_modules}
+        for path in (
+            "src/apoapsis/qualification/runner.py",
+            "src/apoapsis/qualification/session_factory.py",
+            "src/apoapsis/qualification/slot_driver.py",
+            "src/apoapsis/qualification/observation.py",
+            "src/apoapsis/qualification/relay_faults.py",
+            "src/apoapsis/qualification/fake_provider_server.py",
+        ):
+            self.assertNotIn(path, v2_paths)
+            self.assertIn(path, v3_paths)
+
+
+class LockV3BindsExactlyWhatItSaysTests(unittest.TestCase):
+    """One byte anywhere in the bound set invalidates the authorisation."""
+
+    def setUp(self) -> None:
+        self.manifest = load_manifest()
+        self.lock = load_lock()
+        if self.lock is None:
+            self.skipTest("no lock yet; this is the manifest commit")
+        if not (REPO / ".git").exists() or shutil.which("git") is None:
+            self.skipTest("not a git checkout")
+
+    def test_v3_binds_the_current_fake_provider_bytes(self) -> None:
+        from apoapsis.qualification.fake_pilot_provider import script_digest
+
+        authority = self.manifest.pilot_authority
+        self.assertIsNotNone(authority)
+        self.assertEqual(authority.fake_provider_script_sha256, script_digest())
+
+    def test_changing_one_bound_provider_byte_invalidates_v3(self) -> None:
+        from apoapsis.qualification.fake_pilot_provider import (
+            SCRIPTS,
+            ScriptId,
+            script_digest,
+        )
+
+        authority = self.manifest.pilot_authority
+        original = SCRIPTS[ScriptId.COMPLETE_PROPOSAL]
+        SCRIPTS[ScriptId.COMPLETE_PROPOSAL] = (
+            original[0].model_copy(update={"finish_reason": "length"}),
+        )
+        try:
+            self.assertNotEqual(authority.fake_provider_script_sha256, script_digest())
+        finally:
+            SCRIPTS[ScriptId.COMPLETE_PROPOSAL] = original
+
+    def test_changing_one_runner_module_byte_invalidates_v3(self) -> None:
+        from apoapsis.qualification.authority import BoundModule, verify_authority
+
+        authority = self.manifest.pilot_authority
+        tampered = tuple(
+            BoundModule(
+                path=item["path"],
+                sha256=("0" * 64 if item["path"].endswith("runner.py") else item["sha256"]),
+            )
+            for item in authority.bound_modules
+        )
+        result = verify_authority(authority.authority_commit, tampered, repo=REPO)
+        self.assertFalse(result.satisfied)
+        self.assertIn(
+            "src/apoapsis/qualification/runner.py",
+            {item.path for item in result.findings},
+        )
+
+    def test_manifest_mutation_invalidates_lock_v3(self) -> None:
+        payload = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
+        payload["qwen"]["qwen_home"] = "/tmp/somewhere-else"
+        mutated = PilotManifest.model_validate(payload)
+        decision = authorize_rehearsal(mutated, self.lock)
+        self.assertFalse(decision.authorized)
+        self.assertIn("changed since it was locked", decision.reason)
+
+    def test_lock_v3_authorises_the_rehearsal_only(self) -> None:
+        decision = authorize_rehearsal(self.manifest, self.lock)
+        self.assertTrue(decision.authorized, decision.reason)
+        self.assertTrue(self.lock.authorises_zero_token_rehearsal)
+        self.assertFalse(self.lock.authorises_live_inference)
+        self.assertIn("live inference is not authorised", decision.reason)
+        # There is no field that can turn live inference on.
+        with self.assertRaises(ValueError):
+            self.lock.model_copy(update={"authorises_live_inference": True}).model_validate(
+                {
+                    **self.lock.model_dump(mode="json"),
+                    "authorises_live_inference": True,
+                }
+            )
 
 
 class ExecutableProvenanceTests(unittest.TestCase):
