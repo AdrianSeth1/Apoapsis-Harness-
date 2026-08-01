@@ -97,6 +97,7 @@ _WORKTREE_CHECKED_ACTIONS = frozenset(
         ReviewActionKind.FRONTIER_CONTINUATION,
         ReviewActionKind.AUTHORIZE_FRONTIER_STAGE,
         ReviewActionKind.MANUAL_FRONTIER_HANDOFF,
+        ReviewActionKind.AUTHORIZE_LOCAL_STAGE,
     }
 )
 
@@ -193,7 +194,7 @@ def _validate_operation_preconditions(
             f"{review_case.task_id} "
             f"(eligible: {[item.value for item in review_case.eligible_actions]})"
         )
-    if action in _WORKTREE_CHECKED_ACTIONS:
+    if action in _WORKTREE_CHECKED_ACTIONS and review_case.worktree_exists:
         if (
             expected_worktree_fingerprint is None
             or expected_worktree_fingerprint != review_case.worktree_fingerprint
@@ -1032,10 +1033,6 @@ def _execute_authorize_local_stage(
     child execution's route is overridden; project configuration is unchanged.
     """
 
-    if review_case.worktree_exists or review_case.worktree_path is not None:
-        raise ReviewError(
-            "Run locally is only valid before any task worktree exists"
-        )
     task_directory = root / ".apoapsis" / "tasks" / review_case.task_id
     # Either local loop's stage counts. Checking only the strict loop's
     # filename made this guard blind to sandbox stages, so "Run locally"
@@ -1045,6 +1042,21 @@ def _execute_authorize_local_stage(
             "Run locally cannot start over an existing local agent session; "
             "use Repair and verify instead"
         )
+    if review_case.worktree_exists:
+        if review_case.worktree_path is None or review_case.current_diff != "":
+            raise ReviewError(
+                "a fresh local retry requires the existing managed worktree "
+                "to be present and unchanged"
+            )
+        # This is the zero-session recovery case: no model ran and the exact
+        # fingerprint was rechecked above. Remove only the pristine managed
+        # task worktree and its task branch so the ordinary execution service
+        # can recreate both from the approved base.
+        WorktreeManager(root).cleanup(
+            task_slug(review_case.task_id), force=False, delete_branch=True
+        )
+    elif review_case.worktree_path is not None:
+        raise ReviewError("the recorded task worktree is not available")
 
     execution = config.execution.model_copy(update={"route": AgentRoute.LOCAL_ONLY})
     local_config = config.model_copy(update={"execution": execution})

@@ -12,7 +12,7 @@ from apoapsis.reporting.current_state import project_current_task_evidence
 from apoapsis.reporting.report import FinalTaskReport
 from apoapsis.review.classify import classify_stop_reason, eligible_actions_for
 from apoapsis.review.errors import ReviewCaseError
-from apoapsis.review.schema import ReviewCase
+from apoapsis.review.schema import ReviewActionKind, ReviewCase, StopReasonKind
 from apoapsis.verification.failures import FailureNormalizer, NormalizedFailure
 from apoapsis.verification.results import VerificationResult, VerificationStatus
 from apoapsis.workflow.engine import SQLiteTaskStore
@@ -285,6 +285,23 @@ def build_review_case(
         manual_frontier_rounds_used=manual_frontier_rounds_used,
         max_manual_frontier_rounds=max_manual_frontier_rounds,
     )
+    # A pre-agent infrastructure stop has no session to continue. Offer one
+    # fresh, explicitly authorized local rerun when the managed worktree is
+    # still pristine; never advertise a continuation that must fail with
+    # "no prior local agent session" (ADR 0098).
+    if local_session is None:
+        eligible_actions = [
+            item
+            for item in eligible_actions
+            if item != ReviewActionKind.LOCAL_CONTINUATION
+        ]
+        if (
+            kind == StopReasonKind.LOCAL_AGENT_ESCALATION_UNAVAILABLE
+            and worktree_exists
+            and current_diff == ""
+            and ReviewActionKind.AUTHORIZE_LOCAL_STAGE not in eligible_actions
+        ):
+            eligible_actions.append(ReviewActionKind.AUTHORIZE_LOCAL_STAGE)
 
     audit_artifact_locations: list[str] = []
     if task_directory.is_dir():

@@ -1371,6 +1371,13 @@ does not guess a `plan-vN.json` filename from that counter. Packages created
 before ADR 0097 retain the exact versioned-artifact fallback and fail closed if
 that legacy artifact is unavailable.
 
+Capability Sandbox launch accepts both ordinary Git checkouts and attached Git
+worktrees (whose `.git` metadata is a file). If infrastructure stops before a
+local session exists, Human Review offers **Run locally / retry fresh** instead
+of a continuation that cannot succeed. The retry is available only while the
+managed task worktree is unchanged; Apoapsis fingerprint-checks it, removes it
+without force, and recreates the run from the approved base (ADR 0098).
+
 The workcell runs the real Qwen coding CLI's own native loop inside a
 disposable, hardened container. Apoapsis keeps every durable authority —
 admission, verification, checkpointing, promotion, delivery — outside it.

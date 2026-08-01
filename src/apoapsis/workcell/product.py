@@ -268,9 +268,14 @@ class NativeQwenWorkcellExecutor:
             completed.stderr, encoding="utf-8"
         )
         if completed.returncode != 0 or not response_path.is_file():
+            detail = (
+                completed.stderr.strip()
+                or completed.stdout.strip()
+                or f"launcher exited {completed.returncode} without a result artifact"
+            )
             return self._review(
                 "Capability Sandbox preflight or runtime failed; no compatibility "
-                "fallback was attempted. " + (completed.stderr.strip()[-1000:] or "")
+                "fallback was attempted. " + detail[-1000:]
             )
         payload = json.loads(response_path.read_text(encoding="utf-8"))
         if payload.get("outcome") != "complete":

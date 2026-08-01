@@ -981,7 +981,7 @@ const REVIEW_ACTION_LABELS = {
   verification_only_retry: "Verify current changes",
   local_continuation: "Continue locally",
   frontier_continuation: "Continue with frontier",
-  authorize_local_stage: "Run locally",
+  authorize_local_stage: "Run locally / retry fresh",
   authorize_frontier_run: "Run with frontier",
   authorize_frontier_stage: "Authorize a fresh frontier stage",
 };
@@ -1228,7 +1228,7 @@ function reviewActionButton(action) {
     verification_only_retry: "Runs configured verification against the current worktree. No model is called.",
     local_continuation: "Resumes the local coding agent with additional authorized turns.",
     frontier_continuation: "Resumes the frontier coding agent with additional authorized turns.",
-    authorize_local_stage: "Explicitly overrides this routing stop and starts a fresh bounded local coding run. The normal worktree, patch policy, verification, and audit controls still apply.",
+    authorize_local_stage: "Starts one fresh bounded local coding run. For a zero-session infrastructure stop, Apoapsis first removes only the unchanged managed task worktree and recreates it from the approved base. Normal patch, verification, and audit controls still apply.",
     authorize_frontier_run: "Explicitly starts this untouched task with the configured frontier coder. The normal worktree, patch policy, verification, and audit controls still apply.",
     authorize_frontier_stage: "Starts a brand-new frontier coding-agent stage using the local session's diff, failures, and full configured frontier budget. Never launches automatically.",
   }[action] || "";
@@ -1247,7 +1247,7 @@ function reviewConfirmPanel(detail, action) {
     verification_only_retry: "Runs configured verification against the current worktree right now. No model is called.",
     local_continuation: "Resumes the local coding agent from exactly where it stopped, with the authorized additional turns. This calls a model.",
     frontier_continuation: "Resumes the frontier coding agent from exactly where it stopped, with the authorized additional turns. This calls a hosted/frontier model and may incur cost.",
-    authorize_local_stage: "This task stopped before any agent ran because deterministic routing required a human decision. Run it once with the configured local coding model. This is a fresh bounded execution, not a continuation; all normal patch and verification controls remain active.",
+    authorize_local_stage: "Run once with the configured local coding model. This is a fresh bounded execution, not a continuation. It also repairs a zero-session Capability Sandbox stop when the managed task worktree is unchanged; all normal patch and verification controls remain active.",
     authorize_frontier_run: "This task stopped before any agent ran because deterministic routing required a human decision. Run it once with the configured frontier coding model. This is a fresh bounded execution, not a continuation, and may incur hosted-model cost.",
     authorize_frontier_stage: "Starts a fresh frontier coding-agent stage from the local session's exact diff and failures. This is a new session, not a continuation, and calls a hosted/frontier model -- it may incur cost.",
   }[action] || "";

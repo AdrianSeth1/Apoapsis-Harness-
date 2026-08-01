@@ -113,6 +113,19 @@ class ApprovedPlanPayloadTests(unittest.TestCase):
         with self.assertRaisesRegex(CapabilitySandboxError, "plan v5 artifact"):
             _approved_plan_payload(self.root, package)
 
+    def test_launcher_accepts_git_worktree_metadata_files(self) -> None:
+        launcher = (
+            Path(__file__).resolve().parents[1]
+            / "tools"
+            / "run_capability_sandbox_task.sh"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn(
+            'git -C "${SEED}" rev-parse --is-inside-work-tree', launcher
+        )
+        self.assertNotIn('test -d "${SEED}/.git"', launcher)
+        self.assertIn("Capability Sandbox task path is not a Git worktree", launcher)
+
 
 if __name__ == "__main__":
     unittest.main()
