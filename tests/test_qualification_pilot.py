@@ -35,15 +35,22 @@ REPO = Path(__file__).resolve().parents[1]
 #: evidence digest, and rewriting it to match would destroy the record of what
 #: was actually locked when.
 MANIFEST_PATH = (
+    REPO / "docs" / "qualification" / "slice7-crisis-atlas-pilot-manifest-v8.json"
+)
+LOCK_PATH = REPO / "docs" / "qualification" / "slice7-crisis-atlas-pilot-lock-v8.json"
+#: The pair v8 supersedes. Preserved unedited, with its failed containment
+#: evidence: v7 bound the workcell image that shipped OPENAI_API_KEY.
+SUPERSEDED_MANIFEST_PATH = (
     REPO / "docs" / "qualification" / "slice7-crisis-atlas-pilot-manifest-v7.json"
 )
-LOCK_PATH = REPO / "docs" / "qualification" / "slice7-crisis-atlas-pilot-lock-v7.json"
-#: The pair v7 supersedes. Preserved unedited: v6 bound a runner that raised
-#: NameError after Stage 3, so it never reached a verdict.
-SUPERSEDED_MANIFEST_PATH = (
+SUPERSEDED_LOCK_PATH = (
+    REPO / "docs" / "qualification" / "slice7-crisis-atlas-pilot-lock-v7.json"
+)
+#: v6, superseded by v7: its runner raised NameError after Stage 3.
+V6_MANIFEST_PATH = (
     REPO / "docs" / "qualification" / "slice7-crisis-atlas-pilot-manifest-v6.json"
 )
-SUPERSEDED_LOCK_PATH = (
+V6_LOCK_PATH = (
     REPO / "docs" / "qualification" / "slice7-crisis-atlas-pilot-lock-v6.json"
 )
 #: v5, superseded by v6: its runner never entered the shared session and its
@@ -572,8 +579,10 @@ class SupersessionTests(unittest.TestCase):
         self.assertTrue(SUPERSEDED_MANIFEST_PATH.is_file())
         self.assertTrue(SUPERSEDED_LOCK_PATH.is_file())
         old = json.loads(SUPERSEDED_MANIFEST_PATH.read_text(encoding="utf-8"))
-        self.assertEqual(old["manifest_id"], "slice7-crisis-atlas-pilot-v6")
+        self.assertEqual(old["manifest_id"], "slice7-crisis-atlas-pilot-v7")
         self.assertEqual(old["schema_version"], "2.0")
+        self.assertTrue(V6_MANIFEST_PATH.is_file())
+        self.assertTrue(V6_LOCK_PATH.is_file())
         self.assertTrue(V5_MANIFEST_PATH.is_file())
         self.assertTrue(V5_LOCK_PATH.is_file())
         # v4, v3, v2 and v1 are still there behind v5. Supersession is a chain,
@@ -611,10 +620,88 @@ class SupersessionTests(unittest.TestCase):
         self.assertTrue(block["preserved_not_edited"])
         self.assertEqual(
             block["manifest_path"],
-            "docs/qualification/slice7-crisis-atlas-pilot-manifest-v6.json",
+            "docs/qualification/slice7-crisis-atlas-pilot-manifest-v7.json",
         )
         reasons = " ".join(block["invalid_because"])
-        self.assertIn("NameError", reasons)
+        self.assertIn("OPENAI_API_KEY", reasons)
+
+    def test_package_evidence_reuse_is_unchanged_by_the_image_rebuild(self) -> None:
+        """Rebuilding the workcell does not touch the package proofs."""
+
+        reuse = self.current["package_evidence_reuse"]
+        self.assertFalse(reuse["reused"])
+        self.assertTrue(reuse["all_eight_proofs_passed"])
+
+
+class WorkcellImageAndPlaceholderTests(unittest.TestCase):
+    """What v8 changed, and what it deliberately did not."""
+
+    def setUp(self) -> None:
+        self.manifest = load_manifest()
+        self.v7_manifest = PilotManifest.model_validate_json(
+            SUPERSEDED_MANIFEST_PATH.read_text(encoding="utf-8")
+        )
+
+    def test_the_workcell_image_changed_and_the_old_one_is_not_reused(self) -> None:
+        """v8 supersedes v7 for the image, and says which image."""
+
+        self.assertNotEqual(
+            self.v7_manifest.qwen.image_digest, self.manifest.qwen.image_digest
+        )
+        self.assertEqual(
+            self.v7_manifest.qwen.image_digest,
+            "sha256:7419b0da604682974fe1d1fb1b8e1b27f8b7c8675c7cac249a038a54e59ab1b5",
+        )
+        self.assertEqual(
+            self.manifest.workcell_image.image_id, self.manifest.qwen.image_digest
+        )
+        # The Dockerfile is pinned by digest even though the image carries no
+        # provenance labels, so the build is reproducible from committed bytes
+        # rather than from a note about how it was made.
+        self.assertIsNotNone(self.manifest.workcell_image.dockerfile_sha256)
+
+    def test_the_bound_settings_carry_the_declared_placeholder(self) -> None:
+        """The settings digest is what makes the configuration check
+        enforceable, so it must be the digest of the bytes the controller
+        actually writes."""
+
+        import hashlib
+
+        from apoapsis.qualification.slot_driver import (
+            LOCAL_PLACEHOLDER_API_KEY,
+            qwen_settings,
+        )
+
+        settings = qwen_settings(
+            model_alias=self.manifest.model.model_alias,
+            loopback_port=8080,
+            context_window=self.manifest.budgets.context_limit_tokens,
+            max_output=self.manifest.budgets.max_output_tokens,
+        )
+        body = json.dumps(settings)
+        self.assertEqual(
+            hashlib.sha256(body.encode()).hexdigest(),
+            self.manifest.qwen.effective_settings_sha256,
+        )
+        self.assertEqual(
+            len(body.encode()), self.manifest.qwen.effective_settings_bytes
+        )
+        self.assertEqual(
+            settings["security"]["auth"]["apiKey"], LOCAL_PLACEHOLDER_API_KEY
+        )
+        # And the manifest says, in the artefact rather than in a commit
+        # message, what that value is and is not.
+        evidence = self.manifest.qwen.tool_surface_evidence
+        for phrase in ("non-secret", "authenticates nothing", "loopback"):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, evidence)
+
+
+class SupersessionChainTests(unittest.TestCase):
+    """The rest of the supersession record, about the current manifest."""
+
+    def setUp(self) -> None:
+        self.current = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
 
     def test_the_old_lock_cannot_authorise_the_new_manifest(self) -> None:
         old_lock = PilotLock.model_validate_json(
@@ -695,17 +782,23 @@ class SupersededV2CannotAuthoriseAnythingTests(unittest.TestCase):
             V5_LOCK_PATH.read_text(encoding="utf-8")
         )
         self.v6_manifest = PilotManifest.model_validate_json(
-            SUPERSEDED_MANIFEST_PATH.read_text(encoding="utf-8")
+            V6_MANIFEST_PATH.read_text(encoding="utf-8")
         )
         self.v6_lock = PilotLock.model_validate_json(
+            V6_LOCK_PATH.read_text(encoding="utf-8")
+        )
+        self.v7_manifest = PilotManifest.model_validate_json(
+            SUPERSEDED_MANIFEST_PATH.read_text(encoding="utf-8")
+        )
+        self.v7_lock = PilotLock.model_validate_json(
             SUPERSEDED_LOCK_PATH.read_text(encoding="utf-8")
         )
         self.manifest = load_manifest()
 
     def test_the_superseded_pair_is_recorded_at_its_real_digests(self) -> None:
         block = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))["supersedes"]
-        self.assertEqual(block["manifest_digest"], self.v6_manifest.digest())
-        self.assertEqual(block["lock_digest"], self.v6_lock.digest())
+        self.assertEqual(block["manifest_digest"], self.v7_manifest.digest())
+        self.assertEqual(block["lock_digest"], self.v7_lock.digest())
 
     def test_no_superseded_lock_can_authorise_the_current_manifest(self) -> None:
         for name, lock in (
@@ -714,6 +807,7 @@ class SupersededV2CannotAuthoriseAnythingTests(unittest.TestCase):
             ("v4", self.v4_lock),
             ("v5", self.v5_lock),
             ("v6", self.v6_lock),
+            ("v7", self.v7_lock),
         ):
             with self.subTest(lock=name):
                 decision = authorize_rehearsal(self.manifest, lock)
@@ -739,9 +833,12 @@ class SupersededV2CannotAuthoriseAnythingTests(unittest.TestCase):
         self.assertEqual(self.manifest.qwen.expected_native_tool_count, 26)
         self.assertEqual(len(self.manifest.qwen.expected_tool_names), 26)
         self.assertIsNotNone(self.manifest.qwen.expected_tool_schema_sha256)
-        # Same image, different surface: the count was wrong, the image was not.
+        # Same image, different surface: the count was wrong, the image was
+        # not. Compared against v7, the last manifest to bind that image --
+        # v8 replaced it for an unrelated reason, and reading the two changes
+        # as one would lose why either happened.
         self.assertEqual(
-            self.v2_manifest.qwen.image_digest, self.manifest.qwen.image_digest
+            self.v2_manifest.qwen.image_digest, self.v7_manifest.qwen.image_digest
         )
         # `tool_search` is disabled in settings and absent from the wire.
         self.assertNotIn("tool_search", self.manifest.qwen.expected_tool_names)
@@ -778,14 +875,20 @@ class SupersededV2CannotAuthoriseAnythingTests(unittest.TestCase):
         )
         self.assertNotEqual(
             self._bound(self.v6_manifest, "src/apoapsis/qualification/runner.py"),
-            self._bound(self.manifest, "src/apoapsis/qualification/runner.py"),
+            self._bound(self.v7_manifest, "src/apoapsis/qualification/runner.py"),
         )
         v6_reasons = " ".join(
+            json.loads(V6_MANIFEST_PATH.read_text(encoding="utf-8"))["supersedes"][
+                "invalid_because"
+            ]
+        )
+        self.assertIn("entered the shared session", v6_reasons)
+        v7_reasons = " ".join(
             json.loads(SUPERSEDED_MANIFEST_PATH.read_text(encoding="utf-8"))[
                 "supersedes"
             ]["invalid_because"]
         )
-        self.assertIn("entered the shared session", v6_reasons)
+        self.assertIn("NameError", v7_reasons)
 
     def test_the_authority_set_covers_every_verdict_affecting_module(self) -> None:
         """Widened in v6, and asserted rather than assumed.
@@ -839,7 +942,7 @@ class SupersededV2CannotAuthoriseAnythingTests(unittest.TestCase):
             for item in self.manifest.pilot_authority.bound_modules
         }
         moved = sorted(path for path in v5 if v5[path] != current[path])
-        self.assertEqual(moved, ["src/apoapsis/qualification/runner.py"])
+        self.assertIn("src/apoapsis/qualification/runner.py", moved)
         added = sorted(set(current) - set(v5))
         self.assertIn("src/apoapsis/workcell/relay_policy.py", added)
 
