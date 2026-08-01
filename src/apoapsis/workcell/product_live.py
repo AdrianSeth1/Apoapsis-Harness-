@@ -287,6 +287,8 @@ def run(
     repo: Path,
     seed: Path,
     runtime_root: Path,
+    *,
+    containment_preflight_only: bool = False,
 ) -> int:
     request = json.loads(request_path.read_text(encoding="utf-8"))
     manifest = PilotManifest.model_validate_json(
@@ -312,7 +314,7 @@ def run(
         json.dumps(runtime, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
     task_text = _task_text(request)
-    _live_preflight(
+    gates = _live_preflight(
         manifest,
         repo=repo,
         seed=seed,
@@ -320,6 +322,21 @@ def run(
         runtime_root=runtime_root / "live-preflight",
         task_text=task_text,
     )
+    if containment_preflight_only:
+        response_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": "1.0",
+                    "outcome": "containment_preflight_complete",
+                    "gates": gates,
+                },
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        return 0
     control_record = None
     control_observation = None
     if bool(request.get("high_assurance_parity_guard")):
@@ -433,8 +450,16 @@ def main() -> int:
     parser.add_argument("--repo", type=Path, required=True)
     parser.add_argument("--seed", type=Path, required=True)
     parser.add_argument("--runtime-root", type=Path, required=True)
+    parser.add_argument("--containment-preflight-only", action="store_true")
     args = parser.parse_args()
-    return run(args.request, args.response, args.repo, args.seed, args.runtime_root)
+    return run(
+        args.request,
+        args.response,
+        args.repo,
+        args.seed,
+        args.runtime_root,
+        containment_preflight_only=args.containment_preflight_only,
+    )
 
 
 if __name__ == "__main__":
