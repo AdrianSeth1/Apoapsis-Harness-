@@ -16,7 +16,6 @@ import subprocess
 import time
 import urllib.request
 from pathlib import Path
-import tempfile
 
 from pydantic import Field
 
@@ -68,6 +67,16 @@ def _prepare_containment_workspace(path: Path) -> None:
 
     path.mkdir(parents=True, exist_ok=True)
     os.chown(path, WORKCELL_UID, WORKCELL_UID)
+
+
+def _prepare_preflight_scratch(evidence_root: Path) -> Path:
+    """Create scratch where both controller and host Docker daemon can see it."""
+
+    scratch = evidence_root / "live-preflight" / "scratch"
+    if scratch.exists():
+        raise LivePilotError("live preflight scratch already exists; evidence is not fresh")
+    scratch.mkdir(parents=True)
+    return scratch
 
 
 class BoundLiveModule(StrictModel):
@@ -263,7 +272,10 @@ def run_live_pilot(
     # realised tool surface and containment.  The full rehearsal is not rerun
     # here because it is bound to the earlier rehearsal authority; pretending
     # a newer live runner was that authority would be false provenance.
-    scratch = Path(tempfile.mkdtemp(prefix="apoapsis-live-preflight-"))
+    # The controller is itself a container. Docker bind sources for sibling
+    # workcells are resolved by the host daemon, so private controller `/tmp`
+    # is not a valid source even though it exists from Python's perspective.
+    scratch = _prepare_preflight_scratch(evidence_root)
     preflight_writer = EvidenceWriter(evidence_root / "live-preflight" / "observations")
     identity = stage_1_runtime_identity(
         manifest, repo=repo, seed_repository=seed_repository, scratch=scratch,

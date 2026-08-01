@@ -60,8 +60,10 @@ zero model requests and zero arms were consumed.
 
 The direct causes were controller-container topology, not the model: the local
 fake-provider route resolved to Docker Desktop's host gateway instead of
-controller loopback, and the root controller did not transfer the fresh
-workspace to UID 65532. The remediation binds loopback explicitly, transfers
-that ownership before containment, and changes the default evidence location
+controller loopback; private controller `/tmp` was invisible to the host
+daemon resolving sibling-workcell mounts; and the root controller did not
+transfer the fresh workspace to UID 65532. The remediation binds loopback
+explicitly, places scratch under the identically mounted evidence root,
+transfers that ownership before containment, and changes the default evidence location
 from the root-owned rehearsal directory to an operator-writable native-ext4
 path. The failed v1 evidence is retained and must not be reused.

@@ -75,9 +75,12 @@ controller inside a host-networked container exposed two assumptions that the
 native-WSL rehearsal had not exercised. A fake provider served by the
 controller process must be addressed through controller loopback: resolving
 the container hostname produced Docker Desktop's host-gateway address, so the
-controller-owned relay never reached the fake provider. Separately, the root
-controller had to transfer ownership of the freshly created containment
-workspace to pinned workcell UID 65532; without that transfer, the
+controller-owned relay never reached the fake provider. Preflight scratch also
+lived in the controller's private `/tmp`; the host Docker daemon resolves the
+sibling workcell's bind sources and could not see those files. Scratch now
+lives under the identically mounted evidence root. The root controller also
+transfers ownership of the freshly created containment workspace to pinned
+workcell UID 65532; without that transfer, the
 capability-preserving writable-workspace probe correctly reported a breach.
 
 The correction does not relax either gate. It makes the observed topology

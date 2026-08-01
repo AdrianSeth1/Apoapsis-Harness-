@@ -11,6 +11,7 @@ from apoapsis.qualification.live_pilot import (
     LivePilotError,
     OPERATOR_ACKNOWLEDGEMENT,
     _prepare_containment_workspace,
+    _prepare_preflight_scratch,
     load_authorized_inputs,
     run_live_pilot,
 )
@@ -60,6 +61,15 @@ class LiveAuthorizationTests(unittest.TestCase):
             self.assertTrue(workspace.is_dir())
 
         chown.assert_called_once_with(workspace, WORKCELL_UID, WORKCELL_UID)
+
+    def test_preflight_scratch_is_inside_the_host_mounted_evidence_root(self):
+        with tempfile.TemporaryDirectory() as raw:
+            evidence = Path(raw) / "evidence"
+            scratch = _prepare_preflight_scratch(evidence)
+
+            self.assertEqual(scratch, evidence / "live-preflight" / "scratch")
+            with self.assertRaisesRegex(LivePilotError, "not fresh"):
+                _prepare_preflight_scratch(evidence)
 
     def test_operator_launcher_mounts_bound_docs_read_only(self):
         launcher = (REPO / "tools/run_crisis_atlas_live_pilot.sh").read_text(
