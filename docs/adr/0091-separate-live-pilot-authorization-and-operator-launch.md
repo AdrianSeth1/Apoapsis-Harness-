@@ -56,11 +56,14 @@ live authorization.
 
 ## Observed verification
 
-Focused deterministic coverage passed 14/14 on CPython 3.12. The canonical
-native-ext4 full suite at runner commit `ef2905b` passed 1,942 tests with 13
-skips in 348.348 seconds. Earlier invalid attempts are not evidence: one imported a
+Focused runner coverage passed 14/14 and the final launcher-focused coverage
+passed 6/6 on CPython 3.12. The canonical native-ext4 full suite at launcher
+commit `1217243` passed 1,943 tests with 13 skips in 343.721 seconds. Earlier
+invalid attempts are not evidence: one imported a
 previously installed package, and one found the Linux `rg` binary through its
 read-only Windows mount and failed before normal workflows; both causes were
-corrected before the recorded run. `compileall` and diff checking are recorded
+corrected before the recorded run. A first final-tree suite attempt hit a
+known-timing-shaped relay-test race; the exact test immediately passed alone,
+and the complete clean rerun above is the recorded result. `compileall` and diff checking are recorded
 with the final authorization commit. No `llama-server` process was started and
 no inference occurred.

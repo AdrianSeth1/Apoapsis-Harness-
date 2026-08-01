@@ -21,9 +21,12 @@ The image was built from a `git archive` of the bound commit. Its source tree is
 
 ## Observed deterministic verification
 
-- Focused live-runner tests: 14/14 passed on CPython 3.12.
-- Canonical native-ext4 full suite: 1,942 passed, 13 skipped, zero failures in
-  348.348 seconds.
+- Focused live-runner tests: 14/14 passed on CPython 3.12; the final
+  launcher-focused file passed 6/6 after the read-only docs mount was added.
+- Canonical native-ext4 full suite at launcher commit `1217243`: 1,943 passed,
+  13 skipped, zero failures in 343.721 seconds. A preceding attempt hit one
+  relay-test timing race; that exact test passed immediately alone, and only
+  the subsequent complete green run is recorded as verification.
 - `python -m compileall -q src tests`: passed.
 - `git diff --check`: passed.
 - The immutable controller image imported the live entry point, exposed the
@@ -31,7 +34,7 @@ The image was built from a `git archive` of the bound commit. Its source tree is
   `nvidia-smi`: NVIDIA GeForce RTX 4090, 24,564 MiB, driver 610.74.
 
 The full-suite log is retained outside the repository at
-`/home/arya/apoapsis-live-runner-ef2905b-full-suite-final.log`.
+`/home/arya/apoapsis-live-runner-1217243-full-suite-final.log`.
 
 ## Operator handoff
 
