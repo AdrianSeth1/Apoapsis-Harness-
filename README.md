@@ -1270,6 +1270,19 @@ says so. Crisis Atlas is a regression benchmark: its failure mode was known
 before these acceptance rules were written, so a result here cannot establish
 non-inferiority on anything else.
 
+The passed v8 rehearsal authorizes a live preflight, not inference. ADR 0091
+adds a separate, committed live authorization and the operator-launched WSL
+runner for the six frozen arms. The old lock remains unchanged and false for
+live inference. The runner rehashes the model/server closure, reobserves the
+real CLI surface and containment before spend, starts and stops the pinned
+server for every cold slot, keeps the control on Qwen Code's native loop, and
+allows the sandbox only controller-produced repair packets through native
+session continuation. It writes `live-pilot-result.json` as raw evidence
+pending separate scoring; it cannot declare its own pilot successful. Use
+`tools/run_crisis_atlas_live_pilot.sh` from Ubuntu-24.04 only after the
+committed authorization file exists. A new evidence directory is mandatory so
+a retry cannot overwrite a partial run.
+
 `RealCasePackageProbe` (`qualification/real_probe.py`) is the real
 implementation. It clones the seed twice per checkpoint — base and candidate
 independently, so a defect in a copy cannot appear as a delta the checkpoint

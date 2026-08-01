@@ -587,8 +587,17 @@ The remaining path, in order:
    eight real proofs were re-run and the evidence digest is `236e650f…`.
    Canonical suite: **1,874 tests, zero failures.**
 
-   **Next action is 7P.3 again, from Stage 0, under lock v2.** Nothing before
-   it. If that passes, the action after is the real six-arm model session.
+   **7P.3 is complete under v8.** The official zero-model rehearsal reached
+   `PASS_LIVE_PREFLIGHT_AUTHORIZED`: all stages, six scripted slots, 17 mapped
+   negative controls and 20 relay iterations passed. This authorizes preflight
+   only; the v8 lock still cannot authorize inference.
+
+   **Next action is the operator-launched ADR 0091 session.** Build and bind the
+   live controller, then run `tools/run_crisis_atlas_live_pilot.sh` from
+   Ubuntu-24.04. The launcher requires an unused native-ext4 evidence path and
+   the literal six-arm acknowledgement. When it finishes, independently score
+   first-proposal quality and sandbox detection from `live-pilot-result.json`;
+   do not let repair quality enter proposal scoring.
 
    **Superseded, for reference — the 7P.3 remediation list.** In
    order: author the runner as reviewable source; add runner identity to the
@@ -604,13 +613,11 @@ The remaining path, in order:
    itself when fixed, and a second test asserts the runner is *currently
    unbound* so a future binding cannot land unnoticed.
 
-   Still open for live preflight whenever it is reached: the Qwen workcell
-   image has no provenance labels (`provenance_proven: false`); the realised
-   tool surface must be reobserved because Slice 2C once found an image
-   exposing 57 tools with no `write_file`; and `test_workcell_relay`'s
-   dropped-stream intermittent (4 pass / 1 fail over five repeats, at both
-   `918bc82` and the 7P.2 tree) sits on the egress path both arms depend on and
-   must be diagnosed before any live run.
+   The live runner rechecks the still-open runtime facts immediately before
+   spend: the unlabelled workcell's immutable image id, the realised tool
+   surface (because Slice 2C once found 57 tools with no writer), the complete
+   server dependency closure and containment. Any mismatch stops before the
+   readiness inference.
 
    **Superseded, for reference (Slice 7P.2):** capture model/server/Qwen/workcell identities
    without inference; author the separate Crisis Atlas pilot manifest; bind the

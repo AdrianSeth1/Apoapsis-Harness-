@@ -19,7 +19,9 @@ import json
 import os
 import shutil
 import subprocess
+import time
 from pathlib import Path
+from typing import Callable
 
 from apoapsis.qualification.fake_pilot_provider import ScriptId
 from apoapsis.qualification.fake_provider_server import FakeProviderServer
@@ -145,7 +147,14 @@ def write_settings(session, settings: dict) -> str:
     return hashlib.sha256(body.encode()).hexdigest()
 
 
-def run_qwen(session, prompt: str, *, timeout_seconds: float = 900.0):
+def run_qwen(
+    session,
+    prompt: str,
+    *,
+    timeout_seconds: float = 900.0,
+    continue_session: bool = False,
+    stream_json: bool = False,
+):
     """Run the genuine CLI headless and return its streams."""
 
     command = (
@@ -154,7 +163,9 @@ def run_qwen(session, prompt: str, *, timeout_seconds: float = 900.0):
         "QWEN_CODE_SUPPRESS_YOLO_WARNING=1 "
         f"timeout {int(timeout_seconds)} node "
         "/usr/local/lib/node_modules/@qwen-code/qwen-code/cli-entry.js "
-        f"--yolo --prompt {json.dumps(prompt)} "
+        f"--yolo {'--continue ' if continue_session else ''}"
+        f"{'--output-format stream-json ' if stream_json else ''}"
+        f"--prompt {json.dumps(prompt)} "
         "> /tmp/qwen-stdout.log 2>/tmp/qwen-stderr.log; echo EXIT=$?"
     )
     code, out, _err = session.exec(
@@ -190,6 +201,7 @@ class SlotObservation:
         self.incomplete_relay_responses: tuple[str, ...] = ()
         self.kept_workspace: Path | None = None
         self.error: str | None = None
+        self.checkpoints: tuple[object, ...] = ()
 
 
 def execute_slot(
@@ -200,13 +212,17 @@ def execute_slot(
     base: Path,
     repetition_id: str,
     arm: str,
-    script: ScriptId,
+    script: ScriptId | None,
     evidence_dir: Path,
     previous_slot_paths: tuple[Path, ...] = (),
     max_output_tokens: int,
     qwen_timeout_seconds: float = 900.0,
     seed_files: dict[str, str] | None = None,
     keep_workspace: bool = False,
+    live_upstream_base_url: str | None = None,
+    supervisor: Callable[[Path, int], tuple[object, str | None]] | None = None,
+    continuation_limit: int = 0,
+    stream_json: bool = False,
 ) -> SlotObservation:
     """Run one slot end to end in a real `--network none` workcell."""
 
@@ -295,16 +311,23 @@ def execute_slot(
     task_artifact = slot_root / "task.md"
     task_artifact.write_text(task_text, encoding="utf-8")
 
-    provider = FakeProviderServer(
-        script,
-        model_name=manifest.model.model_alias,
-        host="0.0.0.0",
-        transcript_path=evidence_dir / "provider-transcript.json",
-    )
-    provider.start()
+    if (script is None) == (live_upstream_base_url is None):
+        raise ValueError("exactly one of script or live_upstream_base_url is required")
+    provider = None
+    if script is not None:
+        provider = FakeProviderServer(
+            script,
+            model_name=manifest.model.model_alias,
+            host="0.0.0.0",
+            transcript_path=evidence_dir / "provider-transcript.json",
+        )
+        provider.start()
     try:
-        port = provider.base_url.rsplit(":", 1)[1]
-        upstream = f"http://{controller_address()}:{port}"
+        if provider is not None:
+            port = provider.base_url.rsplit(":", 1)[1]
+            upstream = f"http://{controller_address()}:{port}"
+        else:
+            upstream = str(live_upstream_base_url)
         config = build_workcell_config(
             manifest,
             repo=repo,
@@ -334,15 +357,39 @@ def execute_slot(
             observation.mounts = observe_mounts(session)
             observation.relay_before = session.relay_request_count()
 
-            _, wrapper, stdout, stderr_log = run_qwen(
-                session,
+            prompt = (
                 "Read TASK.md in the current directory and implement exactly "
                 "what it specifies. Create the files it names at the paths it "
-                "names. Do not ask questions; make the changes.",
-                timeout_seconds=qwen_timeout_seconds,
+                "names. Do not ask questions; make the changes."
             )
-            observation.qwen_stdout = stdout
-            observation.qwen_stderr = stderr_log
+            stdout_parts: list[str] = []
+            stderr_parts: list[str] = []
+            checkpoints: list[object] = []
+            deadline = time.monotonic() + qwen_timeout_seconds
+            for turn in range(continuation_limit + 1):
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    observation.error = "the frozen per-arm wall-clock budget expired"
+                    break
+                _, _wrapper, stdout, stderr_log = run_qwen(
+                    session,
+                    prompt,
+                    timeout_seconds=remaining,
+                    continue_session=turn > 0,
+                    stream_json=stream_json,
+                )
+                stdout_parts.append(stdout)
+                stderr_parts.append(stderr_log)
+                if supervisor is None:
+                    break
+                checkpoint, next_prompt = supervisor(workspace, turn)
+                checkpoints.append(checkpoint)
+                if next_prompt is None:
+                    break
+                prompt = next_prompt
+            observation.checkpoints = tuple(checkpoints)
+            observation.qwen_stdout = "\n".join(stdout_parts)
+            observation.qwen_stderr = "\n".join(stderr_parts)
             observation.relay_after = session.relay_request_count()
 
             # A turn whose response never completed cannot have produced a
@@ -359,8 +406,12 @@ def execute_slot(
                     "response(s), so no candidate from this slot may be scored: "
                     + "; ".join(observation.incomplete_relay_responses[:3])
                 )
-            (evidence_dir / "qwen-stdout.log").write_text(stdout, encoding="utf-8")
-            (evidence_dir / "qwen-stderr.log").write_text(stderr_log, encoding="utf-8")
+            (evidence_dir / "qwen-stdout.log").write_text(
+                observation.qwen_stdout, encoding="utf-8"
+            )
+            (evidence_dir / "qwen-stderr.log").write_text(
+                observation.qwen_stderr, encoding="utf-8"
+            )
 
         # Outside the context manager: the container is gone, so residue is a
         # real question rather than a formality.
@@ -370,10 +421,13 @@ def execute_slot(
             relay=session.relay,
         )
     finally:
-        observation.observed_tool_names = provider.observed_tool_names
-        observation.observed_tool_schema = provider.observed_tool_schema
-        provider.stop()
-        observation.provider_requests = provider.request_count
+        if provider is not None:
+            observation.observed_tool_names = provider.observed_tool_names
+            observation.observed_tool_schema = provider.observed_tool_schema
+            provider.stop()
+            observation.provider_requests = provider.request_count
+        else:
+            observation.provider_requests = observation.relay_after - observation.relay_before
 
     observation.created_paths = tuple(
         sorted(
