@@ -31,6 +31,7 @@ docker run --rm --pull never --network host --gpus all \
   -v "${RUNTIME}:${RUNTIME}:rw" \
   -v /home/arya/llama.cpp:/home/arya/llama.cpp:ro \
   -v /home/arya/models:/home/arya/models:ro \
+  -v /usr/local/cuda:/usr/local/cuda:ro \
   "${IMAGE_ID}" -m apoapsis.qualification.live_pilot \
   --repo /opt/apoapsis \
   --authorization /authorization.json \

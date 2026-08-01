@@ -108,3 +108,18 @@ factory is now an explicitly required live-authorization module.
 
 Runner commit `ec1c934` passed the canonical native-ext4 suite: 1,948 tests,
 13 skipped, zero failures in 348.880 seconds. No live arm has run.
+
+The next operator attempt passed that live preflight and reached the first
+server process, which exited 127 before health or readiness. The pinned server
+was built on Ubuntu 24.04, while the controller used Debian 12: `libgomp.so.1`
+was absent, glibc 2.38 and GLIBCXX 3.4.32 symbols were unavailable, and the
+host CUDA runtime was not mounted. The controller base is therefore
+digest-pinned Ubuntu 24.04 with `libgomp1`; the launcher mounts `/usr/local/cuda`
+read-only, and the runner supplies only the server and CUDA library directories
+through `LD_LIBRARY_PATH`. Preflight now records `ldd` and refuses any missing
+library or symbol-version error before server startup.
+
+The owner explicitly directed that test suites be skipped for this correction.
+That exception is recorded rather than disguised as verification; compile,
+diff, immutable-image linkage, and zero-token server-start checks remain
+required before reauthorization.

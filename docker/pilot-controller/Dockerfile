@@ -18,7 +18,7 @@
 # Base pins are digest-pinned by the caller via build args so a moved tag
 # cannot silently change the image.
 
-ARG PYTHON_BASE=python:3.12-slim-bookworm
+ARG PYTHON_BASE=ubuntu:24.04@sha256:4fbb8e6a8395de5a7550b33509421a2bafbc0aab6c06ba2cef9ebffbc7092d90
 ARG DOCKER_CLI=docker:29-cli
 
 FROM ${DOCKER_CLI} AS docker_cli
@@ -37,14 +37,16 @@ LABEL org.apoapsis.role="pilot-controller" \
 
 COPY --from=docker_cli /usr/local/bin/docker /usr/local/bin/docker
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates git \
+    && apt-get install -y --no-install-recommends \
+       ca-certificates git libgomp1 python3 python3-venv \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /opt/apoapsis
 COPY . /opt/apoapsis
-RUN python -m pip install --no-cache-dir .
+RUN python3 -m venv /opt/venv \
+    && /opt/venv/bin/python -m pip install --no-cache-dir .
 
 # Refuse to be a controller that cannot say where it came from.
 RUN test -n "${SOURCE_COMMIT}" || (echo "SOURCE_COMMIT build arg is required" && false)
 
-ENTRYPOINT ["python"]
+ENTRYPOINT ["/opt/venv/bin/python"]

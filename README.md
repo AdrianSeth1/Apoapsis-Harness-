@@ -1288,6 +1288,9 @@ first argument replaces that destination. Disposable workspaces and Unix
 sockets use the separate short, host-mounted runtime root
 `/home/arya/apx-ca-live-v2` (overridden by the second argument), so Docker can
 resolve every bind source without exceeding the Unix-socket path limit.
+The controller base is Ubuntu 24.04, matching the pinned server build's glibc
+and libstdc++ ABI; the launcher mounts the frozen host CUDA runtime read-only,
+and preflight refuses unresolved dynamic libraries before server startup.
 
 `RealCasePackageProbe` (`qualification/real_probe.py`) is the real
 implementation. It clones the seed twice per checkpoint — base and candidate

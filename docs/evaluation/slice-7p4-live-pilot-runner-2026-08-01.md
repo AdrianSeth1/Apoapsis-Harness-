@@ -114,3 +114,21 @@ Evidence is retained at
 The final canonical native-ext4 suite at runner commit `ec1c934` passed 1,948
 tests with 13 skips and zero failures in 348.880 seconds. Its log is retained at
 `/home/arya/apoapsis-live-runner-ec1c934-full-suite.log`.
+
+## First server start: ABI refused before readiness
+
+The next operator attempt retained v2 evidence at
+`/home/arya/apoapsis-live-evidence/crisis-atlas-live-pilot-v2`. Live preflight
+passed both gates, then the first cold `llama-server` process exited 127. Its
+captured log reported missing `libgomp.so.1`. A complete loader inspection also
+found that the Debian 12 controller lacked the server build's glibc 2.38 and
+GLIBCXX 3.4.32 symbol versions and could not see `libcudart.so.13` or
+`libcublas.so.13`. There was no health/readiness record, model request, arm
+result, surviving server, or GPU compute process; zero arms were consumed.
+
+The direct correction uses digest-pinned Ubuntu 24.04, installs `libgomp1`,
+mounts the WSL host CUDA runtime read-only, sets the server/CUDA dynamic-loader
+directories explicitly, and makes unresolved `ldd` output a pre-start failure.
+Per the owner's explicit instruction, test suites are skipped for this
+correction; the record must not claim focused or full-suite verification for
+the new commit.

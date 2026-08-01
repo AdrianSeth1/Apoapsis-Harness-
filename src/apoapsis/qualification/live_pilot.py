@@ -47,6 +47,17 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _server_environment(manifest: PilotManifest) -> dict[str, str]:
+    environment = os.environ.copy()
+    server_directory = str(Path(manifest.server.absolute_path).parent)
+    cuda_directory = "/usr/local/cuda/targets/x86_64-linux/lib"
+    inherited = environment.get("LD_LIBRARY_PATH", "")
+    environment["LD_LIBRARY_PATH"] = ":".join(
+        item for item in (server_directory, cuda_directory, inherited) if item
+    )
+    return environment
+
+
 def _llama_server_pids(proc_root: Path = Path("/proc")) -> tuple[int, ...]:
     """Read Linux procfs directly; the pinned slim controller has no `pgrep`."""
 
@@ -165,6 +176,15 @@ def verify_runtime(manifest: PilotManifest) -> dict[str, object]:
         observed.append({"path": str(path), "sha256": actual, "size_bytes": size})
     if _llama_server_pids():
         raise LivePilotError("llama-server is already running; cold state is unproved")
+    linkage = subprocess.run(
+        ["ldd", manifest.server.absolute_path],
+        capture_output=True,
+        text=True,
+        env=_server_environment(manifest),
+    )
+    linkage_text = linkage.stdout + linkage.stderr
+    if linkage.returncode != 0 or "not found" in linkage_text or "version `" in linkage_text:
+        raise LivePilotError(f"pinned server dependency closure is unloadable: {linkage_text}")
     architecture = subprocess.run(
         ["uname", "-m"], capture_output=True, text=True, check=True
     ).stdout.strip()
@@ -189,6 +209,7 @@ def verify_runtime(manifest: PilotManifest) -> dict[str, object]:
         "runtime_files": observed, "llama_server_initially_stopped": True,
         "architecture": architecture, "wsl_kernel": kernel,
         "gpu": {"name": gpu_name, "memory_total_mib": int(memory), "driver": driver},
+        "server_linkage": linkage.stdout.splitlines(),
     }
 
 
@@ -204,7 +225,7 @@ class ModelServer:
         self.log = (self.evidence / "llama-server.log").open("wb")
         self.process = subprocess.Popen(
             list(self.manifest.server.argv), stdout=self.log, stderr=subprocess.STDOUT,
-            start_new_session=True,
+            start_new_session=True, env=_server_environment(self.manifest),
         )
         deadline = time.monotonic() + self.manifest.budgets.launch_timeout_seconds
         try:
