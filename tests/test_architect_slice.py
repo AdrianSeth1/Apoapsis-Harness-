@@ -44,7 +44,10 @@ from apoapsis.architect.store import SQLitePlanStore
 from apoapsis.architect.validation import validate_plan
 from apoapsis.config import (
     ApoapsisConfig,
+    CapabilitySandboxConfig,
     ContextCompilerConfig,
+    ExecutionConfig,
+    ExecutionMode,
     FrontierProviderConfig,
     ModelsConfig,
     PatchPolicyConfig,
@@ -57,6 +60,9 @@ from apoapsis.reporting.current_state import project_current_task_evidence
 from apoapsis.verification.runner import VerificationCommand, VerificationConfig
 from apoapsis.workflow.engine import SQLiteTaskStore
 from apoapsis.workflow.states import WorkflowState
+from apoapsis.workflow.vertical_slice import VerticalSliceRunner
+from apoapsis.agent.session import AgentSessionOutcome, AgentSessionResult
+from apoapsis.verification.runner import VerificationRunner
 from tests.architect_helpers import make_plan, make_slice
 from tests.fakes import FakeModelProvider
 from tests.test_agent_loop import action
@@ -214,6 +220,64 @@ class PlanSliceExecutionTestsBase(unittest.TestCase):
 
 
 class SlicePackagingTests(PlanSliceExecutionTestsBase):
+    def test_approved_plan_slice_uses_capability_sandbox_product_adapter(self) -> None:
+        record, base_config = self._approved_plan()
+        config = base_config.model_copy(
+            update={
+                "execution": ExecutionConfig(
+                    mode=ExecutionMode.AGENT,
+                    capability_sandbox=CapabilitySandboxConfig(enabled=True),
+                )
+            }
+        )
+        package = package_slice(
+            self.root, self.plan_store, self.slice_store, self.task_store,
+            self.operation_store, record.plan_id, "SLICE-1",
+            expected_plan_version=record.version, config=config,
+        )
+        approved = approve_slice(
+            self.root, self.task_store, self.slice_store, record.plan_id, "SLICE-1",
+            expected_package_sha256=package.package_sha256,
+        )
+
+        class FakeNativeExecutor:
+            calls = 0
+
+            def run(inner_self, **kwargs):
+                inner_self.calls += 1
+                worktree = kwargs["worktree"]
+                source = worktree / "src" / "download_service" / "capability.py"
+                source.parent.mkdir(parents=True, exist_ok=True)
+                source.write_text("MODE = 'native-qwen'\n", encoding="utf-8")
+                verification = VerificationRunner(kwargs["config"].verification).run(
+                    kwargs["specification"].task_id, worktree
+                )
+                return AgentSessionResult(
+                    outcome=AgentSessionOutcome.COMPLETE,
+                    stop_reason="fake native checkpoint complete",
+                    turns=1,
+                    patch_attempts=1,
+                    verification_runs=1,
+                    changed_files=["src/download_service/capability.py"],
+                    verification_results=[verification],
+                )
+
+        executor = FakeNativeExecutor()
+        runner = VerticalSliceRunner(
+            self.root,
+            self.task_store,
+            self._provider([]),
+            config,
+            capability_sandbox_executor=executor,
+        )
+        report = runner.execute_approved_task(approved.task_id)
+
+        self.assertEqual(report.outcome.value, "complete")
+        self.assertEqual(executor.calls, 1)
+        events = [item.event_type for item in self.task_store.events(approved.task_id)]
+        self.assertIn("capability_sandbox_patch_ready", events)
+        self.assertIn("capability_sandbox_verification_passed", events)
+
     def test_package_is_deterministic_and_carries_exact_inherited_records(self) -> None:
         record, config = self._approved_plan()
         package = package_slice(

@@ -123,6 +123,23 @@ def _read(root: Path, relative: str) -> str | None:
         return None
 
 
+def _has_executable_python(source: str) -> bool:
+    """Whether a Python file contains more than comments or a module docstring."""
+
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        # Syntax errors are executable candidate defects and must not disappear
+        # from changed-behaviour scrutiny merely because parsing failed here.
+        return True
+    body = list(tree.body)
+    if body and isinstance(body[0], ast.Expr):
+        value = body[0].value
+        if isinstance(value, ast.Constant) and isinstance(value.value, str):
+            body = body[1:]
+    return bool(body)
+
+
 def changed_behaviour(
     delta: CandidateDelta, base_root: str | Path, candidate_root: str | Path
 ) -> list[BehaviourUnit]:
@@ -150,6 +167,13 @@ def changed_behaviour(
             continue
 
         if entry.kind == ChangeKind.ADDED:
+            # Package markers containing only comments or a module docstring
+            # have no executable line for a trace witness to reach. They are
+            # still part of the admitted delta, but are not behaviour units.
+            if entry.path.endswith(".py") and not _has_executable_python(
+                candidate_source
+            ):
+                continue
             line_count = max(1, len(candidate_source.splitlines()))
             units.append(
                 BehaviourUnit(

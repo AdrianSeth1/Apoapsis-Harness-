@@ -43,7 +43,7 @@ if not defined APOAPSIS_PROJECT goto PICK_PROJECT
 goto PROJECT_SELECTED
 
 :PICK_PROJECT
-for /f "usebackq delims=" %%P in (`powershell -NoProfile -STA -ExecutionPolicy Bypass -Command "Add-Type -AssemblyName System.Windows.Forms; $dialog = New-Object System.Windows.Forms.FolderBrowserDialog; $dialog.Description = 'Select the Git project to open in Apoapsis'; $dialog.ShowNewFolderButton = $false; if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $dialog.SelectedPath }"`) do set "APOAPSIS_PROJECT=%%P"
+for /f "usebackq delims=" %%P in (`powershell -NoProfile -STA -ExecutionPolicy Bypass -Command "Add-Type -AssemblyName System.Windows.Forms; $dialog = New-Object System.Windows.Forms.FolderBrowserDialog; $dialog.Description = 'Select a project folder. An empty folder is okay -- Apoapsis will set it up for you.'; $dialog.ShowNewFolderButton = $true; if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $dialog.SelectedPath }"`) do set "APOAPSIS_PROJECT=%%P"
 if not defined APOAPSIS_PROJECT (
   echo No project folder was selected.
   if not defined APOAPSIS_NO_PAUSE pause
@@ -51,21 +51,17 @@ if not defined APOAPSIS_PROJECT (
 )
 
 :PROJECT_SELECTED
-if not exist "%APOAPSIS_PROJECT%\.git" (
-  echo The selected folder is not a Git repository:
-  echo   %APOAPSIS_PROJECT%
-  echo Create or clone a Git repository first, then try again.
+echo Checking the selected folder...
+py -3 -m apoapsis.project_setup --project-root "%APOAPSIS_PROJECT%" >nul
+if errorlevel 1 (
+  echo.
+  echo Apoapsis stopped before starting the app.
+  echo Follow the explanation above, then try again.
   if not defined APOAPSIS_NO_PAUSE pause
   exit /b 1
 )
-
-if not exist "%APOAPSIS_PROJECT%\.apoapsis\config.toml" (
-  echo This project has not been initialized for Apoapsis yet:
-  echo   %APOAPSIS_PROJECT%
-  echo Run apoapsis init in that repository once, then reopen this launcher.
-  if not defined APOAPSIS_NO_PAUSE pause
-  exit /b 1
-)
+echo Your project is ready.
+echo.
 
 echo Starting Apoapsis local coding service for:
 echo   %APOAPSIS_PROJECT%

@@ -319,6 +319,15 @@ class ChangedBehaviourTests(unittest.TestCase):
         units = changed_behaviour(delta, workspace.base, workspace.candidate)
         self.assertEqual([item.kind for item in units], [BehaviourKind.NEW_FILE])
 
+    def test_a_docstring_only_package_marker_is_not_executable_behaviour(self) -> None:
+        workspace = _Workspace(self)
+        workspace.write(
+            "incident/services/__init__.py",
+            '"""Incident service package."""\n',
+        )
+        delta = compute_delta(workspace.base, workspace.candidate)
+        self.assertEqual(changed_behaviour(delta, workspace.base, workspace.candidate), [])
+
 
 class CrisisAtlasTwoTurnTests(unittest.TestCase):
     """The Slice 4B integration test the reviewer asked for.

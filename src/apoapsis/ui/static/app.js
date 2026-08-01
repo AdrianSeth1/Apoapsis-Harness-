@@ -16,6 +16,8 @@ const store = {
   evaluations: null,
   plans: null,
   plan: null,
+  planRun: null,
+  planRunConfirmMode: null,
   planSlice: null,
   planSliceApprovalPending: false,
   reviews: null,
@@ -46,6 +48,7 @@ const store = {
   discoverFrontierExportPaths: null,
   discoverBriefApprovePending: false,
   localPowerConfirm: null,
+  capabilitySandboxConfirm: null,
   route: { name: "home" },
   busy: false,
   error: null,
@@ -228,6 +231,8 @@ async function syncRoute() {
       store.plans = await api("/api/plans");
     } else if (store.route.name === "plan") {
       if (!store.plan || store.plan.plan.plan_id !== store.route.planId) {
+        store.planRun = null;
+        store.planRunConfirmMode = null;
         store.plan = null;
         store.busy = true;
         render();
@@ -404,7 +409,7 @@ function homeView() {
           <span class="pill ${overview.project.initialized ? "good" : "warn"}">${overview.project.initialized ? "Project ready" : "Initialization required"}</span>
           <h2>${e(overview.project.name)}</h2>
           <p class="mono">${e(overview.project.root)}</p>
-          <p>${overview.repository.is_clean === true ? "The Git worktree is clean." : `${overview.repository.changed_files?.length || 0} local path(s) currently differ from HEAD.`} To use another repository, close this window and launch <span class="mono">START_APOAPSIS.cmd</span>, then select the project folder. Run <span class="mono">apoapsis init</span> in that repository once if it has not been initialized.</p>
+          <p>${overview.repository.is_clean === true ? "The Git worktree is clean." : `${overview.repository.changed_files?.length || 0} local path(s) currently differ from HEAD.`} To use another project, close this window and launch <span class="mono">START_APOAPSIS.cmd</span>, then select the project folder. A new empty folder is okay; the launcher prepares it for you.</p>
         </div>
         <div class="stat-stack">
           <div class="stat"><span>Active tasks</span><strong>${activeTasks}</strong></div>
@@ -539,6 +544,7 @@ function modelsView() {
   const configured = overview.models || [];
   const doctor = store.doctor;
   const power = overview.execution?.local_power;
+  const capability = overview.execution?.capability_sandbox;
   return `<main class="content">
     <div class="page-heading"><div><p class="eyebrow">MODELS / ENVIRONMENT</p><h1>Know what is ready.</h1><p>Configured roles are separate from measured readiness. Running Doctor performs Apoapsis's existing deterministic checks and never sends a model prompt unless an explicit probe is requested from the CLI.</p></div><button class="button primary" data-action="doctor" ${store.busy ? "disabled" : ""}>${store.busy ? "Checking…" : "Run doctor"}</button></div>
     <div class="grid four">${configured.map(modelCard).join("")}</div>
@@ -550,12 +556,36 @@ function modelsView() {
       ${metric("Verify runs", overview.execution?.max_verification_runs ?? "—", "Hard ceiling")}
       ${metric("Completion policy", titleCase(overview.execution?.completion_policy || "—"), overview.execution?.completion_policy === "baseline" ? "No acceptance-coverage gate" : "Gates COMPLETE on proven acceptance criteria")}
     </div>
-    ${localPowerSettings(power)}
+    ${capabilitySandboxSettings(capability, power)}
     <p class="section-title">Doctor evidence</p>
     <section class="card card-pad">
       ${doctor ? doctorList(doctor) : `<div class="empty"><h2>Not run in this UI session</h2><p>Readiness is never inferred from configuration alone. Run Doctor to produce a fresh, timestamped diagnostic result.</p></div>`}
     </section>
   </main>`;
+}
+
+function capabilitySandboxSettings(capability, power) {
+  if (!capability) return "";
+  const enabled = Boolean(capability.enabled);
+  const parity = Boolean(capability.high_assurance_parity_guard);
+  const pending = store.capabilitySandboxConfirm;
+  if (pending) {
+    const selectingCapability = pending === "capability";
+    return `<section class="card card-pad mt-18" data-role="capability-sandbox-confirm">
+      <div class="card-header"><div><h2>${selectingCapability ? "Use Capability Sandbox?" : "Use compatibility mode?"}</h2><p>${selectingCapability ? "Future local slices use native Qwen inside the qualified workcell." : "Future local slices use the older typed Local Power loop."}</p></div><span class="pill ${selectingCapability ? "good" : "warn"}">${selectingCapability ? "Recommended" : "Compatibility"}</span></div>
+      <div class="notice mt-14">${selectingCapability ? e(capability.warning) : "Compatibility mode is one-action JSON with mediated whole-file and shell operations. It remains contained, but it is less capable than the qualified native Qwen interface."}</div>
+      <div class="approval-bar mt-16"><div><strong>This changes future runs only</strong><span>Apoapsis validates the configuration and never silently falls back between modes.</span></div><div class="approval-actions"><button class="button ghost" data-action="capability-sandbox-cancel">Cancel</button><button class="button primary" data-action="capability-sandbox-confirm" data-enabled="${selectingCapability ? "true" : "false"}">${selectingCapability ? "Use Capability Sandbox" : "Use compatibility mode"}</button></div></div>
+    </section>`;
+  }
+  return `<section class="card card-pad mt-18" data-role="capability-sandbox-settings">
+    <div class="card-header"><div><h2>Local coding mode</h2><p>Capability Sandbox is the qualified, recommended default. The compatibility option is always one click away.</p></div><span class="pill ${enabled ? "good" : "warn"}">${enabled ? "Capability Sandbox · On" : "Compatibility · On"}</span></div>
+    <div class="grid two mt-14">
+      <div class="metric card"><span>Selected mode</span><strong class="metric-compact">${enabled ? "Capability Sandbox" : "Local Power compatibility"}</strong><small>${enabled ? "Native Qwen tools in a network-contained workcell" : "Older typed action protocol"}</small></div>
+      <div class="metric card"><span>High-assurance parity</span><strong class="metric-compact">${parity ? "On" : "Off"}</strong><small>${parity ? "Also runs a matched control and refuses regression" : "One supervised candidate; lower resource use"}</small></div>
+    </div>
+    <div class="notice mt-14">${e(capability.resource_note)} No silent fallback: a failed workcell preflight stops for review.</div>
+    <div class="approval-bar mt-16"><div><strong>${enabled ? "Recommended mode is active" : "Compatibility mode is active"}</strong><span>${enabled ? "Apoapsis admits the complete delta and independently decides readiness." : "Return to the qualified native interface whenever you are ready."}</span></div><div class="approval-actions"><button class="button ghost" data-action="capability-parity-toggle" data-enabled="${parity ? "false" : "true"}" ${!enabled || store.busy ? "disabled" : ""}>Turn parity ${parity ? "off" : "on"}</button><button class="button ${enabled ? "ghost" : "primary"}" data-action="capability-sandbox-intent" data-intent="${enabled ? "compatibility" : "capability"}" ${store.busy ? "disabled" : ""}>${enabled ? "Use compatibility mode" : "Use Capability Sandbox"}</button></div></div>
+  </section>`;
 }
 
 function localPowerSettings(power) {
@@ -610,7 +640,7 @@ function evalRow(run) {
 function plansView() {
   const plans = store.plans?.plans || [];
   return `<main class="content">
-    <div class="page-heading"><div><p class="eyebrow">LARGER PROJECTS / PLANS</p><h1>Approved work,<br>split into slices.</h1><p>Start in <a href="#/discover">Plan a larger change</a>. A local model clarifies the idea, optional Research can inform it, and either an API or a manual ChatGPT or Claude handoff proposes the plan. You still review and approve every plan and slice.</p></div><span class="pill ${plans.length ? "good" : "warn"}">${plans.length ? `${plans.length} recorded` : "No plans yet"}</span></div>
+    <div class="page-heading"><div><p class="eyebrow">LARGER PROJECTS / PLANS</p><h1>Approved work,<br>split into slices.</h1><p>Start in <a href="#/discover">Plan a larger change</a>. A local model clarifies the idea, optional Research can inform it, and either an API or a manual ChatGPT or Claude handoff proposes the plan. Review and approve the plan once, then choose automatic or slice-by-slice execution.</p></div><span class="pill ${plans.length ? "good" : "warn"}">${plans.length ? `${plans.length} recorded` : "No plans yet"}</span></div>
     <section class="card">
       ${plans.length ? `<div class="task-list">${plans.map(planRow).join("")}</div>` : `<div class="empty"><h2>No plans yet</h2><p>Begin with the guided planning flow. It supports both API access and a normal ChatGPT or Claude subscription.</p><a class="button primary" href="#/discover">Plan a larger change →</a></div>`}
     </section>
@@ -665,7 +695,7 @@ function planOverviewView(detail) {
   const canValidate = detail.available_actions?.includes("validate_plan");
   const delivery = detail.delivery;
   return `<main class="content narrow">
-    <div class="page-heading"><div><p class="eyebrow">ARCHITECTURE / DECISIONS</p><h1>Design record,<br>not an execution order.</h1><p>Architect Mode designs; it never runs a shell command, edits a file, or executes a slice. Approving this plan only records a reviewed status -- nothing executes as a result.</p></div><span class="pill ${planStatusClass(record.status)}">${e(titleCase(record.status))}</span></div>
+    <div class="page-heading"><div><p class="eyebrow">ARCHITECTURE / DECISIONS</p><h1>Review the design<br>before it runs.</h1><p>Architect Mode only proposes this plan. Approval records your decision but starts nothing; when you are ready, Implementation slices offers one controlled automatic run or the existing slice-by-slice path.</p></div><span class="pill ${planStatusClass(record.status)}">${e(titleCase(record.status))}</span></div>
     <article class="card card-pad"><p class="section-title mt-0">Idea</p><blockquote class="objective">${e(record.idea_text)}</blockquote></article>
     <p class="section-title">Architecture summary</p>
     <article class="card card-pad"><p class="objective">${e(plan.architecture_summary)}</p></article>
@@ -709,10 +739,57 @@ function planSlicesView(detail) {
   const byId = new Map(plan.slices.map((item) => [item.slice_id, item]));
   const orderedSlices = order.map((id) => byId.get(id)).filter(Boolean);
   const statusById = new Map((detail.slices || []).map((item) => [item.slice_id, item]));
+  if (detail.plan_run && (!store.planRun || store.planRun.run_id !== detail.plan_run.run_id)) {
+    store.planRun = detail.plan_run;
+  }
+  if (store.planRun && ["recorded", "running"].includes(store.planRun.status)) {
+    pollPlanRun(record.plan_id, store.planRun.run_id);
+  }
   return `<main class="content">
-    <div class="page-heading"><div><p class="eyebrow">IMPLEMENTATION SLICES / ONE AT A TIME</p><h1>Work through the plan.</h1><p>Open a Ready slice, package and approve it, then start coding. Packaging the next slice checkpoints completed earlier work on its isolated branch and inherits that exact commit. Your checked-out branch is never moved or merged automatically.</p></div><span class="pill purple">${orderedSlices.length} slice(s)</span></div>
+    <div class="page-heading"><div><p class="eyebrow">IMPLEMENTATION SLICES / VERIFIED IN ORDER</p><h1>Run the plan.</h1><p>Authorize once and Apoapsis will package, hash-bind, execute, verify, and advance through dependency-ready slices. It stops immediately for failed verification, human review, changed configuration, or an interrupted run.</p></div><span class="pill purple">${orderedSlices.length} slice(s)</span></div>
+    ${planRunPanel(detail)}
     ${orderedSlices.length ? orderedSlices.map((slice) => sliceCard(slice, record.plan_id, statusById.get(slice.slice_id))).join("") : emptyState("No slices in this plan", "The imported plan did not include any implementation slices.")}
   </main>`;
+}
+
+function planRunPanel(detail) {
+  const record = detail.plan;
+  const run = store.planRun || detail.plan_run;
+  const active = run && ["recorded", "running"].includes(run.status);
+  if (active) {
+    return `<section class="card card-pad plan-run-panel mt-16" aria-live="polite">
+      <div class="constraint-head"><span class="constraint-id">AUTO MODE</span><span class="pill purple">${e(titleCase(run.status))}</span></div>
+      <h2>${run.current_slice_id ? `Running ${e(run.current_slice_id)}` : "Preparing the first ready slice"}</h2>
+      <p>${e(run.detail)}</p>
+      <div class="mono">COMPLETED: ${e((run.completed_slice_ids || []).join(", ") || "none yet")}</div>
+      <div class="mono">RUN: ${e(run.run_id)}</div>
+    </section>`;
+  }
+  if (run) {
+    return `<section class="card card-pad plan-run-panel mt-16">
+      <div class="constraint-head"><span class="constraint-id">LAST PLAN RUN</span><span class="pill ${run.status === "succeeded" ? "good" : run.status === "failed" ? "bad" : "warn"}">${e(titleCase(run.status))}</span></div>
+      <p>${e(run.detail)}</p>
+      <div class="mono">COMPLETED: ${e((run.completed_slice_ids || []).join(", ") || "none")}</div>
+      ${detail.all_slices_complete ? "" : planRunActions(record)}
+    </section>`;
+  }
+  return `<section class="card card-pad plan-run-panel mt-16">
+    <div class="constraint-head"><span class="constraint-id">AUTOMATIC RUN</span><span class="pill ${record.status === "approved" ? "warn" : "purple"}">${record.status === "approved" ? "Not running" : "Waiting"}</span></div>
+    <h2>${record.status === "approved" ? "Automatic execution is off" : "One step remains before execution"}</h2>
+    <p>Auto mode is a run you start, not a setting or toggle. Once started, Apoapsis advances only after controller-owned verification marks each slice complete. It stops at the first dependency, verification, or review problem.</p>
+    ${planRunActions(record)}
+  </section>`;
+}
+
+function planRunActions(record) {
+  if (record.status === "proposed") return `<div class="approval-bar mt-14"><div><strong>Validate the plan first</strong><span>Apoapsis must check the plan against this project's configuration before it can be approved or run.</span></div><div class="approval-actions"><a class="button primary" href="#/plan/${encodeURIComponent(record.plan_id)}/overview">Validate plan →</a></div></div>`;
+  if (record.status === "validated") return `<div class="approval-bar mt-14"><div><strong>Validated — your approval is required</strong><span>Reviewing and approving the plan does not start any slice. After approval, this panel will show the automatic-run button.</span></div><div class="approval-actions"><a class="button primary" href="#/plan/${encodeURIComponent(record.plan_id)}/overview">Review &amp; approve plan →</a></div></div>`;
+  if (record.status !== "approved") return `<p class="muted">This plan cannot start from its current ${e(titleCase(record.status))} state.</p>`;
+  if (!store.planRunConfirmMode) {
+    return `<div class="approval-actions mt-14"><button class="button primary" data-action="plan-run-intent" data-mode="auto">Run all slices automatically →</button><button class="button ghost" data-action="plan-run-intent" data-mode="next">Run only the next slice</button></div>`;
+  }
+  const automatic = store.planRunConfirmMode === "auto";
+  return `<div class="approval-bar mt-14"><div><strong>Confirm ${automatic ? "automatic plan run" : "next slice"}</strong><span>${automatic ? "Apoapsis will continue across successful slices and stop at the first problem." : "Apoapsis will package, approve, execute, and verify one dependency-ready slice."}</span></div><div class="approval-actions"><button class="button ghost" data-action="plan-run-cancel">Cancel</button><button class="button primary" data-action="plan-run-confirm" data-plan-id="${e(record.plan_id)}" data-version="${e(record.version)}" data-auto-advance="${automatic}">Confirm &amp; run →</button></div></div>`;
 }
 
 function sliceRiskClass(risk) {
@@ -1548,6 +1625,17 @@ function localPowerNotice(power) {
   </div>`;
 }
 
+function capabilitySandboxNotice(capability) {
+  if (!capability || !capability.enabled) return "";
+  if (!capability.active_for_task) return `<div class="mt-14 mono" data-role="capability-sandbox-notice"><strong>STRICT TYPED LOOP FOR THIS TASK</strong><div>${e(capability.eligibility_detail || "")}</div></div>`;
+  return `<div class="mt-14 mono" data-role="capability-sandbox-notice">
+    <strong>RUN CAPABILITY SANDBOX · RECOMMENDED</strong>
+    <div>${e(capability.warning || "")}</div>
+    <div>NETWORK: denied inside workcell · CONTINUATIONS: ${e(capability.max_native_continuations)} · PARITY GUARD: ${capability.high_assurance_parity_guard ? "ON" : "off"}</div>
+    <div>No silent fallback. A failed identity, containment, admission, or readiness check stops for review.</div>
+  </div>`;
+}
+
 // Live sandbox status during execution: current turn, the command running
 // right now, files changed so far, the latest verification result, and every
 // request the boundary refused. Refusals are shown rather than hidden -- a
@@ -1606,6 +1694,7 @@ function executionStartPanel(detail) {
       <div class="mt-14 mono">LOCAL BUDGET: ${e(localBudget?.max_turns ?? "—")} turns / ${e(localBudget?.max_patch_attempts ?? "—")} patch attempts / ${e(localBudget?.max_verification_runs ?? "—")} verify runs</div>
       ${preview.frontier_available ? `<div class="mt-14 mono">FRONTIER BUDGET: ${e(frontierBudget?.max_turns ?? "—")} turns / ${e(frontierBudget?.max_patch_attempts ?? "—")} patch attempts / ${e(frontierBudget?.max_verification_runs ?? "—")} verify runs</div>` : ""}
       <div class="mt-14 mono">COMPLETION POLICY: ${e(preview.completion_policy)} · SANDBOX: ${e(preview.verification_backend)}</div>
+      ${capabilitySandboxNotice(preview.capability_sandbox)}
       ${localPowerNotice(preview.local_power)}
       <div class="mt-14 mono">VERIFICATION COMMANDS: ${e((preview.verification_commands || []).join(", ") || "none configured")}</div>
       ${verificationContractNotice(preview.verification_contract)}
@@ -1949,7 +2038,7 @@ function discoveryApiTransportPanel(detail) {
 function discoveryPlanImportedView(detail) {
   const session = detail.session;
   const plan = detail.plan_summary;
-  return `<section class="card result-hero mt-16"><div class="result-outcome"><span class="result-orb"></span><div><h2>Plan imported</h2><p>The frontier model returned a complete plan. It became an entirely ordinary Architect Mode plan -- review, validate, and approve it on the Plans page exactly as any other plan.</p></div></div></section>
+  return `<section class="card result-hero mt-16"><div class="result-outcome"><span class="result-orb"></span><div><h2>Plan imported and checked</h2><p>Apoapsis automatically ran its deterministic plan validation. Open the plan to review the result: a clean plan is ready for your approval, while any exact validation findings remain visible for correction. Approval is never automatic.</p></div></div></section>
   ${plan ? `<section class="card card-pad mt-16"><p class="section-title mt-0">${e(plan.architecture_summary)}</p><div class="mono">${e(plan.plan_id)} · ${e(titleCase(plan.status))} · ${e(plan.slice_count)} slice(s)</div><div class="mt-14"><a class="button primary" href="#/plan/${encodeURIComponent(session.plan_id)}/overview">Open plan →</a></div></section>` : ""}`;
 }
 
@@ -2031,6 +2120,30 @@ async function setLocalPowerEnabled(enabled) {
   }
 }
 
+async function setCapabilitySandbox(enabled, parity = null) {
+  store.busy = true;
+  store.error = null;
+  render();
+  try {
+    const body = { enabled };
+    if (parity !== null) body.high_assurance_parity_guard = parity;
+    await api("/api/config/capability-sandbox", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+    store.overview = await api("/api/overview");
+    store.capabilitySandboxConfirm = null;
+    if (store.task && store.route.name === "task") {
+      store.task = await api(`/api/tasks/${encodeURIComponent(store.route.taskId)}`);
+    }
+  } catch (error) {
+    store.error = error.message;
+  } finally {
+    store.busy = false;
+    render();
+  }
+}
+
 async function approve(button) {
   const taskId = button.dataset.taskId;
   const version = Number(button.dataset.version);
@@ -2071,6 +2184,60 @@ async function approvePlan(button) {
     store.error = error.message;
   } finally {
     store.busy = false;
+    render();
+  }
+}
+
+let planRunPollHandle = null;
+let planRunPollingId = null;
+
+async function startPlanRun(button) {
+  const planId = button.dataset.planId;
+  const version = Number(button.dataset.version);
+  const autoAdvance = button.dataset.autoAdvance === "true";
+  store.busy = true;
+  store.error = null;
+  render();
+  try {
+    const record = await api(`/api/plans/${encodeURIComponent(planId)}/run`, {
+      method: "POST",
+      body: JSON.stringify({ expected_plan_version: version, auto_advance: autoAdvance }),
+    });
+    store.planRun = record;
+    store.planRunConfirmMode = null;
+    pollPlanRun(planId, record.run_id);
+  } catch (error) {
+    store.error = error.message;
+  } finally {
+    store.busy = false;
+    render();
+  }
+}
+
+async function pollPlanRun(planId, runId) {
+  if (planRunPollingId === runId && planRunPollHandle) return;
+  if (planRunPollHandle) clearTimeout(planRunPollHandle);
+  planRunPollingId = runId;
+  try {
+    const record = await api(`/api/plan-runs/${encodeURIComponent(runId)}`);
+    store.planRun = record;
+    if (store.route.name === "plan" && store.route.planId === planId) {
+      store.plan = await api(`/api/plans/${encodeURIComponent(planId)}`);
+    }
+    render();
+    if (["recorded", "running"].includes(record.status)) {
+      planRunPollHandle = setTimeout(() => {
+        planRunPollHandle = null;
+        pollPlanRun(planId, runId);
+      }, 2000);
+    } else {
+      planRunPollHandle = null;
+      planRunPollingId = null;
+    }
+  } catch (error) {
+    planRunPollHandle = null;
+    planRunPollingId = null;
+    store.error = error.message;
     render();
   }
 }
@@ -2517,6 +2684,20 @@ root.addEventListener("click", (event) => {
   if (button.dataset.action === "local-power-confirm") {
     setLocalPowerEnabled(button.dataset.enabled === "true");
   }
+  if (button.dataset.action === "capability-sandbox-intent") {
+    store.capabilitySandboxConfirm = button.dataset.intent;
+    render();
+  }
+  if (button.dataset.action === "capability-sandbox-cancel") {
+    store.capabilitySandboxConfirm = null;
+    render();
+  }
+  if (button.dataset.action === "capability-sandbox-confirm") {
+    setCapabilitySandbox(button.dataset.enabled === "true");
+  }
+  if (button.dataset.action === "capability-parity-toggle") {
+    setCapabilitySandbox(true, button.dataset.enabled === "true");
+  }
   if (button.dataset.action === "approve-intent") {
     store.approvalPending = true;
     render();
@@ -2537,6 +2718,15 @@ root.addEventListener("click", (event) => {
   if (button.dataset.action === "plan-approve-confirm") approvePlan(button);
   if (button.dataset.action === "plan-validate") validatePlan(button);
   if (button.dataset.action === "plan-prepare-delivery") preparePlanDelivery(button);
+  if (button.dataset.action === "plan-run-intent") {
+    store.planRunConfirmMode = button.dataset.mode || "auto";
+    render();
+  }
+  if (button.dataset.action === "plan-run-cancel") {
+    store.planRunConfirmMode = null;
+    render();
+  }
+  if (button.dataset.action === "plan-run-confirm") startPlanRun(button);
   if (button.dataset.action === "plan-download-delivery") downloadPlanDelivery(button);
   if (button.dataset.action === "plan-download-frontier-handoff") downloadPlanFrontierHandoff(button);
   if (button.dataset.action === "slice-package") packagePlanSlice(button);

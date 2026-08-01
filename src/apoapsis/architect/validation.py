@@ -1,18 +1,23 @@
 from __future__ import annotations
 
-from pathlib import PurePosixPath
-from typing import Iterable, Sequence
+from pathlib import Path, PurePosixPath
+from typing import TYPE_CHECKING, Iterable, Sequence
 
 from apoapsis.architect.schema import (
     ArchitecturePlan,
     ImplementationSlice,
     PlanValidationFinding,
+    PlanValidationResult,
+    PlanRecord,
     RuntimeBoundary,
     ValidationSeverity,
 )
-from apoapsis.config import ArchitectPlanCeilings
+from apoapsis.config import ApoapsisConfig, ArchitectPlanCeilings
 from apoapsis.specification.schema import ConstraintStatus
 from apoapsis.verification.runner import VerificationCommand
+
+if TYPE_CHECKING:
+    from apoapsis.architect.store import SQLitePlanStore
 
 # Which harness-owned verification flags contradict which declared runtime
 # boundaries (ADR 0074). Keyed by flag because the harness defines these
@@ -817,3 +822,46 @@ def validate_plan(
                         )
 
     return findings
+
+
+def validate_and_record_plan(
+    project_root: str | Path,
+    plan_store: "SQLitePlanStore",
+    config: ApoapsisConfig,
+    plan_id: str,
+    *,
+    expected_version: int,
+) -> tuple[PlanRecord, PlanValidationResult]:
+    """Run and persist the canonical deterministic plan validation.
+
+    Shared by frontier import, the UI, and the CLI so those entry points
+    cannot drift on findings, version transitions, or audit artifacts. This
+    invokes no model and no project command, and never approves a plan.
+    """
+
+    from apoapsis.architect.audit import PlanAuditStore
+    record = plan_store.get_plan(plan_id)
+    configured_names = {command.name for command in config.verification.commands}
+    findings = validate_plan(
+        record.plan,
+        configured_verification_commands=configured_names,
+        ceilings=config.architect.ceilings,
+        configured_commands=config.verification.commands,
+    )
+    result = PlanValidationResult(
+        plan_id=plan_id,
+        plan_version=record.version,
+        valid=not any(
+            finding.severity == ValidationSeverity.ERROR for finding in findings
+        ),
+        findings=findings,
+    )
+    updated = plan_store.record_validation(
+        plan_id, result, expected_version=expected_version
+    )
+    PlanAuditStore(project_root, plan_id).write_json(
+        f"validation-v{record.version}.json",
+        result,
+        kind="plan_validation_result",
+    )
+    return updated, result

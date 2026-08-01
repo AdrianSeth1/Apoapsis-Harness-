@@ -82,6 +82,10 @@ from apoapsis.workflow.escalation import build_local_to_frontier_escalation
 from apoapsis.workflow.events import WorkflowActor
 from apoapsis.workflow.routing import RoutingDecision, select_agent_route
 from apoapsis.workflow.states import WorkflowState, transition_is_allowed
+from apoapsis.workcell.product import (
+    CapabilitySandboxExecutor,
+    NativeQwenWorkcellExecutor,
+)
 
 
 ApprovalCallback = Callable[[TaskSpecification], bool]
@@ -103,6 +107,7 @@ class VerticalSliceRunner:
         research_engine: ResearchEngine | None = None,
         research_mode: ResearchMode = ResearchMode.OFF,
         agent_step_prompt_fn: AgentStepPromptBuilder | None = None,
+        capability_sandbox_executor: CapabilitySandboxExecutor | None = None,
     ) -> None:
         self.project_root = Path(project_root).resolve()
         self.store = store
@@ -155,12 +160,18 @@ class VerticalSliceRunner:
         # infrastructure (ADR 0029) ever passes an override; no product CLI/
         # UI/service call site does.
         self.agent_step_prompt_fn = agent_step_prompt_fn
+        self.capability_sandbox_executor = (
+            capability_sandbox_executor or NativeQwenWorkcellExecutor()
+        )
 
     def _execution_base(self, task_id: str, repository_head: str) -> tuple[str, list[str]]:
         """Return the exact human-approved base for a packaged plan slice."""
 
         for event in reversed(self.store.events(task_id)):
-            if event.event_type != "plan_slice_specification_approved":
+            if event.event_type not in {
+                "plan_slice_specification_approved",
+                "plan_slice_auto_approved",
+            }:
                 continue
             candidate = event.payload.get("execution_base_commit")
             inherited = event.payload.get("inherited_slice_ids", [])
@@ -171,6 +182,23 @@ class VerticalSliceRunner:
             ).stdout.strip()
             return resolved, [str(item) for item in inherited]
         return repository_head, []
+
+    def _plan_slice_identity(self, task_id: str) -> tuple[str | None, str | None]:
+        """Read the exact approved plan/slice identity from the task ledger."""
+
+        for event in reversed(self.store.events(task_id)):
+            if event.event_type not in {
+                "plan_slice_specification_approved",
+                "plan_slice_auto_approved",
+            }:
+                continue
+            plan_id = event.payload.get("plan_id")
+            slice_id = event.payload.get("slice_id")
+            return (
+                str(plan_id) if isinstance(plan_id, str) else None,
+                str(slice_id) if isinstance(slice_id, str) else None,
+            )
+        return None, None
 
     def _prompt_patch_policy(self) -> dict[str, bool]:
         return {
@@ -806,8 +834,13 @@ class VerticalSliceRunner:
         # below are untouched -- a sandbox session returns the same
         # `AgentSessionResult` shape the strict loop returns, and it can only
         # report COMPLETE when the harness's own verification passed.
+        capability_sandbox = self.config.execution.capability_sandbox
         local_power = self.config.execution.local_power
-        if local_power.enabled:
+        plan_id, slice_id = self._plan_slice_identity(self.specification.task_id)
+        if capability_sandbox.enabled and plan_id is not None and slice_id is not None:
+            local_result = self._run_capability_sandbox_session(implementation_context)
+            event_prefix = "capability_sandbox"
+        elif local_power.enabled:
             local_result = self._run_local_power_session(implementation_context)
             event_prefix = "local_power_sandbox"
         else:
@@ -868,6 +901,25 @@ class VerticalSliceRunner:
                 f"bounded local coding agent requires escalation: "
                 f"{local_result.stop_reason}"
             ),
+        )
+
+    def _run_capability_sandbox_session(
+        self, context: ContextPackage
+    ) -> AgentSessionResult:
+        """Run Slice 8's native-Qwen workcell through the product adapter."""
+
+        assert self.audit is not None
+        assert self.specification is not None
+        assert self.worktree_path is not None
+        plan_id, slice_id = self._plan_slice_identity(self.specification.task_id)
+        return self.capability_sandbox_executor.run(
+            specification=self.specification,
+            worktree=Path(self.worktree_path),
+            context=context,
+            config=self.config,
+            audit=self.audit,
+            plan_id=plan_id,
+            slice_id=slice_id,
         )
 
     def _run_local_power_session(

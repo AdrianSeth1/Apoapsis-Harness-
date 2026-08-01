@@ -17,8 +17,7 @@ from apoapsis.architect.importer import import_planner_response
 from apoapsis.architect.package import build_planner_request_package
 from apoapsis.architect.audit import PlanAuditStore, write_package_artifact
 from apoapsis.architect.store import SQLitePlanStore
-from apoapsis.architect.validation import validate_plan
-from apoapsis.architect.schema import PlanValidationResult, ValidationSeverity
+from apoapsis.architect.validation import validate_and_record_plan
 from apoapsis.architect.slice_service import (
     approve_slice,
     package_slice,
@@ -204,6 +203,14 @@ cached_input_per_million_usd = 0
 mode = "agent"
 route = "auto"
 completion_policy = "baseline"
+
+[execution.capability_sandbox]
+enabled = true
+runtime_profile = "crisis-atlas-v8-qwen3.6-27b"
+qualified_model_alias = "qwen3.6-27b"
+high_assurance_parity_guard = false
+max_native_continuations = 2
+runtime_root = "/tmp/apoapsis-capability-sandbox"
 
 [execution.agent]
 max_turns = 20
@@ -1580,6 +1587,29 @@ _GITIGNORE_ENTRIES: tuple[tuple[str, frozenset[str]], ...] = (
 )
 
 
+def _ensure_ignore_entries(ignore_file: Path) -> bool:
+    """Add Apoapsis runtime exclusions to one Git ignore file."""
+
+    ignore_file.parent.mkdir(parents=True, exist_ok=True)
+    existing = (
+        ignore_file.read_text(encoding="utf-8") if ignore_file.is_file() else ""
+    )
+    present = {line.strip() for line in existing.splitlines()}
+    missing = [
+        entry
+        for entry, covered in _GITIGNORE_ENTRIES
+        if not (present & covered)
+    ]
+    if not missing:
+        return False
+    separator = "" if existing == "" or existing.endswith("\n") else "\n"
+    ignore_file.write_text(
+        existing + separator + "".join(f"{entry}\n" for entry in missing),
+        encoding="utf-8",
+    )
+    return True
+
+
 def _ensure_apoapsis_gitignored(root: Path) -> bool:
     """Ensures ``.apoapsis/`` (Apoapsis's own runtime state -- task, plan,
     and discovery databases, caches, and audit artifacts, never project
@@ -1597,27 +1627,27 @@ def _ensure_apoapsis_gitignored(root: Path) -> bool:
     freshly initialized project does not present verification byproducts as
     working-tree changes at all."""
 
-    gitignore = root / ".gitignore"
-    existing = (
-        gitignore.read_text(encoding="utf-8") if gitignore.is_file() else ""
-    )
-    present = {line.strip() for line in existing.splitlines()}
-    missing = [
-        entry
-        for entry, covered in _GITIGNORE_ENTRIES
-        if not (present & covered)
-    ]
-    if not missing:
-        return False
-    separator = "" if existing == "" or existing.endswith("\n") else "\n"
-    gitignore.write_text(
-        existing + separator + "".join(f"{entry}\n" for entry in missing),
-        encoding="utf-8",
-    )
-    return True
+    return _ensure_ignore_entries(root / ".gitignore")
 
 
-def _init(root: Path) -> dict[str, object]:
+def _ensure_apoapsis_locally_ignored(root: Path) -> bool:
+    """Ignore runtime state without changing a project's tracked files.
+
+    The friendly launcher uses the repository-local Git exclude file so
+    selecting an established clean project does not immediately make it dirty.
+    The explicit CLI ``apoapsis init`` command retains its documented
+    ``.gitignore`` behavior.
+    """
+
+    repository = GitRepository(root)
+    raw_path = repository.run(["rev-parse", "--git-path", "info/exclude"]).stdout.strip()
+    exclude = Path(raw_path)
+    if not exclude.is_absolute():
+        exclude = root / exclude
+    return _ensure_ignore_entries(exclude.resolve())
+
+
+def _init(root: Path, *, local_git_exclude: bool = False) -> dict[str, object]:
     GitRepository(root)
     metadata = root / ".apoapsis"
     metadata.mkdir(parents=True, exist_ok=True)
@@ -1627,12 +1657,18 @@ def _init(root: Path) -> dict[str, object]:
         config.write_text(DEFAULT_CONFIG, encoding="utf-8")
         created_config = True
     SQLiteTaskStore(metadata / "apoapsis.db")
-    gitignore_updated = _ensure_apoapsis_gitignored(root)
+    gitignore_updated = (
+        False if local_git_exclude else _ensure_apoapsis_gitignored(root)
+    )
+    local_git_exclude_updated = (
+        _ensure_apoapsis_locally_ignored(root) if local_git_exclude else False
+    )
     return {
         "initialized": True,
         "metadata_directory": str(metadata),
         "config_created": created_config,
         "gitignore_updated": gitignore_updated,
+        "local_git_exclude_updated": local_git_exclude_updated,
     }
 
 
@@ -1702,24 +1738,12 @@ def _plan_validate(
 ) -> dict[str, object]:
     config = ApoapsisConfig.from_toml(root / ".apoapsis" / "config.toml")
     record = plan_store.get_plan(plan_id)
-    configured_names = {command.name for command in config.verification.commands}
-    findings = validate_plan(
-        record.plan,
-        configured_verification_commands=configured_names,
-        ceilings=config.architect.ceilings,
-        configured_commands=config.verification.commands,
-    )
-    result = PlanValidationResult(
-        plan_id=plan_id,
-        plan_version=record.version,
-        valid=not any(item.severity == ValidationSeverity.ERROR for item in findings),
-        findings=findings,
-    )
-    updated = plan_store.record_validation(
-        plan_id, result, expected_version=record.version
-    )
-    PlanAuditStore(root, plan_id).write_json(
-        f"validation-v{record.version}.json", result, kind="plan_validation_result"
+    updated, result = validate_and_record_plan(
+        root,
+        plan_store,
+        config,
+        plan_id,
+        expected_version=record.version,
     )
     return {"plan": updated.model_dump(mode="json"), "validation": result.model_dump(mode="json")}
 

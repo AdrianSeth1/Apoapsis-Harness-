@@ -155,6 +155,9 @@ def approve_slice(
     slice_id: str,
     *,
     expected_package_sha256: str,
+    approval_actor: WorkflowActor = WorkflowActor.USER,
+    approval_event_type: str = "plan_slice_specification_approved",
+    approval_context: dict[str, Any] | None = None,
 ) -> PlanSliceExecutionRecord:
     """Explicit human approval of exactly the package that was previewed:
     converts its ``derived_specification`` into a real task (the normal
@@ -190,8 +193,8 @@ def approve_slice(
     approved = task_store.transition(
         specification.task_id,
         WorkflowState.SPEC_APPROVED,
-        actor=WorkflowActor.USER,
-        event_type="plan_slice_specification_approved",
+        actor=approval_actor,
+        event_type=approval_event_type,
         payload={
             "plan_id": plan_id,
             "slice_id": slice_id,
@@ -201,6 +204,7 @@ def approve_slice(
                 package.execution_base_commit or package.repository_head_commit
             ),
             "inherited_slice_ids": package.inherited_slice_ids,
+            **(approval_context or {}),
         },
         expected_version=drafted.version,
     )

@@ -20,14 +20,21 @@ priorities only. Current architecture is in `HANDOFF.md`, decision history is in
    - Run `apoapsis doctor` before spending model calls.
 
 2. Use the guided local application.
-   - Preferred Windows path: double-click `START_APOAPSIS.cmd`, select the
-     initialized Git project, let it start the configured local model service,
-     and use the UI that opens.
+   - Preferred Windows path: double-click `START_APOAPSIS.cmd`, select an
+     existing Git project or an empty folder, let Apoapsis prepare it and start
+     the configured local model service, and use the UI that opens.
    - Quick change: create and approve one bounded task.
-   - Larger project: clarify, optionally research, import/validate/approve a
-     plan, then package and execute one dependency-ready slice at a time.
-   - After a completed slice, package the next slice; Apoapsis checkpoints and
-     inherits completed prior work without moving the checked-out branch.
+   - Larger project: clarify, optionally research, and import a plan. Apoapsis
+     validates it automatically; review and approve a clean plan once, then use
+     the recommended automatic run or one-slice pacing.
+   - Capability Sandbox is selected by default for approved plan slices. The
+     first live product run builds a committed-source controller and rechecks
+     runtime/tool/containment gates before Qwen starts, so allow extra startup
+     time. Models & environment has a one-action Local Power compatibility
+     switch and rollback. High-assurance parity approximately doubles inference.
+   - Automatic mode checkpoints and inherits completed prior work before each
+     dependent slice without moving the checked-out branch, and stops at the
+     first verification or review problem.
    - After the final slice completes, use **Prepare finished project**, then
      download the ZIP. Download the companion frontier-review handoff when a
      whole-project ChatGPT/Claude review is desired.
@@ -82,7 +89,37 @@ priorities only. Current architecture is in `HANDOFF.md`, decision history is in
 - Do not make a live network, local-model, hosted-model, Docker, or browser claim
   unless that exact path is separately exercised and recorded.
 
-### Priority 2: build a baseline-preserving Qwen Capability Sandbox
+### Priority 2: observe the Slice 8 product adapter on one ordinary plan slice
+
+**Crisis Atlas v4 pilot completed 2026-08-01.** Six live slots ran. Every
+matched pair scored 1.0 control / 1.0 Apoapsis on first-proposal quality, with
+no continuation required; the v8 zero-model rehearsal separately retained
+17/17 mapped detector controls. This clears the owner-selected Crisis Atlas
+non-inferiority gate and does not constitute held-out or broad-corpus evidence.
+Raw and independently scored evidence is recorded in
+`docs/evaluation/slice-7p4-live-pilot-v4-2026-08-01.md`.
+
+**Product integration is implemented in the working tree under ADR 0095.** The
+ordinary `VerticalSliceRunner` now selects the pinned native-Qwen product
+adapter for an approved plan slice, consumes controller-owned
+admission/readiness continuations, promotes only an admitted COMPLETE snapshot,
+and reruns project verification. New and migrated configs select Capability
+Sandbox by default; Local Power is an explicit one-action compatibility mode,
+not a renamed substitute. The optional matched parity guard is also wired and
+fails closed.
+
+The next bounded gate is one live ordinary slice after the verdict-deciding
+source is committed. Use Test Project 6's approved `SLICE-001`, leave parity off
+for the first run, and retain the task authorization, product preflight,
+checkpoint, relay, verification, teardown, and final report artifacts. Confirm
+the UI clearly shows `qwen3.6-27b`, Capability Sandbox, and no silent fallback.
+If it stops, fix only the direct execution-path blocker. Do not expand the
+corpus or resume telemetry/performance archaeology first.
+
+**Plan UX is no longer a blocker.** ADR 0092 adds a durable one-confirmation
+auto mode that advances across dependency-ready slices only after authoritative
+COMPLETE, plus a one-click next-slice mode. Keep any further UI work confined to
+the direct plan/execution path until the qualified workcell integration lands.
 
 The unrestricted Crisis Atlas control falsified the assumption that the current
 typed Local Power loop preserves enough of Qwen's coding ability. The first

@@ -22,22 +22,17 @@ if errorlevel 1 (
   exit /b 1
 )
 
-if not exist "%APOAPSIS_PROJECT%\.git" (
-  echo The selected folder is not a Git repository:
-  echo   %APOAPSIS_PROJECT%
-  echo Create or clone a Git repository first, then try again.
+echo Checking the selected folder...
+py -3 -m apoapsis.project_setup --project-root "%APOAPSIS_PROJECT%" >nul
+if errorlevel 1 (
+  echo.
+  echo Apoapsis stopped before starting the app.
+  echo Follow the explanation above, then try again.
   if not defined APOAPSIS_NO_PAUSE pause
   exit /b 1
 )
-
-if not exist "%APOAPSIS_PROJECT%\.apoapsis\config.toml" (
-  echo This project has not been initialized for Apoapsis yet:
-  echo   %APOAPSIS_PROJECT%
-  echo From a terminal in that folder, run: apoapsis init
-  echo Then reopen this launcher.
-  if not defined APOAPSIS_NO_PAUSE pause
-  exit /b 1
-)
+echo Your project is ready.
+echo.
 
 echo Opening the Apoapsis local interface in your system browser...
 echo Project: %APOAPSIS_PROJECT%

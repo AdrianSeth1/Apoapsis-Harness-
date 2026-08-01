@@ -51,11 +51,11 @@ content hashes and worktree pointers are not corrupted; see
   file content while Apoapsis builds, validates, applies, verifies, and audits
   the patch; known llama.cpp tool-template residue on that action is normalized
   without allowing extra model authority.
-- An opt-in, experimental Local Power Sandbox execution mode (ADR 0059,
-  disabled by default) that lets a local model write whole files and run
-  allowlisted commands inside the disposable task worktree while Apoapsis
-  computes the diff, mediates every path and command, and keeps verification
-  and completion authority. See "Local Power Sandbox" below.
+- A default-on Capability Sandbox for approved plan slices (ADR 0095): genuine
+  Qwen Code runs with normal file/shell/test tools inside the qualified
+  network-none workcell, while Apoapsis admits the complete delta, gathers
+  current evidence, and alone decides promotion and completion. The older
+  typed Local Power path remains a one-action compatibility choice.
 - Deterministic risk routing across local-only, local-then-frontier,
   frontier-only, and human-review paths, with a reproducible escalation package
   and separate budgets for each coding stage.
@@ -73,7 +73,8 @@ content hashes and worktree pointers are not corrupted; see
   execution lane against a fresh copy of a controlled fixture and writes one
   comparison report.
 - Windows `START_APOAPSIS.cmd`/`STOP_APOAPSIS.cmd` controls that let the
-  operator select one initialized Git project, start the configured loopback
+  operator select one project folder, prepare an empty folder or initialize an
+  existing Git project for Apoapsis, start the configured loopback
   local coding service (Ollama or `llama-server`), open the UI, and explicitly
   release supported local model memory without touching hosted providers.
 - A bounded, local-first Architect Mode discovery workflow followed by an
@@ -181,16 +182,22 @@ python -m unittest discover -s tests -v
 ## Start and stop local models on Windows
 
 Double-click `START_APOAPSIS.cmd` to begin a local session. With no folder
-argument, it opens a Windows folder picker; select the initialized Git project
-you want Apoapsis to manage. The launcher validates Python, Git, the selected
-repository, and `.apoapsis/config.toml`, then starts the configured loopback
-local coding service and opens the UI for that project.
+argument, it opens a Windows folder picker. Select an existing Git project or
+create/select an empty folder. The launcher prepares it automatically, then
+starts the configured loopback local coding service and opens the UI. You do
+not need to run `git init` or `apoapsis init` first.
+
+For safety, Apoapsis will not guess what to do with a non-empty folder that is
+not already a Git project, or with an uncommitted new Git project containing
+files. It explains the problem and leaves those files alone. Existing Git
+projects are initialized using repository-local exclusions, so opening one
+does not edit its tracked `.gitignore`.
 
 For the default Laguna `llama-server` configuration, set
 `APOAPSIS_LLAMA_SERVER_COMMAND` once to the explicit command that starts your
 local server. `START_APOAPSIS.cmd` will use it only when the configured
 loopback OpenAI-compatible endpoint is unavailable. It never pulls a model,
-installs software, initializes a repository, or manages hosted endpoints.
+installs software, adds existing files to Git, or manages hosted endpoints.
 
 The research-only model stays lazy by default because loading two large models
 can exceed available RAM/VRAM. Warm it explicitly when needed:
@@ -232,15 +239,15 @@ You can also pass the Git project path explicitly:
 ```
 
 The browser manages **one Git project per window**. To use another project,
-run `apoapsis init` once inside that repository, close the current launcher,
-and start again with the other folder. Folder selection happens in the trusted
+close the current launcher and start again with the other folder; the launcher
+performs safe first-time setup automatically. Folder selection happens in the trusted
 launcher/native layer, not in browser JavaScript; the browser is deliberately
 not allowed to browse arbitrary folders or initialize repositories.
 
-`OPEN_APOAPSIS.cmd` checks for the Python launcher, Git, and an initialized project
-(reporting any of those missing in plain language before doing anything
-else), then runs `apoapsis ui` from the checkout and opens your system
-browser. It never installs, downloads, or reconfigures anything, and never
+`OPEN_APOAPSIS.cmd` checks for Python and Git, safely prepares the selected
+folder when needed, then runs `apoapsis ui` from the checkout and opens your
+system browser. It never installs, downloads, or changes existing project
+files, and never
 loads or unloads a model -- it manages only the one UI process it starts.
 It remains available as a UI-only fallback if the local model service is already
 running. Closing its window (or Ctrl+C) stops just that process; use
@@ -496,15 +503,19 @@ apoapsis discover call-api DISC-ABC123 --authorize-planning-spend-usd 1.00
 The frontier model may return a small, capped number of further
 clarification questions (`[discovery] max_frontier_clarification_rounds`,
 default 10 -- answer them with `apoapsis discover answer-frontier-questions`
-and export again) or a complete plan. A returned plan becomes an entirely
-ordinary Architect Mode plan -- inspect, validate, and approve it exactly
-as described below, through the same unmodified commands:
+and export again) or a complete plan. Apoapsis automatically runs its
+deterministic plan validation when a complete plan is imported. A clean plan
+arrives as **Validated**, ready for your review and approval; a plan with errors
+remains **Proposed** and shows the exact findings to correct. Import never
+approves the plan or starts work:
 
 ```bash
 apoapsis discover inspect DISC-ABC123
-apoapsis plan validate PLAN-...
 apoapsis plan approve PLAN-... --expected-version 2
 ```
+
+`apoapsis plan validate PLAN-...` remains available when configuration or a
+revised plan needs to be checked again.
 
 Neither model can approve a plan, invent a verification-command name,
 bypass a ceiling, execute a slice, or choose a workflow transition. The
@@ -885,12 +896,33 @@ agent produces them, then a usage/telemetry summary once the task finishes. A
 task that stops for a human decision links directly into the existing Human
 Review case view.
 
-## Approved-plan to single-slice execution (ADR 0027)
+## Approved-plan execution (ADRs 0027 and 0092)
 
-Once an Architect Mode plan (see below) is approved, one explicitly selected
-slice can become a real, running task through the exact same durable
-execution service above -- never automatically, and never more than one
-slice at a time:
+Once an Architect Mode plan is approved, the browser now offers **Run all
+slices automatically** as the recommended path. One confirmation authorizes
+the controller to package, hash-bind, approve, execute, and verify each
+dependency-ready slice in order. It advances only after the current slice is
+authoritatively `COMPLETE`; configuration drift, a dependency block, failed
+verification, Human Review, a superseded package, or an interrupted run stops
+the sequence. **Run only the next slice** gives the same one-click flow with
+manual pacing. Automatic approvals are audited as controller actions bound to
+the plan-run id, and any older manual package is rebuilt under the authorized
+configuration before it can run.
+
+The authorization is durable and bound to one exact plan version and effective
+configuration digest. A queued run can be reclaimed after restart. A run that
+may already have called a model is marked ambiguous and is never silently
+repeated. The plan worker shuts down with the app instead of surviving against
+the project directory. Final integrated verification and delivery remain
+separate actions.
+
+Auto mode is not a setting or toggle. On **Implementation slices**, the
+Automatic run panel says whether a run is active. Before approval it links to
+the exact remaining step; after approval it shows **Run all slices
+automatically** and **Run only the next slice**. Starting a run does not make a
+persistent mode change.
+
+The individual CLI workflow remains available for inspection and scripting:
 
 ```bash
 apoapsis plan slice list PLAN-ABC123
@@ -1032,15 +1064,14 @@ documented flags, not an inference from the contract's prose;
 specification-approval transitions, unchanged) but does not start it;
 `start` hands it to the same durable execution service `apoapsis execute
 start` uses. A slice's status is always read live from its derived task's
-real state, never a separate, independently-tracked copy of it. Nothing here ever
-starts a next slice or merges into the user's branch.
+real state, never a separate, independently-tracked copy of it. Auto mode may
+start the next dependency-ready slice under its one durable user authorization;
+it never merges into the user's branch.
 
-The same flow is available from the browser: a plan's Implementation Slices
-tab shows live per-slice status, an Inspect view renders the same immutable
-package preview, and a two-step Approve action creates the derived task --
-which then behaves exactly like any other task, including the existing
-control room's own "Start coding" confirmation. There is no "Run all"
-button and no scheduler in the UI.
+The browser still exposes every individual package and task for inspection,
+but the happy path no longer requires visiting each one. The plan page shows
+the active slice, completed slices, durable run id, and the exact reason an
+automatic run stopped.
 
 ## Diagnostics and evaluation
 
@@ -1319,7 +1350,7 @@ inherited-suite result and its coverage artifact — is persisted outside the
 ephemeral clones, because a qualification that deleted its own evidence would
 leave the claim and remove the reason to believe it.
 
-## Capability Sandbox workcell (ADR 0077, experimental and gate-blocked)
+## Capability Sandbox workcell (ADR 0077 and ADR 0095)
 
 The workcell runs the real Qwen coding CLI's own native loop inside a
 disposable, hardened container. Apoapsis keeps every durable authority —
@@ -1355,14 +1386,38 @@ The relay additionally **refuses** — never clamps — any request whose output
 budget exceeds the run's pinned ceiling, and records the peak budget it
 observed.
 
-**The mode is still blocked.** The paired arms ran live with no acceptance
-repair and returned `CAPABILITY_REGRESSED`, so `apoapsis slice3-gate` refuses.
-That verdict is not a valid capability comparison: the agent CLI inside the
-workcell image exposes no `write_file`, `edit`, or `run_shell_command`, so
-neither arm could edit a file. No baseline or matched quality claim is
-permitted. See
-`docs/evaluation/slice-2c-limits-envelope-and-paired-arms-2026-07-30.md` and
-`docs/evaluation/slice-2b-live-conformance-and-pins-2026-07-30.md`.
+The corrected Crisis Atlas v4 pilot completed all six live slots on 2026-08-01.
+All three matched repetitions scored `1.0 / 1.0` for first-proposal quality,
+with no continuation required, so the Apoapsis arm was non-inferior in every
+pair. Detection remains separately established by the v8 rehearsal's 17/17
+mapped negative controls; no live sandbox proposal was incomplete, so the live
+run is not described as a live defect catch. See
+`docs/evaluation/slice-7p4-live-pilot-v4-2026-08-01.md`.
+
+The locked pilot qualified the frozen Crisis Atlas path. ADR 0095 now connects
+that native workcell to ordinary **approved plan-slice** execution. Before a
+model starts, the product controller re-hashes the pinned runtime and
+reobserves the genuine Qwen tool surface and containment gate. Each native turn
+ends at the same controller-owned admission/readiness checkpoint; only a
+COMPLETE admitted snapshot is copied into the normal task worktree, where the
+project's configured verification runs again. A failed preflight, unknown
+witness type, refused delta, incomplete readiness result, or relay truncation
+stops for review. There is no silent Local Power fallback.
+
+Open **Models & environment** to see the primary **Local coding mode** card.
+Capability Sandbox is selected by default. **Use compatibility mode** switches
+future local slices to the older typed Local Power path in one confirmed
+action; **Use Capability Sandbox** switches back. **Turn parity on** adds a
+fresh matched default-Qwen control and refuses a supervised proposal that
+proves fewer obligations. Parity is off by default because it approximately
+doubles inference time and local model resource use.
+
+The current product witness adapter supports Python `unittest` commands. A
+required command from another ecosystem stops at Human Review until a
+controller-owned structured witness adapter exists; a green exit code alone is
+not promoted into readiness evidence. Quick-change tasks continue to use the
+strict typed loop because they do not yet carry an approved slice-readiness
+contract.
 
 Run the ordered live gate, and decide whether Slice 3 may begin:
 
@@ -1619,35 +1674,33 @@ produced no usable evidence is not a pass — missing evidence, an unreadable
 truncation, an infrastructure failure, and a mismatched pair are each recorded
 as their own outcome, and none of them counts in favour.
 
-## Local Power Sandbox (ADR 0059, experimental)
+## Local Power Sandbox (ADR 0059, compatibility mode)
 
-An opt-in second execution path for **local models only**. It exists to test one
-hypothesis: that small local models fail the strict one-action loop on protocol
+The retained compatibility path for **local models only**. It originally
+tested one hypothesis: that small local models fail the strict one-action loop on protocol
 mechanics — hand-authored unified diffs, tool-call wrapper residue,
 cross-action fields — rather than on coding ability. In this mode the model
 writes **whole files** and Apoapsis computes the diff.
 
 The unrestricted Crisis Atlas control showed that even atomic multi-file JSON
-actions do not preserve all of a normal coding CLI's useful behavior. A
-baseline-preserving **Capability Sandbox** is therefore the next architecture
-assignment, not current product behavior: Qwen gets its ordinary persistent
-shell/file/test loop only inside a disposable container, while Apoapsis remains
-the sole authority for admitting the resulting delta, running independent
-verification, checkpointing, completing, and delivering it. That design and
-its required paired non-inferiority gates are specified in
-`docs/handoff-2026-07-30-qwen-baseline-preserving-superiority.md`.
+actions do not preserve all of a normal coding CLI's useful behavior. The
+baseline-preserving Capability Sandbox is therefore the recommended product
+mode; Local Power is retained for compatibility rather than renamed.
 
-It is disabled by default and the strict loop remains the documented default.
-In the UI, open **Models & environment**, use **Turn on Local Power**, and
-confirm the warning. Apoapsis updates only the known execution settings, reloads
-and validates `.apoapsis/config.toml`, and then refreshes the execution preview.
-Use **Turn off** in the same place to return future runs to the strict loop.
+It is not selected by default. In the UI, open **Models & environment** and
+choose **Use compatibility mode**. Apoapsis atomically turns Capability Sandbox
+off and Local Power on, reloads and validates `.apoapsis/config.toml`, and
+refreshes the execution preview. Choose **Use Capability Sandbox** for the
+one-action rollback to the recommended mode.
 
 The equivalent manual config is:
 
 ```toml
 [execution]
 mode = "agent"             # required; the sandbox has no one-shot equivalent
+
+[execution.capability_sandbox]
+enabled = false            # explicit compatibility selection
 
 [execution.local_power]
 enabled = true             # opt in explicitly

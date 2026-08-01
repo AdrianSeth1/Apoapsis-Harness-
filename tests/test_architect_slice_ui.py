@@ -241,11 +241,45 @@ class PlanSliceUIServerTests(PlanSliceUITestsBase):
         self.assertEqual(bad_request.exception.code, 400)
         bad_request.exception.close()
 
+    def test_http_plan_run_records_one_auto_mode_authorization(self) -> None:
+        record, _config = self._approved_plan()
+        expected = {
+            "run_id": "PLANRUN-TEST",
+            "plan_id": record.plan_id,
+            "status": "recorded",
+            "auto_advance": True,
+        }
+        with patch.object(
+            self.server.service, "start_plan_run", return_value=expected
+        ) as start:
+            with self.request(
+                f"/api/plans/{record.plan_id}/run",
+                method="POST",
+                payload={
+                    "expected_plan_version": record.version,
+                    "auto_advance": True,
+                },
+                token=self.token,
+            ) as response:
+                payload = json.load(response)
+        self.assertEqual(response.status, 202)
+        self.assertEqual(payload, expected)
+        start.assert_called_once_with(
+            record.plan_id,
+            expected_plan_version=record.version,
+            auto_advance=True,
+        )
+
     def test_static_asset_bundles_slice_actions(self) -> None:
         with self.request("/app.js", token=self.token) as response:
             content = response.read().decode("utf-8")
         self.assertIn("slice-package", content)
         self.assertIn("slice-approve-confirm", content)
+        self.assertIn("Run all slices automatically", content)
+        self.assertIn("Auto mode is a run you start, not a setting or toggle", content)
+        self.assertIn("Review &amp; approve plan", content)
+        self.assertIn("Validate the plan first", content)
+        self.assertIn('data-action="plan-run-confirm"', content)
         self.assertIn("/slices/", content)
 
 

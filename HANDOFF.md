@@ -13,6 +13,11 @@ operational truth and the documentation must be corrected in the same change.
 
 | Item | Current value |
 | --- | --- |
+| ADR 0095 Slice 8 product rollout | **Implemented, committed, and verified, 2026-08-01; live ordinary-task evidence pending.** Approved plan slices now select a real product adapter for the pinned native Qwen workcell. The committed-source Linux controller re-hashes the v8 runtime, reobserves the 26-tool surface and containment gate before inference, supervises admission/readiness continuations, promotes only an admitted COMPLETE snapshot, and reruns configured verification in the normal task worktree. Capability Sandbox is default-on for new configs and migrated older configs; explicit Local Power configs remain compatibility-selected. Models & environment provides one clear confirmed mode switch, one-action rollback, and an opt-in matched parity guard which fails closed and approximately doubles inference. Quick changes retain the strict typed loop pending an approved readiness contract. Focused UI/authorization/checkpoint/Local Power coverage passed 165 tests with one expected skip; new product checkpoint controls passed 3/3, and the normal plan-task state-machine adapter control passed. A full Windows run completed 1,971 tests with 36 skips, 6 failures and 11 errors: the two newly exposed real-qualification failures were fixed and rerun green; the remaining inventory is the established Windows generated-file/filesystem, Docker/relay/`os.chown` baseline plus one lifecycle assertion affected by the operator's configured live launcher environment. No new live inference was run. |
+| ADR 0094 frontier-plan validation and auto-run UX | **Implemented and verified in the working tree, 2026-08-01.** Manual and API frontier-plan imports now call the same deterministic validation-and-record operation as CLI/UI validation, so a clean handoff reaches `VALIDATED` while an invalid one remains `PROPOSED` with findings; neither path approves or executes. Implementation slices now presents automatic execution as an explicit stopped/running operation, routes proposed and validated plans to their exact prerequisite, and reveals the start buttons after approval. Focused discovery/validation/CLI/slice-UI coverage passed 113/113. The full Windows run completed 1,962 tests with 36 skips, 5 failures and 11 errors; every changed-path test passed, and the remaining inventory is the established Windows generated-file/filesystem, lifecycle, Docker/relay, and real-qualification class already recorded in this handoff. Compileall, JavaScript syntax validation, and final diff checks passed. No live model or provider was called. |
+| ADR 0093 friendly launcher setup | **Implemented and focused-tested in the working tree, 2026-08-01.** The Windows launchers now accept an empty folder and deterministically create a Git repository, repository-local Apoapsis exclusions, Apoapsis state, and an empty initial checkpoint. Existing committed Git projects receive Apoapsis state without a tracked-file edit. Non-empty non-Git folders, unborn repositories containing user files, and nested subfolders are refused before Apoapsis state is written; the launcher never auto-adds or commits pre-existing user files. Setup/launcher coverage passed 23/23; a 46-test setup/launcher/CLI/Architect-UI regression run passed. The full Windows run reached 1,961 tests with 36 skips, 6 failures and 11 errors; one failure was this change's stale copy assertion, fixed and rerun 16/16, while the remaining inventory is the established Windows filesystem/Docker qualification class and the full 19-minute run was not repeated. Compileall, JavaScript syntax validation, and diff check passed. No model or provider was started for this change. |
+| ADR 0092 plan auto mode | **Implemented, focused-tested, and browser-exercised, 2026-08-01.** One plan-version/config-digest-bound authorization can now package, hash-bind, system-approve with the plan-run id in the audit, execute, verify, and advance through dependency-ready slices. A pre-existing manual package is rebuilt under the authorized state. `Run only the next slice` uses the same controller path once. Any non-COMPLETE outcome, drift, dependency block, or interrupted active run stops; a possibly-started run is never repeated. Final delivery remains separate. Focused deterministic runs passed 39/39 across auto-run/UI/accessibility/JavaScript modules and 45/45 for the full Architect slice module; a final 21-test worker/route regression run also passed. The real loopback browser flow created and polled a durable run, then displayed a deliberate dirty-repository refusal. A Windows full run reached 1,954 tests with 36 skips, 6 failures and 12 errors; the one new UI stale-state failure was fixed and its affected suite rerun green, while the remaining Windows/Docker/qualification inventory was not re-run as a second 19-minute full pass. |
+| Crisis Atlas live pilot v4 | **Six live slots complete and independently scored, 2026-08-01.** All three matched pairs scored control 1.0 / sandbox 1.0 on first-proposal quality; all six first proposals were COMPLETE on all three criteria, with no continuation, malformed response, or model error. Detection is separately supported by the v8 rehearsal's 17/17 mapped controls; the live proposals provided no incomplete shape to catch. Evidence digest before summary `9d1451db...`; raw root `/home/arya/apoapsis-live-evidence/crisis-atlas-live-pilot-v4/`. This is Crisis Atlas regression evidence, not held-out or broad-corpus superiority, and the live pilot runner is not yet the ordinary product task executor. Details: `docs/evaluation/slice-7p4-live-pilot-v4-2026-08-01.md`. |
 | ADR 0091 live Crisis Atlas runner | **Minimal evaluator ownership correction rebuilt, checked, and rebound; ready for a fresh v4 six-slot run, 2026-08-01.** V3 passed preflight, loaded the server, passed readiness, and completed the first control proposal (21 model requests, 201,429 input, 2,834 output, 13 tool calls), then Git rejected the independent checkpoint's clone of the UID-1000 seed from the root controller. The retained worktree was salvaged as `COMPLETE` with all three criteria satisfied. Per owner direction there is no resume machinery: v3 is aborted evidence and v4 reruns the frozen six. Runner commit `5c38553`, image `sha256:394334e67eb2...`, sets `safe.directory` to only the exact bound seed `.git`. In that exact rebuilt image, a fresh clone and complete checkpoint of the retained worktree passed with unit-test exit 0 and all three criteria. Focused/full suites were skipped per owner direction; compileall and diff check passed. Details: `docs/evaluation/slice-7p4-live-pilot-runner-2026-08-01.md`. |
 | ADR 0077 Slice 2 live gate | **Partially proven, blocked at conformance, 2026-07-30.** A native-ext4 Docker workcell passed all 22 containment probes after the sacrificial clone and image were sanitized. The complete relay path then passed health, model listing, and a one-token Qwen3.6-27B completion, with exactly three relay-observed requests and clean teardown. The run found and fixed a stale relay-counter API and Unix-socket group assignment. Linux CPython 3.12 focused coverage passed 156/156, compileall and diff check passed; the owner stopped the full suite to run separately, so no full-suite result is claimed. The live sequence stopped before either quality task because no driver exists for the nine conformance classifiers; all nine correctly remain `NOT_RUN`. Prompt/tool/template pin provenance and automatic clone sanitization are also missing. Slice 2 and Slice 3 remain blocked. Details: `docs/evaluation/slice-2-live-gate-2026-07-30.md`. |
 | ADR 0077 Slice 2C conformance and paired arms | **Conformance fully proven live, quality measurement invalid, Slice 3 still blocked, 2026-07-30.** The nine conformance checks passed **9/9** live against `llama-server b10107-c0bc8591e` serving Qwen3.6-27B Q4_K_M, with containment 22/22 and relay readiness first. The two Slice 2B failures are fixed at the source the owner specified: a `generationConfig` override on the selected `modelProviders` entry (`contextWindowSize` 65,536, `samplingParams.max_tokens` 16,384) — Qwen's bundled model table was **not** patched and still reports 1,000,000/64,000, while what the CLI *resolves* is 65,536/16,384, read back by executing its own `loadSettings`/`resolveCliGenerationConfig` inside the image. The whole effective config is captured, credential-redacted, hashed, and folded into the run manifest digest. ADR 0078 replaces the Unicode check's evidence source with a deterministic echo provider reached through the real relay/forwarder path, comparing captured request bytes to parsed response bytes; model transcription accuracy survives as a non-gating metric (still inexact — Qwen retypes `U+2018`/`U+2019` as ASCII). The relay now **refuses** (never clamps) a request whose output budget exceeds the pinned ceiling and records the peak budget observed; the conformance run observed 16 requests, 14 carrying a budget, peak 4,096 against the 16,384 cap, 0 refusals. The paired arms then ran live with no acceptance repair and returned **`CAPABILITY_REGRESSED`**, but that verdict is **not** valid as a capability comparison: the agent CLI in the workcell image exposes no `write_file`, `edit`, or `run_shell_command` at all (57 tools, mostly `computer_use__*`), contradicting the pin's 13 wire-captured tool names, so neither arm could edit a file. Three defects in this slice's own work were found and are recorded: a hand-carried effective-config hash, an event adapter that silently read zero tool calls from a 44-call session (which alone had produced a spurious seven-capability regression), and a control arm killed by shell command substitution in its own prompt. Near-boundary: the control arm reached 58,038 input tokens, 88.6% of the 65,536 window, with **no rollover and no compaction event**, so the limit mismatch is **causally consistent** with the Crisis Atlas rollover and is explicitly **not** called proven or the root cause. Details: `docs/evaluation/slice-2c-limits-envelope-and-paired-arms-2026-07-30.md`. |
@@ -45,12 +50,12 @@ operational truth and the documentation must be corrected in the same change.
 | Slice 7P.2 Crisis Atlas pilot freeze | **Identity and configuration capture only. No `llama-server` start, no model load, no readiness request, no inference, no rehearsal.** Two commits: a manifest commit, then a separate lock commit, because a lock naming the hash of the commit containing it could never be written truthfully. Manifest `docs/qualification/slice7-crisis-atlas-pilot-manifest.json`, digest `0f4b0fd5930846841dae90dc4c517141bf98366886f58de55a10528d042019bc`, `unresolved_hashes()` 0, `ready_for_inference()` true — which means complete, not authorised. **Three findings changed what may be claimed.** (1) *No declared sampling seed reaches any provider request*: the Apoapsis payload has no seed field, the `llama-server` argv has no `--seed`, and Qwen's resolved `samplingParams` is `{"max_tokens": 16384}` with zero occurrences of "seed". The repetitions are therefore **repetition identities**, sampling is **stochastic**, comparison is **paired-within-repetition only**, and no seed was added. `RuntimeProfile` moves to schema 1.1 (`repetition_identity`, `sampling_seed_transmitted=False`, nullable `temperature`); schema 1.0's `temperature=0.0` and `sampling_seed=0` were never observed and are superseded, not rewritten. **Temperature is recorded `null`**, never translated into a number. (2) *The 17,920-byte `llama-server` is a launcher, not the implementation*: the closure now hashes `libllama-server-impl.so` (7.2MB), `libggml-cuda` (63.4MB) and six other llama/ggml libraries, with system libraries by package version, CUDA 13.3.1, RTX 4090 driver 610.74, Ubuntu 24.04.4 on kernel 6.6.114.1-WSL2. Static claim; live preflight must recheck. (3) *Image ids are not provenance*: `apoapsis-live-controller:slice5c` carries no labels and was built `FROM slice2c` with a `COPY` from a working tree, so it is replaced by `apoapsis-pilot-controller:ad13cf0` (`sha256:d997bd0101a8f55c…`) built from a committed context at `docker/pilot-controller/`, `git archive` of `ad13cf0`, provenance labelled into the image; `--no-cache` is required because a cached LABEL layer retained another build's context digest. The Qwen workcell image also has no labels and is recorded `provenance_proven: false` with a reason. The reconstructed server argv digests to `f5967deb61bac1c3…`, **byte-identical to the independently recorded Slice 2C server-flags digest**. Package re-issued and **re-qualified**: digest now `d7c4b195ef505975c90f21892a17f633dce6d943dc4224ef3fd01010aef25d22`, evidence `d6c67ce643977c93…`, all eight real proofs pass again. Ladder bound, not derived: warn 12,536 / auto 32,536 / hard 42,536, ratio 0.4965, absolute ceiling governing. Scope prohibitions are `Literal` types, not prose: broad non-inferiority and held-out qualification are false, default rollout prohibited, no combined score, 18 stop conditions none of which converts to a pass. **Not a Capability Sandbox win; no model quality measured.** Eight-case draft untouched at `8c374827…`. Details: `docs/evaluation/slice-7p2-crisis-atlas-pilot-freeze-2026-07-31.md`. |
 | Slice 7P.3 rehearsal | **BLOCKED at the executable-provenance gate. The rehearsal did not execute.** Verdict `NOT_MEASURABLE`; live preflight **not authorized**. No `llama-server`, no GGUF load, no readiness request, no fake-provider run, no arm slot, no container. Manifest and lock unmodified. Stage 0 passed — manifest `0f4b0fd5…`, lock `974c1dfe…`, package `d7c4b195…`, evidence `d6c67ce6…`, mount policy `98f06b56…`, argv `f5967deb…` all recompute to their locked values. Gate 1 failed on two counts. **(A)** The manifest and lock bind **no executable runner**: the six-slot scheduler, scripted pilot fake provider, arm-slot driver/teardown prover and rehearsal verdict model are absent from **both** locked source identities. The decision kernels (admission, checkpoint, acceptance, paired comparability, relay, clone) are present and locked; the thing that sequences them is not. `echo_provider.py` is deterministic but returns input verbatim for the ADR 0078 Unicode check and cannot produce the two required outcome shapes. Writing that runner and rehearsing under this lock is what the gate forbids. **(B) The lock does not bind its own validator** — a defect in `6eb267d`. `src/apoapsis/qualification/pilot.py` defines `PilotManifest`, `PilotLock`, `authorize_rehearsal`, `accept_execution_record` and the eighteen stop conditions, and was introduced in `a5a30d2`; the lock names `evaluator_framework_commit = 22cd8af`, where that file **does not exist**. It went unnoticed because every test imports the module from the working tree and never asks which commit it came from. Same shape as the two defects already corrected once each: an identity that names an authority it does not actually cover. Remediation requires a **superseding manifest and lock** — author and bind the runner, correct `evaluator_framework_commit` to a commit containing `pilot.py`, add a validator refusing a lock whose evaluator commit lacks its own schema module, re-run the affected deterministic qualification, re-lock in two commits, and rehearse from the beginning. The existing pair is left intact as the superseded one rather than edited. A regression test records both gaps: the evaluator-commit check is `expectedFailure` so it stays visible and passes by itself once fixed, and a second test asserts the runner is currently unbound so a future binding cannot land unnoticed. Details: `docs/evaluation/slice-7p3-rehearsal-blocked-2026-07-31.md`. |
 | Slice 7P.2S supersession | **No `llama-server`, no GGUF load, no readiness call, no inference, no rehearsal.** Three commits: **R** `b30079a` (executables + race fixes), **M** `e4b82f5` (manifest v2, digest `91bc99d68dc0e63233a44d5316cc0982ff1593cf5c4a99f101bf434d1f5a169f`), **L** this commit (lock v2, digest `032afa70b81bb8dbe752588a82e2081239ed2c9c34a9424627e58037bc82b83c`). Fixes both 7P.3 gate failures. **Runner authority now exists**: thirteen modules bound by the digest of their bytes at `b30079a`, including the six-slot scheduler, scripted provider, arm drivers, teardown prover, evidence writer, negative-control injector and verdict model; the fake-provider script is digested separately (`d90a85cf…`) so a changed candidate byte invalidates authorization while a comment does not. **Evaluator authority corrected**: `qualification/authority.py` reads Git objects (`cat-file -e`/`rev-parse`/`cat-file blob`) and never imports what it checks, so a working tree holding newer files cannot make a missing object present — the exact hole that let the v1 lock name `22cd8af`, which lacks `pilot.py`. **Five intermittents fixed at two root causes, no retries.** Worker lifecycle was a *product* defect: `IntakeWorker`/`ReviewWorker` ran `while True: queue.get()` on daemon threads with no stop method, so a caller could only drop the reference and leave a thread writing into `.apoapsis` during `TemporaryDirectory.cleanup`; both now take a queue sentinel (draining rather than dropping queued work) and `ApoapsisUIService.shutdown_workers` reports whether they stopped. Relay observation was a *test* defect plus a missing affordance: an HTTP call returns before the request is recorded on the handler thread, so `ModelRelay.wait_for_records` supplies deterministic synchronisation the rehearsal's containment stage needs anyway. Measured before → after on canonical ext4: dropped-stream 1/5 → **50/50 consecutive**, cross-origin 1/30 → **50/50**, unauthorized 2/30 → **50/50**, intake-worker 5/20 → **50/50**, review-worker → **50/50**, with a failure aborting the streak so "48 of 50" cannot read as a pass. **Package evidence regenerated, not reused**: the blob comparator found `case_package.py` differs between `22cd8af` and R (7P.2's seed-terminology refusal), so all eight real proofs were re-run — all pass — and the evidence digest moves to `236e650f5f899abe5585ab0921ff7305f8af354efa9abc25c5bfe931660009cf` while the package digest stays `d7c4b195…`. Controller rebuilt from R, since R changed controller-side code. The v1 pair is **preserved unedited** and marked superseded / never rehearsed / never authorized, and is deliberately stale. Two tests changed state on their own by design: the `expectedFailure` evaluator-commit check now passes so its marker is removed, and the "no runner bound" placeholder is rewritten into an assertion that one is — a rewrite that exposed the placeholder was checking the *lock* for an authority that lives in the *manifest*, and would have kept passing vacuously. Canonical Linux/ext4/CPython 3.12: **1,874 tests, 19 skipped, zero failures**; `compileall` and diff-check clean. Rehearsal **not executed**; live inference **not authorized**. Details: `docs/evaluation/slice-7p2s-supersession-2026-07-31.md`. |
-| Version/state | Committed `1.0` through ADR 0034. ADR 0035 guided workflows/planning research and ADR 0036 hardening/compaction are working-tree changes. Check `git status` for exact local state. |
-| Branch | `main` |
+| Version/state | Committed implementation through ADR 0095, including plan auto-run, friendly setup, auto-validation UX, Slice 8 product integration, and the Crisis Atlas v4 evidence record. Check `git status` for exact local state. |
+| Branch | `codex/slice2-live-gate` |
 | Preserved tag | `substrate-v0.1` at `4c2e735`; never move or delete it. |
 | Live local coding | Qwen3-Coder-Next Q4 has completed controlled tasks, but reliability is not established. A six-run planning comparison reached 0/6; two later single-slice probes both completed. The contrast remains unexplained. |
 | Live hosted coding | Not run. Hosted paths have deterministic fake-provider coverage only. |
-| Live browser | Task intake/execution, review, plans/slices, discovery/manual frontier, launcher, and guided-workflow surfaces have each been exercised in the real loopback UI. See ADRs 0023-0035 and dated evaluation records. |
+| Live browser | Task intake/execution, review, plans/slices, discovery/manual frontier, launcher, and guided-workflow surfaces have each been exercised in the real loopback UI. ADR 0092's automatic-plan confirmation, running status, polling, and fail-closed stop display were exercised on 2026-08-01 in a disposable initialized project. See ADRs 0023-0035, ADR 0092, and dated evaluation records. |
 | Live Docker | The pinned `python:3.12-slim` sandbox success path and isolation checks passed on 2026-07-20. See `docs/evaluation/apoapsis-d5a-live-docker-evidence-2026-07-20.md`. |
 
 Never turn fake-provider coverage into a live-provider claim. Never describe
@@ -73,8 +78,9 @@ request -> structured specification -> user approval -> deterministic context
 ```
 
 Larger work may first pass through discovery, optional planning research, a
-frontier/manual architecture plan, plan validation and approval, and then one
-explicitly selected slice at a time.
+frontier/manual architecture plan, automatic deterministic validation, explicit
+human approval, and then one controller-authorized automatic run or one slice
+at a time.
 
 ## Non-negotiable authority boundary
 
@@ -95,7 +101,7 @@ Models never receive direct shell, filesystem, Git, network, credential,
 workflow-transition, retry-limit, verification, completion, or audit authority.
 Changing this boundary requires an explicit ADR before implementation.
 
-### The boundary is being split in two (ADR 0077, decided, not yet implemented)
+### Split ephemeral capability from durable authority (ADR 0077 and ADR 0095)
 
 The rule above conflates two different things: *ephemeral capability* inside a
 disposable environment, and *durable authority* over the owner's repository,
@@ -117,16 +123,19 @@ credential access by prompt instruction, model-selected verification or
 acceptance policy, or model-owned completion, Git promotion, plan approval, or
 delivery.
 
-The `apoapsis.workcell` package implements part of that boundary. A live
-native-ext4 workcell has passed all 22 containment probes and the complete
-relay path has passed through a one-token local-model generation. The real
-Qwen CLI and the nine-check conformance suite have **not** run: the repository
-contains conformance classifiers but no driver that produces their live
-observations. Until the capability spike returns `CAPABILITY_PRESERVED` with both
-`contained` and `conformant` true, the typed Local Power path below remains the
-only local execution mode, and the Capability Sandbox must not be described as
-working execution. See
-`docs/evaluation/slice-2-live-gate-2026-07-30.md`.
+The `apoapsis.workcell` package implements this boundary. The locked Crisis
+Atlas live pilot has now exercised the pinned native Qwen CLI through the real
+workcell, relay, containment checks, controller checkpoint, and continuation
+seam. Six fresh slots completed; all three matched pairs scored 1.0/1.0 on
+first-proposal quality, and the separate zero-model rehearsal retained 17/17
+mapped detector controls. ADR 0095 connects that path to ordinary approved
+plan-slice execution through `workcell/product.py` and
+`workcell/product_live.py`: `VerticalSliceRunner` consumes the same
+`AgentSessionResult` boundary as its older local stages, but only the external
+controller can produce COMPLETE after admission, structured witnesses and
+readiness. The typed Local Power route is retained as an explicitly selected
+compatibility mode, never renamed. Live evidence for the new ordinary-task
+adapter is still pending and must not be inferred from the earlier pilot.
 
 | Layer | Module | Enforced by |
 | --- | --- | --- |
@@ -155,7 +164,7 @@ boundary rather than a policy.
 mandatory in HTTP/1.1, and the safety property is that the relay never consults
 it, not that the client omitted it.
 
-### Local Power Sandbox (ADR 0059, experimental, disabled by default)
+### Local Power Sandbox (ADR 0059, explicit compatibility mode)
 
 `[execution.local_power]` adds a second, opt-in execution path for *local*
 models only. It widens the action protocol — whole-file `write_file`,
@@ -197,14 +206,17 @@ claimed. Setting `atomic_change_sets = false` removes the action from the
 prompt and the grammar, which is what makes the one-action protocol a real
 comparison arm rather than differently-worded advice.
 
-The strict one-action loop in `BoundedAgentSession` remains the default and is
-unchanged. See `docs/adr/0059-local-power-sandbox-execution-mode.md`.
-The UI exposes this as a two-step **Turn on Local Power** / **Turn off** control
-on Models & environment (ADR 0061). The browser does not write arbitrary TOML:
-`ApoapsisUIService.set_local_power_enabled()` edits only the known execution
-fields, switches `mode` to `agent`, moves an incompatible `frontier_only` route
-back to `auto` when enabling, reloads the full Pydantic config, and restores the
-previous bytes if validation fails.
+Capability Sandbox is the default local plan-slice mode. The strict one-action
+loop remains the path for quick-change tasks, which do not yet have an approved
+slice-readiness contract. See ADR 0095 and ADR 0059.
+The UI exposes one **Local coding mode** card on Models & environment. Its
+confirmed compatibility selection atomically disables Capability Sandbox and
+enables Local Power; its rollback does the inverse. The browser never writes
+arbitrary TOML: `ApoapsisUIService.set_capability_sandbox()` edits only known
+execution fields, corrects an incompatible route, reloads the full Pydantic
+config, and restores the previous bytes if validation fails. The older Local
+Power endpoint remains compatible but performs the same mutually exclusive
+edit.
 
 ## Current architecture
 
@@ -256,13 +268,16 @@ previous bytes if validation fails.
   verification evidence, prior agent sessions, and the exact approved slice
   package when present (ADR 0048).
 - `START_APOAPSIS.cmd` is the primary Windows entry point: it accepts or prompts
-  for one initialized Git project, starts configured loopback local coding
+  for an existing Git project or empty folder, safely prepares first-time
+  project state, then starts configured loopback local coding
   service targets (Ollama or OpenAI-compatible `llama-server`), and opens the
   UI for that project. `OPEN_APOAPSIS.cmd` remains a UI-only fallback for an
   already-running local model service. `STOP_APOAPSIS.cmd` releases configured
   Ollama model memory and leaves shared services running.
-- `.apoapsis/` is runtime state and must be Git-ignored. Initialization never
-  installs software, downloads models, or creates a repository.
+- `.apoapsis/` is runtime state and must be Git-ignored. Explicit CLI
+  initialization updates `.gitignore`; friendly launcher setup uses the local
+  Git exclude file. Launcher setup may create a repository only in an empty
+  selected folder and never adds or commits pre-existing user files.
 
 ### Specification and workflow persistence
 
@@ -525,8 +540,10 @@ agents do not receive general internet access.
   never automated.
 - `architect/` validates a typed plan, verification names, constraints,
   dependencies, paths, and ceilings before explicit approval.
-- A plan never executes automatically. One approved, dependency-ready slice is
-  packaged and approved at a time. Its derived task preserves the full approved
+- A plan may execute under one explicit, durable auto-mode authorization bound
+  to its exact approved version and effective configuration digest. Apoapsis
+  packages, approves, and runs only one dependency-ready slice at a time and
+  advances only from authoritative COMPLETE; every other outcome stops. Its derived task preserves the full approved
   slice execution contract rather than only the objective and inherited
   constraints. Completion does not commit or merge; the operator does that in
   normal Git before dependent slices become ready.

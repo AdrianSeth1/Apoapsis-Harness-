@@ -95,7 +95,7 @@ def compile_slice_contract(
     production_paths = [
         path
         for path in target.suggested_paths
-        if not path.endswith((".md", ".rst", ".txt"))
+        if not path.endswith((".md", ".rst", ".txt", "/"))
     ]
     for index, path in enumerate(sorted(production_paths), start=1):
         obligation_id = f"{slice_id}-artifact-{index}"

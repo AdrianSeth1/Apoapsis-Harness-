@@ -237,10 +237,36 @@ class LocalPowerConfig(StrictModel):
         return self
 
 
+class CapabilitySandboxConfig(StrictModel):
+    """ADR 0095 / handoff Slice 8 product rollout selection.
+
+    Enabled is the recommended default, but it is still an operator-visible
+    selection included in every execution authorization. Disabling it selects
+    the older typed Local Power compatibility path; it never weakens the
+    controller's verification or completion authority.
+    """
+
+    # Direct programmatic construction stays backward compatible for library
+    # callers and deterministic tests. User config loading below migrates a
+    # missing Slice 8 table to the recommended enabled selection, and every
+    # newly generated config writes it explicitly as true.
+    enabled: bool = False
+    runtime_profile: Literal["crisis-atlas-v8-qwen3.6-27b"] = (
+        "crisis-atlas-v8-qwen3.6-27b"
+    )
+    qualified_model_alias: Literal["qwen3.6-27b"] = "qwen3.6-27b"
+    high_assurance_parity_guard: bool = False
+    max_native_continuations: int = Field(default=2, ge=0, le=10)
+    runtime_root: str = Field(default="/tmp/apoapsis-capability-sandbox", min_length=1)
+
+
 class ExecutionConfig(StrictModel):
     mode: ExecutionMode = ExecutionMode.ONE_SHOT
     route: AgentRoute = AgentRoute.AUTO
     completion_policy: CompletionPolicy = CompletionPolicy.BASELINE
+    capability_sandbox: CapabilitySandboxConfig = Field(
+        default_factory=CapabilitySandboxConfig
+    )
     local_power: LocalPowerConfig = Field(default_factory=LocalPowerConfig)
     agent: AgentLoopConfig = Field(default_factory=AgentLoopConfig)
     frontier_agent: AgentLoopConfig = Field(
@@ -536,6 +562,20 @@ class ApoapsisConfig(StrictModel):
                     "[execution.local_power] is a local-model mode and cannot "
                     "be combined with the frontier_only route"
                 )
+        if self.execution.capability_sandbox.enabled:
+            if (
+                self.execution.mode == ExecutionMode.AGENT
+                and self.execution.route == AgentRoute.FRONTIER_ONLY
+            ):
+                raise ValueError(
+                    "[execution.capability_sandbox] is a local-model mode and "
+                    "cannot be combined with the frontier_only route"
+                )
+            if self.execution.local_power.enabled:
+                raise ValueError(
+                    "Capability Sandbox and Local Power compatibility mode are "
+                    "mutually exclusive"
+                )
         return self
 
     @classmethod
@@ -556,6 +596,11 @@ class ApoapsisConfig(StrictModel):
             )
             if key in raw
         }
+        execution = selected.get("execution")
+        if isinstance(execution, dict) and "capability_sandbox" not in execution:
+            legacy = execution.get("local_power")
+            legacy_selected = isinstance(legacy, dict) and legacy.get("enabled") is True
+            execution["capability_sandbox"] = {"enabled": not legacy_selected}
         return cls.model_validate(selected)
 
 

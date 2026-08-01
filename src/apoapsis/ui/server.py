@@ -185,6 +185,9 @@ class ApoapsisUIRequestHandler(BaseHTTPRequestHandler):
         if "/slices/" in path and path.endswith("/approve"):
             self._handle_plan_slice_approve(path)
             return
+        if path.startswith("/api/plans/") and path.endswith("/run"):
+            self._handle_plan_run(path)
+            return
         if path.startswith("/api/plans/") and path.endswith("/approve"):
             self._handle_plan_approve(path)
             return
@@ -215,6 +218,9 @@ class ApoapsisUIRequestHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/config/local-power":
             self._handle_local_power_toggle()
+            return
+        if path == "/api/config/capability-sandbox":
+            self._handle_capability_sandbox_toggle()
             return
         if path == "/api/discovery/sessions":
             self._handle_discovery_session_start()
@@ -301,6 +307,23 @@ class ApoapsisUIRequestHandler(BaseHTTPRequestHandler):
             if not isinstance(enabled, bool):
                 raise ValueError("enabled must be true or false")
             payload = self.server.service.set_local_power_enabled(enabled=enabled)
+        except (TaskStoreError, ValueError, json.JSONDecodeError) as exc:
+            self._send_error(HTTPStatus.BAD_REQUEST, str(exc))
+        else:
+            self._send_json(HTTPStatus.OK, payload)
+
+    def _handle_capability_sandbox_toggle(self) -> None:
+        try:
+            body = self._read_json_body()
+            enabled = body.get("enabled")
+            parity = body.get("high_assurance_parity_guard")
+            if not isinstance(enabled, bool):
+                raise ValueError("enabled must be true or false")
+            if parity is not None and not isinstance(parity, bool):
+                raise ValueError("high_assurance_parity_guard must be true or false")
+            payload = self.server.service.set_capability_sandbox(
+                enabled=enabled, high_assurance_parity_guard=parity
+            )
         except (TaskStoreError, ValueError, json.JSONDecodeError) as exc:
             self._send_error(HTTPStatus.BAD_REQUEST, str(exc))
         else:
@@ -414,6 +437,30 @@ class ApoapsisUIRequestHandler(BaseHTTPRequestHandler):
             self._send_error(HTTPStatus.BAD_REQUEST, str(exc))
         else:
             self._send_json(HTTPStatus.OK, payload)
+
+    def _handle_plan_run(self, path: str) -> None:
+        plan_id = unquote(path[len("/api/plans/") : -len("/run")]).strip("/")
+        try:
+            body = self._read_json_body()
+            expected_plan_version = body.get("expected_plan_version")
+            auto_advance = body.get("auto_advance")
+            if not isinstance(expected_plan_version, int) or isinstance(
+                expected_plan_version, bool
+            ):
+                raise ValueError("expected_plan_version must be an integer")
+            if not isinstance(auto_advance, bool):
+                raise ValueError("auto_advance must be true or false")
+            payload = self.server.service.start_plan_run(
+                plan_id,
+                expected_plan_version=expected_plan_version,
+                auto_advance=auto_advance,
+            )
+        except PlanNotFoundError:
+            self._send_error(HTTPStatus.NOT_FOUND, "plan not found")
+        except (PlanActionError, TaskStoreError, ValueError, json.JSONDecodeError) as exc:
+            self._send_error(HTTPStatus.CONFLICT, str(exc))
+        else:
+            self._send_json(HTTPStatus.ACCEPTED, payload)
 
     def _handle_review_operation_submit(self, path: str) -> None:
         task_id = unquote(
@@ -763,6 +810,9 @@ class ApoapsisUIRequestHandler(BaseHTTPRequestHandler):
                 payload = self.server.service.evaluations()
             elif path == "/api/plans":
                 payload = self.server.service.plans()
+            elif path.startswith("/api/plan-runs/"):
+                run_id = unquote(path[len("/api/plan-runs/") :]).strip("/")
+                payload = self.server.service.plan_run_status(run_id)
             elif path.startswith("/api/tasks/"):
                 task_id = unquote(path[len("/api/tasks/") :]).strip("/")
                 payload = self.server.service.task_detail(task_id)

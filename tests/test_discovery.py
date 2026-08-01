@@ -8,9 +8,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from apoapsis.architect.errors import PlanActionError
-from apoapsis.architect.schema import PlanStatus, ValidationSeverity
+from apoapsis.architect.schema import PlanStatus
 from apoapsis.architect.store import SQLitePlanStore
-from apoapsis.architect.validation import validate_plan
 from apoapsis.config import (
     ApoapsisConfig,
     ContextCompilerConfig,
@@ -579,27 +578,64 @@ class FullFlowTests(DiscoveryTestsBase):
         self.assertEqual(session.status, DiscoveryStatus.PLAN_IMPORTED)
         self.assertIsNotNone(session.plan_id)
 
-        # The resulting plan continues through the existing, completely
-        # unmodified Architect Mode validate/approve machinery.
+        # Frontier import runs the same deterministic validation as the CLI
+        # and UI, but preserves human approval as a separate decision.
         record = self.plan_store.get_plan(session.plan_id)
-        self.assertEqual(record.status, PlanStatus.PROPOSED)
-        findings = validate_plan(
-            record.plan,
-            configured_verification_commands={"unit-tests"},
-            ceilings=config.architect.ceilings,
+        self.assertEqual(record.status, PlanStatus.VALIDATED)
+        self.assertIsNotNone(record.validation)
+        self.assertTrue(record.validation.valid)
+        self.assertEqual(record.validation.plan_version, 1)
+        self.assertTrue(
+            (self.root / ".apoapsis" / "plans" / record.plan_id / "validation-v1.json").is_file()
         )
-        result_valid = not any(item.severity == ValidationSeverity.ERROR for item in findings)
-        self.assertTrue(result_valid)
-        from apoapsis.architect.schema import PlanValidationResult
-
-        validation = PlanValidationResult(
-            plan_id=record.plan_id, plan_version=record.version, valid=True, findings=[]
+        approved = self.plan_store.approve_plan(
+            record.plan_id, expected_version=record.version
         )
-        updated = self.plan_store.record_validation(
-            record.plan_id, validation, expected_version=record.version
-        )
-        approved = self.plan_store.approve_plan(record.plan_id, expected_version=updated.version)
         self.assertEqual(approved.status, PlanStatus.APPROVED)
+
+    def test_frontier_import_records_findings_without_approving_invalid_plan(self) -> None:
+        config, session = self._to_approved_brief("DISC-FLOW-INVALID")
+        session, package, _, _ = export_frontier_planning_package(
+            self.root,
+            self.discovery_store,
+            config,
+            session.session_id,
+            transport="manual",
+            expected_version=session.version,
+        )
+        plan_payload = json.loads(make_plan().model_dump_json())
+        plan_payload["verification_strategy"]["whole_project_verification_commands"] = [
+            "not-configured"
+        ]
+        envelope = {
+            "schema_version": "1.0",
+            "package_id": package.package_id,
+            "package_sha256": package.package_sha256,
+            "session_id": session.session_id,
+            "kind": "plan",
+            "plan": plan_payload,
+        }
+
+        imported = import_manual_frontier_planning_response(
+            self.root,
+            self.discovery_store,
+            self.plan_store,
+            config,
+            session_id=session.session_id,
+            package_id=package.package_id,
+            response_bytes=json.dumps(envelope).encode("utf-8"),
+            declared_model_name="fake-frontier",
+        )
+
+        record = self.plan_store.get_plan(imported.plan_id)
+        self.assertEqual(record.status, PlanStatus.PROPOSED)
+        self.assertIsNotNone(record.validation)
+        self.assertFalse(record.validation.valid)
+        self.assertTrue(record.validation.findings)
+        self.assertNotIn(
+            "plan_approved",
+            [event.event_type for event in self.plan_store.events(record.plan_id)],
+        )
 
     def test_stale_package_response_rejected(self) -> None:
         config, session = self._to_approved_brief("DISC-FLOW-2")

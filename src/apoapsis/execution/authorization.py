@@ -25,6 +25,7 @@ from apoapsis.verification.contract import (
     assess_verification_contract,
 )
 from apoapsis.workflow.routing import select_agent_route
+from apoapsis.workflow.engine import SQLiteTaskStore
 
 # Fixed, non-negotiable statements of who decides what -- included in every
 # package so the audit record and the UI confirmation both state the
@@ -79,6 +80,8 @@ class ExecutionAuthorizationPackage(StrictModel):
     frontier_agent_budget: AgentLoopConfig
     context_ceilings: ContextCompilerConfig
     completion_policy: CompletionPolicy
+    local_execution_profile: str = Field(min_length=1)
+    high_assurance_parity_guard: bool = False
     verification_backend: str = Field(min_length=1)
     verification_command_catalog: list[str] = Field(default_factory=list)
     verification_config_sha256: str = Field(min_length=64, max_length=64)
@@ -141,6 +144,15 @@ def build_execution_authorization_package(
 
     root = Path(project_root).resolve()
     config = effective_config_for_specification(config, specification)
+    plan_slice_task = any(
+        event.event_type in {
+            "plan_slice_specification_approved",
+            "plan_slice_auto_approved",
+        }
+        for event in SQLiteTaskStore(
+            root / ".apoapsis" / "apoapsis.db", initialize=False
+        ).events(task_id)
+    )
     repository = GitRepository(root)
     head = repository.run(["rev-parse", "HEAD"]).stdout.strip()
     fingerprint = compute_worktree_fingerprint(root)
@@ -162,6 +174,11 @@ def build_execution_authorization_package(
     if config.models.frontier_coder is not None:
         provider_kinds["frontier_coder"] = config.models.frontier_coder.provider
         model_names["frontier_coder"] = config.models.frontier_coder.model
+    if config.execution.capability_sandbox.enabled and plan_slice_task:
+        provider_kinds["local_coder"] = "qualified_capability_workcell"
+        model_names["local_coder"] = (
+            config.execution.capability_sandbox.qualified_model_alias
+        )
 
     safe_config = _safe_config_payload(config)
     package = ExecutionAuthorizationPackage(
@@ -181,6 +198,16 @@ def build_execution_authorization_package(
         frontier_agent_budget=config.execution.frontier_agent,
         context_ceilings=config.context,
         completion_policy=config.execution.completion_policy,
+        local_execution_profile=(
+            "capability_sandbox"
+            if config.execution.capability_sandbox.enabled and plan_slice_task
+            else "local_power_compatibility"
+            if config.execution.local_power.enabled
+            else "strict_typed_loop"
+        ),
+        high_assurance_parity_guard=(
+            config.execution.capability_sandbox.high_assurance_parity_guard
+        ),
         verification_backend=config.verification.backend.backend.value,
         verification_command_catalog=[
             item.name for item in config.verification.commands

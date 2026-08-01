@@ -163,6 +163,34 @@ class UIServiceTests(unittest.TestCase):
         self.assertFalse(config.execution.local_power.enabled)
         self.assertFalse(disabled["local_power"]["enabled"])
 
+    def test_capability_sandbox_is_default_and_compatibility_is_one_action(self) -> None:
+        service = ApoapsisUIService(self.root)
+        config_path = self.root / ".apoapsis" / "config.toml"
+
+        initial = service.overview()["execution"]
+        self.assertEqual(initial["execution_profile"], "capability_sandbox")
+        self.assertTrue(initial["capability_sandbox"]["enabled"])
+
+        compatibility = service.set_capability_sandbox(enabled=False)
+        config = ApoapsisConfig.from_toml(config_path)
+        self.assertFalse(config.execution.capability_sandbox.enabled)
+        self.assertTrue(config.execution.local_power.enabled)
+        self.assertEqual(
+            compatibility["execution"]["execution_profile"],
+            "local_power_compatibility",
+        )
+
+        recommended = service.set_capability_sandbox(
+            enabled=True, high_assurance_parity_guard=True
+        )
+        config = ApoapsisConfig.from_toml(config_path)
+        self.assertTrue(config.execution.capability_sandbox.enabled)
+        self.assertTrue(config.execution.capability_sandbox.high_assurance_parity_guard)
+        self.assertFalse(config.execution.local_power.enabled)
+        self.assertTrue(
+            recommended["capability_sandbox"]["high_assurance_parity_guard"]
+        )
+
     def test_ui_cli_arguments_are_explicit_and_loopback_scoped(self) -> None:
         arguments = build_parser().parse_args(["ui", "--port", "8123", "--no-open"])
         self.assertEqual(arguments.command, "ui")
@@ -372,11 +400,40 @@ class UIServerTests(UIServiceTests):
             payload = json.load(response)
         self.assertFalse(payload["local_power"]["enabled"])
 
+    def test_http_capability_sandbox_toggle_is_clear_and_atomic(self) -> None:
+        with self.request(
+            "/api/config/capability-sandbox",
+            method="POST",
+            payload={"enabled": False},
+            token=self.token,
+        ) as response:
+            payload = json.load(response)
+        self.assertFalse(payload["capability_sandbox"]["enabled"])
+        self.assertTrue(payload["execution"]["local_power"]["enabled"])
+
+        with self.request(
+            "/api/config/capability-sandbox",
+            method="POST",
+            payload={"enabled": True, "high_assurance_parity_guard": True},
+            token=self.token,
+        ) as response:
+            payload = json.load(response)
+        self.assertTrue(payload["capability_sandbox"]["enabled"])
+        self.assertTrue(payload["capability_sandbox"]["high_assurance_parity_guard"])
+        self.assertFalse(payload["execution"]["local_power"]["enabled"])
+
     def test_static_shell_contains_local_power_toggle_action(self) -> None:
         with self.request("/app.js") as response:
             script = response.read().decode("utf-8")
         self.assertIn("Turn on Local Power", script)
         self.assertIn('data-action="local-power-confirm"', script)
+
+    def test_static_shell_contains_clear_capability_mode_controls(self) -> None:
+        with self.request("/app.js") as response:
+            script = response.read().decode("utf-8")
+        self.assertIn("Capability Sandbox · On", script)
+        self.assertIn("Use compatibility mode", script)
+        self.assertIn('data-action="capability-parity-toggle"', script)
 
     def test_server_refuses_non_loopback_binding(self) -> None:
         with self.assertRaisesRegex(ValueError, "loopback"):

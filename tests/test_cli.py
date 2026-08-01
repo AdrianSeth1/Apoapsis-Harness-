@@ -90,6 +90,11 @@ class CLITests(unittest.TestCase):
         self.assertIsNone(config.models.frontier_coder)
         self.assertEqual(config.execution.mode.value, "agent")
         self.assertEqual(config.execution.route.value, "auto")
+        self.assertTrue(config.execution.capability_sandbox.enabled)
+        self.assertFalse(
+            config.execution.capability_sandbox.high_assurance_parity_guard
+        )
+        self.assertFalse(config.execution.local_power.enabled)
         # ADR 0049: coupled DEFAULT_CONFIG round-trip for the new
         # `max_criteria_per_slice` ceiling (now 20) and the local / frontier
         # coder budgets bumped in lockstep. Existing test overrides below

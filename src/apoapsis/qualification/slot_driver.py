@@ -228,6 +228,8 @@ def execute_slot(
     supervisor: Callable[[Path, int], tuple[object, str | None]] | None = None,
     continuation_limit: int = 0,
     stream_json: bool = False,
+    task_text_override: str | None = None,
+    write_workspace_task: bool = True,
 ) -> SlotObservation:
     """Run one slot end to end in a real `--network none` workcell."""
 
@@ -295,11 +297,16 @@ def execute_slot(
     shutil.rmtree(workspace / ".git", ignore_errors=True)
 
     package_root = repo / manifest.crisis_atlas.package_root
-    task_text = (package_root / "task.md").read_text(encoding="utf-8")
+    task_text = (
+        task_text_override
+        if task_text_override is not None
+        else (package_root / "task.md").read_text(encoding="utf-8")
+    )
     import hashlib
 
     observation.task_bytes_sha256 = hashlib.sha256(task_text.encode()).hexdigest()
-    (workspace / "TASK.md").write_text(task_text, encoding="utf-8")
+    if write_workspace_task:
+        (workspace / "TASK.md").write_text(task_text, encoding="utf-8")
     # Extra fixtures, used by the capability probe: the marker it must read.
     for relative, body in (seed_files or {}).items():
         target = workspace / relative
@@ -363,7 +370,7 @@ def execute_slot(
             observation.relay_before = session.relay_request_count()
 
             prompt = (
-                "Read TASK.md in the current directory and implement exactly "
+                f"Read {'TASK.md in the current directory' if write_workspace_task else '/task/task.md'} and implement exactly "
                 "what it specifies. Create the files it names at the paths it "
                 "names. Do not ask questions; make the changes."
             )
