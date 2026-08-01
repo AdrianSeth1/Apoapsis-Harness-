@@ -123,3 +123,10 @@ The owner explicitly directed that test suites be skipped for this correction.
 That exception is recorded rather than disguised as verification; compile,
 diff, immutable-image linkage, and zero-token server-start checks remain
 required before reauthorization.
+
+The rebuilt image passed those authorized checks. All 22 `ldd` lines resolved
+inside the GPU-enabled container, `llama-server --version` reported build
+10107/c0bc8591e without loading a model, and the runner's bound runtime check
+rehash observed the pinned RTX 4090, 24,564 MiB, and driver 610.74. Image
+`sha256:ddc7e09ce5fc...` is rebound to runner commit `603e68f`. No test-suite
+result is claimed for this correction.

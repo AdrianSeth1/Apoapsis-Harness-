@@ -132,3 +132,23 @@ directories explicitly, and makes unresolved `ldd` output a pre-start failure.
 Per the owner's explicit instruction, test suites are skipped for this
 correction; the record must not claim focused or full-suite verification for
 the new commit.
+
+The corrected controller image is
+`sha256:ddc7e09ce5fc3c7a12c1a5f99d4a6bf7c2d14ff69d9f8a749d190f55929788d1`,
+built from runner commit `603e68fdb62ba81f698ec663ec8b7ef149cb1533`,
+source tree `daf407395561127b423ed7576fbf0970b1e78d91`, build-context SHA-256
+`23b941560319d0e561e12769230017d8851ebd7a8cc5dbde8e6f90e99bf3c2bf`,
+and Dockerfile SHA-256
+`8215b364ffc9264c2b780a94855f6c3de132b2c9a150411f9aa34390b0112e7a`.
+
+Observed without model loading or inference:
+
+- all 22 dynamic-linkage entries resolved inside the `--gpus all` container;
+- `llama-server --version` reported `10107 (c0bc8591e)`;
+- the runner's complete runtime rehash/linkage/GPU check passed and observed
+  NVIDIA GeForce RTX 4090, 24,564 MiB, driver 610.74;
+- `python -m compileall -q src` and `git diff --check` passed.
+
+Per the owner's instruction, focused and full test suites were not run for
+commit `603e68f`. Fresh retry defaults are v3 evidence and runtime paths; v2 is
+retained as failed evidence.

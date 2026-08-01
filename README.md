@@ -1283,10 +1283,10 @@ pending separate scoring; it cannot declare its own pilot successful. Use
 committed authorization file exists. A new evidence directory is mandatory so
 a retry cannot overwrite a partial run. The launcher defaults to the
 operator-writable native-ext4 path
-`/home/arya/apoapsis-live-evidence/crisis-atlas-live-pilot-v2`; an explicit
+`/home/arya/apoapsis-live-evidence/crisis-atlas-live-pilot-v3`; an explicit
 first argument replaces that destination. Disposable workspaces and Unix
 sockets use the separate short, host-mounted runtime root
-`/home/arya/apx-ca-live-v2` (overridden by the second argument), so Docker can
+`/home/arya/apx-ca-live-v3` (overridden by the second argument), so Docker can
 resolve every bind source without exceeding the Unix-socket path limit.
 The controller base is Ubuntu 24.04, matching the pinned server build's glibc
 and libstdc++ ABI; the launcher mounts the frozen host CUDA runtime read-only,
