@@ -4,10 +4,12 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from apoapsis.workcell.acceptance import CheckpointOutcome
 from apoapsis.workcell.product import CapabilitySandboxError, _approved_plan_payload
 from apoapsis.workcell.product_live import ProductSupervisor
+from apoapsis.workcell.product_live import _base_tree
 from tests.architect_helpers import make_plan
 
 
@@ -126,6 +128,22 @@ class ApprovedPlanPayloadTests(unittest.TestCase):
         self.assertIn('git clone --quiet --no-local', launcher)
         self.assertNotIn('test -d "${SEED}/.git"', launcher)
         self.assertIn("Capability Sandbox task path is not a Git worktree", launcher)
+
+    def test_controller_git_cleanup_trusts_only_its_exact_disposable_copy(self) -> None:
+        seed = self.root / "seed"
+        target = self.root / "controller-runtime" / "approved-base"
+        (seed / ".git").mkdir(parents=True)
+        (seed / "README.md").write_text("seed\n", encoding="utf-8")
+
+        with patch("apoapsis.workcell.product_live.subprocess.run") as run:
+            _base_tree(seed, target)
+
+        expected_override = f"safe.directory={target}"
+        self.assertEqual(run.call_count, 2)
+        for call in run.call_args_list:
+            self.assertEqual(call.args[0][0:3], ["git", "-c", expected_override])
+            self.assertEqual(call.kwargs["cwd"], target)
+        self.assertFalse((target / ".git").exists())
 
 
 if __name__ == "__main__":

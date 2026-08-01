@@ -1381,6 +1381,11 @@ succeed. The retry is available only while the managed task worktree is
 unchanged; Apoapsis fingerprint-checks it, removes it without force, and
 recreates the run from the approved base (ADR 0098).
 
+Inside the controller, Git cleanup of the disposable copied base uses a
+command-scoped `safe.directory` setting for that exact path (ADR 0099). This
+handles the bind-mount UID difference without globally trusting the project,
+mount, parent directory, or a wildcard.
+
 The workcell runs the real Qwen coding CLI's own native loop inside a
 disposable, hardened container. Apoapsis keeps every durable authority —
 admission, verification, checkpointing, promotion, delivery — outside it.
