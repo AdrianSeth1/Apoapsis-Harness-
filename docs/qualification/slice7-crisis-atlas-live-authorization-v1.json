@@ -4,7 +4,7 @@
   "bound_live_modules": [
     {
       "path": "src/apoapsis/qualification/live_pilot.py",
-      "sha256": "758cfab27aa30849dc81b1793d84390f196411cca70b4818124b8154f4563236"
+      "sha256": "06fcaab975dab202c1ed90931b16a5b3acbb4a01230b84a1e27874c2997210ff"
     },
     {
       "path": "src/apoapsis/qualification/slot_driver.py",
@@ -15,9 +15,9 @@
       "sha256": "834eb0ca1f7a85889feec04654672671725e832804af337a963250eebaac4fa7"
     }
   ],
-  "controller_image_id": "sha256:ddc7e09ce5fc3c7a12c1a5f99d4a6bf7c2d14ff69d9f8a749d190f55929788d1",
+  "controller_image_id": "sha256:394334e67eb263a65b43b92bc8b0795d8d672c387d08fdd9f6a3e92f7b905a57",
   "exactly_six_slots": true,
-  "live_runner_commit": "603e68fdb62ba81f698ec663ec8b7ef149cb1533",
+  "live_runner_commit": "5c38553a7825583986853ab9b8b8b19956cb896c",
   "local_model_only": true,
   "lock_digest": "61b36743c43ec3afc932d956ad76fe1f2a320d41cff52356ab749746b6112867",
   "lock_path": "docs/qualification/slice7-crisis-atlas-pilot-lock-v8.json",

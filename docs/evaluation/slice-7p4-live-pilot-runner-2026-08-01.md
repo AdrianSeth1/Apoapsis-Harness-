@@ -169,3 +169,13 @@ criteria satisfied, unit tests exit 0, and fingerprint
 `e0aa0d4dd6e23e10b9091dc7c65b6b74c6747bfc508ba2abb4eefe0bdb1b7b7f`.
 The correction adds only that exact trust entry. At the owner's direction no
 resume mechanism is introduced; fresh v4 paths rerun the normal six slots.
+
+The rebuilt correction is runner commit
+`5c38553a7825583986853ab9b8b8b19956cb896c`, image
+`sha256:394334e67eb263a65b43b92bc8b0795d8d672c387d08fdd9f6a3e92f7b905a57`,
+source tree `ed39bdd5752b7300ba952890a81792d784e8172f`, and build-context
+SHA-256 `688bf72011f423f8c487175c06e8a22f7edfea61766a6ccc665e625a0d9ac9cd`.
+Inside that exact image, `_trust_bound_seed` followed by a fresh evaluator
+clone and full checkpoint of the retained v3 worktree passed: `COMPLETE`, all
+three criteria satisfied, unit-test exit 0. No focused or full suite was run,
+per owner direction.

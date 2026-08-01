@@ -138,3 +138,8 @@ sets `safe.directory` to that one bound seed `.git` path before checkpointing;
 it does not use `*`. The retained v3 worktree was checkpointed with that exact
 setting and scored complete. Per owner direction, no resume path is added; v4
 runs a fresh six-slot schedule and v3 remains aborted evidence.
+
+The exact rebuilt image repeated the clone and full checkpoint successfully:
+outcome `COMPLETE`, all three criteria satisfied, and unit-test exit 0. It is
+bound as image `sha256:394334e67eb2...` at runner commit `5c38553`. Test suites
+remain intentionally skipped under the owner's instruction.
