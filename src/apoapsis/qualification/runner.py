@@ -52,7 +52,12 @@ from apoapsis.qualification.observation import (
     observe_mounts,
     observe_teardown,
 )
-from apoapsis.qualification.pilot import PilotLock, PilotManifest, authorize_rehearsal
+from apoapsis.qualification.pilot import (
+    ArmKind,
+    PilotLock,
+    PilotManifest,
+    authorize_rehearsal,
+)
 from apoapsis.qualification.real_probe import RealCasePackageProbe
 from apoapsis.qualification.relay_faults import run_all_relay_faults
 from apoapsis.qualification.session_factory import session_factory_from_manifest
@@ -714,6 +719,7 @@ def stage_6_negative_controls(
     *,
     repo: Path,
     writer: EvidenceWriter,
+    manifest_path: Path,
 ) -> tuple[StageResult, tuple[NegativeControlResult, ...]]:
     """Inject each fault and record which detector actually caught it.
 
@@ -762,9 +768,7 @@ def stage_6_negative_controls(
     from pydantic import ValidationError
 
     payload = json.loads(
-        (repo / "docs" / "qualification" / manifest_filename(manifest)).read_text(
-            encoding="utf-8"
-        )
+        manifest_document(manifest_path).read_text(encoding="utf-8")
     )
     argv = list(payload["server"]["argv"])
     argv[argv.index("65536")] = "32768"
@@ -1016,12 +1020,19 @@ def stage_6_negative_controls(
     )
 
 
-def manifest_filename(manifest: PilotManifest) -> str:
-    return (
-        "slice7-crisis-atlas-pilot-manifest-v2.json"
-        if manifest.schema_version == "2.0"
-        else "slice7-crisis-atlas-pilot-manifest.json"
-    )
+def manifest_document(manifest_path: Path) -> Path:
+    """The manifest file actually under rehearsal.
+
+    R3 mapped `schema_version == "2.0"` to the literal v2 filename. Every
+    manifest from v2 onward carries schema 2.0, so under manifest v3 the
+    changed-server-argument control would have loaded, mutated and refused the
+    *superseded* v2 document -- firing the correct detector against bytes that
+    are not the ones being rehearsed. A control that proves a property of the
+    wrong artifact is the same substitution this pilot keeps correcting, so the
+    path is taken from the caller rather than inferred from a version field.
+    """
+
+    return Path(manifest_path)
 
 
 def _proposal_quality(slot: ArmSlotResult) -> float:
@@ -1081,8 +1092,16 @@ def stage_7_accounting(
     pairs_list: list[PairScore] = []
     for repetition in sorted(by_repetition):
         arms = by_repetition[repetition]
-        control = arms.get("qwen_default_control")
-        sandbox = arms.get("apoapsis_sandbox")
+        # Keyed off `ArmKind`, never off a literal. R3 looked up
+        # `"qwen_default_control"`; the manifest, `ArmKind` and `scheduled_slots`
+        # all emit `"default_qwen_control"`, so every pair came back
+        # `comparable=False` with a reason that listed both arms it claimed were
+        # missing. No test reached this function, so the runner could report
+        # "populated pair scoring" while the only path that populates one was
+        # unreachable. Deriving the keys from the enum makes the two impossible
+        # to drift again.
+        control = arms.get(str(ArmKind.DEFAULT_QWEN_CONTROL))
+        sandbox = arms.get(str(ArmKind.APOAPSIS_SANDBOX))
         if control is None or sandbox is None:
             pairs_list.append(
                 PairScore(
@@ -1257,7 +1276,7 @@ def run_rehearsal(
     stages.append(stage4)
 
     stage6, controls = stage_6_negative_controls(
-        manifest, lock, repo=repo, writer=writer
+        manifest, lock, repo=repo, writer=writer, manifest_path=Path(manifest_path)
     )
     stages.append(stage6)
 

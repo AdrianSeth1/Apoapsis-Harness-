@@ -116,8 +116,23 @@ def _accounting() -> TokenAccounting:
 
 
 def _pairs() -> tuple[PairScore, ...]:
+    """Three pairs that carry actual scores.
+
+    These were `PairScore(repetition_id=...)` with every quality left `None`,
+    which is precisely the shape `decide_verdict` now refuses: `regressed` is
+    False when a score is missing, so three empty pairs read exactly like three
+    clean ones. A fixture that cannot be told apart from an unmeasured run is
+    not a fixture for a passing run.
+    """
+
     return tuple(
-        PairScore(repetition_id=f"crisis-atlas-rep-{index}") for index in (1, 2, 3)
+        PairScore(
+            repetition_id=f"crisis-atlas-rep-{index}",
+            control_proposal_quality=0.5,
+            sandbox_proposal_quality=0.5,
+            sandbox_detection_quality=1.0,
+        )
+        for index in (1, 2, 3)
     )
 
 
