@@ -32,9 +32,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
 import subprocess
 import tempfile
+from contextlib import ExitStack
 from pathlib import Path
 from typing import Callable
 
@@ -44,7 +46,11 @@ from apoapsis.qualification.fake_pilot_provider import (
     ScriptId,
     script_digest,
 )
-from apoapsis.qualification.fake_provider_server import PROBE_MARKER, tool_schema_digest
+from apoapsis.qualification.fake_provider_server import (
+    PROBE_MARKER,
+    FakeProviderServer,
+    tool_schema_digest,
+)
 from apoapsis.qualification.observation import (
     RuntimeResidue,
     observe_capability,
@@ -61,7 +67,7 @@ from apoapsis.qualification.pilot import (
 from apoapsis.qualification.real_probe import RealCasePackageProbe
 from apoapsis.qualification.relay_faults import run_all_relay_faults
 from apoapsis.qualification.session_factory import session_factory_from_manifest
-from apoapsis.qualification.slot_driver import execute_slot
+from apoapsis.qualification.slot_driver import WORKCELL_UID, execute_slot
 from apoapsis.qualification.rehearsal import (
     REQUIRED_DETECTORS,
     ArmSlotResult,
@@ -328,6 +334,7 @@ def stage_2_containment(
     seed_repository: Path,
     scratch: Path,
     writer: EvidenceWriter,
+    session_error: str | None = None,
 ) -> StageResult:
     """Three independent containment questions, each answered by looking.
 
@@ -343,13 +350,24 @@ def stage_2_containment(
             "stage-2-containment",
             StageOutcome.UNRUN,
             "containment cannot be demonstrated without a container; "
-            "'nothing was reachable because nothing ran' is not containment",
+            "'nothing was reachable because nothing ran' is not containment"
+            + (f" (the session could not be entered: {session_error})" if session_error else ""),
         )
 
     report = session.run_containment()
     writer.write_json("stage-2/containment.json", report.model_dump(mode="json"))
-    breaches = [item for item in report.results if item.status.value == "breach"]
-    unproven = [item for item in report.results if item.status.value == "unproven"]
+    # Read off the report's own verdict rather than re-deriving one here. The
+    # previous version compared `status.value` against "breach"; the value is
+    # "breached", so the comparison was never true and a real breach would have
+    # been read as containment. Two implementations of one rule is one too many,
+    # and this is what the second one was worth.
+    breaches = list(report.breaches)
+    unproven = list(report.unproven)
+    executed = [
+        item
+        for item in report.results
+        if item.status.value in {"contained", "breached"}
+    ]
 
     mounts = observe_mounts(session)
     writer.write_json("stage-2/mounts.json", mounts.model_dump(mode="json"))
@@ -376,11 +394,20 @@ def stage_2_containment(
         egress = observe_egress_refusal(Path("/nonexistent"))
     writer.write_json("stage-2/egress.json", egress.model_dump(mode="json"))
 
+    if not executed:
+        return _stage(
+            "stage-2-containment",
+            StageOutcome.UNRUN,
+            f"none of the {len(report.results)} probes executed against a "
+            "container, so no boundary was observed. This is reported as an "
+            "absent measurement rather than a failed one: there is nothing "
+            "here that ran and lost.",
+        )
     if breaches:
         return _stage(
             "stage-2-containment",
             StageOutcome.FAILED,
-            f"{len(breaches)} containment breaches",
+            f"{len(breaches)} containment breaches: {', '.join(breaches)}",
         )
     if not mounts.arm_visible_set_is_correct:
         return _stage(
@@ -414,7 +441,14 @@ def stage_2_containment(
         return _stage(
             "stage-2-containment",
             StageOutcome.INCONCLUSIVE,
-            f"{len(unproven)} probes could not be proven either way",
+            f"{len(unproven)} probes could not be proven either way: "
+            + ", ".join(unproven),
+        )
+    if not report.contained:
+        return _stage(
+            "stage-2-containment",
+            StageOutcome.FAILED,
+            f"the containment report is not contained: {report.detail}",
         )
     return _stage(
         "stage-2-containment",
@@ -427,7 +461,11 @@ def stage_2_containment(
 
 
 def stage_3_relay_stability(
-    *, session, writer: EvidenceWriter, iterations: int = 20
+    *,
+    session,
+    writer: EvidenceWriter,
+    iterations: int = 20,
+    session_error: str | None = None,
 ) -> tuple[StageResult, int, bool]:
     """Exercise the formerly intermittent relay path before any live run."""
 
@@ -437,7 +475,12 @@ def stage_3_relay_stability(
                 "stage-3-relay-stability",
                 StageOutcome.UNRUN,
                 "no relay is running, so the known intermittent cannot be "
-                "shown to be non-reproducible",
+                "shown to be non-reproducible"
+                + (
+                    f" (the session could not be entered: {session_error})"
+                    if session_error
+                    else ""
+                ),
             ),
             0,
             False,
@@ -1198,6 +1241,153 @@ def stage_8_cleanup(
     )
 
 
+def run_shared_session_stages(
+    manifest: PilotManifest,
+    *,
+    repo: Path,
+    seed: Path,
+    scratch: Path,
+    writer: EvidenceWriter,
+    session_factory: Callable[[], object] | None,
+    upstream_base_url: str,
+    relay_iterations: int,
+    stage_0_passed: bool,
+) -> tuple[list[StageResult], int, bool]:
+    """Stages 1-3, around one entered workcell session.
+
+    A separate function because the lifecycle is the thing that was wrong and
+    an untestable lifecycle is how it stayed wrong. Driving `run_rehearsal` to
+    reach it would execute the six real slots behind it, so the part that needs
+    a regression is the part that is callable on its own.
+
+    Three properties this owns:
+
+    **The session is entered, not merely constructed.** `LiveWorkcellSession()`
+    allocates a container name and starts nothing. R6 stopped there, so every
+    Stage 2 probe reached a daemon that had never heard of the container and
+    Stage 3 had no forwarder to find.
+
+    **Stages 2 and 3 share that one entered session.** Re-entering for Stage 3
+    would give it a different container from the one Stage 2 proved, and the
+    containment evidence would describe a box that no longer existed.
+
+    **`ExitStack` owns the exit.** The container and relay come down exactly
+    once, whether the stages pass, fail, or raise.
+
+    Stage 1 runs inside the same block but deliberately starts its own
+    container: a sacrificial probe sharing state with the shared session would
+    make the isolation claim untestable.
+    """
+
+    stages: list[StageResult] = []
+    session = None
+    session_error: str | None = None
+
+    shared_workspace = scratch / "shared" / "workspace"
+    shared_sockets = scratch / "shared" / "sockets"
+
+    with ExitStack() as lifecycle:
+        if stage_0_passed:
+            if session_factory is None:
+                # The disposable clone has to exist before the controller is
+                # asked to mount it, and it has to belong to the workcell user
+                # or the `workspace-writable` probe reports a box with perfect
+                # containment and no capability. `slot_driver` already does
+                # both for its own slots; the shared session had neither, so it
+                # refused to start with `SandboxUnavailableError`.
+                shared_workspace.mkdir(parents=True, exist_ok=True)
+                shared_sockets.mkdir(parents=True, exist_ok=True)
+                try:
+                    os.chown(shared_workspace, WORKCELL_UID, WORKCELL_UID)
+                except (OSError, AttributeError):  # pragma: no cover - non-root
+                    pass
+
+                # Readiness ends in a one-token completion, so the relay needs
+                # *an* upstream that answers. The default 127.0.0.1:8080 is the
+                # model server, which this rehearsal must not start, so
+                # readiness was measuring a refused connection against nothing
+                # and reporting it as a relay intermittent.
+                #
+                # The scripted provider is the same one the six slots use: it
+                # answers /health, /v1/models and completions, streams a proper
+                # SSE terminal, and past the end of its script returns a plain
+                # stop reply rather than repeating or inventing -- which is what
+                # makes twenty-one readiness iterations safe. No model, no
+                # tokens, no network.
+                upstream = FakeProviderServer(
+                    ScriptId.COMPLETE_PROPOSAL,
+                    model_name=manifest.model.model_alias,
+                    transcript_path=Path(writer.root) / "stage-3" / "readiness-upstream.json",
+                )
+                upstream.start()
+                lifecycle.callback(upstream.stop)
+                upstream_base_url = upstream.base_url
+            factory = session_factory or (
+                lambda: session_factory_from_manifest(
+                    manifest,
+                    repo=repo,
+                    workspace=shared_workspace,
+                    socket_directory=shared_sockets,
+                    upstream_base_url=upstream_base_url,
+                )
+            )
+            try:
+                candidate = factory()
+                # Entering inside the `try` is the point: a container that
+                # fails to start leaves `session` None, and Stages 2 and 3 then
+                # report an absent measurement rather than probing a box that
+                # does not exist. There is no path here from "could not start"
+                # to "contained".
+                session = lifecycle.enter_context(candidate)
+                # Readiness probes the in-container forwarder, and nothing
+                # starts it on its own: PID 1 in the workcell is `sleep
+                # infinity`. `slot_driver` starts it for every slot; the shared
+                # session never did, so Stage 3 measured 0/20 against a
+                # forwarder that was not running and called it an intermittent.
+                if hasattr(session, "start_forwarder"):
+                    exit_code, stderr = session.start_forwarder()
+                    if exit_code != 0:
+                        raise RuntimeError(
+                            f"the in-container forwarder did not start: {stderr[:200]}"
+                        )
+            except Exception as exc:  # noqa: BLE001
+                session_error = f"{type(exc).__name__}: {exc}"
+                writer.write_json(
+                    "stage-1/session-error.json", {"error": session_error}
+                )
+                session = None
+
+        stages.append(
+            stage_1_runtime_identity(
+                manifest,
+                repo=repo,
+                seed_repository=seed,
+                scratch=scratch,
+                writer=writer,
+            )
+        )
+        stages.append(
+            stage_2_containment(
+                manifest,
+                session=session,
+                repo=repo,
+                seed_repository=seed,
+                scratch=scratch,
+                writer=writer,
+                session_error=session_error,
+            )
+        )
+        stage3, iterations, relay_passed = stage_3_relay_stability(
+            session=session,
+            writer=writer,
+            iterations=relay_iterations,
+            session_error=session_error,
+        )
+        stages.append(stage3)
+
+    return stages, iterations, relay_passed
+
+
 def run_rehearsal(
     manifest_path: Path,
     lock_path: Path,
@@ -1241,49 +1431,25 @@ def run_rehearsal(
     # each start their own, because a slot that shared a container with the
     # probe before it could inherit its state and the isolation claim would be
     # untestable.
-    session = None
-    if stage0.outcome is StageOutcome.PASSED:
-        factory = session_factory or (
-            lambda: session_factory_from_manifest(
-                manifest,
-                repo=repo,
-                workspace=scratch / "shared" / "workspace",
-                socket_directory=scratch / "shared" / "sockets",
-                upstream_base_url=upstream_base_url,
-            )
-        )
-        try:
-            session = factory()
-        except Exception as exc:  # noqa: BLE001
-            writer.write_json(
-                "stage-1/session-error.json",
-                {"error": f"{type(exc).__name__}: {exc}"},
-            )
-            session = None
-
-    stages.append(
-        stage_1_runtime_identity(
-            manifest,
-            repo=repo,
-            seed_repository=seed,
-            scratch=scratch,
-            writer=writer,
-        )
+    #
+    # The session is *entered*, not merely constructed. `LiveWorkcellSession()`
+    # allocates a container name and starts nothing; the previous version
+    # stopped there, so every Stage 2 probe reached a daemon that had never
+    # heard of the container and Stage 3 readiness had no forwarder to find.
+    # `ExitStack` owns the exit, so the container and relay come down exactly
+    # once whether these stages pass, fail or raise.
+    shared, iterations, relay_passed = run_shared_session_stages(
+        manifest,
+        repo=repo,
+        seed=seed,
+        scratch=scratch,
+        writer=writer,
+        session_factory=session_factory,
+        upstream_base_url=upstream_base_url,
+        relay_iterations=relay_iterations,
+        stage_0_passed=stage0.outcome is StageOutcome.PASSED,
     )
-    stages.append(
-        stage_2_containment(
-            manifest,
-            session=session,
-            repo=repo,
-            seed_repository=seed,
-            scratch=scratch,
-            writer=writer,
-        )
-    )
-    stage3, iterations, relay_passed = stage_3_relay_stability(
-        session=session, writer=writer, iterations=relay_iterations
-    )
-    stages.append(stage3)
+    stages.extend(shared)
 
     stage4, slots = stage_4_arm_slots(
         manifest,

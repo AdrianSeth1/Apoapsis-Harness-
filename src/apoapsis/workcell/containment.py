@@ -55,7 +55,7 @@ class ProbeExpectation(StrEnum):
 
 
 class ProbeStatus(StrEnum):
-    #: The forbidden thing was observably refused.
+    #: The forbidden thing was observably refused *inside a running container*.
     CONTAINED = "contained"
     #: The forbidden thing was reachable. This is a breach.
     BREACHED = "breached"
@@ -63,6 +63,43 @@ class ProbeStatus(StrEnum):
     INCONCLUSIVE = "inconclusive"
     #: The probe never executed. Fails the gate.
     NOT_RUN = "not_run"
+    #: The probe could not be executed at all: no container, a stopped
+    #: container, a daemon error. Distinct from INCONCLUSIVE, which means the
+    #: command ran and said nothing useful. Both fail the gate; they are kept
+    #: apart because they have different repairs -- one is a broken boundary
+    #: measurement, the other is broken infrastructure.
+    UNPROVEN = "unproven"
+
+
+#: Fragments that identify a container-runtime failure rather than a command
+#: result. `docker exec` against a container that does not exist exits *1* with
+#: one of these on stderr -- the same exit code a successfully refused command
+#: produces -- so without this the strongest containment claim in the system was
+#: satisfied by there being no container at all.
+_INFRASTRUCTURE_MARKERS: tuple[str, ...] = (
+    "no such container",
+    "is not running",
+    "cannot connect to the docker daemon",
+    "error response from daemon",
+    "permission denied while trying to connect to the docker daemon",
+    "container not found",
+    "no such object",
+    "executable file not found",
+    "oci runtime exec failed",
+)
+
+
+def is_infrastructure_failure(stderr: str) -> bool:
+    """Did the runtime fail to run the probe, rather than the probe failing?
+
+    Deliberately a substring match on the runtime's own words. Exit codes cannot
+    answer this: "container does not exist" and "the forbidden command was
+    refused" are both exit 1, which is exactly how a rehearsal recorded twenty
+    probes as `contained` against a container that had never been started.
+    """
+
+    haystack = (stderr or "").lower()
+    return any(marker in haystack for marker in _INFRASTRUCTURE_MARKERS)
 
 
 class ContainmentProbe(StrictModel):
@@ -340,6 +377,24 @@ def classify_probe(
             detail="the probe did not complete, so containment was not tested",
         )
 
+    # Checked before any expectation, because an infrastructure failure looks
+    # like a refusal to every one of them. A probe that never reached a
+    # container has established nothing about that container, and "the command
+    # failed, so we must be contained" is the precise shape of the defect this
+    # closes.
+    if is_infrastructure_failure(stderr):
+        return ProbeResult(
+            probe_id=probe.probe_id,
+            status=ProbeStatus.UNPROVEN,
+            exit_code=exit_code,
+            stdout=stdout,
+            stderr=stderr,
+            detail=(
+                "the container runtime could not execute this probe, so the "
+                f"boundary was never tested: {stderr.strip()[:200]}"
+            ),
+        )
+
     if probe.expectation == ProbeExpectation.STDOUT_EQUALS:
         if exit_code != 0:
             return ProbeResult(
@@ -443,9 +498,35 @@ def evaluate_containment(
     unproven = [
         item.probe_id
         for item in complete
-        if item.status in {ProbeStatus.INCONCLUSIVE, ProbeStatus.NOT_RUN}
+        if item.status
+        in {ProbeStatus.INCONCLUSIVE, ProbeStatus.NOT_RUN, ProbeStatus.UNPROVEN}
+    ]
+    executed = [
+        item
+        for item in complete
+        if item.status in {ProbeStatus.CONTAINED, ProbeStatus.BREACHED}
     ]
     unexpected = sorted(set(by_id) - {probe.probe_id for probe in probes})
+
+    if not executed:
+        # Stated separately from the `unproven` branch below because it is a
+        # different claim. Some probes failing to run leaves the boundary
+        # partly untested; *none* of them running means no boundary was
+        # observed at all, and a report of that shape must never be readable as
+        # containment however the individual statuses are counted.
+        return ContainmentReport(
+            workcell_manifest_digest=workcell_manifest_digest,
+            results=complete,
+            contained=False,
+            breaches=breaches,
+            unproven=unproven,
+            detail=(
+                f"none of the {len(complete)} probes executed, so nothing about "
+                "this boundary was observed. Containment cannot pass on an "
+                "absent measurement: 'nothing was reachable because nothing "
+                "ran' is not containment."
+            ),
+        )
 
     if breaches:
         detail = f"{len(breaches)} containment breach(es): " + ", ".join(breaches)

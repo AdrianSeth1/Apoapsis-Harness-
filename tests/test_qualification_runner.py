@@ -190,6 +190,330 @@ class ControlsReadTheManifestUnderRehearsal(unittest.TestCase):
         self.assertIs(parameter.default, inspect.Parameter.empty)
 
 
+class SharedSessionLifecycleTests(unittest.TestCase):
+    """The shared Stage 2/3 session must be entered, reused, and exited once.
+
+    `LiveWorkcellSession(config)` allocates a container name and starts nothing.
+    R6 stopped there: every Stage 2 probe reached a daemon that had never heard
+    of the container, and Stage 3 had no forwarder to find. Both stages then
+    reported against a box that did not exist.
+
+    These drive `run_rehearsal` with a recording stub, so the lifecycle is
+    asserted from the outside without a container, a model or a network.
+    """
+
+    class _Recorder:
+        """A stand-in session that records how it was used."""
+
+        def __init__(self, events: list[str], *, fail_on_enter: bool = False) -> None:
+            self.events = events
+            self.fail_on_enter = fail_on_enter
+            self.entered = False
+
+        def __enter__(self):
+            self.events.append("enter")
+            if self.fail_on_enter:
+                raise RuntimeError("the container could not be started")
+            self.entered = True
+            return self
+
+        def __exit__(self, *_exc) -> None:
+            self.events.append("exit")
+            self.entered = False
+
+        def run_containment(self):
+            self.events.append("stage-2")
+            if not self.entered:
+                raise AssertionError("stage 2 used a session that was not entered")
+            from apoapsis.workcell.containment import (
+                DEFAULT_CONTAINMENT_PROBES,
+                ProbeResult,
+                ProbeStatus,
+                evaluate_containment,
+            )
+
+            # No container here, so every probe is honestly unproven. The point
+            # of this stub is the lifecycle, and a stub that reported
+            # containment would be the very defect under test.
+            return evaluate_containment(
+                [
+                    ProbeResult(
+                        probe_id=probe.probe_id,
+                        status=ProbeStatus.UNPROVEN,
+                        exit_code=1,
+                        stderr="Error response from daemon: No such container: stub",
+                    )
+                    for probe in DEFAULT_CONTAINMENT_PROBES
+                ],
+                workcell_manifest_digest="b" * 64,
+                probes=DEFAULT_CONTAINMENT_PROBES,
+            )
+
+        def exec(self, argv, timeout_seconds=300.0):
+            """Stand in for `docker exec` against a container that is not there.
+
+            The stub answers exactly as the daemon does, so the mount
+            observation and the containment classifier both see the shape they
+            have to handle rather than a convenient one.
+            """
+
+            self.events.append("exec")
+            return 1, "", "Error response from daemon: No such container: stub"
+
+        def run_readiness(self):
+            self.events.append("stage-3")
+            if not self.entered:
+                raise AssertionError("stage 3 used a session that was not entered")
+
+            class _NotReady:
+                ready = False
+
+                def model_dump(self, **_kwargs):
+                    return {"ready": False, "detail": "stub session, no relay"}
+
+            return _NotReady()
+
+    def _run(self, session, *, stage_0_passed: bool = True):
+        """Call the real lifecycle owner directly.
+
+        `run_shared_session_stages` is what `run_rehearsal` uses, so this is the
+        production path and not a re-implementation of it. Driving the whole
+        rehearsal to reach it would execute six real container slots behind it.
+        """
+
+        from apoapsis.qualification.runner import run_shared_session_stages
+
+        scratch = Path(tempfile.mkdtemp(prefix="lifecycle-"))
+        stages, _iterations, _passed = run_shared_session_stages(
+            self.manifest,
+            repo=REPO,
+            seed=self.seed,
+            scratch=scratch,
+            writer=EvidenceWriter(scratch / "evidence"),
+            session_factory=lambda: session,
+            upstream_base_url="http://127.0.0.1:8080",
+            relay_iterations=1,
+            stage_0_passed=stage_0_passed,
+        )
+        return stages
+
+    def setUp(self) -> None:
+        if shutil.which("git") is None:
+            self.skipTest("git is required")
+        self.seed = NegativeControlsAreExecutedNotDescribedTests._seed()
+        if self.seed is None:
+            self.skipTest("the Crisis Atlas seed is not present")
+        self.manifest = _manifest()
+
+    def test_the_session_is_entered_before_stage_two_and_exited_after(self) -> None:
+        events: list[str] = []
+        session = self._Recorder(events)
+
+        self._run(session)
+
+        self.assertIn("enter", events, "the session was never entered")
+        self.assertIn("stage-2", events, "stage 2 never used the session")
+        self.assertLess(
+            events.index("enter"),
+            events.index("stage-2"),
+            "stage 2 ran before the session was entered",
+        )
+        self.assertEqual(events.count("enter"), 1)
+        self.assertEqual(events.count("exit"), 1, "the session was not exited once")
+        self.assertEqual(events[-1], "exit", "the session outlived the stages")
+        self.assertFalse(session.entered)
+
+    def test_stages_two_and_three_share_one_entered_session(self) -> None:
+        events: list[str] = []
+        session = self._Recorder(events)
+
+        self._run(session)
+
+        self.assertEqual(events.count("enter"), 1)
+        # Both stages ran against the same object between one enter and one
+        # exit. Re-entering for stage 3 would give it a different container from
+        # the one stage 2 probed.
+        self.assertEqual(events[0], "enter")
+        self.assertEqual(events[-1], "exit")
+        self.assertIn("stage-3", events)
+
+    def test_the_session_is_exited_even_when_a_stage_raises(self) -> None:
+        """`ExitStack` owns the exit, so an exception cannot skip teardown."""
+
+        events: list[str] = []
+
+        class _Exploding(self._Recorder):
+            def run_containment(self):
+                self.events.append("stage-2")
+                raise KeyboardInterrupt("something violent mid-stage")
+
+        session = _Exploding(events)
+        with self.assertRaises(KeyboardInterrupt):
+            self._run(session)
+
+        self.assertEqual(events.count("exit"), 1, "teardown was skipped")
+        self.assertEqual(events[-1], "exit")
+
+    def test_a_session_that_cannot_be_entered_leaves_the_stages_unrun(self) -> None:
+        """Start failure is an absent measurement, never containment."""
+
+        events: list[str] = []
+        stages = self._run(self._Recorder(events, fail_on_enter=True))
+
+        self.assertIn("enter", events)
+        # Nothing was entered, so nothing may be exited -- and nothing may be
+        # reported as contained either.
+        self.assertNotIn("exit", events)
+        by_stage = {item.stage: item for item in stages}
+        for stage in ("stage-2-containment", "stage-3-relay-stability"):
+            with self.subTest(stage=stage):
+                self.assertIn(
+                    by_stage[stage].outcome,
+                    {StageOutcome.UNRUN, StageOutcome.INCONCLUSIVE},
+                )
+        self.assertIsNot(
+            by_stage["stage-2-containment"].outcome, StageOutcome.PASSED
+        )
+
+
+class ContainmentEvidenceTests(unittest.TestCase):
+    """An unexecutable probe proves nothing, and must never read as contained."""
+
+    def _probe(self):
+        from apoapsis.workcell.containment import DEFAULT_CONTAINMENT_PROBES
+
+        return DEFAULT_CONTAINMENT_PROBES[0]
+
+    def test_a_nonexistent_container_yields_unproven_probes(self) -> None:
+        from apoapsis.workcell.containment import ProbeStatus, classify_probe
+
+        for stderr in (
+            "Error response from daemon: No such container: apoapsis-workcell-6eb9a26",
+            "Error response from daemon: Container abc is not running",
+            "Cannot connect to the Docker daemon at unix:///var/run/docker.sock",
+        ):
+            with self.subTest(stderr=stderr[:40]):
+                # Exit 1 is exactly what a *successfully refused* command gives,
+                # which is why the exit code cannot be the discriminator.
+                result = classify_probe(
+                    self._probe(), exit_code=1, stdout="", stderr=stderr
+                )
+                self.assertIs(result.status, ProbeStatus.UNPROVEN)
+
+    def test_a_real_refusal_inside_a_running_container_is_contained(self) -> None:
+        from apoapsis.workcell.containment import ProbeStatus, classify_probe
+
+        result = classify_probe(self._probe(), exit_code=1, stdout="", stderr="")
+        self.assertIs(result.status, ProbeStatus.CONTAINED)
+
+    def test_zero_executed_probes_can_never_pass(self) -> None:
+        from apoapsis.workcell.containment import (
+            DEFAULT_CONTAINMENT_PROBES,
+            ProbeResult,
+            ProbeStatus,
+            evaluate_containment,
+        )
+
+        report = evaluate_containment(
+            [
+                ProbeResult(
+                    probe_id=probe.probe_id,
+                    status=ProbeStatus.UNPROVEN,
+                    exit_code=1,
+                    stderr="Error response from daemon: No such container: x",
+                )
+                for probe in DEFAULT_CONTAINMENT_PROBES
+            ],
+            workcell_manifest_digest="a" * 64,
+            probes=DEFAULT_CONTAINMENT_PROBES,
+        )
+
+        self.assertFalse(report.contained)
+        self.assertEqual(len(report.unproven), len(DEFAULT_CONTAINMENT_PROBES))
+        self.assertIn("none of the", report.detail)
+
+    def test_a_breach_is_not_read_as_containment_by_the_runner(self) -> None:
+        """The runner compared `status.value` against "breach"; it is
+        "breached", so the comparison was never true and a real breach would
+        have reached PASS."""
+
+        from apoapsis.qualification import runner as runner_module
+
+        source = inspect.getsource(runner_module.stage_2_containment)
+        self.assertNotIn('== "breach"', source)
+        self.assertIn("report.breaches", source)
+
+
+class RealContainmentAgainstARunningWorkcellTests(unittest.TestCase):
+    """The other half: a genuine `--network none` container still passes.
+
+    Classifying daemon errors as unproven is only a fix if a real, running,
+    correctly-contained workcell still records its refusals as containment. This
+    starts one. It is skipped -- loudly -- when Docker or the workcell image is
+    absent, because a container that never started proves nothing here either.
+    """
+
+    def setUp(self) -> None:
+        import os
+
+        if shutil.which("docker") is None:
+            self.skipTest("docker is not available")
+        if hasattr(os, "geteuid") and os.geteuid() != 0:
+            # The relay socket has to be given the workcell's group, which is a
+            # privileged operation. Skipping is honest; running as a user who
+            # cannot chown would fail for a reason that has nothing to do with
+            # containment.
+            self.skipTest("a real workcell session requires root to own the socket")
+        self.seed = NegativeControlsAreExecutedNotDescribedTests._seed()
+        if self.seed is None:
+            self.skipTest("the Crisis Atlas seed is not present")
+        self.manifest = _manifest()
+        import subprocess
+
+        probe = subprocess.run(
+            ["docker", "image", "inspect", self.manifest.qwen.image],
+            capture_output=True,
+            check=False,
+        )
+        if probe.returncode != 0:
+            self.skipTest(f"{self.manifest.qwen.image} is not present to this daemon")
+
+    def test_a_running_network_none_container_records_containment(self) -> None:
+        from apoapsis.qualification.session_factory import session_factory_from_manifest
+        from apoapsis.workcell.containment import ProbeStatus
+
+        scratch = Path(tempfile.mkdtemp(prefix="real-containment-"))
+        workspace = scratch / "workspace"
+        workspace.mkdir(parents=True, exist_ok=True)
+        session = session_factory_from_manifest(
+            self.manifest,
+            repo=REPO,
+            workspace=workspace,
+            socket_directory=scratch / "sockets",
+            upstream_base_url="http://127.0.0.1:8080",
+        )
+        with session:
+            report = session.run_containment()
+
+        executed = [
+            item
+            for item in report.results
+            if item.status in {ProbeStatus.CONTAINED, ProbeStatus.BREACHED}
+        ]
+        self.assertTrue(executed, "no probe executed against the running container")
+        # The egress probes are the point: a real command, really refused,
+        # inside a real `--network none` namespace.
+        by_id = {item.probe_id: item for item in report.results}
+        for probe_id in ("no-external-route", "no-default-route"):
+            with self.subTest(probe=probe_id):
+                self.assertIs(by_id[probe_id].status, ProbeStatus.CONTAINED)
+        self.assertEqual(
+            [item.probe_id for item in report.results if item.status is ProbeStatus.UNPROVEN],
+            [],
+            "a running container still produced unproven probes",
+        )
+
+
 class NegativeControlsAreExecutedNotDescribedTests(unittest.TestCase):
     """Stage 6 must actually run. Reading it is not enough.
 
