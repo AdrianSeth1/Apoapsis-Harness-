@@ -1,0 +1,186 @@
+{
+  "breaches": [],
+  "contained": true,
+  "detail": "all 22 probes observed the boundary holding",
+  "results": [
+    {
+      "detail": "",
+      "exit_code": 1,
+      "probe_id": "host-windows-users-absent",
+      "status": "contained",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "detail": "",
+      "exit_code": 1,
+      "probe_id": "host-root-mount-absent",
+      "status": "contained",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "detail": "",
+      "exit_code": 1,
+      "probe_id": "apoapsis-checkout-absent",
+      "status": "contained",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "detail": "",
+      "exit_code": 1,
+      "probe_id": "task-artifact-outside-workspace",
+      "status": "contained",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "detail": "",
+      "exit_code": 2,
+      "probe_id": "task-artifact-read-only",
+      "status": "contained",
+      "stderr": "sh: 1: cannot create /task/task.md: Permission denied",
+      "stdout": ""
+    },
+    {
+      "detail": "",
+      "exit_code": 1,
+      "probe_id": "ssh-agent-absent",
+      "status": "contained",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "detail": "",
+      "exit_code": 1,
+      "probe_id": "home-credentials-absent",
+      "status": "contained",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "detail": "",
+      "exit_code": 1,
+      "probe_id": "no-token-environment",
+      "status": "contained",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "detail": "",
+      "exit_code": 1,
+      "probe_id": "git-remote-sanitized",
+      "status": "contained",
+      "stderr": "fatal: not a git repository (or any parent up to mount point /)\nStopping at filesystem boundary (GIT_DISCOVERY_ACROSS_FILESYSTEM not set).",
+      "stdout": ""
+    },
+    {
+      "detail": "",
+      "exit_code": 2,
+      "probe_id": "no-external-route",
+      "status": "contained",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "detail": "",
+      "exit_code": 1,
+      "probe_id": "no-default-route",
+      "status": "contained",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "detail": "",
+      "exit_code": 2,
+      "probe_id": "cloud-metadata-unreachable",
+      "status": "contained",
+      "stderr": "sh: 1: cannot open /dev/tcp/169.254.169.254/80: No such file",
+      "stdout": ""
+    },
+    {
+      "detail": "",
+      "exit_code": 2,
+      "probe_id": "host-loopback-unreachable",
+      "status": "contained",
+      "stderr": "sh: 1: cannot open /dev/tcp/host.docker.internal/80: No such file",
+      "stdout": ""
+    },
+    {
+      "detail": "",
+      "exit_code": 1,
+      "probe_id": "docker-socket-absent",
+      "status": "contained",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "detail": "",
+      "exit_code": 2,
+      "probe_id": "podman-socket-absent",
+      "status": "contained",
+      "stderr": "ls: cannot access '/run/podman/podman.sock': No such file or directory\nls: cannot access '/run/user/*/podman/podman.sock': No such file or directory",
+      "stdout": ""
+    },
+    {
+      "detail": "",
+      "exit_code": 1,
+      "probe_id": "wsl-interop-absent",
+      "status": "contained",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "detail": "",
+      "exit_code": 127,
+      "probe_id": "docker-cli-unusable",
+      "status": "contained",
+      "stderr": "sh: 1: docker: not found",
+      "stdout": ""
+    },
+    {
+      "detail": "",
+      "exit_code": 1,
+      "probe_id": "model-socket-is-only-egress",
+      "status": "contained",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "detail": "",
+      "exit_code": 1,
+      "probe_id": "audit-log-unreachable",
+      "status": "contained",
+      "stderr": "find: '/etc/ssl/private': Permission denied\nfind: '/root': Permission denied\nfind: '/var/cache/apt/archives/partial': Permission denied\nfind: '/var/cache/ldconfig': Permission denied",
+      "stdout": ""
+    },
+    {
+      "detail": "",
+      "exit_code": 0,
+      "probe_id": "non-root-execution",
+      "status": "contained",
+      "stderr": "",
+      "stdout": "65532"
+    },
+    {
+      "detail": "",
+      "exit_code": 0,
+      "probe_id": "no-new-privileges",
+      "status": "contained",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "detail": "",
+      "exit_code": 0,
+      "probe_id": "workspace-writable",
+      "status": "contained",
+      "stderr": "",
+      "stdout": ""
+    }
+  ],
+  "schema_version": "1.0",
+  "unproven": [],
+  "workcell_manifest_digest": "c60ae48521acbf9843abbb66f697f16100baba5f1cd5d9ae73007a813b8db047"
+}

@@ -1,0 +1,41 @@
+{
+  "accounting": {
+    "aggregate_counted_as_call": false,
+    "exposed_message_tokens": 83132,
+    "residual_tokens": 11494,
+    "session_aggregate_tokens": 94626,
+    "unmeasured_reason": null
+  },
+  "pairs": [
+    {
+      "aggregate_may_offset_pair_regression": false,
+      "comparable": true,
+      "control_proposal_quality": 0.0,
+      "incomparable_reason": null,
+      "repaired_quality_excluded_from_proposal": true,
+      "repetition_id": "crisis-atlas-rep-1",
+      "sandbox_detection_quality": 1.0,
+      "sandbox_proposal_quality": 0.0
+    },
+    {
+      "aggregate_may_offset_pair_regression": false,
+      "comparable": true,
+      "control_proposal_quality": 1.0,
+      "incomparable_reason": null,
+      "repaired_quality_excluded_from_proposal": true,
+      "repetition_id": "crisis-atlas-rep-2",
+      "sandbox_detection_quality": 1.0,
+      "sandbox_proposal_quality": 1.0
+    },
+    {
+      "aggregate_may_offset_pair_regression": false,
+      "comparable": true,
+      "control_proposal_quality": 1.0,
+      "incomparable_reason": null,
+      "repaired_quality_excluded_from_proposal": true,
+      "repetition_id": "crisis-atlas-rep-3",
+      "sandbox_detection_quality": 1.0,
+      "sandbox_proposal_quality": 1.0
+    }
+  ]
+}

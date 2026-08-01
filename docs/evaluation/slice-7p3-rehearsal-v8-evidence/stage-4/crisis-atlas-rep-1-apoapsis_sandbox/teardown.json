@@ -1,0 +1,13 @@
+{
+  "cross_slot_paths_reachable": [],
+  "evidence_bytes": 223899,
+  "evidence_retained": true,
+  "qwen_home_removed": true,
+  "residue": {
+    "observation_failed": null,
+    "relay_socket_present": false,
+    "surviving_containers": [],
+    "surviving_relay_streams": 0
+  },
+  "worktree_removed": true
+}

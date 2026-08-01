@@ -1,0 +1,19 @@
+{
+  "api_key_is_declared_placeholder": true,
+  "base_url_is_bound_loopback": true,
+  "detail": "settings c5a7d909839f147f from apoapsis-qwen-workcell:0.21.1-no-token-env: apiKey is the declared placeholder=True, baseUrl=http://127.0.0.1:8080/v1, other credential sites=[], network=none",
+  "network_is_none": true,
+  "observed_api_key": "apoapsis-local-nonsecret-placeholder",
+  "observed_base_url": "http://127.0.0.1:8080/v1",
+  "observed_network_mode": "none",
+  "observed_relay_routes": [
+    "/health",
+    "/v1/chat/completions",
+    "/v1/models"
+  ],
+  "observed_relay_upstream": "http://127.0.0.1:34001",
+  "other_credential_sites": [],
+  "relay_policy_matches_bound": true,
+  "settings_digest_matches_bound": true,
+  "settings_sha256": "c5a7d909839f147faf807abfc8d116f3f6d33510d0c33554e6f095ac2f1b3e82"
+}

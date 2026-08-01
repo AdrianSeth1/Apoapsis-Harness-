@@ -1,0 +1,16 @@
+:root {
+  color-scheme: dark;
+  font-family: system-ui, sans-serif;
+}
+
+body {
+  margin: 0;
+  background: #0b1020;
+  color: #f3f5fb;
+}
+
+.app-shell {
+  max-width: 70rem;
+  margin: 0 auto;
+  padding: 2rem;
+}

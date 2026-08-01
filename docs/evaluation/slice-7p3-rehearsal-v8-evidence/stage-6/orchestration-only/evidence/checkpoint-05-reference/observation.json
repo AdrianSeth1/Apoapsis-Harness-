@@ -1,0 +1,19 @@
+{
+  "commands": [
+    {
+      "covered_paths": [],
+      "exit_code": 0,
+      "name": "unit-tests",
+      "worktree_fingerprint": "122b7e35035d8573b997395cf5aebbc21be927d6cddaf0030737ba0da5a297a9"
+    }
+  ],
+  "emitter_failed": false,
+  "outcome": "COMPLETE",
+  "readiness_blocks": [],
+  "repair_packet": "",
+  "satisfied_criteria": [
+    "AC-CHANGED-BEHAVIOUR-EXERCISED",
+    "AC-EXPORT-SERVICE",
+    "AC-INCIDENT-SERVICE"
+  ]
+}

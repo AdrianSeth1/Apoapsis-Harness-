@@ -1,0 +1,130 @@
+{
+  "arm_slots": [
+    {
+      "arm": "default_qwen_control",
+      "checkpoint_outcome": "CONTINUE",
+      "order": 1,
+      "provider_requests": 2,
+      "relay_observed_requests": 2,
+      "repetition_id": "crisis-atlas-rep-1"
+    },
+    {
+      "arm": "apoapsis_sandbox",
+      "checkpoint_outcome": "CONTINUE",
+      "order": 2,
+      "provider_requests": 2,
+      "relay_observed_requests": 2,
+      "repetition_id": "crisis-atlas-rep-1"
+    },
+    {
+      "arm": "apoapsis_sandbox",
+      "checkpoint_outcome": "COMPLETE",
+      "order": 1,
+      "provider_requests": 2,
+      "relay_observed_requests": 2,
+      "repetition_id": "crisis-atlas-rep-2"
+    },
+    {
+      "arm": "default_qwen_control",
+      "checkpoint_outcome": "COMPLETE",
+      "order": 2,
+      "provider_requests": 2,
+      "relay_observed_requests": 2,
+      "repetition_id": "crisis-atlas-rep-2"
+    },
+    {
+      "arm": "default_qwen_control",
+      "checkpoint_outcome": "COMPLETE",
+      "order": 1,
+      "provider_requests": 2,
+      "relay_observed_requests": 2,
+      "repetition_id": "crisis-atlas-rep-3"
+    },
+    {
+      "arm": "apoapsis_sandbox",
+      "checkpoint_outcome": "COMPLETE",
+      "order": 2,
+      "provider_requests": 2,
+      "relay_observed_requests": 2,
+      "repetition_id": "crisis-atlas-rep-3"
+    }
+  ],
+  "artifact": "slice7-crisis-atlas-rehearsal-verdict-v8",
+  "authorises_live_inference": false,
+  "bound_to": {
+    "authority_commit": "9db16f011ee5d3b0c94b8ab9545e52b3a405c8e9",
+    "controller_image_id": "sha256:c6a511553cfe2f50a3a92eed3a90de0fa6ab3fc77d56ecc2887417348c043d0a",
+    "lock_digest": "61b36743c43ec3afc932d956ad76fe1f2a320d41cff52356ab749746b6112867",
+    "lock_path": "docs/qualification/slice7-crisis-atlas-pilot-lock-v8.json",
+    "manifest_digest": "f369760e438b6866b59fbecafa4b1d63cb8523aa726b3c9ba20a9699c26e4798",
+    "manifest_path": "docs/qualification/slice7-crisis-atlas-pilot-manifest-v8.json",
+    "workcell_image_id": "sha256:80d6438472fcb3741fa76f3741a0bab07b18ed34f9cd83a44944aab44a5019f6"
+  },
+  "evidence": {
+    "committed_bundle_sha256": "d0e3abb01f93eefb48dd68af5480159557240afd74d410a660388f10befc63e7",
+    "files": 195,
+    "omitted": "stage-6/orchestration-only/workspace: two `git clone`s of the Crisis Atlas seed. A git repository committed inside this one is not retrievable by anyone who clones it, so the evidence would look present and be empty. The control's result is in stage-6/controls.json and the clones are reproducible from the bound seed commit.",
+    "report_digest": "264d75610854f7f4e0030200a95e8a2344ebb7b4ef2224ae0a29352acefe28e9",
+    "root": "docs/evaluation/slice-7p3-rehearsal-v8-evidence",
+    "runner_evidence_digest": "716f235699a0cf3bf826aa9b174ef9a5225b12b67005bf7732df9fa2b92df685"
+  },
+  "negative_controls_caught": 17,
+  "negative_controls_total": 17,
+  "no_model_contacted": {
+    "detail": "Every provider turn in this rehearsal was served by the scripted provider. No model service was started before, during or after.",
+    "gguf_loaded": false,
+    "llama_server_started": false,
+    "model_inference_requests": 0,
+    "provider": "apoapsis.qualification.fake_provider_server.FakeProviderServer"
+  },
+  "pair_scores": [
+    {
+      "comparable": true,
+      "control_proposal_quality": 0.0,
+      "repetition_id": "crisis-atlas-rep-1",
+      "sandbox_detection_quality": 1.0,
+      "sandbox_proposal_quality": 0.0
+    },
+    {
+      "comparable": true,
+      "control_proposal_quality": 1.0,
+      "repetition_id": "crisis-atlas-rep-2",
+      "sandbox_detection_quality": 1.0,
+      "sandbox_proposal_quality": 1.0
+    },
+    {
+      "comparable": true,
+      "control_proposal_quality": 1.0,
+      "repetition_id": "crisis-atlas-rep-3",
+      "sandbox_detection_quality": 1.0,
+      "sandbox_proposal_quality": 1.0
+    }
+  ],
+  "reason": "every stage passed, six slots rehearsed, all injected controls caught by their mapped detector, relay stress met, accounting consistent. This authorises the live preflight only; live inference remains unauthorised and every live recheck still applies.",
+  "relay_stress_iterations": 20,
+  "schema_version": "1.0",
+  "stages": {
+    "stage-0-lock": "passed",
+    "stage-1-runtime-identity": "passed",
+    "stage-2-containment": "passed",
+    "stage-3-relay-stability": "passed",
+    "stage-4-arm-slots": "passed",
+    "stage-6-negative-controls": "passed",
+    "stage-7-accounting": "passed",
+    "stage-8-cleanup": "passed"
+  },
+  "token_accounting": {
+    "aggregate_counted_as_call": false,
+    "exposed_message_tokens": 83132,
+    "residual_tokens": 11494,
+    "session_aggregate_tokens": 94626,
+    "unmeasured_reason": null
+  },
+  "verdict": "pass_live_preflight_authorized",
+  "what_this_authorises": "The live preflight only. `authorises_live_inference` is false in both the lock and this report: a passing rehearsal says the harness measures what it claims to, not that a model may be called. Every live recheck the manifest names still applies -- the dependency closure, the realised tool surface, and the containment probes must all be reobserved against the live configuration.",
+  "what_this_does_not_authorise": [
+    "any request to a model service",
+    "the six Crisis Atlas arms, which have no implemented execution path: `execute_slot` constructs a FakeProviderServer unconditionally and no code points a slot at llama-server",
+    "any claim about Apoapsis's effect on Qwen's performance, which is what the arms exist to measure and none of them has run"
+  ]
+}

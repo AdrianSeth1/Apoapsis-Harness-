@@ -1,0 +1,104 @@
+[
+  {
+    "control": "manifest_lock_mismatch",
+    "detector_fired": "PilotLock.verify_against",
+    "refused": true,
+    "required_detector": "PilotLock.verify_against"
+  },
+  {
+    "control": "evaluator_only_exposed",
+    "detector_fired": "ResolvedCasePackage.assert_arm_visible_set_is_contained",
+    "refused": true,
+    "required_detector": "ResolvedCasePackage.assert_arm_visible_set_is_contained"
+  },
+  {
+    "control": "changed_server_argument",
+    "detector_fired": "ServerIdentity.argv_sha256",
+    "refused": true,
+    "required_detector": "ServerIdentity.argv_sha256"
+  },
+  {
+    "control": "prior_arm_contamination",
+    "detector_fired": "TeardownProof",
+    "refused": true,
+    "required_detector": "TeardownProof"
+  },
+  {
+    "control": "regression_hidden_by_aggregate",
+    "detector_fired": "PairScore.aggregate_may_offset_pair_regression",
+    "refused": true,
+    "required_detector": "PairScore.aggregate_may_offset_pair_regression"
+  },
+  {
+    "control": "unclassified_stop_reason",
+    "detector_fired": "StopCondition.TELEMETRY_CANNOT_BE_CLASSIFIED",
+    "refused": true,
+    "required_detector": "StopCondition.TELEMETRY_CANNOT_BE_CLASSIFIED"
+  },
+  {
+    "control": "repair_entering_proposal_score",
+    "detector_fired": "RepairPolicy.repair_may_improve_proposal_score",
+    "refused": true,
+    "required_detector": "RepairPolicy.repair_may_improve_proposal_score"
+  },
+  {
+    "control": "absent_required_repetition",
+    "detector_fired": "decide_verdict:arm_slot_count",
+    "refused": true,
+    "required_detector": "decide_verdict:arm_slot_count"
+  },
+  {
+    "control": "workcell_profile_mismatch",
+    "detector_fired": "StopCondition.CODING_PROFILE_OR_REALISED_TOOLS_DIFFER",
+    "refused": true,
+    "required_detector": "StopCondition.CODING_PROFILE_OR_REALISED_TOOLS_DIFFER"
+  },
+  {
+    "control": "controlled_variable_mismatch",
+    "detector_fired": "StopCondition.REPETITION_CONFIGURATION_DIFFERS",
+    "refused": true,
+    "required_detector": "StopCondition.REPETITION_CONFIGURATION_DIFFERS"
+  },
+  {
+    "control": "missing_durable_evidence",
+    "detector_fired": "StopCondition.EVIDENCE_STORAGE_NOT_DURABLE",
+    "refused": true,
+    "required_detector": "StopCondition.EVIDENCE_STORAGE_NOT_DURABLE"
+  },
+  {
+    "control": "stale_witness_digest",
+    "detector_fired": "validate_witness",
+    "refused": true,
+    "required_detector": "validate_witness"
+  },
+  {
+    "control": "unmapped_obligation",
+    "detector_fired": "validate_criteria_mapping",
+    "refused": true,
+    "required_detector": "validate_criteria_mapping"
+  },
+  {
+    "control": "output_ceiling_truncation",
+    "detector_fired": "CeilingStopReason.OUTPUT_CEILING_TRUNCATION",
+    "refused": true,
+    "required_detector": "CeilingStopReason.OUTPUT_CEILING_TRUNCATION"
+  },
+  {
+    "control": "input_context_exhausted",
+    "detector_fired": "CeilingStopReason.INPUT_CONTEXT_EXHAUSTED",
+    "refused": true,
+    "required_detector": "CeilingStopReason.INPUT_CONTEXT_EXHAUSTED"
+  },
+  {
+    "control": "changed_task_bytes",
+    "detector_fired": "StopCondition.SEED_TASK_OR_CONTRACT_BYTES_DIFFER",
+    "refused": true,
+    "required_detector": "StopCondition.SEED_TASK_OR_CONTRACT_BYTES_DIFFER"
+  },
+  {
+    "control": "fake_evidence_as_real_qualification",
+    "detector_fired": "CasePackageValidation.registerable",
+    "refused": true,
+    "required_detector": "CasePackageValidation.registerable"
+  }
+]

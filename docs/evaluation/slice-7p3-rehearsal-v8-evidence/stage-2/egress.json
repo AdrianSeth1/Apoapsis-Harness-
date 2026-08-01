@@ -1,0 +1,14 @@
+{
+  "classified_network_unreachable": true,
+  "invocation_accepted": true,
+  "network_attempted": true,
+  "no_successful_response": true,
+  "not_cache_hit": true,
+  "not_schema_rejection": true,
+  "not_stdout_inference": true,
+  "tool_results": [
+    "[{\"text\": \"Error during fetch for https://example.com/?apoapsis-egress-probe: fetch failed (cause: getaddrinfo EAI_AGAIN example.com)\", \"type\": \"text\"}]",
+    "[{\"text\": \"Error during fetch for https://example.com/?apoapsis-egress-probe: fetch failed (cause: getaddrinfo EAI_AGAIN example.com)\", \"type\": \"text\"}]"
+  ],
+  "tool_transcript_captured": true
+}
