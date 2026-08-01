@@ -35,16 +35,23 @@ REPO = Path(__file__).resolve().parents[1]
 #: evidence digest, and rewriting it to match would destroy the record of what
 #: was actually locked when.
 MANIFEST_PATH = (
+    REPO / "docs" / "qualification" / "slice7-crisis-atlas-pilot-manifest-v7.json"
+)
+LOCK_PATH = REPO / "docs" / "qualification" / "slice7-crisis-atlas-pilot-lock-v7.json"
+#: The pair v7 supersedes. Preserved unedited: v6 bound a runner that raised
+#: NameError after Stage 3, so it never reached a verdict.
+SUPERSEDED_MANIFEST_PATH = (
     REPO / "docs" / "qualification" / "slice7-crisis-atlas-pilot-manifest-v6.json"
 )
-LOCK_PATH = REPO / "docs" / "qualification" / "slice7-crisis-atlas-pilot-lock-v6.json"
-#: The pair v6 supersedes. Preserved unedited: v5 bound a runner that never
-#: entered the shared session and a containment evaluator that read "No such
-#: container" as containment.
-SUPERSEDED_MANIFEST_PATH = (
+SUPERSEDED_LOCK_PATH = (
+    REPO / "docs" / "qualification" / "slice7-crisis-atlas-pilot-lock-v6.json"
+)
+#: v5, superseded by v6: its runner never entered the shared session and its
+#: containment evaluator read "No such container" as containment.
+V5_MANIFEST_PATH = (
     REPO / "docs" / "qualification" / "slice7-crisis-atlas-pilot-manifest-v5.json"
 )
-SUPERSEDED_LOCK_PATH = (
+V5_LOCK_PATH = (
     REPO / "docs" / "qualification" / "slice7-crisis-atlas-pilot-lock-v5.json"
 )
 #: v4, superseded by v5: it bound a relay that reported truncated responses as
@@ -565,8 +572,10 @@ class SupersessionTests(unittest.TestCase):
         self.assertTrue(SUPERSEDED_MANIFEST_PATH.is_file())
         self.assertTrue(SUPERSEDED_LOCK_PATH.is_file())
         old = json.loads(SUPERSEDED_MANIFEST_PATH.read_text(encoding="utf-8"))
-        self.assertEqual(old["manifest_id"], "slice7-crisis-atlas-pilot-v5")
+        self.assertEqual(old["manifest_id"], "slice7-crisis-atlas-pilot-v6")
         self.assertEqual(old["schema_version"], "2.0")
+        self.assertTrue(V5_MANIFEST_PATH.is_file())
+        self.assertTrue(V5_LOCK_PATH.is_file())
         # v4, v3, v2 and v1 are still there behind v5. Supersession is a chain,
         # not a swap: each link records a defect that was real when it was
         # locked.
@@ -602,10 +611,10 @@ class SupersessionTests(unittest.TestCase):
         self.assertTrue(block["preserved_not_edited"])
         self.assertEqual(
             block["manifest_path"],
-            "docs/qualification/slice7-crisis-atlas-pilot-manifest-v5.json",
+            "docs/qualification/slice7-crisis-atlas-pilot-manifest-v6.json",
         )
         reasons = " ".join(block["invalid_because"])
-        self.assertIn("container", reasons)
+        self.assertIn("NameError", reasons)
 
     def test_the_old_lock_cannot_authorise_the_new_manifest(self) -> None:
         old_lock = PilotLock.model_validate_json(
@@ -680,17 +689,23 @@ class SupersededV2CannotAuthoriseAnythingTests(unittest.TestCase):
             V4_LOCK_PATH.read_text(encoding="utf-8")
         )
         self.v5_manifest = PilotManifest.model_validate_json(
-            SUPERSEDED_MANIFEST_PATH.read_text(encoding="utf-8")
+            V5_MANIFEST_PATH.read_text(encoding="utf-8")
         )
         self.v5_lock = PilotLock.model_validate_json(
+            V5_LOCK_PATH.read_text(encoding="utf-8")
+        )
+        self.v6_manifest = PilotManifest.model_validate_json(
+            SUPERSEDED_MANIFEST_PATH.read_text(encoding="utf-8")
+        )
+        self.v6_lock = PilotLock.model_validate_json(
             SUPERSEDED_LOCK_PATH.read_text(encoding="utf-8")
         )
         self.manifest = load_manifest()
 
     def test_the_superseded_pair_is_recorded_at_its_real_digests(self) -> None:
         block = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))["supersedes"]
-        self.assertEqual(block["manifest_digest"], self.v5_manifest.digest())
-        self.assertEqual(block["lock_digest"], self.v5_lock.digest())
+        self.assertEqual(block["manifest_digest"], self.v6_manifest.digest())
+        self.assertEqual(block["lock_digest"], self.v6_lock.digest())
 
     def test_no_superseded_lock_can_authorise_the_current_manifest(self) -> None:
         for name, lock in (
@@ -698,6 +713,7 @@ class SupersededV2CannotAuthoriseAnythingTests(unittest.TestCase):
             ("v3", self.v3_lock),
             ("v4", self.v4_lock),
             ("v5", self.v5_lock),
+            ("v6", self.v6_lock),
         ):
             with self.subTest(lock=name):
                 decision = authorize_rehearsal(self.manifest, lock)
@@ -758,14 +774,18 @@ class SupersededV2CannotAuthoriseAnythingTests(unittest.TestCase):
         )
         self.assertNotEqual(
             self._bound(self.v5_manifest, "src/apoapsis/qualification/runner.py"),
+            self._bound(self.v6_manifest, "src/apoapsis/qualification/runner.py"),
+        )
+        self.assertNotEqual(
+            self._bound(self.v6_manifest, "src/apoapsis/qualification/runner.py"),
             self._bound(self.manifest, "src/apoapsis/qualification/runner.py"),
         )
-        reasons = " ".join(
-            json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))["supersedes"][
-                "invalid_because"
-            ]
+        v6_reasons = " ".join(
+            json.loads(SUPERSEDED_MANIFEST_PATH.read_text(encoding="utf-8"))[
+                "supersedes"
+            ]["invalid_because"]
         )
-        self.assertIn("entered the shared session", reasons)
+        self.assertIn("entered the shared session", v6_reasons)
 
     def test_the_authority_set_covers_every_verdict_affecting_module(self) -> None:
         """Widened in v6, and asserted rather than assumed.
@@ -799,7 +819,7 @@ class SupersededV2CannotAuthoriseAnythingTests(unittest.TestCase):
             item["path"] for item in self.v5_manifest.pilot_authority.bound_modules
         }
         self.assertTrue(
-            v5_bound < bound, "v6 must bind a superset of what v5 bound"
+            v5_bound < bound, "the widened set must be a superset of v5's"
         )
 
     def test_unchanged_bytes_are_bound_too(self) -> None:
@@ -814,13 +834,13 @@ class SupersededV2CannotAuthoriseAnythingTests(unittest.TestCase):
             item["path"]: item["sha256"]
             for item in self.v5_manifest.pilot_authority.bound_modules
         }
-        v6 = {
+        current = {
             item["path"]: item["sha256"]
             for item in self.manifest.pilot_authority.bound_modules
         }
-        moved = sorted(path for path in v5 if v5[path] != v6[path])
+        moved = sorted(path for path in v5 if v5[path] != current[path])
         self.assertEqual(moved, ["src/apoapsis/qualification/runner.py"])
-        added = sorted(set(v6) - set(v5))
+        added = sorted(set(current) - set(v5))
         self.assertIn("src/apoapsis/workcell/relay_policy.py", added)
 
     def test_v3_binds_the_modules_v2_left_unbound(self) -> None:
