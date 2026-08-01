@@ -319,7 +319,7 @@ def run(
         repo=repo,
         seed=seed,
         evidence=evidence / "live-preflight",
-        runtime_root=runtime_root / "live-preflight",
+        runtime_root=runtime_root / "p",
         task_text=task_text,
     )
     if containment_preflight_only:
@@ -347,7 +347,7 @@ def run(
                 manifest,
                 repo=repo,
                 seed_repository=seed,
-                base=runtime_root / "slots",
+                base=runtime_root / "s",
                 repetition_id=request["run_id"],
                 arm="default-qwen-control",
                 script=None,
@@ -372,7 +372,7 @@ def run(
             manifest,
             repo=repo,
             seed_repository=seed,
-            base=runtime_root / "slots",
+            base=runtime_root / "s",
             repetition_id=request["run_id"],
             arm="apoapsis-sandbox",
             script=None,
@@ -452,14 +452,21 @@ def main() -> int:
     parser.add_argument("--runtime-root", type=Path, required=True)
     parser.add_argument("--containment-preflight-only", action="store_true")
     args = parser.parse_args()
-    return run(
-        args.request,
-        args.response,
-        args.repo,
-        args.seed,
-        args.runtime_root,
-        containment_preflight_only=args.containment_preflight_only,
-    )
+    try:
+        return run(
+            args.request,
+            args.response,
+            args.repo,
+            args.seed,
+            args.runtime_root,
+            containment_preflight_only=args.containment_preflight_only,
+        )
+    finally:
+        # Inner workcells intentionally run under a non-root UID and may leave
+        # directories the WSL launcher user cannot remove. The root controller
+        # owns only this freshly created runtime subtree and removes it before
+        # the launcher's exact mktemp-root trap handles the normalized seed.
+        shutil.rmtree(args.runtime_root, ignore_errors=True)
 
 
 if __name__ == "__main__":
