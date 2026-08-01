@@ -377,6 +377,84 @@ class SharedSessionLifecycleTests(unittest.TestCase):
         )
 
 
+class RunRehearsalReferencesOnlyBoundNamesTests(unittest.TestCase):
+    """No name in `run_rehearsal` may be unbound at the point it is read.
+
+    Moving the shared session into its own function left `session=session` in
+    the Stage 4 call. Nothing caught it: `compileall` compiles a `NameError`
+    happily, no test calls `run_rehearsal` end to end, and the six real slots
+    behind it make one impractical. So the check is static -- every local name
+    the function loads must be one it also binds, or a module-level name.
+    """
+
+    def test_every_local_name_is_bound_before_it_is_read(self) -> None:
+        import ast
+        import builtins
+
+        from apoapsis.qualification import runner as runner_module
+
+        tree = ast.parse(Path(runner_module.__file__).read_text(encoding="utf-8"))
+        module_names = {
+            node.id
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store)
+        }
+        module_names |= {
+            node.name
+            for node in tree.body
+            if isinstance(node, (ast.FunctionDef, ast.ClassDef))
+        }
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.Import, ast.ImportFrom)):
+                for alias in node.names:
+                    module_names.add((alias.asname or alias.name).split(".")[0])
+
+        offenders: list[str] = []
+        for function in [
+            node
+            for node in tree.body
+            if isinstance(node, ast.FunctionDef)
+        ]:
+            bound = set(module_names) | set(dir(builtins))
+            for argument in (
+                function.args.args
+                + function.args.kwonlyargs
+                + function.args.posonlyargs
+            ):
+                bound.add(argument.arg)
+            for inner in ast.walk(function):
+                if isinstance(inner, ast.Name) and isinstance(inner.ctx, ast.Store):
+                    bound.add(inner.id)
+                elif isinstance(inner, (ast.Import, ast.ImportFrom)):
+                    for alias in inner.names:
+                        bound.add((alias.asname or alias.name).split(".")[0])
+                elif isinstance(inner, ast.arg):
+                    bound.add(inner.arg)
+                elif isinstance(inner, ast.ExceptHandler) and inner.name:
+                    bound.add(inner.name)
+                elif isinstance(
+                    inner, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+                ):
+                    # Nested definitions bind their own name in the enclosing
+                    # scope, and the module dunders are always available.
+                    bound.add(inner.name)
+            bound |= {"__file__", "__name__", "__doc__"}
+            for inner in ast.walk(function):
+                if isinstance(inner, ast.Name) and isinstance(inner.ctx, ast.Load):
+                    if inner.id not in bound:
+                        offenders.append(f"{function.name}: {inner.id}")
+
+        self.assertEqual(sorted(set(offenders)), [])
+
+    def test_stage_four_takes_no_session(self) -> None:
+        """A slot must not inherit the shared session, so there is nothing to
+        pass. The parameter existed and was never read."""
+
+        from apoapsis.qualification.runner import stage_4_arm_slots
+
+        self.assertNotIn("session", inspect.signature(stage_4_arm_slots).parameters)
+
+
 class ContainmentEvidenceTests(unittest.TestCase):
     """An unexecutable probe proves nothing, and must never read as contained."""
 

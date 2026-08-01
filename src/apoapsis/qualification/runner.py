@@ -540,9 +540,13 @@ def stage_4_arm_slots(
     seed_repository: Path,
     scratch: Path,
     writer: EvidenceWriter,
-    session=None,
 ) -> tuple[StageResult, tuple[ArmSlotResult, ...]]:
     """Execute all six slots in the frozen order.
+
+    Takes no session. Every slot starts and tears down its own workcell, and
+    the parameter that used to be here was never read -- it existed only so the
+    caller could pass the shared session in, which is precisely what a slot must
+    not inherit.
 
     Each slot gets its own clone, its own Qwen home and its own evidence
     directory, and teardown is *proved* afterwards rather than assumed. The
@@ -1457,7 +1461,6 @@ def run_rehearsal(
         seed_repository=seed,
         scratch=scratch,
         writer=writer,
-        session=session,
     )
     stages.append(stage4)
 
