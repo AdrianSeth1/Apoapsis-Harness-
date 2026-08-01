@@ -6,15 +6,29 @@ SEED="$2"
 REQUEST="$3"
 RESPONSE="$4"
 
-test -d "${REPO}/.git"
-test -d "${SEED}/.git"
-test -f "${REQUEST}"
+if ! git -C "${REPO}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  echo "Capability Sandbox harness path is not a Git worktree: ${REPO}" >&2
+  exit 2
+fi
+if ! git -C "${SEED}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  echo "Capability Sandbox task path is not a Git worktree: ${SEED}" >&2
+  exit 2
+fi
+if ! test -f "${REQUEST}"; then
+  echo "Capability Sandbox request is missing: ${REQUEST}" >&2
+  exit 2
+fi
 
 # Verdict-deciding product code is built only from the current committed
 # source tree.  A dirty harness checkout cannot quietly decide a task.
 if test -n "$(git -C "${REPO}" status --porcelain --untracked-files=all -- src pyproject.toml tools/run_capability_sandbox_task.sh docker/pilot-controller docs/qualification)"; then
   echo "Capability Sandbox product code has uncommitted changes; commit the Apoapsis update before it decides a task." >&2
   exit 3
+fi
+
+if test "${5:-}" = "--preflight-only"; then
+  echo "Capability Sandbox preflight passed."
+  exit 0
 fi
 
 COMMIT="$(git -C "${REPO}" rev-parse HEAD)"

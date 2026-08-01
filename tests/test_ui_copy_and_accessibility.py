@@ -102,7 +102,9 @@ class UiCopyStyleTests(unittest.TestCase):
             source,
         )
         self.assertIn("continue the approved implementation", source)
-        self.assertIn('authorize_local_stage: "Run locally"', source)
+        self.assertIn(
+            'authorize_local_stage: "Run locally / retry fresh"', source
+        )
         self.assertIn('authorize_frontier_run: "Run with frontier"', source)
         self.assertIn("Routing stopped before any coding agent ran", source)
         self.assertIn("Local run incomplete", source)

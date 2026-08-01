@@ -314,6 +314,61 @@ class RoutingRequiresHumanTests(ReviewExecutionTestsBase):
         )
         self.assertEqual(authorization.payload["route_override"], "local_only")
 
+    def test_zero_session_stop_offers_and_runs_fresh_local_retry(self) -> None:
+        config = self._agent_config(local_turns=1)
+        report = self._run(
+            [
+                specification_response(),
+                action("search_repository", query="download"),
+            ],
+            config,
+        )
+        self.assertEqual(report.outcome, TaskOutcome.HUMAN_REVIEW_REQUIRED)
+        session_path = (
+            self.root
+            / ".apoapsis"
+            / "tasks"
+            / report.task_id
+            / "agent-session.json"
+        )
+        session_path.unlink()
+
+        case = build_review_case(self.root, self.store, config, report.task_id)
+        self.assertTrue(case.worktree_exists)
+        self.assertEqual(case.current_diff, "")
+        self.assertNotIn(
+            ReviewActionKind.LOCAL_CONTINUATION, case.eligible_actions
+        )
+        self.assertIn(
+            ReviewActionKind.AUTHORIZE_LOCAL_STAGE, case.eligible_actions
+        )
+        local_fake = FakeModelProvider(
+            [
+                action("propose_patch", unified_diff=COMPLETE_PATCH),
+                action("submit_for_verification"),
+            ]
+        )
+
+        operation = execute_review_action(
+            self.root,
+            self.store,
+            self.operation_store,
+            config,
+            task_id=report.task_id,
+            action=ReviewActionKind.AUTHORIZE_LOCAL_STAGE,
+            operation_id="RVOP-FRESH-RETRY-1",
+            expected_version=case.task_version,
+            expected_worktree_fingerprint=case.worktree_fingerprint,
+            local_coder_provider=InstrumentedModelProvider(
+                local_fake, ProviderPricing()
+            ),
+        )
+
+        self.assertEqual(operation.status.value, "succeeded")
+        self.assertEqual(
+            self.store.get_task(report.task_id).state, WorkflowState.COMPLETE
+        )
+
     def test_human_can_authorize_fresh_frontier_run(self) -> None:
         frontier_config = FrontierProviderConfig(
             base_url="https://frontier.invalid/v1", model="frontier-coder"
