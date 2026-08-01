@@ -922,6 +922,16 @@ the exact remaining step; after approval it shows **Run all slices
 automatically** and **Run only the next slice**. Starting a run does not make a
 persistent mode change.
 
+A manual ChatGPT or Claude response saved in the project folder no longer
+blocks either button after that exact response has been successfully imported.
+At plan-run and ordinary execution preflight, Apoapsis recognizes only a
+top-level `apoapsis-plan-response…json` file whose parsed payload exactly
+matches the canonical response already retained in the discovery audit, then
+adds that exact filename to the repository-local Git exclusions. The response
+file is left in place. A renamed project file, an altered response, a tracked
+file, or any other uncommitted change still stops execution with the normal
+dirty-repository warning.
+
 The individual CLI workflow remains available for inspection and scripting:
 
 ```bash

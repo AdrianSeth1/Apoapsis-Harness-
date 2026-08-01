@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -13,6 +15,10 @@ from apoapsis.architect.auto_run import (
     run_plan,
 )
 from apoapsis.ui.application import ApoapsisUIService
+from apoapsis.repository.readiness import (
+    DirtyParentRepositoryError,
+    require_clean_parent_repository,
+)
 from apoapsis.workflow.events import WorkflowActor
 from apoapsis.workflow.states import WorkflowState
 from tests.test_architect_slice import PlanSliceExecutionTestsBase
@@ -54,6 +60,31 @@ class PlanRunStoreTests(unittest.TestCase):
 
 
 class PlanAutoRunTests(PlanSliceExecutionTestsBase):
+    def _write_imported_plan_response_transfer(
+        self, plan, *, altered=False, wrapped=False
+    ) -> Path:
+        payload = {
+            "schema_version": "1.0",
+            "package_id": "FPKG-TRANSFER-TEST",
+            "package_sha256": "a" * 64,
+            "session_id": "DISC-TRANSFER-TEST",
+            "kind": "plan",
+            "plan": plan.model_dump(mode="json"),
+        }
+        audit = self.root / ".apoapsis" / "discovery" / "DISC-TRANSFER-TEST"
+        audit.mkdir(parents=True, exist_ok=True)
+        (audit / "frontier-response-FPKG-TRANSFER-TEST.json").write_text(
+            json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        if altered:
+            payload["package_sha256"] = "b" * 64
+        transfer = self.root / "apoapsis-plan-response-remade.json"
+        transfer_text = json.dumps(payload)
+        if wrapped:
+            transfer_text = f"```json\n{transfer_text}\n```\n"
+        transfer.write_text(transfer_text, encoding="utf-8")
+        return transfer
+
     def _complete_without_model(
         self,
         _root,
@@ -127,6 +158,60 @@ class PlanAutoRunTests(PlanSliceExecutionTestsBase):
         )
         self.assertEqual(approval.actor, WorkflowActor.SYSTEM)
         self.assertEqual(approval.payload["plan_run_id"], run.run_id)
+
+    def test_auto_mode_locally_excludes_exact_imported_plan_response_transfer(self) -> None:
+        plan, config = self._approved_plan()
+        transfer = self._write_imported_plan_response_transfer(plan.plan, wrapped=True)
+        store = PlanRunStore(self.root / ".apoapsis" / "plan-runs.db")
+        run = store.create(
+            run_id="PLANRUN-TRANSFER",
+            plan_id=plan.plan_id,
+            expected_plan_version=plan.version,
+            config_sha256=config_digest(config),
+            auto_advance=True,
+        )
+
+        result = run_plan(
+            self.root,
+            store,
+            run.run_id,
+            execute_slice=self._complete_without_model,
+            config_override=config,
+        )
+
+        self.assertEqual(result.status, PlanRunStatus.SUCCEEDED)
+        self.assertTrue(transfer.is_file())
+        ignored = subprocess.run(
+            ["git", "check-ignore", "--quiet", transfer.name],
+            cwd=self.root,
+            check=False,
+        )
+        self.assertEqual(ignored.returncode, 0)
+        self.assertEqual(
+            subprocess.run(
+                ["git", "status", "--porcelain"],
+                cwd=self.root,
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout,
+            "",
+        )
+
+    def test_changed_plan_response_transfer_still_fails_dirty_parent_guard(self) -> None:
+        plan, _config = self._approved_plan()
+        transfer = self._write_imported_plan_response_transfer(plan.plan, altered=True)
+
+        with self.assertRaises(DirtyParentRepositoryError):
+            require_clean_parent_repository(self.root)
+
+        self.assertTrue(transfer.is_file())
+        ignored = subprocess.run(
+            ["git", "check-ignore", "--quiet", transfer.name],
+            cwd=self.root,
+            check=False,
+        )
+        self.assertNotEqual(ignored.returncode, 0)
 
     def test_manual_mode_stops_after_one_complete_slice(self) -> None:
         from tests.architect_helpers import make_slice

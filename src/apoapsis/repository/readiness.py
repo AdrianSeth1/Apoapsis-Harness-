@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import ast
+import json
+import re
 import sys
 import tomllib
 from pathlib import Path
@@ -28,6 +30,116 @@ class DirtyParentRepositoryError(RuntimeError):
 
 class VerificationContractError(RuntimeError):
     """Raised when configured verification cannot possibly run as written."""
+
+
+_PLAN_RESPONSE_TRANSFER_NAME = re.compile(
+    r"^apoapsis-plan-response(?:[-_ .][A-Za-z0-9._ -]+)?\.json$",
+    re.IGNORECASE,
+)
+_MAX_PLAN_RESPONSE_TRANSFER_BYTES = 16 * 1024 * 1024
+
+
+def _registered_plan_response_payloads(root: Path) -> list[object]:
+    """Load only canonical responses already accepted into discovery audit."""
+
+    from pydantic import ValidationError
+
+    from apoapsis.discovery.schema import FrontierPlanningResponseEnvelope
+
+    discovery_root = root / ".apoapsis" / "discovery"
+    if not discovery_root.is_dir():
+        return []
+    payloads: list[object] = []
+    for artifact in sorted(discovery_root.glob("*/frontier-response-FPKG-*.json")):
+        try:
+            if artifact.stat().st_size > _MAX_PLAN_RESPONSE_TRANSFER_BYTES:
+                continue
+            payload = json.loads(artifact.read_text(encoding="utf-8"))
+            FrontierPlanningResponseEnvelope.model_validate(payload)
+            payloads.append(payload)
+        except (OSError, UnicodeError, json.JSONDecodeError, ValidationError):
+            # An unreadable audit artifact proves nothing. The ordinary dirty
+            # repository refusal remains in force for the transfer file.
+            continue
+    return payloads
+
+
+def exclude_registered_plan_response_transfers(
+    project_root: str | Path,
+) -> list[str]:
+    """Locally exclude exact, already-imported manual planning responses.
+
+    A manual frontier response is transport material, not project source. A
+    user can naturally save it in the selected project folder before uploading
+    it through the browser, which used to make the next execution fail its
+    dirty-parent guard. This recovery is deliberately narrow: the candidate
+    must be an untracked top-level JSON file using Apoapsis's transfer filename
+    convention, and its parsed payload must exactly equal a canonical response
+    already retained in the discovery audit. The user file is never moved,
+    rewritten, or deleted; only its exact root-relative name is appended to
+    ``.git/info/exclude``.
+    """
+
+    from apoapsis.specification.pasted_json import PastedJsonError, parse_pasted_json
+
+    root = Path(project_root).resolve()
+    repository = GitRepository(root)
+    registered = _registered_plan_response_payloads(root)
+    if not registered:
+        return []
+    raw_untracked = repository.run(
+        ["ls-files", "-z", "--others", "--exclude-standard"]
+    ).stdout
+    matched: list[str] = []
+    for relative in sorted(item for item in raw_untracked.split("\0") if item):
+        candidate_relative = Path(relative)
+        if len(candidate_relative.parts) != 1:
+            continue
+        if not _PLAN_RESPONSE_TRANSFER_NAME.fullmatch(candidate_relative.name):
+            continue
+        candidate = root / candidate_relative
+        try:
+            if candidate.stat().st_size > _MAX_PLAN_RESPONSE_TRANSFER_BYTES:
+                continue
+            payload = parse_pasted_json(
+                candidate.read_text(encoding="utf-8"), what="plan response transfer"
+            )
+        except (OSError, UnicodeError, PastedJsonError):
+            continue
+        if any(payload == accepted for accepted in registered):
+            matched.append(candidate_relative.as_posix())
+    if not matched:
+        return []
+
+    raw_exclude = repository.run(
+        ["rev-parse", "--git-path", "info/exclude"]
+    ).stdout.strip()
+    exclude_path = Path(raw_exclude)
+    if not exclude_path.is_absolute():
+        exclude_path = root / exclude_path
+    exclude_path = exclude_path.resolve()
+    exclude_path.parent.mkdir(parents=True, exist_ok=True)
+    existing = (
+        exclude_path.read_text(encoding="utf-8") if exclude_path.is_file() else ""
+    )
+    existing_lines = set(existing.splitlines())
+    additions = [
+        f"/{relative}"
+        for relative in matched
+        if f"/{relative}" not in existing_lines
+    ]
+    if additions:
+        separator = "" if not existing or existing.endswith("\n") else "\n"
+        heading = "# Imported Apoapsis planning response transfer files"
+        heading_line = "" if heading in existing_lines else f"{heading}\n"
+        exclude_path.write_text(
+            existing
+            + separator
+            + heading_line
+            + "".join(f"{line}\n" for line in additions),
+            encoding="utf-8",
+        )
+    return matched
 
 
 def _has_testcase_class(tree: ast.AST) -> bool:
@@ -258,6 +370,7 @@ def require_viable_verification_contract(
 
 
 def require_clean_parent_repository(project_root: str | Path) -> None:
+    exclude_registered_plan_response_transfers(project_root)
     snapshot = GitRepository(project_root).snapshot()
     if snapshot.is_clean:
         return
@@ -280,6 +393,7 @@ def require_clean_parent_repository(project_root: str | Path) -> None:
 __all__ = [
     "DirtyParentRepositoryError",
     "VerificationContractError",
+    "exclude_registered_plan_response_transfers",
     "required_verification_scaffolding",
     "require_clean_parent_repository",
     "require_viable_verification_contract",

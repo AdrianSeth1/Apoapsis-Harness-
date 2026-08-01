@@ -25,6 +25,7 @@ from apoapsis.architect.slice_store import PlanSliceExecutionStore
 from apoapsis.architect.store import SQLitePlanStore
 from apoapsis.config import ApoapsisConfig
 from apoapsis.execution.operation_store import ExecutionOperationStore
+from apoapsis.repository.readiness import exclude_registered_plan_response_transfers
 from apoapsis.specification.schema import StrictModel, utc_now
 from apoapsis.workflow.engine import SQLiteTaskStore
 from apoapsis.workflow.events import WorkflowActor
@@ -279,6 +280,12 @@ def run_plan(
                 status=PlanRunStatus.PAUSED,
                 detail="The approved plan version changed; review and authorize it again.",
             )
+
+        # Manual plan-response files are transfer material, not project source.
+        # Recover an already-imported response before package_slice snapshots the
+        # parent repository, using the same exact-audit-match rule as ordinary
+        # execution preflight.
+        exclude_registered_plan_response_transfers(root)
 
         completed = list(run.completed_slice_ids)
         for slice_id in dependency_order(plan_record.plan):
