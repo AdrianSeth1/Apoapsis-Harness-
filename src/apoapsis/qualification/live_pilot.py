@@ -91,6 +91,21 @@ def _prepare_preflight_scratch(runtime_root: Path) -> Path:
     return scratch
 
 
+def _trust_bound_seed(seed_repository: Path) -> None:
+    """Allow root in the ephemeral controller to clone the owner-mounted seed."""
+
+    completed = subprocess.run(
+        [
+            "git", "config", "--global", "--replace-all", "safe.directory",
+            str(seed_repository / ".git"),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if completed.returncode != 0:
+        raise LivePilotError(f"could not trust the bound seed: {completed.stderr}")
+
+
 class BoundLiveModule(StrictModel):
     path: str = Field(min_length=1)
     sha256: str = Field(pattern=_SHA256)
@@ -356,6 +371,7 @@ def run_live_pilot(
             f"live preflight refused: identity={identity.outcome}, containment={containment.outcome}"
         )
 
+    _trust_bound_seed(seed_repository)
     package_root = repo / manifest.crisis_atlas.package_root
     slot_records = []
     previous_workspaces: list[Path] = []

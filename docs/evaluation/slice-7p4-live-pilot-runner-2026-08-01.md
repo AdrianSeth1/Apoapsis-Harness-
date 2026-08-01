@@ -152,3 +152,20 @@ Observed without model loading or inference:
 Per the owner's instruction, focused and full test suites were not run for
 commit `603e68f`. Fresh retry defaults are v3 evidence and runtime paths; v2 is
 retained as failed evidence.
+
+## V3 first control completed; evaluator clone refused
+
+V3 passed preflight, server readiness, and the first control proposal. Its raw
+trace is complete: 21 model requests, 201,429 input tokens, 2,834 output
+tokens, 177,949 cached input tokens, 13 tool calls, normal end, zero adapter
+errors, and no compaction. The independent evaluator then failed before
+writing the slot result because Git rejected the root controller's clone of
+the UID-1000 owner-mounted seed as dubious ownership.
+
+The produced worktree and raw telemetry are retained. With the exact seed
+`.git` path added to global `safe.directory` inside an ephemeral controller,
+the same checkpoint ran successfully and reported `COMPLETE`, all three
+criteria satisfied, unit tests exit 0, and fingerprint
+`e0aa0d4dd6e23e10b9091dc7c65b6b74c6747bfc508ba2abb4eefe0bdb1b7b7f`.
+The correction adds only that exact trust entry. At the owner's direction no
+resume mechanism is introduced; fresh v4 paths rerun the normal six slots.

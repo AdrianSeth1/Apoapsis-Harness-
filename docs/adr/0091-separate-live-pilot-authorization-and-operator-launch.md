@@ -130,3 +130,11 @@ inside the GPU-enabled container, `llama-server --version` reported build
 rehash observed the pinned RTX 4090, 24,564 MiB, and driver 610.74. Image
 `sha256:ddc7e09ce5fc...` is rebound to runner commit `603e68f`. No test-suite
 result is claimed for this correction.
+
+The v3 attempt then completed the first control proposal but failed before its
+result record: Git 2.45 refused to clone the owner-mounted seed from the root
+controller because the repository had different ownership. The evaluator now
+sets `safe.directory` to that one bound seed `.git` path before checkpointing;
+it does not use `*`. The retained v3 worktree was checkpointed with that exact
+setting and scored complete. Per owner direction, no resume path is added; v4
+runs a fresh six-slot schedule and v3 remains aborted evidence.
