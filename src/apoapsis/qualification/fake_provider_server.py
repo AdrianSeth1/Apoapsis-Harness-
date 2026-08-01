@@ -23,6 +23,7 @@ manifest never bound.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import threading
 import time
@@ -54,7 +55,33 @@ def _tool_call(index: int, path: str, content: str) -> dict:
     }
 
 
-def script_turns(script: ScriptId) -> list[dict]:
+#: The CLI's `write_file` schema says: "The absolute path to the file to write
+#: to. Relative paths are not supported." Sending relative paths produced tool
+#: calls the CLI accepted and silently did not execute -- the run completed,
+#: the summary turn arrived, and no candidate file existed. Rooting the paths
+#: is what makes the call actually run.
+WORKSPACE_ROOT = "/workspace"
+
+#: Placed in `probe_source.txt` by the controller and written back out by the
+#: agent. It can only reach the written file by being read first, which is what
+#: makes read capability observable rather than asserted.
+PROBE_MARKER = "APOAPSIS-CAPABILITY-MARKER-7P5"
+
+
+def tool_schema_digest(tools: object) -> str:
+    """One digest over the whole declared tool schema, not just the names.
+
+    Names alone would miss a changed parameter contract -- and a changed
+    contract is precisely what makes a tool call look right and never execute,
+    as the relative-vs-absolute `file_path` requirement already demonstrated.
+    """
+
+    return hashlib.sha256(
+        json.dumps(tools, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+def script_turns(script: ScriptId, *, root: str = WORKSPACE_ROOT) -> list[dict]:
     """Turn a scripted change set into successive assistant messages.
 
     One turn carrying every `write_file` call, then a turn with no tool calls
@@ -64,8 +91,121 @@ def script_turns(script: ScriptId) -> list[dict]:
 
     turn = SCRIPTS[script][0]
     proposal = json.loads(turn.content)
+
+    if script is ScriptId.WEB_FETCH_EGRESS_PROBE:
+        # Calls the tool rather than reasoning about it. `web_fetch` being in
+        # the surface is acceptable; a successful fetch under `--network none`
+        # would not be, and only invoking it distinguishes the two.
+        return [
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_egress",
+                        "type": "function",
+                        "function": {
+                            "name": "web_fetch",
+                            # Both `url` and `prompt` are required; sending
+                            # either alone yields "params must have required
+                            # property ...", so the tool rejects the call and
+                            # NO fetch is attempted. A classifier that treated
+                            # any error as a refusal would score that schema
+                            # complaint as proof of containment.
+                            #
+                            # The caller passes a unique URL per run because
+                            # the tool serves repeat fetches of the same URL
+                            # from a 15-minute local cache -- a cache hit would
+                            # not exercise the network boundary at all.
+                            "arguments": json.dumps(
+                                {
+                                    "url": proposal["url"],
+                                    "prompt": proposal["prompt"],
+                                }
+                            ),
+                        },
+                    }
+                ],
+                "finish_reason": "tool_calls",
+            },
+            {
+                "role": "assistant",
+                "content": proposal["summary"],
+                "tool_calls": None,
+                "finish_reason": turn.finish_reason,
+            },
+        ]
+
+    if script is ScriptId.CAPABILITY_PROBE:
+        # Three tools, one per capability, so a partial surface shows up as a
+        # partial result instead of a single opaque failure.
+        return [
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_read",
+                        "type": "function",
+                        "function": {
+                            "name": "read_file",
+                            "arguments": json.dumps(
+                                {"absolute_path": f"{root}/probe_source.txt"}
+                            ),
+                        },
+                    }
+                ],
+                "finish_reason": "tool_calls",
+            },
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_write",
+                        "type": "function",
+                        "function": {
+                            "name": "write_file",
+                            "arguments": json.dumps(
+                                {
+                                    "file_path": f"{root}/probe_written.txt",
+                                    "content": PROBE_MARKER + "\n",
+                                }
+                            ),
+                        },
+                    },
+                    {
+                        "id": "call_shell",
+                        "type": "function",
+                        "function": {
+                            "name": "run_shell_command",
+                            "arguments": json.dumps(
+                                {
+                                    "command": (
+                                        f"echo SHELL_RAN > {root}/probe_shell.txt"
+                                    ),
+                                    "description": "prove shell capability",
+                                }
+                            ),
+                        },
+                    },
+                ],
+                "finish_reason": "tool_calls",
+            },
+            {
+                "role": "assistant",
+                "content": proposal["summary"],
+                "tool_calls": None,
+                "finish_reason": turn.finish_reason,
+            },
+        ]
+
     calls = [
-        _tool_call(index, change["path"], change["content"])
+        _tool_call(
+            index,
+            f"{root.rstrip('/')}/{change['path'].lstrip('/')}",
+            change["content"],
+        )
         for index, change in enumerate(proposal["changes"])
     ]
     return [
@@ -115,6 +255,43 @@ class FakeProviderServer:
     def request_count(self) -> int:
         with self._lock:
             return len(self._requests)
+
+    @property
+    def observed_tool_names(self) -> tuple[str, ...]:
+        """The tool surface the CLI actually declared, taken off the wire.
+
+        This is the authoritative answer, and it is not the one a static probe
+        gives: searching the installed bundle matches vendored files, and the
+        manifest's expectation came from a wire capture of a *different* image.
+        What the CLI sends in `tools` is what the CLI has.
+        """
+
+        with self._lock:
+            for entry in self._requests:
+                body = entry.get("body")
+                if not isinstance(body, dict):
+                    continue
+                tools = body.get("tools")
+                if not tools:
+                    continue
+                names = {
+                    (tool.get("function") or tool).get("name")
+                    for tool in tools
+                    if isinstance(tool, dict)
+                }
+                return tuple(sorted(name for name in names if name))
+        return ()
+
+    @property
+    def observed_tool_schema(self) -> list | None:
+        """The complete `tools` array the CLI declared, for digesting."""
+
+        with self._lock:
+            for entry in self._requests:
+                body = entry.get("body")
+                if isinstance(body, dict) and body.get("tools"):
+                    return body["tools"]
+        return None
 
     @property
     def requests(self) -> list[dict]:
@@ -180,6 +357,48 @@ class FakeProviderServer:
                 self.end_headers()
                 self.wfile.write(body)
 
+            def _send_stream(self, turn: dict) -> None:
+                """Emit the turn as Server-Sent Events.
+
+                Tool calls in a streamed delta carry an `index`, which a
+                non-streamed message does not. Omitting it makes the CLI
+                discard the call, so the shapes are not interchangeable.
+                """
+
+                identifier = f"chatcmpl-rehearsal-{server._served:03d}"
+
+                def event(delta: dict, finish: str | None) -> bytes:
+                    payload = {
+                        "id": identifier,
+                        "object": "chat.completion.chunk",
+                        "created": int(time.time()),
+                        "model": server.model_name,
+                        "choices": [
+                            {"index": 0, "delta": delta, "finish_reason": finish}
+                        ],
+                    }
+                    return b"data: " + json.dumps(payload).encode("utf-8") + b"\n\n"
+
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.send_header("Cache-Control", "no-cache")
+                self.send_header("Connection", "close")
+                self.end_headers()
+
+                self.wfile.write(event({"role": "assistant"}, None))
+                if turn["tool_calls"]:
+                    for index, call in enumerate(turn["tool_calls"]):
+                        self.wfile.write(
+                            event({"tool_calls": [{"index": index, **call}]}, None)
+                        )
+                    self.wfile.write(event({}, "tool_calls"))
+                else:
+                    if turn["content"]:
+                        self.wfile.write(event({"content": turn["content"]}, None))
+                    self.wfile.write(event({}, turn["finish_reason"]))
+                self.wfile.write(b"data: [DONE]\n\n")
+                self.wfile.flush()
+
             def do_GET(self) -> None:  # noqa: N802
                 server._record("GET", self.path, None)
                 # Relay readiness probes `/health` before any token is spent.
@@ -220,6 +439,14 @@ class FakeProviderServer:
                     return
 
                 turn = server._next_turn()
+                # The CLI asks for SSE. Answering a streaming request with
+                # application/json produces "Streaming request received a
+                # non-SSE response", the tool calls are never executed, and the
+                # slot silently produces no candidate -- which would look like
+                # a capability failure rather than a provider defect.
+                if request.get("stream"):
+                    self._send_stream(turn)
+                    return
                 message = {"role": "assistant", "content": turn["content"]}
                 if turn["tool_calls"]:
                     message["tool_calls"] = turn["tool_calls"]

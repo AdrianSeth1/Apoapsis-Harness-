@@ -438,6 +438,18 @@ def validate_criteria_mapping(package: ResolvedCasePackage) -> None:
     contract = _read_json(package, "plan-contract.json")
     mapped = {item["criterion_id"] for item in criteria}
     for obligation in contract["obligations"]:
+        # An obligation that names *no* criteria has to be rejected explicitly.
+        # The subtraction below cannot see it: `set() - mapped` is empty, so an
+        # empty criteria list produced no unmapped entries and passed as though
+        # it were fully mapped. That is the worst possible reading -- an
+        # obligation nothing proves is indistinguishable from one everything
+        # proves -- and it is exactly the hole a negative control aims at.
+        if not obligation["criteria"]:
+            raise CasePackageError(
+                f"obligation {obligation['obligation_id']!r} names no criteria, "
+                "so nothing proves it; an unmapped obligation must not read as "
+                "a satisfied one"
+            )
         unmapped = set(obligation["criteria"]) - mapped
         if unmapped:
             raise CasePackageError(

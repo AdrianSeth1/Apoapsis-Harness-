@@ -352,6 +352,41 @@ def decide_verdict(
             f"these pairs are not comparable: {sorted(incomparable)}",
         )
 
+    # An empty tuple of pair scores previously reached PASS, because every
+    # check above is a loop or an `any` over pair_scores and all of them are
+    # vacuously satisfied by nothing. Three populated pairs are the comparison
+    # the pilot exists to make, so their absence is an absent measurement.
+    if len(pair_scores) != 3:
+        return (
+            RehearsalVerdict.NOT_MEASURABLE,
+            f"{len(pair_scores)} pair scores were produced; the pilot compares "
+            "three repetitions, and a missing pair is an unmeasured comparison "
+            "rather than a passing one",
+        )
+
+    unpopulated = [
+        item.repetition_id
+        for item in pair_scores
+        if item.control_proposal_quality is None
+        or item.sandbox_proposal_quality is None
+        or item.sandbox_detection_quality is None
+    ]
+    if unpopulated:
+        return (
+            RehearsalVerdict.NOT_MEASURABLE,
+            f"these pairs carry no scores: {sorted(unpopulated)}. `regressed` "
+            "is False when a score is None, so an unpopulated pair would "
+            "otherwise read exactly like a pair that did not regress",
+        )
+
+    regressed = [item.repetition_id for item in pair_scores if item.regressed]
+    if regressed:
+        return (
+            RehearsalVerdict.FAIL_REHEARSAL,
+            f"the sandbox arm scored below control in {sorted(regressed)}; a "
+            "better mean across the other pairs must not offset it",
+        )
+
     return (
         RehearsalVerdict.PASS_LIVE_PREFLIGHT_AUTHORIZED,
         "every stage passed, six slots rehearsed, all injected controls caught "

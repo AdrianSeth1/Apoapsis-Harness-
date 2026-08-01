@@ -248,6 +248,12 @@ class QwenIdentity(StrictModel):
     expected_tool_names: tuple[str, ...] = Field(min_length=1)
     expected_tool_names_sha256: str = Field(pattern=_SHA256)
     expected_native_tool_count: int = Field(ge=1)
+    #: Digest of the *full* tool schema the CLI puts on the wire, not just the
+    #: names. Names alone would not notice a parameter being added, removed or
+    #: retyped, and `web_fetch` requiring both `url` and `prompt` is exactly
+    #: the kind of detail a name-only pin cannot express. Optional so v2
+    #: manifests still load; the runner requires it from v3 onward.
+    expected_tool_schema_sha256: str | None = Field(default=None, pattern=_SHA256)
     qwen_home: str = Field(min_length=1)
     #: Where the expected tool surface came from. Static package presence is
     #: explicitly insufficient: Slice 2C found an image whose CLI exposed 57

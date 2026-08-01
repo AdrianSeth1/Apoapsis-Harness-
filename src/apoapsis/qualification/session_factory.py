@@ -62,11 +62,21 @@ def build_workcell_config(
     socket_directory: Path,
     upstream_base_url: str,
     forwarder_path: Path | None = None,
+    task_artifact_path: Path | None = None,
 ) -> WorkcellConfig:
-    """Assemble the config. Every pinned value is read from the manifest."""
+    """Assemble the config. Every pinned value is read from the manifest.
+
+    `forwarder_path` and `task_artifact_path` exist because bind-mount sources
+    are resolved by the *daemon*, not inside the controller. A path that exists
+    only in this container -- `/opt/apoapsis/docs/...` -- is created by Docker
+    as an empty directory, so `/task/task.md` arrives as a directory and every
+    check against it fails. This was found once for the forwarder and fixed
+    only there; the task artifact had the identical defect. Callers pass
+    host-resolvable copies for both.
+    """
 
     package_root = repo / manifest.crisis_atlas.package_root
-    task_artifact = package_root / "task.md"
+    task_artifact = Path(task_artifact_path or package_root / "task.md")
     if not task_artifact.is_file():
         raise SessionFactoryError(f"the task artifact is missing at {task_artifact}")
 

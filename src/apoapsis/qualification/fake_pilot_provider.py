@@ -37,6 +37,15 @@ from apoapsis.specification.schema import StrictModel
 class ScriptId(StrEnum):
     INCOMPLETE_PROPOSAL = "incomplete_proposal"
     COMPLETE_PROPOSAL = "complete_proposal"
+    #: Proves read, write and shell behaviourally, in a sacrificial repository.
+    #: Behavioural because the static alternative does not work: a string
+    #: search over the bundle reports `read_file` present because a vendored
+    #: `miniaudio.h` contains those characters.
+    CAPABILITY_PROBE = "capability_probe"
+    #: Invokes `web_fetch` against an external origin. The tool's *presence* is
+    #: acceptable; a successful undeclared egress is not, and the only way to
+    #: know which happened is to call it and watch.
+    WEB_FETCH_EGRESS_PROBE = "web_fetch_egress_probe"
     OUTPUT_CEILING_TRUNCATION = "output_ceiling_truncation"
     INPUT_CONTEXT_EXHAUSTED = "input_context_exhausted"
     UNCLASSIFIED_STOP_REASON = "unclassified_stop_reason"
@@ -153,6 +162,42 @@ SCRIPTS: dict[ScriptId, tuple[ScriptedTurn, ...]] = {
             input_tokens=14_002,
             output_tokens=2_310,
             session_total_tokens=16_312,
+        ),
+    ),
+    ScriptId.CAPABILITY_PROBE: (
+        ScriptedTurn(
+            content=_change_set(
+                "Probe read, write and shell capability",
+                {
+                    # The marker can only reach `probe_written.txt` by being
+                    # read out of `probe_source.txt` first.
+                    "probe_written.txt": "MARKER-PLACEHOLDER\n",
+                },
+            ),
+            finish_reason="stop",
+            input_tokens=900,
+            output_tokens=120,
+            session_total_tokens=1_020,
+        ),
+    ),
+    ScriptId.WEB_FETCH_EGRESS_PROBE: (
+        ScriptedTurn(
+            content=json.dumps(
+                {
+                    "action": "web_fetch",
+                    "summary": "attempt undeclared egress",
+                    # A cache-busting query keeps this out of web_fetch's
+                    # 15-minute same-URL cache, so every run actually reaches
+                    # for the network instead of replaying a stored answer.
+                    "url": "https://example.com/?apoapsis-egress-probe",
+                    "prompt": "Report the first line of this page.",
+                },
+                sort_keys=True,
+            ),
+            finish_reason="tool_calls",
+            input_tokens=800,
+            output_tokens=40,
+            session_total_tokens=840,
         ),
     ),
     ScriptId.OUTPUT_CEILING_TRUNCATION: (

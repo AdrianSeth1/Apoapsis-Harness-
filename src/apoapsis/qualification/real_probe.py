@@ -380,6 +380,80 @@ class RealCasePackageProbe:
 
         return self._observe(record, record_dir)
 
+    def run_checkpoint_on_worktree(
+        self, *, worktree: Path, label: str
+    ) -> CheckpointObservation:
+        """Score a worktree the agent produced, rather than a packaged candidate.
+
+        `run_checkpoint` exists to qualify the *package*: it applies a named
+        candidate from the package to a fresh clone, which is exactly right for
+        proving the case detects what it claims to. It is the wrong instrument
+        for a slot, because the thing under test there is what Qwen wrote, and
+        a packaged candidate would score the package again while looking like
+        it had scored the agent.
+
+        The base clone is still taken fresh from the seed, so the diff is
+        against the same starting point every slot began from.
+        """
+
+        self._checkpoints += 1
+        record_dir = self.evidence_root / f"checkpoint-{self._checkpoints:02d}-{label}"
+        record_dir.mkdir(parents=True, exist_ok=True)
+
+        with tempfile.TemporaryDirectory() as scratch:
+            workspace = Path(scratch)
+            base = workspace / "base"
+            candidate_tree = workspace / "candidate"
+
+            self._observer.clone_seed(destination=base)
+            shutil.rmtree(base / ".git")
+
+            # A copy, so the checkpoint cannot mutate the evidence it is
+            # reading, and without `.git`, which would otherwise show up as a
+            # difference the checkpoint attributes to the agent.
+            shutil.copytree(worktree, candidate_tree)
+            git_dir = candidate_tree / ".git"
+            if git_dir.exists():
+                shutil.rmtree(git_dir)
+
+            artifact = record_dir / "coverage.json"
+            emitted: list[str] = []
+
+            def emit(snapshot: Path, fingerprint: str):
+                def runner(argv, *, timeout_seconds):
+                    completed = subprocess.run(  # noqa: S603
+                        argv,
+                        cwd=snapshot,
+                        capture_output=True,
+                        text=True,
+                        env=_clean_environment(),
+                        timeout=timeout_seconds,
+                    )
+                    return completed.returncode, completed.stdout, completed.stderr
+
+                witness = emit_test_witness(
+                    runner,
+                    command_name="unit-tests",
+                    command_version="1",
+                    argv=[self.python, str(self._runner_script), str(artifact)],
+                    worktree_fingerprint=fingerprint,
+                    coverage_artifact=artifact,
+                    criteria_proved=self._acceptance_claimed_criteria(),
+                    collection_method="stdlib trace module",
+                )
+                emitted.append(witness.witness_id)
+                return [witness]
+
+            record = run_checkpoint(
+                self._contract(),
+                base_root=base,
+                candidate_root=candidate_tree,
+                snapshot_root=workspace / "snapshot",
+                emit_witnesses=emit,
+            )
+
+        return self._observe(record, record_dir)
+
     def _observe(self, record, record_dir: Path) -> CheckpointObservation:
         """Translate one `CheckpointRecord` into what the proofs ask about.
 
