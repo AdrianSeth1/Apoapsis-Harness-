@@ -23,4 +23,12 @@ from __future__ import annotations
 
 collect_ignore_glob = [
     "docs/qualification/pilot/*",
+    # Worktrees an arm actually produced, preserved as evidence. They are the
+    # *output* of a run against the evaluation seed, so their tests import that
+    # seed's packages -- `calc`, `crisis_atlas` -- which exist there and must
+    # never exist here. Collecting them aborts the whole run at import time,
+    # which reads like a broken suite and is really this same boundary being
+    # crossed one directory further along.
+    "docs/evaluation/*/produced-worktree/*",
+    "docs/evaluation/*/*/produced-worktree/*",
 ]
