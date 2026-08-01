@@ -275,7 +275,14 @@ def run_relay_fault(
         config = ModelRelayConfig(
             upstream_base_url=upstream.base_url,
             socket_path=str(socket_path),
-            allowed_routes=["POST /v1/chat/completions"],
+            # Paths, not "METHOD PATH". `RelayPin` records verbs because a
+            # run's identity includes which were reachable; `ModelRelayConfig`
+            # narrows the built-in allowlist by path and rejects anything it
+            # cannot recognise as a narrowing. Passing the pin's format here
+            # raised a validation error the first time these faults were ever
+            # injected -- which was during the official rehearsal, because no
+            # test had run them.
+            allowed_routes=["/v1/chat/completions"],
             upstream_timeout_seconds=upstream_timeout_seconds,
             stream_write_timeout_seconds=stream_write_timeout_seconds,
             idle_timeout_seconds=upstream_timeout_seconds * 2,
@@ -315,7 +322,9 @@ def run_relay_fault(
 
         # Give the relay a moment to finish recording and retire its worker.
         time.sleep(1.0)
-        stats = relay.stats()
+        # A property, not a method. `relay.stats()` raised
+        # "'RelayStats' object is not callable" on the first real injection.
+        stats = relay.stats
         stopped = relay.stop()
 
     duration = time.monotonic() - started

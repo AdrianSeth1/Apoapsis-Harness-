@@ -257,5 +257,64 @@ class NegativeControlsAreExecutedNotDescribedTests(unittest.TestCase):
                 self.assertTrue(item.correctly_detected, item.model_dump(mode="json"))
 
 
+class RelayFaultsAreInjectedAgainstARealRelayTests(unittest.TestCase):
+    """Stage 3's fault machinery must be executable, not merely bound.
+
+    `relay_faults.py` was bound as authority from v3 onward and no test had
+    ever called it. It configured its relay with `["POST /v1/chat/completions"]`
+    -- the pin's "METHOD PATH" form -- where `ModelRelayConfig` narrows by path
+    and rejects anything else, so the first injection raised a validation error
+    and took the whole rehearsal down with it. A bound module nothing runs is
+    bound in name only.
+
+    Loopback Unix sockets only; no container, no model, no external network.
+    """
+
+    def test_all_five_faults_are_injected_and_recorded(self) -> None:
+        """Every fault must reach the relay and be recorded as a request."""
+
+        from apoapsis.qualification.relay_faults import run_all_relay_faults
+
+        sockets = Path(tempfile.mkdtemp(prefix="relay-faults-")) / "sockets"
+        report = run_all_relay_faults(socket_directory=sockets)
+
+        self.assertGreaterEqual(len(report.outcomes), 5)
+        for outcome in report.outcomes:
+            with self.subTest(fault=str(outcome.fault)):
+                self.assertIsNone(outcome.error, outcome.error)
+                self.assertTrue(outcome.relay_responded)
+                self.assertTrue(outcome.recorded)
+                self.assertTrue(outcome.no_worker_leaked)
+
+    @unittest.expectedFailure
+    def test_no_fault_is_reported_to_the_client_as_a_complete_answer(self) -> None:
+        """Known open defect, kept under test rather than described in prose.
+
+        Injecting the five faults for the first time -- Stage 3 had never run --
+        showed the relay converting two of them into apparent successes:
+
+        * `upstream_disconnect`: the upstream closes mid-stream and the client
+          receives HTTP 200 with a truncated body. No cancellation is recorded
+          and `upstream_failures` stays 0.
+        * `dropped_stream`: same shape. 200, half an answer, nothing recorded.
+
+        `upstream_timeout`, `backpressure` and `client_cancellation` are handled
+        correctly, so this is specific rather than a relay that records nothing.
+
+        A truncated answer presented as a complete one is the exact failure the
+        pilot's telemetry classification exists to prevent, and it would be
+        indistinguishable from a short model reply in a live run. Marked
+        expected-failure rather than deleted or weakened, so it starts passing
+        by itself when the relay records these two as failures -- and so an
+        unexpected success is reported rather than silently absorbed.
+        """
+
+        from apoapsis.qualification.relay_faults import run_all_relay_faults
+
+        sockets = Path(tempfile.mkdtemp(prefix="relay-faults-")) / "sockets"
+        report = run_all_relay_faults(socket_directory=sockets)
+        self.assertTrue(report.all_handled, list(report.unhandled))
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
