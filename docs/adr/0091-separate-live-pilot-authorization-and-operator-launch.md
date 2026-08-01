@@ -24,10 +24,12 @@ edited or reinterpreted.
 The operator must also pass the literal acknowledgement
 `I-AUTHORIZE-SIX-LOCAL-INFERENCE-ARMS`. The supplied WSL launcher is the only
 supported entry point. It selects the controller by immutable image id, mounts
-only the Docker socket, the committed seed, durable evidence, and the pinned
-read-only model/server files, and gives the controller host networking. Each
-agent workcell remains `--network none`; its only egress remains the
-controller-owned Unix-socket relay.
+only the Docker socket, the committed seed, durable evidence, the bound
+qualification/evaluation inputs, and the pinned read-only model/server files,
+and gives the controller host networking. The docs mount is data, not an
+executable-source override; the runner modules remain the bytes baked into the
+immutable image. Each agent workcell remains `--network none`; its only egress
+remains the controller-owned Unix-socket relay.
 
 Immediately before spend, the runner rehashes the GGUF, launcher, and complete
 llama/ggml dependency closure, refuses an already-running server, and reobserves

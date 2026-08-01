@@ -2,8 +2,8 @@
 set -euo pipefail
 
 # Run from Ubuntu-24.04 under WSL2.  The controller image contains only the
-# committed runner; this checkout contributes the authorization document and
-# nothing executable.
+# committed runner; this checkout contributes the authorization and its bound
+# read-only qualification/evaluation inputs, but nothing executable.
 REPO="$(git rev-parse --show-toplevel)"
 AUTH="${REPO}/docs/qualification/slice7-crisis-atlas-live-authorization-v1.json"
 SEED="${APOAPSIS_CRISIS_ATLAS_SEED:-/home/arya/apoapsis-7p2s/.apoapsis-eval/slice-e-crisis-atlas-seed-2026-07-29}"
@@ -22,6 +22,7 @@ docker run --rm --pull never --network host --gpus all \
   --name apoapsis-crisis-atlas-live-pilot \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -v "${AUTH}:/authorization.json:ro" \
+  -v "${REPO}/docs:/opt/apoapsis/docs:ro" \
   -v "${SEED}:${SEED}:ro" \
   -v "${EVIDENCE}:${EVIDENCE}:rw" \
   -v /home/arya/llama.cpp:/home/arya/llama.cpp:ro \

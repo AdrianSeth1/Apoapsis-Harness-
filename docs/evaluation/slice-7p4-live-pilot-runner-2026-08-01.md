@@ -37,7 +37,9 @@ The full-suite log is retained outside the repository at
 
 The supported entry point is `tools/run_crisis_atlas_live_pilot.sh` from
 Ubuntu-24.04 under WSL2. It refuses an existing evidence directory and requires
-the literal acknowledgement `I-AUTHORIZE-SIX-LOCAL-INFERENCE-ARMS`. It runs the
+the literal acknowledgement `I-AUTHORIZE-SIX-LOCAL-INFERENCE-ARMS`. The image
+contains the committed executable runner; the launcher supplies its locked
+qualification/evaluation inputs through a read-only docs mount. It runs the
 frozen six slots and stops at `six_slots_complete_pending_independent_scoring`;
 the resulting proposal-quality and harness-detection scores remain independent
 review work.

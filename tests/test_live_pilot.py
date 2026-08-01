@@ -46,6 +46,12 @@ def authorization(module: Path) -> dict:
 
 
 class LiveAuthorizationTests(unittest.TestCase):
+    def test_operator_launcher_mounts_bound_docs_read_only(self):
+        launcher = (REPO / "tools/run_crisis_atlas_live_pilot.sh").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('${REPO}/docs:/opt/apoapsis/docs:ro', launcher)
+
     def test_server_detection_reads_procfs_without_external_tools(self):
         from apoapsis.qualification.live_pilot import _llama_server_pids
 
