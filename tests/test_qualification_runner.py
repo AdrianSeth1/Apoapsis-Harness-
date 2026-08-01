@@ -62,6 +62,7 @@ def _manifest() -> PilotManifest:
     """
 
     for name in (
+        "slice7-crisis-atlas-pilot-manifest-v5.json",
         "slice7-crisis-atlas-pilot-manifest-v4.json",
         "slice7-crisis-atlas-pilot-manifest-v3.json",
         "slice7-crisis-atlas-pilot-manifest-v2.json",
@@ -215,14 +216,14 @@ class NegativeControlsAreExecutedNotDescribedTests(unittest.TestCase):
                 "cannot substitute anything for it"
             )
         self.manifest = _manifest()
-        lock_path = QUALIFICATION / "slice7-crisis-atlas-pilot-lock-v4.json"
+        lock_path = QUALIFICATION / "slice7-crisis-atlas-pilot-lock-v5.json"
         if not lock_path.exists():
             self.skipTest("no lock yet; this is the manifest commit")
         self.lock = PilotLock.model_validate_json(
             lock_path.read_text(encoding="utf-8")
         )
         self.manifest_path = (
-            QUALIFICATION / "slice7-crisis-atlas-pilot-manifest-v4.json"
+            QUALIFICATION / "slice7-crisis-atlas-pilot-manifest-v5.json"
         )
 
     @staticmethod

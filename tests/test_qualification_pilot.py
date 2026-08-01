@@ -35,16 +35,24 @@ REPO = Path(__file__).resolve().parents[1]
 #: evidence digest, and rewriting it to match would destroy the record of what
 #: was actually locked when.
 MANIFEST_PATH = (
+    REPO / "docs" / "qualification" / "slice7-crisis-atlas-pilot-manifest-v5.json"
+)
+LOCK_PATH = REPO / "docs" / "qualification" / "slice7-crisis-atlas-pilot-lock-v5.json"
+#: The pair v5 supersedes. Preserved unedited: v4 bound a relay that reported
+#: truncated responses as successes, and its rehearsal halted in Stage 3 without
+#: producing a verdict.
+SUPERSEDED_MANIFEST_PATH = (
     REPO / "docs" / "qualification" / "slice7-crisis-atlas-pilot-manifest-v4.json"
 )
-LOCK_PATH = REPO / "docs" / "qualification" / "slice7-crisis-atlas-pilot-lock-v4.json"
-#: The pair v4 supersedes. Preserved unedited: v3 bound a runner whose stage 6
-#: raised TypeError the first time it executed, so it could not complete a
-#: rehearsal and never authorised anything.
-SUPERSEDED_MANIFEST_PATH = (
+SUPERSEDED_LOCK_PATH = (
+    REPO / "docs" / "qualification" / "slice7-crisis-atlas-pilot-lock-v4.json"
+)
+#: v3, superseded by v4: it bound a runner whose stage 6 raised TypeError the
+#: first time it executed.
+V3_MANIFEST_PATH = (
     REPO / "docs" / "qualification" / "slice7-crisis-atlas-pilot-manifest-v3.json"
 )
-SUPERSEDED_LOCK_PATH = (
+V3_LOCK_PATH = (
     REPO / "docs" / "qualification" / "slice7-crisis-atlas-pilot-lock-v3.json"
 )
 #: v2, superseded by v3: it expected a 13-tool surface the image never had,
@@ -549,10 +557,16 @@ class SupersessionTests(unittest.TestCase):
         self.assertTrue(SUPERSEDED_MANIFEST_PATH.is_file())
         self.assertTrue(SUPERSEDED_LOCK_PATH.is_file())
         old = json.loads(SUPERSEDED_MANIFEST_PATH.read_text(encoding="utf-8"))
-        self.assertEqual(old["manifest_id"], "slice7-crisis-atlas-pilot-v3")
+        self.assertEqual(old["manifest_id"], "slice7-crisis-atlas-pilot-v4")
         self.assertEqual(old["schema_version"], "2.0")
-        # v2 and v1 are still there behind v3. Supersession is a chain, not a
-        # swap: each link records a defect that was real when it was locked.
+        # v3, v2 and v1 are still there behind v4. Supersession is a chain, not
+        # a swap: each link records a defect that was real when it was locked.
+        self.assertTrue(V3_MANIFEST_PATH.is_file())
+        self.assertTrue(V3_LOCK_PATH.is_file())
+        self.assertEqual(
+            json.loads(V3_MANIFEST_PATH.read_text(encoding="utf-8"))["manifest_id"],
+            "slice7-crisis-atlas-pilot-v3",
+        )
         self.assertTrue(V2_MANIFEST_PATH.is_file())
         self.assertTrue(V2_LOCK_PATH.is_file())
         self.assertEqual(
@@ -573,10 +587,10 @@ class SupersessionTests(unittest.TestCase):
         self.assertTrue(block["preserved_not_edited"])
         self.assertEqual(
             block["manifest_path"],
-            "docs/qualification/slice7-crisis-atlas-pilot-manifest-v3.json",
+            "docs/qualification/slice7-crisis-atlas-pilot-manifest-v4.json",
         )
         reasons = " ".join(block["invalid_because"])
-        self.assertIn("runner", reasons)
+        self.assertIn("relay", reasons)
 
     def test_the_old_lock_cannot_authorise_the_new_manifest(self) -> None:
         old_lock = PilotLock.model_validate_json(
@@ -639,20 +653,30 @@ class SupersededV2CannotAuthoriseAnythingTests(unittest.TestCase):
             V2_LOCK_PATH.read_text(encoding="utf-8")
         )
         self.v3_manifest = PilotManifest.model_validate_json(
-            SUPERSEDED_MANIFEST_PATH.read_text(encoding="utf-8")
+            V3_MANIFEST_PATH.read_text(encoding="utf-8")
         )
         self.v3_lock = PilotLock.model_validate_json(
+            V3_LOCK_PATH.read_text(encoding="utf-8")
+        )
+        self.v4_manifest = PilotManifest.model_validate_json(
+            SUPERSEDED_MANIFEST_PATH.read_text(encoding="utf-8")
+        )
+        self.v4_lock = PilotLock.model_validate_json(
             SUPERSEDED_LOCK_PATH.read_text(encoding="utf-8")
         )
         self.manifest = load_manifest()
 
     def test_the_superseded_pair_is_recorded_at_its_real_digests(self) -> None:
         block = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))["supersedes"]
-        self.assertEqual(block["manifest_digest"], self.v3_manifest.digest())
-        self.assertEqual(block["lock_digest"], self.v3_lock.digest())
+        self.assertEqual(block["manifest_digest"], self.v4_manifest.digest())
+        self.assertEqual(block["lock_digest"], self.v4_lock.digest())
 
     def test_no_superseded_lock_can_authorise_the_current_manifest(self) -> None:
-        for name, lock in (("v2", self.v2_lock), ("v3", self.v3_lock)):
+        for name, lock in (
+            ("v2", self.v2_lock),
+            ("v3", self.v3_lock),
+            ("v4", self.v4_lock),
+        ):
             with self.subTest(lock=name):
                 decision = authorize_rehearsal(self.manifest, lock)
                 self.assertFalse(decision.authorized)
@@ -687,29 +711,61 @@ class SupersededV2CannotAuthoriseAnythingTests(unittest.TestCase):
         # `web_fetch` is present, and its presence is not the containment claim.
         self.assertIn("web_fetch", self.manifest.qwen.expected_tool_names)
 
-    def test_the_v3_runner_could_not_complete_stage_six(self) -> None:
-        """Why v3 was superseded, asserted against v3's own bound bytes.
+    def _bound(self, manifest, path: str) -> str:
+        return {
+            item["path"]: item["sha256"]
+            for item in manifest.pilot_authority.bound_modules
+        }[path]
+
+    def test_each_supersession_changed_the_module_it_blames(self) -> None:
+        """Why each pair was superseded, asserted against its own bound bytes.
 
         v3 bound a `runner.py` whose control 14 raised `TypeError` on its first
-        execution. The manifest records that; this checks the record is about
-        the module v3 actually bound, not a story told afterwards.
+        execution; v4 bound a `relay.py` that reported truncated responses as
+        successes. Both manifests record that. This checks the records are about
+        modules that actually changed, rather than stories told afterwards.
         """
 
-        v3_runner = {
-            item["path"]: item["sha256"]
-            for item in self.v3_manifest.pilot_authority.bound_modules
-        }["src/apoapsis/qualification/runner.py"]
-        current_runner = {
-            item["path"]: item["sha256"]
-            for item in self.manifest.pilot_authority.bound_modules
-        }["src/apoapsis/qualification/runner.py"]
-        self.assertNotEqual(v3_runner, current_runner)
+        self.assertNotEqual(
+            self._bound(self.v3_manifest, "src/apoapsis/qualification/runner.py"),
+            self._bound(self.v4_manifest, "src/apoapsis/qualification/runner.py"),
+        )
+        self.assertNotEqual(
+            self._bound(self.v4_manifest, "src/apoapsis/workcell/relay.py"),
+            self._bound(self.manifest, "src/apoapsis/workcell/relay.py"),
+        )
         reasons = " ".join(
             json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))["supersedes"][
                 "invalid_because"
             ]
         )
-        self.assertIn("control 14", reasons)
+        self.assertIn("terminal", reasons)
+
+    def test_only_the_modules_that_changed_were_rebound(self) -> None:
+        """v5 moves three modules and leaves the other seventeen alone.
+
+        A revision that rebound everything would make "what changed" unreadable
+        from the manifests, which is most of what the supersession chain is for.
+        """
+
+        v4 = {
+            item["path"]: item["sha256"]
+            for item in self.v4_manifest.pilot_authority.bound_modules
+        }
+        v5 = {
+            item["path"]: item["sha256"]
+            for item in self.manifest.pilot_authority.bound_modules
+        }
+        self.assertEqual(set(v4), set(v5))
+        changed = sorted(path for path in v5 if v4[path] != v5[path])
+        self.assertEqual(
+            changed,
+            [
+                "src/apoapsis/qualification/relay_faults.py",
+                "src/apoapsis/qualification/slot_driver.py",
+                "src/apoapsis/workcell/relay.py",
+            ],
+        )
 
     def test_v3_binds_the_modules_v2_left_unbound(self) -> None:
         v2_paths = {item["path"] for item in self.v2_manifest.pilot_authority.bound_modules}
