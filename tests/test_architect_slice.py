@@ -235,6 +235,7 @@ class SlicePackagingTests(PlanSliceExecutionTestsBase):
             self.operation_store, record.plan_id, "SLICE-1",
             expected_plan_version=record.version, config=config,
         )
+        self.assertEqual(package.approved_plan, record.plan)
         approved = approve_slice(
             self.root, self.task_store, self.slice_store, record.plan_id, "SLICE-1",
             expected_package_sha256=package.package_sha256,

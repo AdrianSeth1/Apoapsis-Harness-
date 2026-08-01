@@ -64,6 +64,21 @@ def _registered_plan_response_payloads(root: Path) -> list[object]:
     return payloads
 
 
+def _plan_response_identity(payload: object) -> tuple[object, ...] | None:
+    if not isinstance(payload, dict):
+        return None
+    return tuple(
+        payload.get(key)
+        for key in (
+            "schema_version",
+            "package_id",
+            "package_sha256",
+            "session_id",
+            "kind",
+        )
+    )
+
+
 def exclude_registered_plan_response_transfers(
     project_root: str | Path,
 ) -> list[str]:
@@ -74,12 +89,16 @@ def exclude_registered_plan_response_transfers(
     it through the browser, which used to make the next execution fail its
     dirty-parent guard. This recovery is deliberately narrow: the candidate
     must be an untracked top-level JSON file using Apoapsis's transfer filename
-    convention, and its parsed payload must exactly equal a canonical response
-    already retained in the discovery audit. The user file is never moved,
-    rewritten, or deleted; only its exact root-relative name is appended to
+    convention, validate as a response envelope, and carry the same
+    cryptographic package/session identity as a canonical response already
+    retained in the discovery audit. The user file is never moved, rewritten,
+    or deleted; only its exact root-relative name is appended to
     ``.git/info/exclude``.
     """
 
+    from pydantic import ValidationError
+
+    from apoapsis.discovery.schema import FrontierPlanningResponseEnvelope
     from apoapsis.specification.pasted_json import PastedJsonError, parse_pasted_json
 
     root = Path(project_root).resolve()
@@ -104,9 +123,13 @@ def exclude_registered_plan_response_transfers(
             payload = parse_pasted_json(
                 candidate.read_text(encoding="utf-8"), what="plan response transfer"
             )
-        except (OSError, UnicodeError, PastedJsonError):
+            FrontierPlanningResponseEnvelope.model_validate(payload)
+        except (OSError, UnicodeError, PastedJsonError, ValidationError):
             continue
-        if any(payload == accepted for accepted in registered):
+        identity = _plan_response_identity(payload)
+        if identity is not None and any(
+            identity == _plan_response_identity(accepted) for accepted in registered
+        ):
             matched.append(candidate_relative.as_posix())
     if not matched:
         return []

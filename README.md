@@ -925,12 +925,14 @@ persistent mode change.
 A manual ChatGPT or Claude response saved in the project folder no longer
 blocks either button after that exact response has been successfully imported.
 At plan-run and ordinary execution preflight, Apoapsis recognizes only a
-top-level `apoapsis-plan-response…json` file whose parsed payload exactly
-matches the canonical response already retained in the discovery audit, then
-adds that exact filename to the repository-local Git exclusions. The response
-file is left in place. A renamed project file, an altered response, a tracked
-file, or any other uncommitted change still stops execution with the normal
-dirty-repository warning.
+top-level `apoapsis-plan-response…json` file that is a schema-valid response
+bound to the same package ID, cryptographic package hash, session, and response
+kind as a canonical response already retained in the discovery audit, then adds
+that exact filename to the repository-local Git exclusions. This also covers a
+second valid response revision saved after the first import. The response file
+is left in place. A renamed project file, a response for a different package,
+a tracked file, or any other uncommitted change still stops execution with the
+normal dirty-repository warning.
 
 The individual CLI workflow remains available for inspection and scripting:
 
@@ -1361,6 +1363,13 @@ ephemeral clones, because a qualification that deleted its own evidence would
 leave the claim and remove the reason to believe it.
 
 ## Capability Sandbox workcell (ADR 0077 and ADR 0095)
+
+Approved plan slices carry the complete approved plan inside their immutable,
+hash-bound slice package (ADR 0097). Plan validation and approval may advance
+the workflow record version without changing plan content; execution therefore
+does not guess a `plan-vN.json` filename from that counter. Packages created
+before ADR 0097 retain the exact versioned-artifact fallback and fail closed if
+that legacy artifact is unavailable.
 
 The workcell runs the real Qwen coding CLI's own native loop inside a
 disposable, hardened container. Apoapsis keeps every durable authority —
