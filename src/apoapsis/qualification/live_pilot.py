@@ -27,7 +27,11 @@ from apoapsis.qualification.fake_pilot_provider import ScriptId
 from apoapsis.qualification.fake_provider_server import FakeProviderServer
 from apoapsis.qualification.runner import stage_1_runtime_identity, stage_2_containment
 from apoapsis.qualification.session_factory import session_factory_from_manifest
-from apoapsis.qualification.slot_driver import controller_address, execute_slot
+from apoapsis.qualification.slot_driver import (
+    WORKCELL_UID,
+    controller_address,
+    execute_slot,
+)
 from apoapsis.specification.schema import StrictModel
 from apoapsis.workcell.events import WorkcellEventAdapter
 
@@ -57,6 +61,13 @@ def _llama_server_pids(proc_root: Path = Path("/proc")) -> tuple[int, ...]:
         if command == "llama-server":
             found.append(int(entry.name))
     return tuple(sorted(found))
+
+
+def _prepare_containment_workspace(path: Path) -> None:
+    """Give the pinned unprivileged workcell its declared editing capability."""
+
+    path.mkdir(parents=True, exist_ok=True)
+    os.chown(path, WORKCELL_UID, WORKCELL_UID)
 
 
 class BoundLiveModule(StrictModel):
@@ -265,7 +276,7 @@ def run_live_pilot(
     provider.start()
     try:
         port = provider.base_url.rsplit(":", 1)[1]
-        (scratch / "containment-workspace").mkdir(parents=True, exist_ok=True)
+        _prepare_containment_workspace(scratch / "containment-workspace")
         session = session_factory_from_manifest(
             manifest, repo=repo, workspace=scratch / "containment-workspace",
             socket_directory=scratch / "containment-sockets",

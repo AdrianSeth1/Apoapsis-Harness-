@@ -1281,7 +1281,10 @@ session continuation. It writes `live-pilot-result.json` as raw evidence
 pending separate scoring; it cannot declare its own pilot successful. Use
 `tools/run_crisis_atlas_live_pilot.sh` from Ubuntu-24.04 only after the
 committed authorization file exists. A new evidence directory is mandatory so
-a retry cannot overwrite a partial run.
+a retry cannot overwrite a partial run. The launcher defaults to the
+operator-writable native-ext4 path
+`/home/arya/apoapsis-live-evidence/crisis-atlas-live-pilot-v2`; an explicit
+first argument replaces that destination.
 
 `RealCasePackageProbe` (`qualification/real_probe.py`) is the real
 implementation. It clones the seed twice per checkpoint — base and candidate

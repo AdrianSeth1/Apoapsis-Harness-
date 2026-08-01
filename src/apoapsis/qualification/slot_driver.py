@@ -38,13 +38,18 @@ from apoapsis.workcell.live_session import LiveWorkcellSession
 
 WORKCELL_UID = 65532
 
-#: Reaching the controller from a sibling container. `host.docker.internal`
-#: points at the Windows host, not at this container, so the provider is
-#: addressed by the controller's own bridge address.
 def controller_address() -> str:
-    import socket
+    """Address an upstream served by the controller process itself.
 
-    return socket.gethostbyname(socket.gethostname())
+    The workcell reaches the controller-owned relay over a Unix socket.  The
+    relay, not the workcell, makes the HTTP request to the upstream, so a fake
+    provider in the same controller process is always loopback.  Resolving the
+    controller hostname happened to work from a native WSL controller but, in
+    a host-networked controller container, resolved to Docker Desktop's host
+    gateway and silently bypassed the local fake provider.
+    """
+
+    return "127.0.0.1"
 
 
 #: The declared placeholder Qwen's OpenAI-compatible client validates against.

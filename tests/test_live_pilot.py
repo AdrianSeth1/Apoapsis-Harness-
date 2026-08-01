@@ -5,15 +5,17 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from apoapsis.qualification.live_pilot import (
     LivePilotError,
     OPERATOR_ACKNOWLEDGEMENT,
+    _prepare_containment_workspace,
     load_authorized_inputs,
     run_live_pilot,
 )
 from apoapsis.qualification.pilot import PilotLock, PilotManifest
-from apoapsis.qualification.slot_driver import run_qwen
+from apoapsis.qualification.slot_driver import WORKCELL_UID, controller_address, run_qwen
 
 REPO = Path(__file__).resolve().parents[1]
 MANIFEST = REPO / "docs/qualification/slice7-crisis-atlas-pilot-manifest-v8.json"
@@ -46,6 +48,19 @@ def authorization(module: Path) -> dict:
 
 
 class LiveAuthorizationTests(unittest.TestCase):
+    def test_fake_provider_is_controller_local_even_inside_host_networking(self):
+        self.assertEqual(controller_address(), "127.0.0.1")
+
+    def test_containment_workspace_is_owned_by_the_pinned_workcell_user(self):
+        with tempfile.TemporaryDirectory() as raw, patch(
+            "os.chown", create=True
+        ) as chown:
+            workspace = Path(raw) / "workspace"
+            _prepare_containment_workspace(workspace)
+            self.assertTrue(workspace.is_dir())
+
+        chown.assert_called_once_with(workspace, WORKCELL_UID, WORKCELL_UID)
+
     def test_operator_launcher_mounts_bound_docs_read_only(self):
         launcher = (REPO / "tools/run_crisis_atlas_live_pilot.sh").read_text(
             encoding="utf-8"

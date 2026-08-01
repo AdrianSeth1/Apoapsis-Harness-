@@ -46,3 +46,22 @@ qualification/evaluation inputs through a read-only docs mount. It runs the
 frozen six slots and stops at `six_slots_complete_pending_independent_scoring`;
 the resulting proposal-quality and harness-detection scores remain independent
 review work.
+
+## First operator attempt: refused before inference
+
+The first operator attempt wrote
+`/home/arya/crisis-atlas-live-pilot-v1/live-preflight/` and exited with
+`identity=unrun, containment=failed`. Runtime rehashing completed. The fake
+provider transcript was empty, the realised tool surface contained no tools,
+and containment recorded only `workspace-writable` as breached. Inspection
+after exit observed no controller, workcell, `llama-server`, or GPU compute
+process; there was no readiness record and no `live-arms/` evidence. Therefore
+zero model requests and zero arms were consumed.
+
+The direct causes were controller-container topology, not the model: the local
+fake-provider route resolved to Docker Desktop's host gateway instead of
+controller loopback, and the root controller did not transfer the fresh
+workspace to UID 65532. The remediation binds loopback explicitly, transfers
+that ownership before containment, and changes the default evidence location
+from the root-owned rehearsal directory to an operator-writable native-ext4
+path. The failed v1 evidence is retained and must not be reused.

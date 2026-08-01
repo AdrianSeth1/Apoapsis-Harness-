@@ -67,3 +67,20 @@ known-timing-shaped relay-test race; the exact test immediately passed alone,
 and the complete clean rerun above is the recorded result. `compileall` and diff checking are recorded
 with the final authorization commit. No `llama-server` process was started and
 no inference occurred.
+
+## First operator preflight correction
+
+The first operator launch on 2026-08-01 refused before inference. Running the
+controller inside a host-networked container exposed two assumptions that the
+native-WSL rehearsal had not exercised. A fake provider served by the
+controller process must be addressed through controller loopback: resolving
+the container hostname produced Docker Desktop's host-gateway address, so the
+controller-owned relay never reached the fake provider. Separately, the root
+controller had to transfer ownership of the freshly created containment
+workspace to pinned workcell UID 65532; without that transfer, the
+capability-preserving writable-workspace probe correctly reported a breach.
+
+The correction does not relax either gate. It makes the observed topology
+match the declared one and restores the workcell's intended editing
+capability. The failed evidence directory is retained, and a retry must use a
+new evidence root and a newly built and bound controller image.

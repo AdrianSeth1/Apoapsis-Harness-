@@ -7,7 +7,7 @@ set -euo pipefail
 REPO="$(git rev-parse --show-toplevel)"
 AUTH="${REPO}/docs/qualification/slice7-crisis-atlas-live-authorization-v1.json"
 SEED="${APOAPSIS_CRISIS_ATLAS_SEED:-/home/arya/apoapsis-7p2s/.apoapsis-eval/slice-e-crisis-atlas-seed-2026-07-29}"
-EVIDENCE="${1:-/home/arya/apoapsis-evidence/crisis-atlas-live-pilot-v1}"
+EVIDENCE="${1:-/home/arya/apoapsis-live-evidence/crisis-atlas-live-pilot-v2}"
 
 test -f "${AUTH}"
 test -d "${SEED}/.git"
