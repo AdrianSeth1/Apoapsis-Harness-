@@ -28,6 +28,7 @@ from apoapsis.config import ApoapsisConfig
 from apoapsis.execution.operation_service import execute_execution_operation
 from apoapsis.execution.operation_store import ExecutionOperationStore
 from apoapsis.execution.worktree import WorktreeError, WorktreeManager
+from apoapsis.repository.git import GitCommandError
 from apoapsis.review.case import task_slug
 from apoapsis.reporting.current_state import project_current_task_evidence
 from apoapsis.workflow.engine import SQLiteTaskStore
@@ -367,6 +368,47 @@ _ABANDONABLE_TASK_STATES: tuple[WorkflowState, ...] = (
 )
 
 
+def _discard_task_branch(root: Path, task_id: str) -> None:
+    """Remove a derived task's worktree and branch, in whatever state the
+    pair has been left in.
+
+    Three states are reachable and all of them have to end with no
+    worktree and no branch, because `WorktreeManager.create` refuses both:
+
+    * both present -- an attempt that stopped without being abandoned;
+    * neither present -- `apoapsis rollback --delete-branch`;
+    * worktree gone, branch still there -- the review screen's abandon
+      action, which does not delete the branch. `cleanup` cannot fix this
+      one: it describes the worktree before doing anything, and that
+      raises once the directory is gone, so the branch outlives every
+      cleanup path that exists.
+
+    Never raises. A retry that cannot tidy up should still clear the
+    ledger; failing here would strand the slice in exactly the state this
+    function exists to escape.
+    """
+
+    slug = task_slug(task_id)
+    manager = WorktreeManager(root)
+    try:
+        manager.cleanup(slug, force=True, delete_branch=True)
+        return
+    except WorktreeError:
+        pass
+
+    branch = f"apoapsis/{slug.lower()}"
+    try:
+        manager.repository.run(["worktree", "prune"], check=False)
+        exists = manager.repository.run(
+            ["show-ref", "--verify", "--quiet", f"refs/heads/{branch}"],
+            check=False,
+        )
+        if exists.returncode == 0:
+            manager.repository.run(["branch", "-D", branch], check=False)
+    except GitCommandError:
+        pass
+
+
 def retry_slice(
     project_root: str | Path,
     plan_store: SQLitePlanStore,
@@ -429,16 +471,18 @@ def retry_slice(
                 expected_version=task.version,
             )
             abandoned = True
-            manager = WorktreeManager(root)
-            try:
-                manager.cleanup(
-                    task_slug(record.task_id), force=True, delete_branch=True
-                )
-            except WorktreeError:
-                # Already gone, or never created. Either way there is
-                # nothing to clean and nothing to report: the reset below
-                # is what actually unblocks the slice.
-                pass
+
+    if record is not None and record.task_id is not None:
+        # Unconditional, not gated on whether *this* call did the
+        # abandoning. `review.execution._execute_abandon` -- the UI's
+        # "Abandon & roll back" -- removes the worktree with
+        # delete_branch=False, so a task arriving here already ROLLED_BACK
+        # has no worktree left but still owns its branch. `cleanup` cannot
+        # reach that branch, because it calls `describe` first and that
+        # raises once the directory is gone. Left alone, the next start
+        # fails at worktree creation with "branch already exists" -- after
+        # a retry that reported success.
+        _discard_task_branch(root, record.task_id)
 
     reset = reset_slice(
         root,
