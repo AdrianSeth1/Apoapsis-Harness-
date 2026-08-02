@@ -315,6 +315,31 @@ class SessionCoordinator:
                     )
                 # CONTINUE: the outcome Crisis Atlas Slice 2 was denied. The
                 # agent gets another turn with what is still outstanding.
+                #
+                # Unless nothing has changed since the last one. A checkpoint
+                # with the same candidate fingerprint as its predecessor and
+                # no newly discharged obligation carries no new information:
+                # the same bytes were already inspected and already not
+                # enough, so re-inspecting them cannot decide differently.
+                # Granting a turn for it spends budget on a loop the agent is
+                # not escaping.
+                #
+                # Live PLAN-19E795D6DC4B/SLICE-004 (2026-08-02) produced two
+                # consecutive refused checkpoints at fingerprint 7fb7b7fc...,
+                # then spent the remainder of 22 turns editing an inherited
+                # predecessor's file and delivered neither required artifact.
+                # The stall was visible in the evidence from the second
+                # checkpoint onward and nothing acted on it.
+                #
+                # Deliberately not "unchanged fingerprint" alone: `_carry_
+                # forward` notes that a turn which discharges an obligation
+                # without editing a file is real progress, and punishing that
+                # would penalise exactly the debugging behaviour the
+                # unrestricted control did well. Both have to be absent.
+                stall = self._stalled_since_previous(record)
+                if stall is not None:
+                    self._carry_forward(record)
+                    return self._stop(SessionOutcome.HUMAN_REVIEW_REQUIRED, stall)
                 self._carry_forward(record)
                 continue
 
@@ -455,6 +480,40 @@ class SessionCoordinator:
             base_commit=self.base_commit,
         )
 
+    @staticmethod
+    def _discharged_ids(record: CheckpointRecord) -> set[str]:
+        readiness = record.readiness
+        if readiness is None:
+            return set()
+        return {
+            item.obligation_id
+            for item in readiness.obligations
+            if item.status is ObligationStatus.PROVED
+        }
+
+    def _stalled_since_previous(self, record: CheckpointRecord) -> str | None:
+        """Why this checkpoint repeats its predecessor, or None if it does not.
+
+        Compares against the checkpoint before this one, which is already in
+        ``self._checkpoints`` by the time this runs.
+        """
+
+        if len(self._checkpoints) < 2:
+            return None
+        previous = self._checkpoints[-2]
+        if previous.candidate_fingerprint != record.candidate_fingerprint:
+            return None
+        newly_discharged = self._discharged_ids(record) - self._discharged_ids(previous)
+        if newly_discharged:
+            return None
+        return (
+            "two consecutive checkpoints inspected an identical candidate "
+            f"({record.candidate_fingerprint[:12]}) and discharged no further "
+            "obligation, so the agent is not making progress and another turn "
+            "would inspect the same bytes again. Stopping for review instead "
+            f"of spending the remaining budget. {record.decision.detail}"
+        )
+
     def _carry_forward(self, record: CheckpointRecord) -> None:
         """Fold a CONTINUE checkpoint into the capsule.
 
@@ -474,12 +533,12 @@ class SessionCoordinator:
             discharged = [
                 item.obligation_id
                 for item in readiness.obligations
-                if item.status is ObligationStatus.SATISFIED
+                if item.status is ObligationStatus.PROVED
             ]
             self.capsule.unresolved_obligations = sorted(
                 item.obligation_id
                 for item in readiness.obligations
-                if item.status is not ObligationStatus.SATISFIED
+                if item.status is not ObligationStatus.PROVED
             )
             # Findings, not raw command output: the capsule carries what a
             # failure *was*, not the terminal scrollback it arrived in.
