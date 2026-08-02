@@ -55,6 +55,29 @@ def _approved_slice_fact(
     )
 
 
+def _test_discovery_roots(slice_obj, config) -> list[str]:
+    """Directories the verification commands *this slice names* collect
+    tests from, in configured order and de-duplicated.
+
+    Read from the live configuration rather than the plan, deliberately:
+    the plan may predate this check (every slice of PLAN-19E795D6DC4B
+    except SLICE-001 was authored without naming a test directory), and
+    the harness has always known the answer. Empty when the layout cannot
+    be read from argv, in which case no claim is made to the coder.
+    """
+
+    roots_by_command = {
+        command.name: command.resolved_discovery_roots()
+        for command in config.verification.commands
+    }
+    roots: list[str] = []
+    for command_name in slice_obj.verification_commands:
+        for root in roots_by_command.get(command_name, []):
+            if root not in roots:
+                roots.append(root)
+    return roots
+
+
 def _slice_contract_facts(
     *,
     package_reference: str,
@@ -68,6 +91,7 @@ def _slice_contract_facts(
     suggested_symbols: list[str],
     test_obligations: list[str] | None = None,
     failure_cases: list[str] | None = None,
+    test_discovery_roots: list[str] | None = None,
 ) -> list[TraceableStatement]:
     """Preserve the approved execution contract in the derived task.
 
@@ -113,6 +137,28 @@ def _slice_contract_facts(
             integration_assumptions,
         ),
         ("stop-conditions", "Approved stop conditions", stop_conditions),
+        # Unlike suggested paths, this is not advice. The configured test
+        # command collects from these directories and nowhere else, so a
+        # test written outside them is never run -- and the failure is
+        # silent in the worst way: the command still passes on the
+        # inherited suite, no new file gets a witness, and readiness
+        # reports that nothing proves the slice's code is reached. Live
+        # SLICE-002 of PLAN-19E795D6DC4B wrote 93 passing tests into
+        # `backend/tests/` against `unittest discover -s tests`, reported
+        # success, and stopped at 10 unmet conditions.
+        #
+        # Stated separately from suggested-paths so an already-approved
+        # plan whose slices never named a test directory still tells its
+        # coder where tests must live, without a re-plan.
+        (
+            "test-discovery-roots",
+            "REQUIRED test location: the configured test command collects "
+            "tests only from these directories. Tests written anywhere "
+            "else will not run, will not count, and will leave this "
+            "slice's code with no proof it is reached, even if they pass "
+            "when invoked directly",
+            list(test_discovery_roots or []),
+        ),
         (
             "suggested-paths",
             "Advisory suggested paths (not an allowlist)",
@@ -650,6 +696,7 @@ def build_plan_slice_execution_package(
             suggested_symbols=list(slice_obj.suggested_symbols),
             test_obligations=list(slice_obj.test_obligations),
             failure_cases=list(slice_obj.failure_cases),
+            test_discovery_roots=_test_discovery_roots(slice_obj, config),
         ),
         verification_requirements=list(slice_obj.verification_commands),
         risk_level=slice_obj.risk_level,
