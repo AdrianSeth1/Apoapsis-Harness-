@@ -114,6 +114,77 @@ def _wsl_path(path: Path) -> str:
     return completed.stdout.strip()
 
 
+_PINNED_MANIFEST = "docs/qualification/slice7-crisis-atlas-pilot-manifest-v8.json"
+
+_RESIDENT_SERVER_TOOL = "tools/resident_model_server.sh"
+
+
+def _release_conflicting_model_server(root: Path) -> str | None:
+    """Stop a host llama-server already holding the weights this run needs,
+    and return the exact command line it was started with.
+
+    `operator_lifecycle.stop_local_models` deliberately refuses to kill
+    anything on this port, and its reasoning is right: Apoapsis launches
+    the server through an operator-supplied command that may cross a
+    process boundary it cannot see through -- `wsl.exe ...` yields the PID
+    of wsl.exe, not of llama-server inside the distribution -- so killing
+    by port would mean killing whatever a stranger happened to be running.
+
+    That reasoning does not apply to a process whose own command line names
+    the exact GGUF this run's pinned manifest is about to load. That is not
+    a guess about identity; it is the conflict itself, because two copies
+    of the same weights cannot both be resident. Nothing else is touched,
+    including any other llama-server serving a different model.
+
+    Without this the harness deadlocks against itself: START_APOAPSIS
+    launches the configured local model, and the sandbox then refuses to
+    run because a model is loaded. The operator's only escape was to kill,
+    by hand, a process Apoapsis had started for them -- every single run.
+    """
+
+    manifest_path = root / _PINNED_MANIFEST
+    if not manifest_path.is_file():
+        return None
+    try:
+        model_path = json.loads(manifest_path.read_text(encoding="utf-8"))["model"][
+            "absolute_path"
+        ]
+    except (OSError, KeyError, TypeError, json.JSONDecodeError):
+        return None
+
+    tool = _wsl_path(root / _RESIDENT_SERVER_TOOL)
+    stopped = subprocess.run(  # noqa: S603 - fixed bridge and argument vector
+        ["wsl.exe", "-d", "Ubuntu-24.04", "--", "bash", tool, "stop", str(model_path)],
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        timeout=180,
+    )
+    entries = [
+        line.split("\t", 1)
+        for line in (stopped.stdout or "").splitlines()
+        if "\t" in line
+    ]
+    if not entries:
+        return None
+    return entries[0][1].strip()
+
+
+def _restore_model_server(root: Path, command_line: str) -> None:
+    """Put back exactly the server that was stopped, by the command line it
+    was observed running under -- never a reconstructed or configured one.
+    Best effort: the slice's result is already decided by this point, and
+    failing to restore a convenience service must not change it."""
+
+    try:
+        subprocess.run(  # noqa: S603 - fixed bridge and argument vector
+            ["wsl.exe", "-d", "Ubuntu-24.04", "--", "bash",
+             _wsl_path(root / _RESIDENT_SERVER_TOOL), "restore", command_line],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=120,
+        )
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
 def _promote_snapshot(
     base: Path, snapshot: Path, worktree: Path, *, expected_fingerprint: str
 ) -> list[str]:
@@ -257,6 +328,11 @@ class NativeQwenWorkcellExecutor:
             _wsl_path(request_path),
             _wsl_path(response_path),
         ]
+        # Apoapsis started the configured local model itself, and the
+        # controller is about to start its own copy of the same weights.
+        # Releasing ours first is the harness getting out of its own way,
+        # not a policy decision the operator has to make again every run.
+        released_model_server = _release_conflicting_model_server(root)
         completed = subprocess.run(  # noqa: S603 - fixed bridge and argument vector
             command,
             capture_output=True,
@@ -285,6 +361,8 @@ class NativeQwenWorkcellExecutor:
             # as an unknown revision. Anchor the bridge to the harness root.
             cwd=root,
         )
+        if released_model_server is not None:
+            _restore_model_server(root, released_model_server)
         # `or ""`: a diagnostic log is never worth converting a finished run
         # into a crash, whatever the bridge did or did not emit.
         (task_dir / "bridge-stdout.log").write_text(
