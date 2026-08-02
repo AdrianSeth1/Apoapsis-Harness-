@@ -14,7 +14,7 @@ import os
 import shutil
 import subprocess
 import uuid
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Protocol
 
 from apoapsis.agent.session import AgentSessionOutcome, AgentSessionResult
@@ -185,6 +185,22 @@ def _restore_model_server(root: Path, command_line: str) -> None:
         pass
 
 
+#: Never promoted into the task worktree, in either direction. These are the
+#: harness's own metadata, not the product's, and the controller works in a
+#: disposable clone whose `.git` is a directory while a managed worktree's is
+#: a `gitdir:` pointer file. Promoting that delta overwrote the pointer -- or,
+#: when the clone had no `.git` at all, deleted it -- leaving a worktree Git
+#: reports as `prunable` and the review screen cannot open at all:
+#:
+#:     unhandled AgentInspectionError: inspection target must be a Git
+#:     worktree root
+#:
+#: The model's changes were promoted correctly; the harness broke the
+#: container it put them in, and the operator lost access to the review for a
+#: run that had otherwise completed normally.
+_NEVER_PROMOTED = (".git", ".apoapsis")
+
+
 def _promote_snapshot(
     base: Path, snapshot: Path, worktree: Path, *, expected_fingerprint: str
 ) -> list[str]:
@@ -194,15 +210,21 @@ def _promote_snapshot(
     observed = tree_fingerprint(snapshot)
     if observed != expected_fingerprint or observed != delta.candidate_fingerprint:
         raise CapabilitySandboxError("the admitted snapshot changed before promotion")
+    promoted: list[str] = []
     for entry in delta.entries:
+        relative = PurePosixPath(entry.path.replace("\\", "/"))
+        if relative.parts and relative.parts[0] in _NEVER_PROMOTED:
+            continue
         target = worktree / Path(entry.path)
         if entry.kind == ChangeKind.DELETED:
             target.unlink(missing_ok=True)
+            promoted.append(entry.path)
             continue
         source = snapshot / Path(entry.path)
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(source, target)
-    return delta.paths
+        promoted.append(entry.path)
+    return promoted
 
 
 class NativeQwenWorkcellExecutor:
