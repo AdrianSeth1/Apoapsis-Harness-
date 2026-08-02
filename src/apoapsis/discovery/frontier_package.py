@@ -34,6 +34,7 @@ def _verification_catalog(config: ApoapsisConfig) -> list[VerificationCatalogEnt
             category=command.category,
             description=command.description,
             acceptance_designated=command.acceptance,
+            discovery_roots=command.resolved_discovery_roots(),
         )
         for command in sorted(config.verification.commands, key=lambda item: item.name)
     ]

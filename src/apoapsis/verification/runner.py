@@ -57,6 +57,101 @@ HARNESS_VERIFICATION_ENVIRONMENT = {
 }
 
 
+# Flags whose *next* argv element is a value, not a test path. Used only to
+# skip over that value when reading positional discovery roots.
+_PYTEST_VALUE_FLAGS = frozenset(
+    {"-k", "-m", "-p", "-o", "-c", "-n", "--rootdir", "--junitxml", "--deselect"}
+)
+
+
+def _normalize_discovery_root(raw: str) -> str:
+    """Normalize a configured discovery root to a comparable repository-
+    relative directory, or return "" if it is not one.
+
+    Absolute paths and parent traversals are rejected rather than guessed
+    at: this value is only ever used to *compare* against a plan's
+    ``suggested_paths``, so an unnormalizable root must produce no claim
+    rather than a wrong one.
+    """
+
+    candidate = raw.strip().replace("\\", "/").strip("\"'")
+    if not candidate or candidate in {".", "./"}:
+        return ""
+    while candidate.startswith("./"):
+        candidate = candidate[2:]
+    candidate = candidate.rstrip("/")
+    if not candidate or candidate.startswith("/") or candidate.startswith(".."):
+        return ""
+    if len(candidate) > 1 and candidate[1] == ":":  # Windows drive letter
+        return ""
+    return candidate
+
+
+def derive_discovery_roots(argv: list[str]) -> list[str]:
+    """Best-effort, read-only inference of the directories a configured test
+    command scans, from its own ``argv``.
+
+    Apoapsis already knows this: ``unittest discover -s tests`` names its
+    start directory outright. The planner does not, because
+    ``VerificationCatalogEntry`` is deliberately name-only and never carries
+    argv (ADR 0016). Deriving the root here lets the harness tell a planner
+    *where* tests must live without ever transmitting executable content --
+    a repository-relative directory is data of the same kind as
+    ``suggested_paths``, not a shell grant.
+
+    Returns ``[]`` when the command's layout cannot be read confidently.
+    Absent information is not evidence: a caller must treat an empty result
+    as "no claim", never as "no tests required".
+    """
+
+    tokens = [str(item) for item in argv]
+    roots: list[str] = []
+
+    if "unittest" in tokens and "discover" in tokens:
+        explicit = False
+        for index, token in enumerate(tokens):
+            if token in {"-s", "--start-directory"}:
+                if index + 1 < len(tokens):
+                    root = _normalize_discovery_root(tokens[index + 1])
+                    explicit = True
+                    if root:
+                        roots.append(root)
+            elif token.startswith("--start-directory="):
+                explicit = True
+                root = _normalize_discovery_root(token.split("=", 1)[1])
+                if root:
+                    roots.append(root)
+        if not explicit:
+            # `unittest discover` with no -s discovers from the working
+            # directory, which is the repository root: every path is
+            # already in scope, so no single root can be claimed.
+            return []
+
+    elif any(token == "pytest" or token.endswith("/pytest") for token in tokens):
+        start = next(
+            index
+            for index, token in enumerate(tokens)
+            if token == "pytest" or token.endswith("/pytest")
+        )
+        skip_next = False
+        for token in tokens[start + 1 :]:
+            if skip_next:
+                skip_next = False
+                continue
+            if token.startswith("-"):
+                skip_next = token in _PYTEST_VALUE_FLAGS
+                continue
+            root = _normalize_discovery_root(token.split("::", 1)[0])
+            if root:
+                roots.append(root)
+
+    deduplicated: list[str] = []
+    for root in roots:
+        if root not in deduplicated:
+            deduplicated.append(root)
+    return deduplicated
+
+
 class VerificationCommand(StrictModel):
     name: str = Field(min_length=1)
     category: str = Field(min_length=1)
@@ -85,6 +180,33 @@ class VerificationCommand(StrictModel):
             "never prove a criterion, even if a model requests them."
         ),
     )
+    discovery_roots: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Repository-relative directories this command collects tests "
+            "from. Optional: when empty it is inferred from `argv`. Set it "
+            "explicitly when the layout cannot be read from argv (a wrapper "
+            "script, a Makefile target, a custom runner). Descriptive data, "
+            "never executed -- it is shown to planning models so a plan can "
+            "put a slice's tests where this command will actually find "
+            "them, and is compared against a plan's suggested_paths."
+        ),
+    )
+
+    def resolved_discovery_roots(self) -> list[str]:
+        """The directories this command scans: the explicit configuration
+        if set, otherwise whatever `argv` reveals. Empty means unknown."""
+
+        explicit = [
+            normalized
+            for normalized in (
+                _normalize_discovery_root(root) for root in self.discovery_roots
+            )
+            if normalized
+        ]
+        if explicit:
+            return explicit
+        return derive_discovery_roots(self.argv)
 
 
 class VerificationConfig(StrictModel):

@@ -51,6 +51,42 @@ def _is_safe_relative_path(path: str) -> bool:
     return ".." not in PurePosixPath(normalized).parts
 
 
+def _claims_path(suggested_paths: Iterable[str], root: str) -> bool:
+    """Whether any advisory path places work inside ``root``.
+
+    ``tests/``, ``tests``, and ``tests/test_storage.py`` all claim the
+    ``tests`` root; ``backend/tests/`` does not. Matching is on whole path
+    segments so a ``tests_helpers/`` directory never counts as ``tests``.
+    """
+
+    target = PurePosixPath(root.replace("\\", "/").strip("/"))
+    for candidate in suggested_paths:
+        normalized = PurePosixPath(candidate.replace("\\", "/").strip("/"))
+        if normalized == target:
+            return True
+        if normalized.parts[: len(target.parts)] == target.parts:
+            return True
+    return False
+
+
+def _slice_discovery_roots(
+    item: ImplementationSlice, roots_by_command: dict[str, list[str]]
+) -> list[str]:
+    """Discovery roots of the verification commands this slice names.
+
+    Only commands the slice actually cites are considered: a slice is
+    responsible for landing tests where *its own* checks look, not where
+    every configured command in the project looks.
+    """
+
+    roots: list[str] = []
+    for command_name in item.verification_commands:
+        for root in roots_by_command.get(command_name, []):
+            if root not in roots:
+                roots.append(root)
+    return roots
+
+
 def _slice_graph(slices: Sequence[ImplementationSlice]) -> dict[str, list[str]]:
     return {item.slice_id: list(item.dependencies) for item in slices}
 
@@ -150,6 +186,18 @@ def validate_plan(
                 slice_id=slice_id,
             )
         )
+
+    # Where each configured command collects tests from, when the harness
+    # can state it. Empty for every command when only command *names* were
+    # supplied: the UNASSIGNED_TEST_DISCOVERY_ROOT check then produces
+    # nothing, on the same principle as the ADR 0074 argv checks -- absent
+    # information is not evidence of a contradiction.
+    command_discovery_roots: dict[str, list[str]] = {}
+    if configured_commands is not None:
+        command_discovery_roots = {
+            command.name: command.resolved_discovery_roots()
+            for command in configured_commands
+        }
 
     decision_ids = [item.decision_id for item in plan.decisions]
     slice_ids = [item.slice_id for item in plan.slices]
@@ -361,6 +409,32 @@ def validate_plan(
                 slice_id=item.slice_id,
             )
 
+        # Declaring test obligations is not enough: the tests have to land
+        # where the slice's own verification command will collect them. A
+        # slice that writes a complete suite outside the discovery root
+        # produces the worst available outcome -- the command runs, passes
+        # on inherited tests alone, and yields no witness for a single file
+        # the slice added, so readiness fails with wording that reads as
+        # though the coding model never tested its work. Live slice
+        # SLICE-002 of PLAN-19E795D6DC4B (2026-08-02) wrote 93 passing
+        # tests into `backend/tests/` against `unittest discover -s tests`
+        # and stopped at 10 unmet conditions for exactly this reason.
+        #
+        # Only reachable when the harness can state the root: an unknown
+        # layout yields no roots and therefore no finding.
+        if item.test_obligations:
+            for root in _slice_discovery_roots(item, command_discovery_roots):
+                if not _claims_path(item.suggested_paths, root):
+                    error(
+                        "UNASSIGNED_TEST_DISCOVERY_ROOT",
+                        f"slice {item.slice_id} declares test obligations and "
+                        "names a verification command that collects tests from "
+                        f"{root!r}, but no suggested_path is inside {root!r}, so "
+                        "the tests it writes may never be collected and the "
+                        "slice cannot produce a witness for its own code",
+                        slice_id=item.slice_id,
+                    )
+
         for path in item.suggested_paths:
             if not _is_safe_relative_path(path):
                 error(
@@ -552,6 +626,32 @@ def validate_plan(
                 "verification command could pass without exercising the slice",
                 slice_id=item.slice_id,
             )
+
+        # Declaring test obligations is not enough: the tests have to land
+        # where the slice's own verification command will collect them. A
+        # slice that writes a complete suite outside the discovery root
+        # produces the worst available outcome -- the command runs, passes
+        # on inherited tests alone, and yields no witness for a single file
+        # the slice added, so readiness fails with wording that reads as
+        # though the coding model never tested its work. Live slice
+        # SLICE-002 of PLAN-19E795D6DC4B (2026-08-02) wrote 93 passing
+        # tests into `backend/tests/` against `unittest discover -s tests`
+        # and stopped at 10 unmet conditions for exactly this reason.
+        #
+        # Only reachable when the harness can state the root: an unknown
+        # layout yields no roots and therefore no finding.
+        if item.test_obligations:
+            for root in _slice_discovery_roots(item, command_discovery_roots):
+                if not _claims_path(item.suggested_paths, root):
+                    error(
+                        "UNASSIGNED_TEST_DISCOVERY_ROOT",
+                        f"slice {item.slice_id} declares test obligations and "
+                        "names a verification command that collects tests from "
+                        f"{root!r}, but no suggested_path is inside {root!r}, so "
+                        "the tests it writes may never be collected and the "
+                        "slice cannot produce a witness for its own code",
+                        slice_id=item.slice_id,
+                    )
 
         for path in item.suggested_paths:
             if not _is_safe_relative_path(path):

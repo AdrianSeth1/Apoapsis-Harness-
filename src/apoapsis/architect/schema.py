@@ -320,6 +320,19 @@ class VerificationCatalogEntry(StrictModel):
     category: str = Field(min_length=1)
     description: str = ""
     acceptance_designated: bool = False
+    discovery_roots: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Repository-relative directories this command collects tests "
+            "from, when the harness can state them. A planner that puts a "
+            "slice's tests outside these directories has written tests the "
+            "command will never run: the slice then passes its own suite "
+            "and still produces no witness for the code it added. Empty "
+            "means the harness cannot state the layout, not that any "
+            "location will do. This is descriptive data of the same kind "
+            "as suggested_paths -- a path, never argv, never executed."
+        ),
+    )
 
 
 PLAN_AUTHORITY_RULES: list[str] = [
