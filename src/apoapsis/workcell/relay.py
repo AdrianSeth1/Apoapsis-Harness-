@@ -529,6 +529,45 @@ class _RelayHandler(BaseHTTPRequestHandler):
             try:
                 self.wfile.write(chunk)
                 self.wfile.flush()
+            except TimeoutError:
+                # Not a hang-up: this socket carries `stream_write_timeout_
+                # seconds` for the duration of the stream, and the write
+                # simply did not drain inside it. `socket.timeout` *is*
+                # `TimeoutError`, which subclasses `OSError`, so this used to
+                # fall into the clause below and be reported as the workcell
+                # closing the connection -- a cause the relay had not
+                # established and could not distinguish from its own deadline
+                # expiring.
+                #
+                # That mattered: PLAN-19E795D6DC4B/SLICE-004 (2026-08-02)
+                # failed with ten "the workcell closed the connection
+                # mid-response" while the model server was demonstrably
+                # healthy (62 completed generations, ~38 tok/s, clean exit,
+                # no OOM, single copy on the GPU). The message sends a
+                # reader to the documented GPU-eviction cause, which was not
+                # what was happening.
+                #
+                # Same completion semantics as a hang-up -- incomplete, not
+                # scored, not charged to the upstream -- only the attribution
+                # changes, because that is all the relay actually knows.
+                deadline = getattr(
+                    self.state.config, "stream_write_timeout_seconds", None
+                )
+                return _Completion(
+                    total_bytes=total,
+                    streamed=chunks > 1,
+                    client_cancelled=True,
+                    complete=False,
+                    terminal_observed=terminal_seen if is_event_stream else None,
+                    detail=(
+                        "writing to the workcell exceeded the relay's "
+                        f"stream_write_timeout_seconds ({deadline}s) after "
+                        f"{total} byte(s); the workcell may have stopped "
+                        "reading, or may simply not have drained this chunk "
+                        "in time -- the relay cannot tell these apart, and "
+                        "this is not evidence that the model server failed"
+                    ),
+                )
             except (BrokenPipeError, ConnectionResetError, OSError):
                 # The workcell hung up. Returning here closes the upstream
                 # connection in the caller's `finally`, which frees the model
