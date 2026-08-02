@@ -7,6 +7,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -216,8 +217,22 @@ class ProductSupervisor:
                         f"{name!r} is not a unittest command and has no structured witness adapter"
                     )
                 artifact = record_dir / f"{name}-coverage.json"
+                # `sys.executable`, never a bare "python". This runs inside
+                # the controller container, whose base installs python3 and
+                # python3-venv and provides no `python` alias at all, so a
+                # literal "python" raises FileNotFoundError before the trace
+                # runner starts. The witness is then never emitted -- and a
+                # candidate with no witness is reported as "no current-state
+                # witness proves this file is reached", which reads as the
+                # coding model failing to test its own code rather than as
+                # the controller being unable to run the command. `python3`
+                # would resolve, but only `sys.executable` is guaranteed to
+                # be the interpreter that already has this package importable.
                 traced_argv = [
-                    "python", str(self.trace_runner), str(artifact), *argv[module + 2:]
+                    sys.executable,
+                    str(self.trace_runner),
+                    str(artifact),
+                    *argv[module + 2:],
                 ]
 
                 def runner(run_argv, *, timeout_seconds):
