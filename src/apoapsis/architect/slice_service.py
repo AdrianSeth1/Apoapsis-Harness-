@@ -9,6 +9,7 @@ from apoapsis.architect.errors import (
     SliceApprovalError,
     SliceExecutionNotFoundError,
     SlicePackagingError,
+    SliceResetError,
 )
 from apoapsis.architect.slice_package import (
     build_plan_slice_execution_package,
@@ -256,6 +257,105 @@ def start_slice(
     return result
 
 
+#: Task states ``reset_slice`` will discard without an explicit override.
+#: ``ROLLED_BACK`` and ``FAILED`` are the two terminal states that leave
+#: nothing a later slice can inherit. ``HUMAN_REVIEW_REQUIRED`` is
+#: deliberately absent even though it is where a stopped slice usually
+#: sits: its worktree and branch are typically still on disk, and deleting
+#: the task that names them would orphan both. Run ``apoapsis rollback``
+#: first -- that is what removes them -- and the task lands in
+#: ``ROLLED_BACK``, which this list accepts.
+_RESETTABLE_TASK_STATES: tuple[WorkflowState, ...] = (
+    WorkflowState.ROLLED_BACK,
+    WorkflowState.FAILED,
+)
+
+
+def reset_slice(
+    project_root: str | Path,
+    task_store: SQLiteTaskStore,
+    slice_store: PlanSliceExecutionStore,
+    plan_id: str,
+    slice_id: str,
+    *,
+    allow_completed: bool = False,
+) -> dict[str, Any]:
+    """Clears one slice's execution ledger so it can be packaged, approved,
+    and run again from scratch -- no model call, nothing executed, and no
+    file in the repository touched.
+
+    Re-running a slice is not otherwise reachable. ``record_package``
+    refuses to re-package anything past ``PACKAGED``, and a derived task id
+    is a deterministic function of ``(plan, slice)``, so ``create_task``
+    refuses a second approval with 'task already exists'. Together those
+    two guards -- each correct on its own -- mean a slice's first attempt
+    is also its only attempt, which is wrong for a harness whose whole
+    purpose is measuring what a coding model does on a given slice.
+
+    What this removes is the *ledger*, not the evidence. The slice's
+    immutable package artifact stays in ``.apoapsis/plans/``, and the prior
+    task's audit directory stays in ``.apoapsis/tasks/``; both are the
+    record of what was authorized and what happened, and neither is a claim
+    about what is authorized *now*. What it does remove is the pair of
+    rows that assert an authorization the operator has explicitly retired.
+
+    Refuses when the derived task is still live, and refuses a ``COMPLETE``
+    task unless ``allow_completed`` is set: a completed slice's branch is
+    what later slices inherit as their execution base, so discarding it
+    silently would change what a subsequent slice is built on top of."""
+
+    record = slice_store.get(plan_id, slice_id)
+    deleted_task: dict[str, Any] | None = None
+
+    if record.task_id is not None:
+        task = task_store.get_task(record.task_id)
+        if task.state == WorkflowState.COMPLETE and not allow_completed:
+            raise SliceResetError(
+                f"slice {plan_id}/{slice_id}'s task {record.task_id} is "
+                "COMPLETE; later slices may already inherit its branch as "
+                "their execution base. Re-run it only with an explicit "
+                "override (--allow-completed)"
+            )
+        allowed = _RESETTABLE_TASK_STATES + (
+            (WorkflowState.COMPLETE,) if allow_completed else ()
+        )
+        if task.state not in allowed:
+            raise SliceResetError(
+                f"slice {plan_id}/{slice_id}'s task {record.task_id} is "
+                f"{task.state.value}, which is not a finished state this "
+                "can safely discard. If it stopped and you want to abandon "
+                f"it, run `apoapsis rollback {record.task_id}` first -- that "
+                "removes its worktree and leaves it ROLLED_BACK"
+            )
+        removed = task_store.delete_task(record.task_id, allowed_states=allowed)
+        deleted_task = {
+            "task_id": removed.task_id,
+            "state_before_reset": removed.state.value,
+            "version_before_reset": removed.version,
+        }
+
+    discarded = slice_store.discard(plan_id, slice_id)
+    return {
+        "plan_id": plan_id,
+        "slice_id": slice_id,
+        "status": "reset",
+        "discarded_record": discarded.model_dump(mode="json"),
+        "deleted_task": deleted_task,
+        "retained_artifacts": [
+            f".apoapsis/plans/{plan_id}/slice-{slice_id}-package-*.json",
+            *(
+                [f".apoapsis/tasks/{deleted_task['task_id']}/"]
+                if deleted_task is not None
+                else []
+            ),
+        ],
+        "next_action": (
+            f"apoapsis plan slice package {plan_id} {slice_id} "
+            f"--expected-plan-version <current plan version>"
+        ),
+    }
+
+
 def project_slice_status(
     project_root: str | Path,
     plan_store: SQLitePlanStore,
@@ -389,5 +489,6 @@ __all__ = [
     "package_slice",
     "project_slice_status",
     "read_latest_slice_package",
+    "reset_slice",
     "start_slice",
 ]

@@ -249,6 +249,48 @@ class PlanSliceExecutionStore:
                 raise
         return self.get(plan_id, slice_id)
 
+    def discard(self, plan_id: str, slice_id: str) -> PlanSliceExecutionRecord:
+        """Removes this slice's ledger row entirely so the slice can be
+        packaged again from scratch, and returns the record as it was
+        immediately before removal.
+
+        Deliberately *not* a status transition. Every other write on this
+        store moves a row forward through ``PACKAGED -> APPROVED``; there
+        is no backward edge, because a package hash and its derived task
+        are a matched pair and 'un-approving' one of them would leave the
+        other claiming an authorization that no longer exists. Clearing
+        the row outright is the honest operation: it asserts nothing about
+        the previous attempt, and the immutable package artifact it
+        referred to stays on disk as the audit record of what was actually
+        authorized.
+
+        This method enforces no policy of its own -- whether the derived
+        task is still live, and whether removing it would strand work a
+        later slice inherits, are questions that need the task store.
+        ``slice_service.reset_slice`` is the only intended caller and owns
+        those checks."""
+
+        record = self.get(plan_id, slice_id)
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            cursor = connection.execute(
+                "DELETE FROM plan_slice_executions "
+                "WHERE plan_id = ? AND slice_id = ? AND version = ?",
+                (plan_id, slice_id, record.version),
+            )
+            if cursor.rowcount != 1:
+                raise ConcurrentSliceExecutionTransitionError(
+                    f"slice {plan_id}/{slice_id} changed during reset"
+                )
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+        return record
+
     @staticmethod
     def _row_to_record(row: sqlite3.Row) -> PlanSliceExecutionRecord:
         return PlanSliceExecutionRecord(

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import uuid
+from collections.abc import Sequence
 from contextlib import closing
 from datetime import datetime
 from pathlib import Path
@@ -333,6 +334,56 @@ class SQLiteTaskStore:
             )
             for row in rows
         ]
+
+    def delete_task(
+        self, task_id: str, *, allowed_states: Sequence[WorkflowState]
+    ) -> TaskRecord:
+        """Removes a finished task and its whole event history, returning
+        the record as it was immediately before removal.
+
+        This is the one destructive operation on this store, and it exists
+        for exactly one reason: a derived task id is a deterministic
+        function of its plan and slice, not a fresh identifier, so a task
+        that has already been created can never be created again. Without
+        this, a slice whose first attempt ended badly can never be
+        attempted a second time -- ``create_task`` refuses with 'task
+        already exists' forever.
+
+        ``allowed_states`` is required rather than defaulted so no caller
+        can delete a live task by omission; the caller must name the
+        terminal states it is prepared to discard. The audit record of
+        what happened does not live only here -- the task directory under
+        ``.apoapsis/tasks/<task_id>/`` and the slice's immutable package
+        artifact both survive this call untouched."""
+
+        record = self.get_task(task_id)
+        if record.state not in allowed_states:
+            allowed = ", ".join(sorted(state.value for state in allowed_states))
+            raise TaskStoreError(
+                f"task {task_id} is {record.state.value}; it can only be "
+                f"deleted from: {allowed}"
+            )
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                "DELETE FROM workflow_events WHERE task_id = ?", (task_id,)
+            )
+            cursor = connection.execute(
+                "DELETE FROM tasks WHERE task_id = ? AND version = ?",
+                (task_id, record.version),
+            )
+            if cursor.rowcount != 1:
+                raise ConcurrentTransitionError(
+                    f"task {task_id} changed during deletion"
+                )
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+        return record
 
     @staticmethod
     def _new_event_id() -> str:

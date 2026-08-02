@@ -22,6 +22,7 @@ from apoapsis.architect.slice_service import (
     approve_slice,
     package_slice,
     project_slice_status,
+    reset_slice,
     start_slice,
 )
 from apoapsis.architect.slice_store import PlanSliceExecutionStore
@@ -361,7 +362,12 @@ environment_allowlist = [
 name = "unit-tests"
 category = "tests"
 description = "Runs the project's full test suite."
-argv = ["python", "-m", "unittest", "discover", "-s", "tests", "-v"]
+# Use "python3", not "python". Verification argv is executed verbatim in the
+# Linux workcell image, which ships python3 and has no `python` alias; a bare
+# "python" fails with FileNotFoundError before any test runs, and a run that
+# produced no witness is reported as "these files are unexercised" rather than
+# as a broken command.
+argv = ["python3", "-m", "unittest", "discover", "-s", "tests", "-v"]
 timeout_seconds = 120
 required = true
 # Baseline completion still requires this command to pass. Acceptance
@@ -382,7 +388,7 @@ acceptance = false
 # name = "web-product-integrity"
 # category = "acceptance"
 # description = "Cross-references the product's HTML, CSS, and JavaScript."
-# argv = ["python", "-m", "apoapsis", "verify-web-product",
+# argv = ["python3", "-m", "apoapsis", "verify-web-product",
 #         "--forbid-external-resources", "--treat-warnings-as-errors"]
 # timeout_seconds = 60
 # required = true
@@ -831,6 +837,26 @@ def build_parser() -> argparse.ArgumentParser:
     plan_slice_approve.add_argument("plan_id")
     plan_slice_approve.add_argument("slice_id")
     plan_slice_approve.add_argument("--expected-package-sha256", required=True)
+    plan_slice_reset = plan_slice_subparsers.add_parser(
+        "reset",
+        help=(
+            "clear one slice's execution ledger so it can be packaged, "
+            "approved, and run again -- discards the slice record and its "
+            "finished derived task, keeps every package and audit artifact "
+            "on disk, and touches no file in the repository"
+        ),
+    )
+    plan_slice_reset.add_argument("plan_id")
+    plan_slice_reset.add_argument("slice_id")
+    plan_slice_reset.add_argument(
+        "--allow-completed",
+        action="store_true",
+        help=(
+            "also reset a slice whose task COMPLETED. Refused by default: "
+            "a completed slice's branch is what later slices inherit as "
+            "their execution base"
+        ),
+    )
     plan_slice_status = plan_slice_subparsers.add_parser(
         "status", help="real, current status for one slice, read from persisted facts"
     )
@@ -1826,6 +1852,15 @@ def _plan_slice_command(root: Path, args: argparse.Namespace) -> dict[str, objec
             expected_package_sha256=args.expected_package_sha256,
         )
         return record.model_dump(mode="json")
+    if args.plan_slice_command == "reset":
+        return reset_slice(
+            root,
+            task_store,
+            slice_store,
+            args.plan_id,
+            args.slice_id,
+            allow_completed=args.allow_completed,
+        )
     if args.plan_slice_command == "start":
         config = ApoapsisConfig.from_toml(root / ".apoapsis" / "config.toml")
         result = start_slice(

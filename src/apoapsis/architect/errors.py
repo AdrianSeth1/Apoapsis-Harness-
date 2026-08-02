@@ -62,3 +62,10 @@ class SliceApprovalError(SliceExecutionError):
     """Raised when a slice cannot be approved: no matching package exists,
     the supplied package hash does not match, or the record is not in the
     expected status."""
+
+
+class SliceResetError(SliceExecutionError):
+    """Raised when a slice's execution ledger cannot be safely cleared for
+    a fresh attempt: no record exists, its derived task is still live, or
+    that task finished in a state whose work later slices may already
+    inherit (``COMPLETE``) and no explicit override was given."""
