@@ -45,8 +45,26 @@ if ! git --git-dir="${SEED_GIT_DIR}" --work-tree="${SEED}" \
   echo "Capability Sandbox task Git metadata is unreadable: ${SEED_GIT_DIR}" >&2
   exit 2
 fi
-if test -n "$(git --git-dir="${SEED_GIT_DIR}" --work-tree="${SEED}" status --porcelain --untracked-files=all)"; then
+# The porcelain output is the diagnosis, not decoration. Reporting only the
+# path costs hours: on 2026-08-02 this guard refused a launch while Windows
+# Git called the same worktree clean, and the cause was invisible until the
+# file list was read. Git for Windows sets core.autocrlf=true in its *system*
+# config, which WSL's Git never reads, so a CRLF working tree matched
+# LF blobs for one and differed for the other. Every tracked file appearing
+# as modified is that signature, which is why the hint below is worth a line.
+SEED_STATUS="$(git --git-dir="${SEED_GIT_DIR}" --work-tree="${SEED}" status --porcelain --untracked-files=all)"
+if test -n "${SEED_STATUS}"; then
   echo "Capability Sandbox task worktree must be unchanged before launch: ${SEED}" >&2
+  echo "${SEED_STATUS}" | head -40 >&2
+  SEED_CHANGED_COUNT="$(printf '%s\n' "${SEED_STATUS}" | wc -l | tr -d ' ')"
+  if test "${SEED_CHANGED_COUNT}" -gt 40; then
+    echo "  ... and $((SEED_CHANGED_COUNT - 40)) more" >&2
+  fi
+  echo "If every tracked file above is listed as modified ( M ), compare line" >&2
+  echo "endings before assuming real edits: 'git -C \"${SEED}\" diff --stat' from" >&2
+  echo "Windows and from WSL can disagree when core.autocrlf differs between" >&2
+  echo "them. Setting core.autocrlf=false on the project repository and" >&2
+  echo "re-checking out the worktree normalizes it for both." >&2
   exit 2
 fi
 
