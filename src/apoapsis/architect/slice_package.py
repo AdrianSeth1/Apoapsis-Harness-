@@ -228,6 +228,18 @@ def _relevant_decisions(plan: ArchitecturePlan) -> list:
     return list(plan.decisions)
 
 
+def _same_path(left: str, right: str) -> bool:
+    """Compare two Git-reported paths. Git prints forward slashes even on
+    Windows, where the managed path carries backslashes and case may differ."""
+
+    if not left or not right:
+        return False
+    try:
+        return Path(left).resolve() == Path(right).resolve()
+    except OSError:
+        return False
+
+
 def checkpoint_completed_prior_slices(
     project_root: str | Path,
     plan_id: str,
@@ -273,6 +285,33 @@ def checkpoint_completed_prior_slices(
                 f"completed prior slice {slice_obj.slice_id} has no usable "
                 "worktree to inherit"
             ) from exc
+        # A worktree whose `.git` pointer is gone is not a worktree, and Git
+        # does not say so here: `status --porcelain` run inside it answers
+        # from the surrounding repository and returns clean. Trusting that
+        # answer is how a completed slice's work gets silently dropped --
+        # nothing to commit, so nothing is committed, `rev-parse HEAD`
+        # resolves to the parent repository's tip, and the next slice is
+        # handed that tip while the package records the predecessor as
+        # inherited. The successor then rebuilds from an empty base
+        # believing it inherited a finished one, and the operator is told
+        # only that the slice is running.
+        #
+        # Checking this costs one `rev-parse` and turns invisible data loss
+        # into a stop with a name on it.
+        inside = repository.run(
+            ["rev-parse", "--is-inside-work-tree"], cwd=managed.path, check=False
+        )
+        toplevel = repository.run(
+            ["rev-parse", "--show-toplevel"], cwd=managed.path, check=False
+        ).stdout.strip()
+        if inside.returncode != 0 or not _same_path(toplevel, managed.path):
+            raise SlicePackagingError(
+                f"completed prior slice {slice_obj.slice_id} cannot be "
+                f"inherited: {managed.path} is no longer a Git worktree root "
+                "(its .git pointer is missing or damaged), so its work cannot "
+                "be checkpointed and would be silently dropped. Repair or "
+                "re-run that slice before packaging this one"
+            )
         status = repository.run(
             ["status", "--porcelain=v1"], cwd=managed.path
         ).stdout
