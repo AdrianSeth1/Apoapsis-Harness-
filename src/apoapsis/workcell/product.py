@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import platform
 import shutil
 import subprocess
 import uuid
@@ -303,6 +304,15 @@ class NativeQwenWorkcellExecutor:
             "plan_version": slice_package.plan_version,
             "slice_package_sha256": slice_package.package_sha256,
             "plan": approved_plan,
+            # Where the deciding verification actually runs. The coding model
+            # works in a Linux container; configured verification runs through
+            # the project's execution backend, which for the ordinary product
+            # path is this host. A model that cannot see that difference gets a
+            # green run in the container and an unexplained failure afterwards.
+            "independent_verification": {
+                "platform": platform.system(),
+                "backend": config.verification.backend.backend.value,
+            },
             "verification_commands": [
                 {
                     "name": item.name,

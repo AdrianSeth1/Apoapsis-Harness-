@@ -72,8 +72,20 @@ def _task_text(request: dict) -> str:
     task = request["task"]
     plan = request["plan"]
     target = next(item for item in plan["slices"] if item["slice_id"] == request["slice_id"])
+    # The verbatim text is the shorthand the user typed; the interpreted
+    # meaning is what the architect derived from it and what the constraint
+    # actually requires. Sending only the first told a model building for a
+    # Windows workstation nothing but "Runs on an RTX 4090." -- so it wrote
+    # POSIX-only paths into its tests, which passed in this Linux container
+    # and failed the moment independent verification ran them on the host.
     constraints = "\n".join(
-        f"- {item['id']}: {item['text']}" for item in task.get("hard_constraints", [])
+        f"- {item['id']}: {item['text']}"
+        + (
+            f"\n  Meaning: {item['interpreted_meaning']}"
+            if item.get("interpreted_meaning")
+            else ""
+        )
+        for item in task.get("hard_constraints", [])
     )
     criteria = "\n".join(
         f"- {item['id']}: {item['text']}" for item in task.get("acceptance_criteria", [])
@@ -86,7 +98,38 @@ def _task_text(request: dict) -> str:
         f"Suggested paths (advisory):\n" + "\n".join(f"- {x}" for x in target["suggested_paths"]) + "\n\n"
         f"Test obligations:\n" + "\n".join(f"- {x}" for x in target["test_obligations"]) + "\n\n"
         f"Hard constraints:\n{constraints}\n\nAcceptance criteria:\n{criteria}\n\n"
-        "Implement only this slice. Run the relevant tests before declaring readiness."
+        + _verification_environment_text(request)
+        + "Implement only this slice. Run the relevant tests before declaring readiness."
+    )
+
+
+def _verification_environment_text(request: dict) -> str:
+    """State where the deciding verification actually runs.
+
+    The model works in this Linux container and its own test runs are green
+    here, but the verdict that decides the slice comes from independent
+    verification on the operator's host. When those differ, every signal the
+    model can see says it succeeded, and it is told afterwards that it
+    failed -- with no way to have known. Naming the host platform is the
+    difference between an unfair test and a solvable one.
+    """
+
+    environment = request.get("independent_verification") or {}
+    platform_name = environment.get("platform")
+    if not platform_name:
+        return ""
+    portability = ""
+    if platform_name != "Linux":
+        portability = (
+            f" Code and tests must therefore pass on {platform_name} as well as "
+            "here. Do not hardcode POSIX-only paths such as '/tmp/...': on "
+            f"{platform_name} they are not absolute and will be rejected. Use "
+            "`tempfile` and `pathlib` so paths are correct on both."
+        )
+    return (
+        "Verification environment: you are working inside a Linux container, "
+        f"but this slice is decided by verification run on {platform_name}."
+        f"{portability}\n\n"
     )
 
 
