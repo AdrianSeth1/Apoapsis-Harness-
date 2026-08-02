@@ -114,6 +114,19 @@ class WorktreeManager:
                 "worktree contains uncommitted changes; use force only for an "
                 "explicit rollback"
             )
+
+        # Decide everything that can refuse *before* removing anything.
+        #
+        # This used to remove the worktree first and delete the branch last,
+        # so a refusal at the final step left the one state no cleanup path
+        # can repair: worktree gone, branch still present. `describe` raises
+        # once the directory is missing, and `create` refuses while the
+        # branch exists, so the task was wedged until an operator deleted the
+        # branch by hand. Ordering the checks first makes cleanup all-or-
+        # nothing: it either refuses having changed nothing, or it completes.
+        if delete_branch and not force:
+            self._require_branch_is_disposable(managed.branch)
+
         args = ["worktree", "remove"]
         if force:
             args.append("--force")
@@ -122,10 +135,54 @@ class WorktreeManager:
             self.repository.run(args)
             self.repository.run(["worktree", "prune"])
             if delete_branch:
-                branch_flag = "-D" if force else "-d"
-                self.repository.run(["branch", branch_flag, managed.branch])
+                # `-D` unconditionally: for a non-force cleanup the check
+                # above already proved no commit is lost, and for a force
+                # cleanup the caller has accepted the loss.
+                self.repository.run(["branch", "-D", managed.branch])
         except GitCommandError as exc:
             raise WorktreeError(str(exc)) from exc
+
+    def _require_branch_is_disposable(self, branch: str) -> None:
+        """Refuse unless every commit on ``branch`` survives its deletion.
+
+        `git branch -d` cannot answer this question in this repository.
+        It asks whether the branch is merged into the *currently checked out*
+        branch, and Apoapsis never moves the project's checked-out branch --
+        `checkpoint_completed_prior_slices` commits on Apoapsis-owned task
+        branches precisely so the operator's branch is left alone. Every task
+        branch built on an inherited checkpoint is therefore unmerged with
+        respect to that branch by construction, and `-d` refused all of them:
+        a fresh retry of any slice after the first could not clean up after
+        itself (live PLAN-19E795D6DC4B/SLICE-004, 2026-08-02).
+
+        The question worth asking is not "is this merged into HEAD" but "does
+        anything else still reach these commits", which is what actually
+        decides whether deleting the branch destroys work.
+        """
+
+        tip = self.repository.run(["rev-parse", branch], check=False)
+        if tip.returncode != 0:
+            return
+        contained = self.repository.run(
+            ["branch", "--format=%(refname:short)", "--contains", tip.stdout.strip()],
+            check=False,
+        )
+        if contained.returncode != 0:
+            raise WorktreeError(
+                f"cannot determine whether branch {branch} holds unique "
+                "commits; refusing to delete it"
+            )
+        others = {
+            line.strip().lstrip("+* ").strip()
+            for line in contained.stdout.splitlines()
+            if line.strip()
+        } - {branch}
+        if not others:
+            raise WorktreeError(
+                f"branch {branch} holds commits no other branch reaches, so "
+                "deleting it would discard that work; checkpoint or merge it "
+                "first, or use an explicit forced rollback"
+            )
 
     @staticmethod
     def _validate_slug(task_slug: str) -> str:
