@@ -9,9 +9,15 @@
 # image carries, all of which belong in the pilot manifest.
 set -euo pipefail
 
-COMMIT="${1:?usage: build.sh <commit> [tag]}"
+COMMIT="${1:?usage: build.sh <commit> [tag] [repo-root]}"
 TAG="${2:-apoapsis-pilot-controller:${COMMIT}}"
-REPO_ROOT="$(git rev-parse --show-toplevel)"
+# The repository is named, not inferred from the current directory. A caller
+# that launches this from somewhere else -- the product bridge runs `wsl.exe`
+# without setting cwd, so it inherits the *project* folder, not the harness --
+# would otherwise resolve `--show-toplevel` to whatever repository happens to
+# surround that directory and fail with "unknown revision" for a commit that
+# exists, in the repository it should have been reading, all along.
+REPO_ROOT="${3:-$(git rev-parse --show-toplevel)}"
 DOCKERFILE="${REPO_ROOT}/docker/pilot-controller/Dockerfile"
 
 FULL_COMMIT="$(git -C "${REPO_ROOT}" rev-parse "${COMMIT}^{commit}")"

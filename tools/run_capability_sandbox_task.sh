@@ -78,7 +78,7 @@ if test "${5:-}" = "--containment-preflight-only"; then
 fi
 
 if ! docker image inspect "${TAG}" >/dev/null 2>&1; then
-  bash "${REPO}/docker/pilot-controller/build.sh" "${COMMIT}" "${TAG}"
+  bash "${REPO}/docker/pilot-controller/build.sh" "${COMMIT}" "${TAG}" "${REPO}"
 fi
 
 docker run --rm --pull never --network host --gpus all \

@@ -260,6 +260,15 @@ class NativeQwenWorkcellExecutor:
             capture_output=True,
             text=True,
             timeout=7200,
+            # `wsl.exe` translates the caller's Windows working directory into
+            # the Linux one, so without this the bridge hands the *project*
+            # folder to a script whose job is to read the *harness* repository.
+            # Every path the script needs is passed explicitly above, but the
+            # controller image build shells out to `git rev-parse
+            # --show-toplevel`, which is answered by whatever repository
+            # surrounds the inherited directory -- reporting the harness commit
+            # as an unknown revision. Anchor the bridge to the harness root.
+            cwd=root,
         )
         (task_dir / "bridge-stdout.log").write_text(
             completed.stdout, encoding="utf-8"
