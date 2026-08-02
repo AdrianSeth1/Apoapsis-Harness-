@@ -92,6 +92,7 @@ def _slice_contract_facts(
     test_obligations: list[str] | None = None,
     failure_cases: list[str] | None = None,
     test_discovery_roots: list[str] | None = None,
+    inherited_slice_ids: list[str] | None = None,
 ) -> list[TraceableStatement]:
     """Preserve the approved execution contract in the derived task.
 
@@ -150,6 +151,32 @@ def _slice_contract_facts(
         # Stated separately from suggested-paths so an already-approved
         # plan whose slices never named a test directory still tells its
         # coder where tests must live, without a re-plan.
+        # A slice inherits its predecessors' finished code, and nothing told
+        # the coder that code is not its problem. Live
+        # PLAN-19E795D6DC4B/SLICE-004 (2026-08-02) opened an inherited
+        # storage module, decided a predecessor's test was broken, edited
+        # that module across nine of its twenty-two turns, and delivered
+        # neither artifact its own slice required. The inherited suite was
+        # green in both the container and on the host before and after, so
+        # it repaired nothing; "make the suite look right" simply outranked
+        # "build the feature" in the absence of any statement of scope.
+        #
+        # Stated as a boundary rather than advice, and paired with what to
+        # do instead, because a coder that believes it has found a real
+        # defect needs somewhere for that belief to go.
+        (
+            "inherited-code-boundary",
+            "Scope boundary: code and tests inherited from earlier slices "
+            "are already complete and verified. Do not refactor, repair, or "
+            "rewrite them to satisfy this slice. If inherited code appears "
+            "broken, that is a stop condition to report, not work to do -- "
+            "say so and stop rather than spending this slice's turns on it. "
+            "Only files this slice is responsible for count toward its "
+            "completion",
+            ["inherited work is out of scope for this slice"]
+            if inherited_slice_ids
+            else [],
+        ),
         (
             "test-discovery-roots",
             "REQUIRED test location: the configured test command collects "
@@ -697,6 +724,7 @@ def build_plan_slice_execution_package(
             test_obligations=list(slice_obj.test_obligations),
             failure_cases=list(slice_obj.failure_cases),
             test_discovery_roots=_test_discovery_roots(slice_obj, config),
+            inherited_slice_ids=list(inherited_slice_ids or []),
         ),
         verification_requirements=list(slice_obj.verification_commands),
         risk_level=slice_obj.risk_level,
