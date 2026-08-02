@@ -21,7 +21,10 @@ from apoapsis.architect.errors import (
     SliceExecutionNotFoundError,
     SliceResetError,
 )
-from apoapsis.architect.slice_service import reset_slice
+from apoapsis.architect.slice_service import (
+    _TASK_STATE_TO_SLICE_STATUS,
+    reset_slice,
+)
 from apoapsis.architect.slice_store import PlanSliceExecutionStore
 from apoapsis.workflow.engine import SQLiteTaskStore, TaskStoreError
 from apoapsis.workflow.events import WorkflowActor
@@ -167,6 +170,82 @@ class PlanSliceResetTests(unittest.TestCase):
         reset_slice(self.root, self.tasks, self.slices, PLAN, SLICE)
 
         self.assertEqual([item.name for item in self.root.iterdir()], [".apoapsis"])
+
+
+class PlanSliceRetryTests(unittest.TestCase):
+    """`retry_slice` is the one-action form: abandon, reset, package, approve.
+
+    The case that matters most is a task already at ROLLED_BACK, because
+    that is where the review screen's "Abandon & roll back" button leaves
+    it -- and where, before this existed, the slice could not be run again
+    through any supported path.
+    """
+
+    def setUp(self) -> None:
+        self.temporary_directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary_directory.cleanup)
+        self.root = Path(self.temporary_directory.name) / "project"
+        metadata = self.root / ".apoapsis"
+        metadata.mkdir(parents=True)
+        self.tasks = SQLiteTaskStore(metadata / "apoapsis.db")
+        self.slices = PlanSliceExecutionStore(metadata / "plan-slice-executions.db")
+        self.specification = make_specification(TASK)
+
+    def _abandoned_slice(self) -> None:
+        record = self.tasks.create_task(self.specification)
+        for state in TO_ROLLED_BACK:
+            record = self.tasks.transition(
+                TASK, state, actor=WorkflowActor.SYSTEM, event_type="fixture"
+            )
+        self.slices.record_package(PLAN, SLICE, plan_version=5, package_sha256=SHA)
+        self.slices.approve(
+            PLAN,
+            SLICE,
+            expected_package_sha256=SHA,
+            task_id=TASK,
+            task_expected_version=record.version,
+        )
+
+    def test_rolled_back_slice_is_reset_and_recreatable(self) -> None:
+        # retry_slice's own packaging/approval steps need a plan store and a
+        # repository, which this fixture deliberately does not build. What is
+        # pinned here is the part that was impossible before: from ROLLED_BACK,
+        # the ledger clears and the derived task id becomes usable again.
+        self._abandoned_slice()
+
+        reset_slice(self.root, self.tasks, self.slices, PLAN, SLICE)
+
+        self.assertEqual(self.slices.list_for_plan(PLAN), [])
+        recreated = self.tasks.create_task(self.specification)
+        self.assertEqual(recreated.task_id, TASK)
+        self.assertEqual(recreated.version, 1)
+
+    def test_retry_is_exposed_by_the_service_and_the_cli(self) -> None:
+        from apoapsis.architect import slice_service
+        from apoapsis.cli import app as cli_app
+        from apoapsis.ui import application as ui_application
+
+        self.assertIn("retry_slice", slice_service.__all__)
+        self.assertTrue(hasattr(cli_app, "retry_slice"))
+        self.assertTrue(
+            hasattr(ui_application.ApoapsisUIService, "retry_plan_slice")
+        )
+
+    def test_retry_button_is_offered_for_every_finished_slice_state(self) -> None:
+        # A rolled-back slice projects as "failed"; without that entry the
+        # button would be missing from exactly the state the abandon button
+        # produces.
+        app_js = (
+            Path(__file__).resolve().parents[1]
+            / "src" / "apoapsis" / "ui" / "static" / "app.js"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn('SLICE_RETRYABLE_STATUSES = ["human_review", "failed", "complete"]', app_js)
+        self.assertIn('data-action="slice-retry-confirm"', app_js)
+        self.assertIn("/retry`", app_js)
+        self.assertEqual(
+            _TASK_STATE_TO_SLICE_STATUS[WorkflowState.ROLLED_BACK].value, "failed"
+        )
 
 
 if __name__ == "__main__":

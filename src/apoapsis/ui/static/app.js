@@ -20,6 +20,7 @@ const store = {
   planRunConfirmMode: null,
   planSlice: null,
   planSliceApprovalPending: false,
+  planSliceRetryPending: false,
   reviews: null,
   review: null,
   reviewOperation: null,
@@ -864,8 +865,42 @@ function planSliceView() {
     ${sliceDependencySection(slice, pkg)}
     ${pkg ? slicePackagePreview(pkg) : slicePackageActionPanel(detail)}
     ${pkg && status.status === "packaged" ? sliceApproveActionPanel(detail) : ""}
+    ${sliceRetryActionPanel(detail)}
     ${task ? sliceTaskLinksSection(detail) : ""}
   </main>`;
+}
+
+// Abandoning a task and retiring the authorization that named it are two
+// different operations, and doing only the first leaves a slice that looks
+// recoverable and is not: the ledger row still points at the dead task, and
+// the derived task id is a function of (plan, slice), so re-approval fails
+// with "task already exists". Offering the whole sequence as one action is
+// the difference between a stopped slice and a stuck one.
+const SLICE_RETRYABLE_STATUSES = ["human_review", "failed", "complete"];
+
+function sliceRetryActionPanel(detail) {
+  const status = detail.status?.status;
+  const taskState = detail.status?.task_state;
+  if (!SLICE_RETRYABLE_STATUSES.includes(status)) return "";
+  const completed = taskState === "COMPLETE";
+  if (!store.planSliceRetryPending) {
+    return `<section class="card card-pad mt-16">
+      <p class="section-title mt-0">Retry this slice</p>
+      <p class="muted">Abandons this attempt if it has not been abandoned already, removes its worktree, clears the execution record, recompiles the package from the approved plan, and approves it -- one action, no model call. Starting stays a separate step. Every package artifact and audit directory from the previous attempt is kept.</p>
+      ${completed ? `<div class="notice mt-14">This slice COMPLETED. Later slices inherit its branch as their execution base, so retrying it changes what they are built on.</div>` : ""}
+      <button class="button primary" data-action="slice-retry-intent" ${store.busy ? "disabled" : ""}>Retry this slice →</button>
+    </section>`;
+  }
+  return `<div class="approval-bar mt-16">
+    <div>
+      <strong>Confirm: retry ${e(detail.slice_id)}</strong>
+      <span>The previous attempt is abandoned and its worktree removed. The slice returns to approved, ready to start, built from the current approved plan.</span>
+    </div>
+    <div class="approval-actions">
+      <button class="button ghost" data-action="slice-retry-cancel">Cancel</button>
+      <button class="button primary" data-action="slice-retry-confirm" data-plan-id="${e(detail.plan_id)}" data-slice-id="${e(detail.slice_id)}" ${store.busy ? "disabled" : ""}>Confirm retry →</button>
+    </div>
+  </div>`;
 }
 
 function sliceDependencySection(slice, pkg) {
@@ -2333,6 +2368,30 @@ async function packagePlanSlice(button) {
   }
 }
 
+async function retryPlanSlice(button) {
+  const planId = button.dataset.planId;
+  const sliceId = button.dataset.sliceId;
+  store.busy = true;
+  store.error = null;
+  store.planSliceRetryPending = false;
+  render();
+  try {
+    await api(
+      `/api/plans/${encodeURIComponent(planId)}/slices/${encodeURIComponent(sliceId)}/retry`,
+      { method: "POST", body: JSON.stringify({ confirm: true }) }
+    );
+    store.planSlice = await api(
+      `/api/plans/${encodeURIComponent(planId)}/slices/${encodeURIComponent(sliceId)}`
+    );
+    store.plan = null;
+  } catch (error) {
+    store.error = error.message;
+  } finally {
+    store.busy = false;
+    render();
+  }
+}
+
 async function approvePlanSlice(button) {
   const planId = button.dataset.planId;
   const sliceId = button.dataset.sliceId;
@@ -2739,6 +2798,15 @@ root.addEventListener("click", (event) => {
     render();
   }
   if (button.dataset.action === "slice-approve-confirm") approvePlanSlice(button);
+  if (button.dataset.action === "slice-retry-intent") {
+    store.planSliceRetryPending = true;
+    render();
+  }
+  if (button.dataset.action === "slice-retry-cancel") {
+    store.planSliceRetryPending = false;
+    render();
+  }
+  if (button.dataset.action === "slice-retry-confirm") retryPlanSlice(button);
   if (button.dataset.action === "review-act-intent") {
     store.reviewConfirm = { action: button.dataset.reviewAction };
     render();

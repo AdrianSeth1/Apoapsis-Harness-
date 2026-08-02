@@ -23,6 +23,7 @@ from apoapsis.architect.errors import (
     SliceApprovalError,
     SliceExecutionNotFoundError,
     SlicePackagingError,
+    SliceResetError,
 )
 from apoapsis.discovery.errors import (
     DiscoveryError,
@@ -184,6 +185,9 @@ class ApoapsisUIRequestHandler(BaseHTTPRequestHandler):
             return
         if "/slices/" in path and path.endswith("/approve"):
             self._handle_plan_slice_approve(path)
+            return
+        if "/slices/" in path and path.endswith("/retry"):
+            self._handle_plan_slice_retry(path)
             return
         if path.startswith("/api/plans/") and path.endswith("/run"):
             self._handle_plan_run(path)
@@ -428,6 +432,32 @@ class ApoapsisUIRequestHandler(BaseHTTPRequestHandler):
         except (PlanNotFoundError, SliceExecutionNotFoundError):
             self._send_error(HTTPStatus.NOT_FOUND, "not found")
         except (
+            SliceApprovalError,
+            ActiveSliceExecutionExistsError,
+            ConcurrentSliceExecutionTransitionError,
+        ) as exc:
+            self._send_error(HTTPStatus.CONFLICT, str(exc))
+        except (TaskStoreError, PlanStoreError, ValueError, json.JSONDecodeError) as exc:
+            self._send_error(HTTPStatus.BAD_REQUEST, str(exc))
+        else:
+            self._send_json(HTTPStatus.OK, payload)
+
+    def _handle_plan_slice_retry(self, path: str) -> None:
+        plan_id, slice_id = self._parse_plan_slice_path(path, "/retry")
+        try:
+            body = self._read_json_body()
+            if body.get("confirm") is not True:
+                raise ValueError("confirm must be true")
+            payload = self.server.service.retry_plan_slice(
+                plan_id,
+                slice_id,
+                allow_completed=bool(body.get("allow_completed", False)),
+            )
+        except (PlanNotFoundError, SliceExecutionNotFoundError):
+            self._send_error(HTTPStatus.NOT_FOUND, "not found")
+        except (
+            SliceResetError,
+            SlicePackagingError,
             SliceApprovalError,
             ActiveSliceExecutionExistsError,
             ConcurrentSliceExecutionTransitionError,

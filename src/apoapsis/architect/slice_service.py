@@ -27,6 +27,8 @@ from apoapsis.architect.store import SQLitePlanStore
 from apoapsis.config import ApoapsisConfig
 from apoapsis.execution.operation_service import execute_execution_operation
 from apoapsis.execution.operation_store import ExecutionOperationStore
+from apoapsis.execution.worktree import WorktreeError, WorktreeManager
+from apoapsis.review.case import task_slug
 from apoapsis.reporting.current_state import project_current_task_evidence
 from apoapsis.workflow.engine import SQLiteTaskStore
 from apoapsis.workflow.events import WorkflowActor
@@ -356,6 +358,131 @@ def reset_slice(
     }
 
 
+#: Terminal task states ``retry_slice`` will abandon on the operator's behalf
+#: before clearing the ledger. A task here is finished; what remains is its
+#: worktree, which retry removes exactly as `apoapsis rollback` would.
+_ABANDONABLE_TASK_STATES: tuple[WorkflowState, ...] = (
+    WorkflowState.HUMAN_REVIEW_REQUIRED,
+    WorkflowState.FAILED,
+)
+
+
+def retry_slice(
+    project_root: str | Path,
+    plan_store: SQLitePlanStore,
+    slice_store: PlanSliceExecutionStore,
+    task_store: SQLiteTaskStore,
+    operation_store: ExecutionOperationStore,
+    plan_id: str,
+    slice_id: str,
+    config: ApoapsisConfig,
+    *,
+    allow_completed: bool = False,
+) -> dict[str, Any]:
+    """One action for "this attempt is over, give the slice another one":
+    abandon the finished task if it has not been abandoned already, clear
+    the ledger, recompile the package, and approve it. Starting is still
+    separate and still explicit -- this leaves the slice exactly where a
+    freshly approved slice sits, and calls no model.
+
+    The steps are not new; each is the existing, individually-guarded
+    operation, in the only order that works. What is new is that the
+    operator no longer has to know that order. Rolling back and resetting
+    are genuinely different things -- one abandons a task, the other
+    retires the authorization that named it -- and doing the first alone
+    leaves a slice that looks recoverable and is not: `record_package`
+    still refuses a slice past PACKAGED, and the derived task id is a
+    function of (plan, slice), so re-approval still hits "task already
+    exists". Nothing in the review screen said so, and the natural guess
+    from an "Abandon & roll back" button is that abandoning is enough.
+
+    Accepts a task that is already ROLLED_BACK, which is the state that
+    button leaves behind, and treats it as the easy case: there is no
+    worktree left to remove, so retry is a reset and a re-approval."""
+
+    root = Path(project_root).resolve()
+    plan_record = plan_store.get_plan(plan_id)
+    abandoned = False
+
+    try:
+        record = slice_store.get(plan_id, slice_id)
+    except SliceExecutionNotFoundError:
+        record = None
+
+    if record is not None and record.task_id is not None:
+        task = task_store.get_task(record.task_id)
+        if task.state in _ABANDONABLE_TASK_STATES:
+            # Version-checked transition first, destructive cleanup second,
+            # matching `review.execution._execute_abandon`: a stale caller
+            # must fail its version check having deleted nothing.
+            task_store.transition(
+                record.task_id,
+                WorkflowState.ROLLED_BACK,
+                actor=WorkflowActor.USER,
+                event_type="plan_slice_retry_abandoned",
+                payload={
+                    "reason": "operator retried this slice from its plan page",
+                    "plan_id": plan_id,
+                    "slice_id": slice_id,
+                    "abandoned_state": task.state.value,
+                },
+                expected_version=task.version,
+            )
+            abandoned = True
+            manager = WorktreeManager(root)
+            try:
+                manager.cleanup(
+                    task_slug(record.task_id), force=True, delete_branch=True
+                )
+            except WorktreeError:
+                # Already gone, or never created. Either way there is
+                # nothing to clean and nothing to report: the reset below
+                # is what actually unblocks the slice.
+                pass
+
+    reset = reset_slice(
+        root,
+        task_store,
+        slice_store,
+        plan_id,
+        slice_id,
+        allow_completed=allow_completed,
+    ) if record is not None else None
+
+    package = package_slice(
+        root,
+        plan_store,
+        slice_store,
+        task_store,
+        operation_store,
+        plan_id,
+        slice_id,
+        expected_plan_version=plan_record.version,
+        config=config,
+    )
+    approved = approve_slice(
+        root,
+        task_store,
+        slice_store,
+        plan_id,
+        slice_id,
+        expected_package_sha256=package.package_sha256,
+        approval_event_type="plan_slice_specification_approved",
+        approval_context={"retry_of_previous_attempt": True},
+    )
+    return {
+        "plan_id": plan_id,
+        "slice_id": slice_id,
+        "status": "ready_to_start",
+        "abandoned_previous_task": abandoned,
+        "reset": reset,
+        "package_id": package.package_id,
+        "package_sha256": package.package_sha256,
+        "record": approved.model_dump(mode="json"),
+        "next_action": f"apoapsis plan slice start {plan_id} {slice_id}",
+    }
+
+
 def project_slice_status(
     project_root: str | Path,
     plan_store: SQLitePlanStore,
@@ -490,5 +617,6 @@ __all__ = [
     "project_slice_status",
     "read_latest_slice_package",
     "reset_slice",
+    "retry_slice",
     "start_slice",
 ]

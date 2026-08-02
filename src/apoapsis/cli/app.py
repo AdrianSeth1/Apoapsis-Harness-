@@ -23,6 +23,7 @@ from apoapsis.architect.slice_service import (
     package_slice,
     project_slice_status,
     reset_slice,
+    retry_slice,
     start_slice,
 )
 from apoapsis.architect.slice_store import PlanSliceExecutionStore
@@ -856,6 +857,22 @@ def build_parser() -> argparse.ArgumentParser:
             "a completed slice's branch is what later slices inherit as "
             "their execution base"
         ),
+    )
+    plan_slice_retry = plan_slice_subparsers.add_parser(
+        "retry",
+        help=(
+            "give one slice another attempt in a single action: abandon its "
+            "finished task if it has not been abandoned already, clear the "
+            "ledger, recompile the package, and approve it -- calls no model "
+            "and does not start execution"
+        ),
+    )
+    plan_slice_retry.add_argument("plan_id")
+    plan_slice_retry.add_argument("slice_id")
+    plan_slice_retry.add_argument(
+        "--allow-completed",
+        action="store_true",
+        help="also retry a slice whose task COMPLETED (see `reset --allow-completed`)",
     )
     plan_slice_status = plan_slice_subparsers.add_parser(
         "status", help="real, current status for one slice, read from persisted facts"
@@ -1859,6 +1876,19 @@ def _plan_slice_command(root: Path, args: argparse.Namespace) -> dict[str, objec
             slice_store,
             args.plan_id,
             args.slice_id,
+            allow_completed=args.allow_completed,
+        )
+    if args.plan_slice_command == "retry":
+        config = ApoapsisConfig.from_toml(root / ".apoapsis" / "config.toml")
+        return retry_slice(
+            root,
+            plan_store,
+            slice_store,
+            task_store,
+            operation_store,
+            args.plan_id,
+            args.slice_id,
+            config,
             allow_completed=args.allow_completed,
         )
     if args.plan_slice_command == "start":

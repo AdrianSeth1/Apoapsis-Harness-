@@ -22,6 +22,7 @@ from apoapsis.architect.slice_service import (
     package_slice,
     project_slice_status,
     read_latest_slice_package,
+    retry_slice,
 )
 from apoapsis.architect.slice_store import PlanSliceExecutionStore
 from apoapsis.architect.store import SQLitePlanStore
@@ -724,6 +725,33 @@ class ApoapsisUIService:
             expected_package_sha256=expected_package_sha256,
         )
         return record.model_dump(mode="json")
+
+    def retry_plan_slice(
+        self, plan_id: str, slice_id: str, *, allow_completed: bool = False
+    ) -> dict[str, Any]:
+        """Gives one slice another attempt in a single action: abandons its
+        finished task if it has not been abandoned already, clears the
+        ledger, recompiles the package, and approves it. Calls no model and
+        never starts execution -- the slice lands exactly where a freshly
+        approved one sits, and starting stays the separate explicit step it
+        has always been."""
+
+        config = self._config()
+        if config is None:
+            raise TaskStoreError(
+                "Apoapsis is not initialized; run 'apoapsis init' first"
+            )
+        return retry_slice(
+            self.project_root,
+            self._require_plan_store(),
+            self._plan_slice_store(),
+            self._require_store(),
+            self._execution_operation_store(),
+            plan_id,
+            slice_id,
+            config,
+            allow_completed=allow_completed,
+        )
 
     def start_plan_run(
         self,
