@@ -59,7 +59,15 @@ def _server_environment(manifest: PilotManifest) -> dict[str, str]:
 
 
 def _llama_server_pids(proc_root: Path = Path("/proc")) -> tuple[int, ...]:
-    """Read Linux procfs directly; the pinned slim controller has no `pgrep`."""
+    """Read Linux procfs directly; the pinned slim controller has no `pgrep`.
+
+    Sees only this PID namespace. Called from inside the controller container
+    that is the normal product path, it cannot observe a llama-server the
+    operator started on the host, so the cold-state check below it will pass
+    while a second copy of the same weights is already resident on the GPU.
+    `tools/run_capability_sandbox_task.sh` repeats the check before launching
+    the container, which is the only layer that can see both.
+    """
 
     found = []
     for entry in proc_root.iterdir():

@@ -57,6 +57,34 @@ if test -n "$(git -C "${REPO}" status --porcelain --untracked-files=all -- src p
   exit 3
 fi
 
+# The controller starts its own pinned llama-server for this run. A second one
+# already resident is not a spare: it is another full copy of the same weights
+# on the same GPU, and two 16GB copies do not fit on a 24GB card. The loser is
+# evicted mid-generation, which reaches the relay as "the workcell closed the
+# connection mid-response" -- indistinguishable, from there, from the coding
+# model having failed.
+#
+# `verify_runtime` already refuses this, but it runs inside the controller
+# container and reads that container's `/proc`, so a server started on the host
+# is invisible to it and the guard cannot fire. This is the same check at the
+# only layer that can see both.
+RESIDENT_LLAMA=""
+for COMM_FILE in /proc/[0-9]*/comm; do
+  test -r "${COMM_FILE}" || continue
+  test "$(cat "${COMM_FILE}" 2>/dev/null)" = "llama-server" || continue
+  RESIDENT_LLAMA="${RESIDENT_LLAMA} $(basename "$(dirname "${COMM_FILE}")")"
+done
+if test -n "${RESIDENT_LLAMA}"; then
+  echo "Capability Sandbox needs the GPU to itself: llama-server is already running (PID${RESIDENT_LLAMA})." >&2
+  for PID in ${RESIDENT_LLAMA}; do
+    test -r "/proc/${PID}/cmdline" || continue
+    echo "  PID ${PID}: $(tr '\0' ' ' < "/proc/${PID}/cmdline")" >&2
+  done
+  echo "The controller starts its own pinned server; a second copy of the weights will not fit alongside it." >&2
+  echo "Stop the resident server (kill ${RESIDENT_LLAMA# }), then start this slice again." >&2
+  exit 4
+fi
+
 COMMIT="$(git -C "${REPO}" rev-parse HEAD)"
 TAG="apoapsis-product-controller:${COMMIT:0:12}"
 RUNTIME="$(mktemp -d /tmp/apx.XXXXXX)"

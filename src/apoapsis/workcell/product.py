@@ -102,12 +102,14 @@ def _wsl_path(path: Path) -> str:
         ["wsl.exe", "-d", "Ubuntu-24.04", "--", "wslpath", "-a", str(path)],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=30,
     )
-    if completed.returncode != 0 or not completed.stdout.strip():
+    if completed.returncode != 0 or not (completed.stdout or "").strip():
         raise CapabilitySandboxError(
             "Ubuntu-24.04 could not resolve the selected project path: "
-            + completed.stderr.strip()
+            + (completed.stderr or "").strip()
         )
     return completed.stdout.strip()
 
@@ -259,6 +261,19 @@ class NativeQwenWorkcellExecutor:
             command,
             capture_output=True,
             text=True,
+            # The bridge relays a Linux model session, so its output is UTF-8
+            # and routinely carries bytes no Windows ANSI code page maps.
+            # Without this, `text=True` decodes with the locale codec, the
+            # reader thread dies of UnicodeDecodeError, and `stdout` arrives
+            # as None -- which the very next line then tries to write, raising
+            # "TypeError: data must be str, not NoneType" and discarding the
+            # run. A completed slice was lost to this: the controller had
+            # already written outcome "complete" with readiness proved, and
+            # the operator was shown a failed task with no files changed.
+            # Decoding is not where a verdict should be decided, so replace
+            # undecodable bytes rather than raising on them.
+            encoding="utf-8",
+            errors="replace",
             timeout=7200,
             # `wsl.exe` translates the caller's Windows working directory into
             # the Linux one, so without this the bridge hands the *project*
@@ -270,16 +285,18 @@ class NativeQwenWorkcellExecutor:
             # as an unknown revision. Anchor the bridge to the harness root.
             cwd=root,
         )
+        # `or ""`: a diagnostic log is never worth converting a finished run
+        # into a crash, whatever the bridge did or did not emit.
         (task_dir / "bridge-stdout.log").write_text(
-            completed.stdout, encoding="utf-8"
+            completed.stdout or "", encoding="utf-8"
         )
         (task_dir / "bridge-stderr.log").write_text(
-            completed.stderr, encoding="utf-8"
+            completed.stderr or "", encoding="utf-8"
         )
         if completed.returncode != 0 or not response_path.is_file():
             detail = (
-                completed.stderr.strip()
-                or completed.stdout.strip()
+                (completed.stderr or "").strip()
+                or (completed.stdout or "").strip()
                 or f"launcher exited {completed.returncode} without a result artifact"
             )
             return self._review(
