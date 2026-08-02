@@ -194,12 +194,9 @@ def build_manual_frontier_handoff_package(
     return base.model_copy(update={"package_sha256": digest})
 
 
-def verify_package_integrity(package: ManualFrontierHandoffPackage) -> bool:
-    """Recompute ``package_sha256`` from a package's own content and
-    compare -- used before trusting any package reloaded from disk."""
-
+def _unsealed_fields(schema_version: str) -> set[str]:
     excluded = {"package_id", "generated_at", "package_sha256"}
-    if package.schema_version == "1.0":
+    if schema_version == "1.0":
         excluded.update(
             {
                 "verification_results",
@@ -208,8 +205,35 @@ def verify_package_integrity(package: ManualFrontierHandoffPackage) -> bool:
                 "approved_slice_package",
             }
         )
-    payload = package.model_dump(mode="json", exclude=excluded)
+    return excluded
+
+
+def verify_package_integrity(package: ManualFrontierHandoffPackage) -> bool:
+    """Self-consistency of an in-memory package, for a package just built.
+
+    Not suitable for checking a stored file: see `verify_stored_payload`."""
+
+    payload = package.model_dump(
+        mode="json", exclude=_unsealed_fields(package.schema_version)
+    )
     return _sha256_canonical(payload) == package.package_sha256
+
+
+def verify_stored_payload(stored: dict[str, Any], recorded_sha256: str) -> bool:
+    """Whether the JSON *as written to disk* still hashes to its seal.
+
+    Hashes the parsed file rather than a package re-serialized through the
+    current models, so that adding a field to any nested model cannot
+    retroactively invalidate packages sealed before it. See the same
+    function in `discovery.frontier_package` for the incident that
+    motivated this: one optional field with a default broke every
+    previously sealed frontier package while the files themselves were
+    untouched and still hashed correctly.
+    """
+
+    excluded = _unsealed_fields(str(stored.get("schema_version", "")))
+    payload = {key: value for key, value in stored.items() if key not in excluded}
+    return _sha256_canonical(payload) == recorded_sha256
 
 
 def build_handoff_markdown(package: ManualFrontierHandoffPackage) -> str:
@@ -399,10 +423,9 @@ def load_package(root: str | Path, task_id: str, package_id: str) -> ManualFront
     path = package_path(root, task_id, package_id)
     if not path.is_file():
         raise PackageNotFoundError(f"manual-frontier package not found: {package_id}")
-    package = ManualFrontierHandoffPackage.model_validate_json(
-        path.read_text(encoding="utf-8")
-    )
-    if not verify_package_integrity(package):
+    text = path.read_text(encoding="utf-8")
+    package = ManualFrontierHandoffPackage.model_validate_json(text)
+    if not verify_stored_payload(json.loads(text), package.package_sha256):
         raise PackageIntegrityError(
             f"manual-frontier package {package_id} failed its own integrity check "
             "-- the file on disk does not match its recorded package_sha256"

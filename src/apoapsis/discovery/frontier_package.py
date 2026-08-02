@@ -118,11 +118,46 @@ def build_frontier_planning_request_package(
     return base.model_copy(update={"package_sha256": digest})
 
 
+# Fields excluded from the sealed payload: identifiers and timestamps that
+# are properties of *this* export rather than content anyone is authorizing.
+_UNSEALED_FIELDS = ("package_id", "generated_at", "package_sha256")
+
+
 def verify_package_integrity(package: FrontierPlanningRequestPackage) -> bool:
-    payload = package.model_dump(
-        mode="json", exclude={"package_id", "generated_at", "package_sha256"}
-    )
+    """Self-consistency of an in-memory package, for a package just built.
+
+    Not suitable for checking a stored file: see `verify_stored_payload`.
+    """
+
+    payload = package.model_dump(mode="json", exclude=set(_UNSEALED_FIELDS))
     return _sha256_canonical(payload) == package.package_sha256
+
+
+def verify_stored_payload(stored: dict[str, Any], recorded_sha256: str) -> bool:
+    """Whether the JSON *as written to disk* still hashes to its seal.
+
+    Deliberately hashes the parsed file rather than a package re-serialized
+    through the current models. Re-serializing conflates two different
+    questions: "has this file been altered?" and "does this file match
+    today's schema?" -- and answers the first using the second.
+
+    That conflation is not hypothetical. Adding one optional field with a
+    default to `VerificationCatalogEntry` (638efa7) made every package
+    sealed before it fail this check, because parsing injected
+    `discovery_roots: []` into a payload that never contained the key. The
+    files were untouched and still hashed to exactly their recorded value;
+    only the verifier had moved. A seal that breaks when the reader changes
+    is not measuring integrity.
+
+    Hashing the stored bytes is also strictly stronger: a key the current
+    models would silently drop still changes the digest, where a re-dump
+    would have discarded it before hashing.
+    """
+
+    payload = {
+        key: value for key, value in stored.items() if key not in _UNSEALED_FIELDS
+    }
+    return _sha256_canonical(payload) == recorded_sha256
 
 
 def package_path(root: str | Path, package_id: str) -> Path:
@@ -139,10 +174,9 @@ def load_package(root: str | Path, package_id: str) -> FrontierPlanningRequestPa
     path = package_path(root, package_id)
     if not path.is_file():
         raise PackageNotFoundError(f"frontier planning package not found: {package_id}")
-    package = FrontierPlanningRequestPackage.model_validate_json(
-        path.read_text(encoding="utf-8")
-    )
-    if not verify_package_integrity(package):
+    text = path.read_text(encoding="utf-8")
+    package = FrontierPlanningRequestPackage.model_validate_json(text)
+    if not verify_stored_payload(json.loads(text), package.package_sha256):
         raise PackageIntegrityError(
             f"frontier planning package {package_id} failed its own integrity "
             "check -- the file on disk does not match its recorded package_sha256"
