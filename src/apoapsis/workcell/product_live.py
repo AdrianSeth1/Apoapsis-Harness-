@@ -300,6 +300,10 @@ class ProductSupervisor:
                     criteria_proved=list(self.contract.criteria),
                     timeout_seconds=float(command["timeout_seconds"]),
                     collection_method="stdlib trace module",
+                    # The tree the command ran against, so coverage can be
+                    # read against the source and an imported-but-never-called
+                    # module is not mistaken for an exercised one.
+                    source_root=Path(admitted),
                 ))
             return witnesses
 

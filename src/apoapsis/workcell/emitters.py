@@ -24,6 +24,7 @@ found nothing.
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 import re
@@ -62,8 +63,88 @@ def _witness_id(prefix: str) -> str:
     return f"{prefix}-{uuid.uuid4().hex[:12]}"
 
 
+def _executable_body_lines(source: str) -> set[int]:
+    """Line numbers that only run when a function or method is *called*.
+
+    Importing a module executes its top level: the imports, the assignments,
+    the `class` statements, and every `def` header with its decorators,
+    annotations and default expressions. None of that is evidence the code
+    does anything. Only the statements inside a function body require a call.
+
+    Returns an empty set when the source cannot be parsed, which callers must
+    treat as "cannot tell" rather than "nothing ran".
+    """
+
+    try:
+        tree = ast.parse(source)
+    except (SyntaxError, ValueError):
+        return set()
+
+    body_lines: set[int] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for statement in node.body:
+            for inner in ast.walk(statement):
+                line = getattr(inner, "lineno", None)
+                if isinstance(line, int):
+                    body_lines.add(line)
+    return body_lines
+
+
+def _reached_by_call(
+    executed: dict[str, list[int]], source_root: Path | None
+) -> set[str]:
+    """Paths with at least one executed line inside a function body.
+
+    A path whose only executed lines are its imports and `def` headers was
+    *imported*, not exercised, and importing a module proves nothing about
+    whether its code works.
+
+    This is not hypothetical. PLAN-19E795D6DC4B/SLICE-004 (2026-08-02) was
+    accepted as complete on exactly this evidence: `backend/gmail/sync.py`
+    and `backend/gmail/drafts.py` each reported sixteen executed lines, and
+    every one of them was a docstring, an import, a logger assignment or a
+    `def` signature. Not one statement inside any function body ran. The
+    slice's own tests were pytest-style and the configured
+    `unittest discover` never collected them; the witness came entirely from
+    `unittest` importing the test module, which imported the product module.
+
+    Falls back to the old any-line rule for any path whose source cannot be
+    read, so an unreadable file is never *less* exercised than before.
+    """
+
+    reached: set[str] = set()
+    for path, lines in executed.items():
+        if not lines:
+            continue
+        if source_root is None:
+            reached.add(path)
+            continue
+        candidate = source_root / path
+        try:
+            source = candidate.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            reached.add(path)
+            continue
+        body_lines = _executable_body_lines(source)
+        if not body_lines:
+            # No functions at all (a constants or `__init__` module), or
+            # unparseable. Importing it is all there is to do, so the old
+            # rule is the right one.
+            reached.add(path)
+            continue
+        if body_lines & set(lines):
+            reached.add(path)
+    return reached
+
+
 def parse_coverage_json(
-    payload: dict, *, source_sha256: str, collection_method: str
+    payload: dict,
+    *,
+    source_sha256: str,
+    collection_method: str,
+    source_root: Path | None = None,
 ) -> CoverageObservation:
     """Read `coverage.py`'s JSON report into a coverage observation.
 
@@ -107,7 +188,7 @@ def parse_coverage_json(
             "the coverage report contained no executed lines for any file"
         )
     return CoverageObservation(
-        executed_paths=sorted(executed_lines),
+        executed_paths=sorted(_reached_by_call(executed_lines, source_root)),
         executed_lines=executed_lines,
         observed_symbols=sorted(observed_symbols),
         collection_method=collection_method,
@@ -128,6 +209,7 @@ def emit_test_witness(
     evidence_class: EvidenceClass = EvidenceClass.INDEPENDENT,
     timeout_seconds: float = 600.0,
     collection_method: str = "coverage.py json report",
+    source_root: Path | None = None,
 ) -> StructuredWitness:
     """Run a test command under coverage and witness what it actually reached.
 
@@ -146,10 +228,21 @@ def emit_test_witness(
     duration = time.monotonic() - started
 
     if not artifact.is_file():
+        # The exit code and output are in hand here and used to be thrown
+        # away, leaving one message for every possible cause. Three separate
+        # root causes hid behind it in a single session (2026-08-01): a
+        # container with `python3` but no `python`, a bridge that leaked the
+        # wrong working directory, and a discovery root the tests were not
+        # written into. Each looked identical from outside.
+        tail = (stderr or stdout or "").strip().splitlines()[-15:]
+        detail = "\n".join(tail) if tail else "(the command produced no output)"
         raise EmitterError(
             f"{command_name!r} produced no coverage artifact at {artifact}. "
             "Without it there is no way to tell which paths the run reached, "
-            "and a witness that asserted coverage anyway would be a claim."
+            "and a witness that asserted coverage anyway would be a claim.\n"
+            f"command: {' '.join(argv)}\n"
+            f"exit code: {exit_code}\n"
+            f"last output:\n{detail}"
         )
     source_sha = _sha256_file(artifact)
     try:
@@ -158,7 +251,10 @@ def emit_test_witness(
         raise EmitterError(f"the coverage artifact could not be read: {exc}") from exc
 
     coverage = parse_coverage_json(
-        payload, source_sha256=source_sha, collection_method=collection_method
+        payload,
+        source_sha256=source_sha,
+        collection_method=collection_method,
+        source_root=source_root,
     )
     passed = exit_code == 0
     return StructuredWitness(
