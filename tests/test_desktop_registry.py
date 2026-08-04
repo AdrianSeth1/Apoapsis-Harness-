@@ -16,6 +16,7 @@ from apoapsis.desktop.errors import (
 from apoapsis.desktop.project_service import DesktopProjectService
 from apoapsis.desktop.registry_store import ProjectRegistryStore
 from apoapsis.desktop.schema import ProjectStatus
+from tests.helpers import remove_tree
 
 
 def _git_init(root: Path) -> None:
@@ -132,9 +133,8 @@ class DesktopProjectServiceTests(unittest.TestCase):
     def test_moved_project_is_detected_as_missing_on_relist(self) -> None:
         project = self._make_git_project("proj-moved", initialized=True)
         self.service.select_project(project)
-        import shutil
 
-        shutil.rmtree(project)
+        remove_tree(project)
         recents = self.service.list_recent_projects()["projects"]
         self.assertEqual(recents[0]["validation"]["status"], ProjectStatus.MISSING)
 

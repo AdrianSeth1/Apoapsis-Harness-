@@ -467,8 +467,15 @@ def start_local_models(
     keep_alive: str = "30m",
     launch_service: bool = True,
     service_wait_seconds: float = _DEFAULT_SERVICE_WAIT_SECONDS,
+    prebuild_sandbox_image: bool = True,
 ) -> dict[str, object]:
-    """Ensure the local service is ready and warm configured coding models."""
+    """Ensure the local service is ready and warm configured coding models.
+
+    Also warms the Capability Sandbox controller image when one is needed
+    (MH-9). That is a Docker build, not a model load, and it is included here
+    because this function already owns "make the slow things happen before the
+    operator is waiting on them".
+    """
 
     if not _KEEP_ALIVE_PATTERN.fullmatch(keep_alive):
         raise ModelLifecycleError(
@@ -601,12 +608,50 @@ def start_local_models(
             "provider supports it."
         ),
     }
+    if prebuild_sandbox_image:
+        result["capability_sandbox_image"] = _warm_controller_image()
     _write_last_result(project_root, result)
     return result
 
 
-def stop_local_models(project_root: Path) -> dict[str, object]:
-    """Explicitly unload every configured loopback Ollama model."""
+def _warm_controller_image() -> dict[str, object]:
+    """Build the Capability Sandbox controller image now, if it is missing.
+
+    Startup is the right moment for this and the slice is the wrong one. The
+    image is tagged by harness commit and built without cache, so any commit
+    to Apoapsis makes the *next* slice pay a full build inside its own
+    critical path -- measured at 34s on the owner's machine, which is half a
+    minute of unmoving spinner before a single token is generated, at exactly
+    the moment someone is waiting to learn whether their slice works.
+
+    Never fatal, and deliberately so. Everything else in Apoapsis -- intake,
+    planning, review, the whole UI -- works with no Docker at all, and a
+    launcher that refused to start because a sandbox image could not be warmed
+    would trade a large capability for a small one. The status is reported and
+    the launch continues.
+    """
+
+    from apoapsis.workcell.controller_image import prebuild_controller_image
+
+    try:
+        harness_root = Path(__file__).resolve().parents[2]
+        status = prebuild_controller_image(harness_root)
+    except Exception as exc:  # noqa: BLE001 - warming may never fail a launch
+        return {"attempted": False, "reason": f"{type(exc).__name__}: {exc}"}
+    return status.model_dump(mode="json")
+
+
+def stop_local_models(
+    project_root: Path, *, release_loopback_servers: bool = True
+) -> dict[str, object]:
+    """Release every configured local model's memory.
+
+    Two different mechanisms, because the two providers free memory
+    differently: Ollama unloads a model on request (`keep_alive: 0`) and keeps
+    its service running, while a llama-server holds its weights until the
+    process exits. Releasing only the first is what made "model memory has been
+    released" untrue for the larger of the two.
+    """
 
     targets = configured_ollama_targets(project_root)
     results: list[dict[str, object]] = []
@@ -645,39 +690,70 @@ def stop_local_models(project_root: Path) -> dict[str, object]:
             }
         )
 
-    # Loopback OpenAI-compatible servers (llama-server) are reported, never
-    # killed. Apoapsis launches them through an operator-supplied command line
-    # that may cross a process boundary it cannot see through -- `wsl.exe ...`
-    # yields the PID of wsl.exe, not of llama-server inside the distribution.
-    # Without proof that a specific PID is that exact server, terminating
-    # anything would mean guessing, and guessing here means killing a stranger's
-    # process on port 8000. So: tell the truth and stop.
+    # Loopback OpenAI-compatible servers (llama-server) hold their weights in
+    # VRAM until the process exits -- there is no `keep_alive: 0` equivalent.
+    # This used to report them and stop, on the grounds that Apoapsis launches
+    # them through an operator-supplied command line crossing a process
+    # boundary it cannot see through (`wsl.exe ...` yields the PID of wsl.exe),
+    # so killing *by port* would mean killing whatever a stranger was running.
+    #
+    # That reasoning is still right, and it is an argument against killing by
+    # port -- not against stopping the server at all. What was missing was
+    # identity, and the server itself supplies it: `GET /props` reports the
+    # model file it currently holds, and `tools/resident_model_server.sh`
+    # signals only the process whose own command line names that exact file.
+    # Same discipline the sandbox already applies before a run.
+    #
+    # Without this, "Apoapsis model memory has been released" left the single
+    # largest consumer untouched: a 27B at Q4_K_M with every layer offloaded is
+    # about 20 GB of a 24 GB card, and the operator's only remedy was to find
+    # and kill, by hand and inside WSL, a process Apoapsis had started for them.
     unmanaged: list[dict[str, object]] = []
     for target in configured_openai_compatible_local_targets(project_root):
         try:
             _request_absolute_json(_openai_models_path(target.base_url))
-            status = "running_not_managed_by_apoapsis"
+            running = True
         except ModelLifecycleError:
-            status = "not_running"
-        unmanaged.append(
-            {
-                "model": target.model,
-                "roles": list(target.roles),
-                "base_url": target.base_url,
-                "provider": "openai_compatible",
-                "status": status,
-            }
-        )
+            running = False
+        record: dict[str, object] = {
+            "model": target.model,
+            "roles": list(target.roles),
+            "base_url": target.base_url,
+            "provider": "openai_compatible",
+        }
+        if not running:
+            record["status"] = "not_running"
+        elif not release_loopback_servers:
+            record["status"] = "running_left_alone_by_request"
+        else:
+            outcome = _release_loopback_server(target.base_url)
+            record["status"] = "stopped" if outcome.stopped else "running_not_stopped"
+            record["detail"] = outcome.model_dump(mode="json")
+        unmanaged.append(record)
 
     note = (
         "Configured model memory was released. The shared Ollama service was "
         "left running intentionally."
     )
-    if any(item["status"] == "running_not_managed_by_apoapsis" for item in unmanaged):
+    stopped_servers = [item for item in unmanaged if item["status"] == "stopped"]
+    if stopped_servers:
+        note += (
+            f" {len(stopped_servers)} loopback model server(s) were stopped, "
+            "releasing the VRAM their weights held. Start Apoapsis again to "
+            "reload them."
+        )
+    stubborn = [item for item in unmanaged if item["status"] == "running_not_stopped"]
+    if stubborn:
         note += (
             " A loopback OpenAI-compatible server is still running and was NOT "
-            "stopped: Apoapsis cannot prove which process it is, so it will not "
-            "terminate anything on that port. Stop it where you started it."
+            "stopped, because Apoapsis could not prove which local process is "
+            "serving it -- see `unmanaged_local_endpoints[].detail.reason`. "
+            "Stop it where you started it."
+        )
+    if any(item["status"] == "running_left_alone_by_request" for item in unmanaged):
+        note += (
+            " A loopback model server was left running because "
+            "--keep-loopback-servers was passed; its weights still occupy VRAM."
         )
 
     result: dict[str, object] = {
@@ -687,8 +763,52 @@ def stop_local_models(project_root: Path) -> dict[str, object]:
         "service_stopped": False,
         "note": note,
     }
+    # VRAM comes back the moment the process dies; host RAM does not, and an
+    # operator watching Task Manager sees a number that barely moved. Say why.
+    if stopped_servers:
+        memory = _host_memory_report()
+        if memory is not None:
+            result["host_memory"] = memory.model_dump(mode="json")
+            if memory.remedy:
+                note += (
+                    " Host RAM will lag: the model server's memory is free "
+                    "inside WSL, but WSL is not configured to return it to "
+                    "Windows. See `host_memory.remedy`."
+                )
+                result["note"] = note
     _write_last_result(project_root, result)
     return result
+
+
+def _host_memory_report():
+    """Best-effort: never let a diagnostic stop the shutdown from reporting."""
+
+    from apoapsis.workcell.resident_server import host_memory_report
+
+    try:
+        return host_memory_report()
+    except Exception:  # noqa: BLE001 - a diagnostic may never fail a shutdown
+        return None
+
+
+def _release_loopback_server(base_url: str):
+    """Stop one loopback model server, proving its identity first.
+
+    Imported lazily and wrapped: releasing VRAM is the *last* thing a shutdown
+    does, and a failure here must not stop the rest of the shutdown from being
+    reported. The returned object carries its own reason when nothing was
+    stopped, so silence is never mistaken for success.
+    """
+
+    from apoapsis.workcell.resident_server import StoppedServer, stop_resident_server
+
+    harness_root = Path(__file__).resolve().parents[2]
+    try:
+        return stop_resident_server(harness_root, base_url)
+    except Exception as exc:  # noqa: BLE001 - shutdown may never raise
+        return StoppedServer(
+            base_url=base_url, reason=f"{type(exc).__name__}: {exc}"
+        )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -714,6 +834,25 @@ def build_parser() -> argparse.ArgumentParser:
         help="fail instead of launching `ollama serve` when the default endpoint is down",
     )
     parser.add_argument(
+        "--keep-loopback-servers",
+        action="store_true",
+        help=(
+            "on stop, leave a running loopback model server alive. Its weights "
+            "stay in VRAM (a 27B at Q4_K_M is roughly 20 GB); use this only "
+            "when something else is deliberately sharing that server"
+        ),
+    )
+    parser.add_argument(
+        "--no-prebuild-sandbox-image",
+        action="store_true",
+        help=(
+            "skip warming the Capability Sandbox controller image at start. "
+            "Warming it here is what stops the first plan slice after a "
+            "harness update from silently paying the Docker build (~35s "
+            "measured; it is once per harness commit, not per slice)"
+        ),
+    )
+    parser.add_argument(
         "--service-wait-seconds",
         type=float,
         default=_DEFAULT_SERVICE_WAIT_SECONDS,
@@ -735,9 +874,13 @@ def main(argv: list[str] | None = None) -> int:
                 include_research=args.include_research,
                 keep_alive=args.keep_alive,
                 launch_service=not args.no_launch_service,
+                prebuild_sandbox_image=not args.no_prebuild_sandbox_image,
             )
         else:
-            result = stop_local_models(args.project_root)
+            result = stop_local_models(
+                args.project_root,
+                release_loopback_servers=not args.keep_loopback_servers,
+            )
     except ModelLifecycleError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2

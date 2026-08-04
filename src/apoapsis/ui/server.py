@@ -843,6 +843,14 @@ class ApoapsisUIRequestHandler(BaseHTTPRequestHandler):
             elif path.startswith("/api/plan-runs/"):
                 run_id = unquote(path[len("/api/plan-runs/") :]).strip("/")
                 payload = self.server.service.plan_run_status(run_id)
+            # Before the general task route, which would otherwise swallow the
+            # suffix and return a task detail for a task id ending in
+            # "/run-status".
+            elif path.startswith("/api/tasks/") and path.endswith("/run-status"):
+                task_id = unquote(
+                    path[len("/api/tasks/") : -len("/run-status")]
+                ).strip("/")
+                payload = self.server.service.task_run_status(task_id)
             elif path.startswith("/api/tasks/"):
                 task_id = unquote(path[len("/api/tasks/") :]).strip("/")
                 payload = self.server.service.task_detail(task_id)

@@ -12,6 +12,10 @@ from pydantic import Field, model_validator
 from apoapsis.research.schemas import ResearchBudget, ResearchMode
 from apoapsis.specification.schema import RiskLevel, StrictModel, TaskSpecification
 from apoapsis.verification.runner import VerificationConfig
+# `workcell/__init__.py` imports nothing, and `workcell.parity` imports only the
+# specification schema, so naming the policy where it is implemented costs no
+# import cycle and keeps one definition of the modes.
+from apoapsis.workcell.parity import ParityMode
 
 
 def _require_loopback_http_url(value: str, label: str) -> None:
@@ -180,6 +184,10 @@ class LocalPowerConfig(StrictModel):
     never the model's own `finish` claim -- decides the outcome.
     """
 
+    #: Legacy. ADR 0109 names the Capability Sandbox the single local execution
+    #: path; this is the compatibility mode kept for environments without the
+    #: container runtime and for comparison, not a peer. It is reachable only
+    #: by explicit opt-in and is never selected for you.
     enabled: bool = False
     workspace: LocalPowerWorkspace = LocalPowerWorkspace.ISOLATED_WORKTREE
     allow_shell: bool = True
@@ -246,18 +254,45 @@ class CapabilitySandboxConfig(StrictModel):
     controller's verification or completion authority.
     """
 
-    # Direct programmatic construction stays backward compatible for library
-    # callers and deterministic tests. User config loading below migrates a
-    # missing Slice 8 table to the recommended enabled selection, and every
-    # newly generated config writes it explicitly as true.
-    enabled: bool = False
+    # ADR 0109 made this default true, matching what `apoapsis init` writes and
+    # what config loading already migrated a missing table to. It was false
+    # here only, so a library caller or a test constructing `ApoapsisConfig()`
+    # silently got a *different execution path* from every real project --
+    # exactly the class-versus-template drift ADR 0104 fixed for patch
+    # ceilings. One default, asserted in one test.
+    enabled: bool = True
     runtime_profile: Literal["crisis-atlas-v8-qwen3.6-27b"] = (
         "crisis-atlas-v8-qwen3.6-27b"
     )
     qualified_model_alias: Literal["qwen3.6-27b"] = "qwen3.6-27b"
+    #: The pre-ADR-0108 switch. Kept because operators have it set in existing
+    #: configurations and it means something definite: run the control arm on
+    #: every slice. It is now an input to `parity_mode` rather than a separate
+    #: policy -- see the validator below -- so there is still exactly one thing
+    #: deciding whether a control arm runs.
     high_assurance_parity_guard: bool = False
+    #: How often the matched unrestricted control arm runs (ADR 0108).
+    #: `sample` is the default: the paired qualification evidence answered the
+    #: standing question, and an answered question needs monitoring rather than
+    #: re-answering on every slice at 2x inference.
+    parity_mode: ParityMode = ParityMode.SAMPLE
+    #: Under `sample`: the first slice of a plan, then every Nth after it.
+    parity_sample_every: int = Field(default=4, ge=1, le=50)
     max_native_continuations: int = Field(default=2, ge=0, le=10)
     runtime_root: str = Field(default="/tmp/apoapsis-capability-sandbox", min_length=1)
+
+    @model_validator(mode="after")
+    def honour_the_explicit_always_switch(self) -> CapabilitySandboxConfig:
+        """An operator who turned the old switch on asked for every slice.
+
+        Silently downgrading that to sampling would spend their evidence for
+        them. The migration only runs when `parity_mode` is still the default,
+        so a configuration that states both is taken at its word.
+        """
+
+        if self.high_assurance_parity_guard and self.parity_mode == ParityMode.SAMPLE:
+            object.__setattr__(self, "parity_mode", ParityMode.ALWAYS)
+        return self
 
 
 class ExecutionConfig(StrictModel):
@@ -308,7 +343,17 @@ class ContextCompilerConfig(StrictModel):
 
 
 class PatchPolicyConfig(StrictModel):
-    max_changed_lines: int = Field(default=500, ge=1, le=100_000)
+    #: ADR 0104 raised this from 500. 500 was sized for the bounded protocol's
+    #: one-patch-per-turn shape, where a turn is a single edit; the Capability
+    #: Sandbox admits a whole slice as one unit, and a slice that adds three
+    #: modules with their tests routinely exceeds 500 lines. Refusing it puts
+    #: the model in a loop it cannot solve -- the work is correct and the
+    #: ceiling is wrong -- so live projects were already carrying 5000 by hand.
+    #:
+    #: `max_files` stays at 20: file *count* is the ceiling that actually
+    #: catches a runaway change, and slices that touch more than twenty files
+    #: are usually mis-sliced rather than large.
+    max_changed_lines: int = Field(default=5_000, ge=1, le=100_000)
     max_files: int = Field(default=20, ge=1, le=1000)
     allow_dependency_changes: bool = True
     allow_test_changes: bool = True
@@ -563,14 +608,15 @@ class ApoapsisConfig(StrictModel):
                     "be combined with the frontier_only route"
                 )
         if self.execution.capability_sandbox.enabled:
-            if (
-                self.execution.mode == ExecutionMode.AGENT
-                and self.execution.route == AgentRoute.FRONTIER_ONLY
-            ):
-                raise ValueError(
-                    "[execution.capability_sandbox] is a local-model mode and "
-                    "cannot be combined with the frontier_only route"
-                )
+            # Deliberately *not* refused with the frontier_only route any more
+            # (ADR 0109). When enabling the sandbox was an explicit act, the
+            # combination was evidence of operator confusion and refusing it
+            # was a kindness. Now that it is the default, the same refusal
+            # would fire on a perfectly coherent configuration -- "send
+            # everything to the frontier coder" -- where the operator did
+            # nothing at all. The setting means "when a local slice runs, run
+            # it contained"; frontier_only means no local slice runs, so there
+            # is nothing to contradict.
             if self.execution.local_power.enabled:
                 raise ValueError(
                     "Capability Sandbox and Local Power compatibility mode are "

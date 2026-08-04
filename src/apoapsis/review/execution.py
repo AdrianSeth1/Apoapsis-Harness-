@@ -22,6 +22,7 @@ from apoapsis.config import (
     effective_config_for_specification,
 )
 from apoapsis.context.compiler import ContextCompiler
+from apoapsis.context.window import PromptWindowLimits, TokenCounter
 from apoapsis.execution.worktree import WorktreeManager
 from apoapsis.execution.operation_service import execute_execution_operation
 from apoapsis.execution.operation_store import ExecutionOperationStore
@@ -35,6 +36,7 @@ from apoapsis.models.base import (
 from apoapsis.models.frontier import OpenAICompatibleFrontierProvider
 from apoapsis.models.local import OllamaProvider
 from apoapsis.models.provider import ModelRole, ProviderInvocation
+from apoapsis.models.tokenize import is_loopback_url, llama_server_token_counter
 from apoapsis.models.telemetry import InstrumentedModelProvider, InstrumentedProviderError
 from apoapsis.operations.lease import (
     DEFAULT_HEARTBEAT_INTERVAL,
@@ -345,6 +347,33 @@ class _ContinuationModelCaller:
         self.audit.write_call_result(call_number, response, call.telemetry)
         return response
 
+
+
+def _prompt_window_guard(
+    provider_config: FrontierProviderConfig | None,
+) -> tuple[PromptWindowLimits | None, TokenCounter | None]:
+    """The token ceiling and optional exact tokenizer for one provider (MH-2).
+
+    Same derivation as `VerticalSliceRunner._prompt_window_guard`: a resumed
+    continuation must enforce the same window as the session it continues, or
+    a prompt that was refused during the run would be silently truncated on
+    resume instead.
+    """
+
+    if provider_config is None:
+        return None, None
+    limits = PromptWindowLimits.from_provider(
+        context_window_tokens=provider_config.context_window_tokens,
+        max_output_tokens=provider_config.max_output_tokens,
+    )
+    if limits is None:
+        return None, None
+    counter: TokenCounter | None = None
+    if provider_config.provider == "openai_compatible" and is_loopback_url(
+        provider_config.base_url
+    ):
+        counter = llama_server_token_counter(provider_config.base_url)
+    return limits, counter
 
 def _make_apply_patch(audit: TaskAuditStore, config: ApoapsisConfig, worktree_path: str, prefix: str):
     parser = UnifiedDiffParser()
@@ -904,6 +933,7 @@ def _execute_continuation(
     model_call = _ContinuationModelCaller(
         audit, provider, provider_config, start_call_number=existing_calls + 1
     )
+    prompt_window, count_prompt_tokens = _prompt_window_guard(provider_config)
     session: BoundedAgentSession | LocalPowerSession
     if resume_local_power:
         assert local_power_config is not None
@@ -919,6 +949,8 @@ def _execute_continuation(
             prior_review_package=read_local_power_review_package(task_directory),
             model_role=role,
             completion_policy=config.execution.completion_policy,
+            prompt_window=prompt_window,
+            count_prompt_tokens=count_prompt_tokens,
         )
     else:
         apply_patch = _make_apply_patch(
@@ -939,6 +971,8 @@ def _execute_continuation(
             audit_prefix=prefix,
             completion_policy=config.execution.completion_policy,
             patch_policy=config.patch,
+            prompt_window=prompt_window,
+            count_prompt_tokens=count_prompt_tokens,
         )
 
     started_event = f"review_{'frontier' if is_frontier else 'local'}_continuation_started"
@@ -1263,6 +1297,9 @@ def _execute_authorize_frontier_stage(
         start_call_number=existing_calls + 1,
     )
     apply_patch = _make_apply_patch(audit, config, review_case.worktree_path, "frontier-")
+    frontier_window, frontier_token_counter = _prompt_window_guard(
+        config.models.frontier_coder
+    )
     session = BoundedAgentSession(
         specification=specification,
         worktree=review_case.worktree_path,
@@ -1277,6 +1314,8 @@ def _execute_authorize_frontier_stage(
         audit_prefix="frontier-",
         completion_policy=config.execution.completion_policy,
         patch_policy=config.patch,
+        prompt_window=frontier_window,
+        count_prompt_tokens=frontier_token_counter,
     )
     try:
         result: AgentSessionResult = session.run()

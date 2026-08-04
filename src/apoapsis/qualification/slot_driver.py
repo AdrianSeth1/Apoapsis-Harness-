@@ -207,6 +207,18 @@ class SlotObservation:
         self.kept_workspace: Path | None = None
         self.error: str | None = None
         self.checkpoints: tuple[object, ...] = ()
+        #: What the model actually cost, as the relay read it off the wire.
+        #: `calls_with_usage` is the denominator: totals with no count behind
+        #: them cannot be told apart from a run that reported nothing, which is
+        #: exactly how the live path came to publish `input_tokens: 0`.
+        self.calls_with_usage = 0
+        self.input_tokens = 0
+        self.output_tokens = 0
+        self.cached_input_tokens = 0
+        self.peak_input_tokens = 0
+        #: `(call index, input tokens, output tokens)`, in order, so context
+        #: growth across the slice is plottable rather than only totalled.
+        self.usage_series: tuple[tuple[int, int, int], ...] = ()
 
 
 def execute_slot(
@@ -230,6 +242,8 @@ def execute_slot(
     stream_json: bool = False,
     task_text_override: str | None = None,
     write_workspace_task: bool = True,
+    inject_stream_usage_options: bool = False,
+    usage_observer: Callable[[int, object], None] | None = None,
 ) -> SlotObservation:
     """Run one slot end to end in a real `--network none` workcell."""
 
@@ -348,8 +362,9 @@ def execute_slot(
             upstream_base_url=upstream,
             forwarder_path=forwarder,
             task_artifact_path=task_artifact,
+            inject_stream_usage_options=inject_stream_usage_options,
         )
-        session = LiveWorkcellSession(config)
+        session = LiveWorkcellSession(config, usage_observer=usage_observer)
         with session:
             observation.settings_sha256 = write_settings(
                 session,
@@ -403,6 +418,15 @@ def execute_slot(
             observation.qwen_stdout = "\n".join(stdout_parts)
             observation.qwen_stderr = "\n".join(stderr_parts)
             observation.relay_after = session.relay_request_count()
+            # Read while the session is still alive: the relay's stats go with
+            # it, and a total collected after teardown is a total nobody has.
+            relay_stats = session.relay.stats
+            observation.calls_with_usage = relay_stats.requests_with_usage
+            observation.input_tokens = relay_stats.input_tokens
+            observation.output_tokens = relay_stats.output_tokens
+            observation.cached_input_tokens = relay_stats.cached_input_tokens
+            observation.peak_input_tokens = relay_stats.peak_input_tokens
+            observation.usage_series = relay_stats.usage_series
 
             # A turn whose response never completed cannot have produced a
             # proposal, whatever appeared in the worktree. Recorded as a slot

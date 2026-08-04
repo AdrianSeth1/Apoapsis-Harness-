@@ -6,6 +6,7 @@ from enum import StrEnum
 from pydantic import ConfigDict, Field
 
 from apoapsis.config import AgentLoopConfig
+from apoapsis.reporting.operator_schema import OperatorExplanation
 from apoapsis.specification.schema import (
     HardConstraint,
     StrictModel,
@@ -96,6 +97,11 @@ class ReviewCase(StrictModel):
     workflow_state: WorkflowState
     stop_reason_kind: StopReasonKind
     stop_reason_text: str = Field(min_length=1)
+    #: The same stop, written for the operator. `stop_reason_text` above is
+    #: unchanged and remains the precise record; this is what the UI shows
+    #: first, because a person reading "local agent escalation unavailable"
+    #: learns neither what happened nor what to do about it.
+    operator: OperatorExplanation | None = None
     stop_event_type: str = Field(min_length=1)
     objective_text: str = ""
     worktree_path: str | None = None

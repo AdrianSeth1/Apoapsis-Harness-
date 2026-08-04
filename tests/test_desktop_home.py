@@ -10,6 +10,7 @@ from apoapsis.desktop.home_service import DesktopHomeService
 from apoapsis.desktop.project_service import DesktopProjectService
 from apoapsis.desktop.registry_store import ProjectRegistryStore
 from apoapsis.desktop.schema import ProjectStatus
+from tests.helpers import remove_tree
 
 
 def _git_init(root: Path) -> None:
@@ -97,9 +98,7 @@ class DesktopHomeServiceTests(unittest.TestCase):
         _init(project)
         session_id = self.project_service.select_project(project)["session_id"]
 
-        import shutil
-
-        shutil.rmtree(project)
+        remove_tree(project)
 
         summary = self.home_service.home_summary(session_id)
         self.assertEqual(summary["project"]["validation"]["status"], ProjectStatus.MISSING)

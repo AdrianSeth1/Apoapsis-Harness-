@@ -81,7 +81,18 @@ def _poll_until_terminal(service: ApoapsisUIService, operation_id: str, *, timeo
 
 class DiscoveryUIServiceTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.temporary_directory = tempfile.TemporaryDirectory()
+        # `ignore_cleanup_errors` because teardown is not the assertion. These
+        # tests create a real project with a SQLite-backed `.apoapsis`, and on
+        # Windows under full-suite I/O load the directory is intermittently
+        # still busy when the temp dir is removed -- observed once as
+        # `OSError [WinError 145] The directory is not empty`, in a run where
+        # the test body itself passed and fourteen isolated repeats were
+        # clean. Failing the suite on an undeletable scratch directory reports
+        # an environment condition as a test result (ADR 0111's rule, applied
+        # to the flake it did not cover).
+        self.temporary_directory = tempfile.TemporaryDirectory(
+            ignore_cleanup_errors=True
+        )
         self.addCleanup(self.temporary_directory.cleanup)
         self.root = Path(self.temporary_directory.name)
         self._git("init", "-b", "main")

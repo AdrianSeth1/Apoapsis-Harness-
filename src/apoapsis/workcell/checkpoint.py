@@ -43,7 +43,11 @@ from apoapsis.workcell.admission import (
     admit_candidate,
 )
 from apoapsis.workcell.behaviour import BehaviourUnit, changed_behaviour
-from apoapsis.workcell.delta import CandidateDelta, compute_delta
+from apoapsis.workcell.delta import (
+    EXCLUDED_METADATA_NAMES,
+    CandidateDelta,
+    compute_delta,
+)
 from apoapsis.workcell.diagnostics import DiagnosticReport
 from apoapsis.workcell.witness import StructuredWitness
 
@@ -182,12 +186,25 @@ def run_checkpoint(
 
 
 def _paths_in(root: Path) -> set[str]:
+    """Every candidate path readiness may reason about.
+
+    Repository metadata is excluded by the same name set the delta uses, at
+    both the directory and the file level. Excluding `.git` as a directory name
+    alone missed the managed-worktree case, where `.git` is a pointer *file* --
+    which is how it reached a reviewer-facing change surface. One source of
+    truth for "this is not model-authored work" keeps the two from drifting.
+    """
+
     import os
 
     found: set[str] = set()
     for current, directories, names in os.walk(root, followlinks=False):
-        directories[:] = [item for item in directories if item != ".git"]
+        directories[:] = [
+            item for item in directories if item not in EXCLUDED_METADATA_NAMES
+        ]
         for name in names:
+            if name in EXCLUDED_METADATA_NAMES:
+                continue
             found.add((Path(current) / name).relative_to(root).as_posix())
     return found
 

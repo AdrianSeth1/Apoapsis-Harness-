@@ -115,6 +115,34 @@ class DeltaTests(unittest.TestCase):
         (trees.candidate / ".git" / "COMMIT_EDITMSG").write_text("x" * 5000, "utf-8")
         self.assertTrue(trees.delta().is_empty)
 
+    def test_a_worktree_git_pointer_file_is_metadata_not_model_work(self) -> None:
+        """The ADR 0063 regression: `.git` reached `changed_files` live.
+
+        A managed Git worktree's `.git` is a pointer *file*, not a directory,
+        so a directory-name filter never saw it and it was collected as an
+        ordinary changed file -- putting harness metadata into the surface
+        reviewers are told contains only model-authored work.
+        """
+
+        trees = _Trees(self)
+        (trees.base / ".git").write_text("gitdir: /elsewhere/worktrees/task\n", "utf-8")
+        (trees.candidate / ".git").mkdir()
+        (trees.candidate / ".git" / "HEAD").write_text("ref: refs/heads/x\n", "utf-8")
+        trees.write("calc.py", "def add(a, b):\n    return a + b + 0\n")
+
+        delta = trees.delta()
+        self.assertEqual(delta.paths, ["calc.py"])
+        # The mutation is still recorded: excluded, not unseen.
+        self.assertIn(".git", delta.excluded_metadata)
+
+    def test_the_fingerprint_ignores_repository_metadata_on_both_sides(self) -> None:
+        trees = _Trees(self)
+        before = tree_fingerprint(trees.candidate)
+        (trees.candidate / ".git").write_text("gitdir: /elsewhere\n", "utf-8")
+        (trees.candidate / "__pycache__").mkdir()
+        (trees.candidate / "__pycache__" / "calc.pyc").write_bytes(b"\0\1")
+        self.assertEqual(tree_fingerprint(trees.candidate), before)
+
     def test_symlinks_are_skipped_and_reported_not_followed(self) -> None:
         trees = _Trees(self)
         link = trees.candidate / "escape.py"

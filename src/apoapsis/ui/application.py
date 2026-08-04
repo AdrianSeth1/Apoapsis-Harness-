@@ -77,6 +77,7 @@ from apoapsis.manual_frontier.package import (
 from apoapsis.manual_frontier.store import ManualFrontierPreviewStore
 from apoapsis.reporting.current_state import project_current_task_evidence
 from apoapsis.reporting.report import FinalTaskReport
+from apoapsis.reporting.run_status import task_run_status
 from apoapsis.repository.git import GitCommandError, GitRepository
 from apoapsis.review.case import build_review_case
 from apoapsis.review.execution import prepare_review_operation
@@ -118,6 +119,17 @@ def _capability_sandbox_preview(config: ApoapsisConfig) -> dict[str, Any]:
         "enabled": selected.enabled,
         "recommended": True,
         "high_assurance_parity_guard": selected.high_assurance_parity_guard,
+        "parity_mode": selected.parity_mode.value,
+        "parity_sample_every": selected.parity_sample_every,
+        # Stated in the surface the operator makes the choice in. The cost is
+        # the whole reason the default moved off "always", and a toggle whose
+        # price is only documented in an ADR is a toggle nobody prices.
+        "parity_cost_note": (
+            "Pairing every slice against an unrestricted control roughly "
+            "doubles inference time. Sampling pairs the first slice of a plan "
+            f"and every {selected.parity_sample_every}th after it; regressions "
+            "escalate exactly as they do when every slice is paired."
+        ),
         "max_native_continuations": selected.max_native_continuations,
         "runtime_profile": selected.runtime_profile,
         "qualified_model_alias": selected.qualified_model_alias,
@@ -275,6 +287,22 @@ class ApoapsisUIService:
             ),
             "evaluation_runs": len(self.evaluations()["runs"]),
         }
+
+    def task_run_status(self, task_id: str) -> dict[str, Any]:
+        """What this task's sandbox run is doing right now (MH-9).
+
+        Deliberately its own endpoint rather than a field on `task_detail`:
+        this is the one payload the UI polls every couple of seconds while a
+        slice runs, and `task_detail` recompiles current evidence, reads the
+        report, and walks the event log every time it is called. Polling that
+        would make watching a run measurably slow the run down.
+        """
+
+        # No window is passed: the run records the one it actually ran against
+        # in its own journal, and that is a better number than anything this
+        # process could look up now. A percentage against a guessed
+        # denominator is worse than no percentage.
+        return task_run_status(self.project_root, task_id).model_dump(mode="json")
 
     def task_detail(self, task_id: str) -> dict[str, Any]:
         store = self._require_store()

@@ -56,10 +56,15 @@ from apoapsis.workcell.relay_preflight import RelayReadinessReport
 class LiveWorkcellSession:
     """Owns the relay and the container for the duration of one session."""
 
-    def __init__(self, config: WorkcellConfig) -> None:
+    def __init__(self, config: WorkcellConfig, *, usage_observer=None) -> None:
         self.config = config
         self.controller = WorkcellController(config)
-        self.relay = ModelRelay(config.egress.relay)
+        # `usage_observer` is passed straight through to the relay, which is
+        # the only component that sees a contained agent's model traffic. It
+        # is how a live status view learns about a call while the slice is
+        # still running (MH-9); `None` is the ordinary case and changes
+        # nothing.
+        self.relay = ModelRelay(config.egress.relay, usage_observer=usage_observer)
         self._started = False
         #: The echo provider from the most recent `envelope_path` block, kept
         #: after teardown so its captured request bytes remain readable as

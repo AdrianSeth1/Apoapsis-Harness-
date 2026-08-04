@@ -63,8 +63,16 @@ def build_workcell_config(
     upstream_base_url: str,
     forwarder_path: Path | None = None,
     task_artifact_path: Path | None = None,
+    inject_stream_usage_options: bool = False,
 ) -> WorkcellConfig:
     """Assemble the config. Every pinned value is read from the manifest.
+
+    `inject_stream_usage_options` is off by default and passed explicitly by
+    the product path only. It asks the relay to add
+    `stream_options.include_usage` to streaming requests bound for the
+    loopback model server, which is the only way an OpenAI-compatible streamed
+    response reports any token counts at all. Qualification pilots keep the
+    default so their frozen wire behaviour is unchanged.
 
     `forwarder_path` and `task_artifact_path` exist because bind-mount sources
     are resolved by the *daemon*, not inside the controller. A path that exists
@@ -177,6 +185,7 @@ def build_workcell_config(
                 max_concurrent_requests=REHEARSAL_MAX_CONCURRENT,
                 stream_write_timeout_seconds=REHEARSAL_STREAM_WRITE_TIMEOUT,
                 max_output_tokens=manifest.budgets.max_output_tokens,
+                inject_stream_usage_options=inject_stream_usage_options,
             ),
             forwarder_host_path=str(forwarder),
         ),

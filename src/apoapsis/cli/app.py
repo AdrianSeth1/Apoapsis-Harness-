@@ -211,6 +211,11 @@ enabled = true
 runtime_profile = "crisis-atlas-v8-qwen3.6-27b"
 qualified_model_alias = "qwen3.6-27b"
 high_assurance_parity_guard = false
+# ADR 0108: "always" runs the unrestricted control arm on every slice (~2x
+# inference, the pre-0108 behaviour); "sample" pairs the first slice of a plan
+# and every Nth after it; "off" runs no control arm at all.
+parity_mode = "sample"
+parity_sample_every = 4
 max_native_continuations = 2
 runtime_root = "/tmp/apoapsis-capability-sandbox"
 
@@ -264,7 +269,7 @@ cloud_excluded_paths = [
 ]
 
 [patch]
-max_changed_lines = 500
+max_changed_lines = 5000
 max_files = 20
 allow_dependency_changes = true
 allow_test_changes = true

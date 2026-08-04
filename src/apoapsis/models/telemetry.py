@@ -17,6 +17,46 @@ from apoapsis.models.provider import (
 from apoapsis.specification.schema import StrictModel
 
 
+class RelayObservedModelUsage(StrictModel):
+    """What a contained agent's own model traffic cost, read off the relay.
+
+    The Capability Sandbox does not call a provider through the harness: a
+    native CLI inside the workcell talks to the model server, and the only
+    component that sees those exchanges is the controller-owned relay. So this
+    is deliberately *not* a `ProviderCallTelemetry` -- there is no prompt hash,
+    no per-call request id, and no harness-side latency to report, and
+    manufacturing one call record per exchange would put invented fields in the
+    audit surface. It is a separate, honestly-shaped summary of observed usage.
+
+    `calls` is the number of exchanges that *reported* usage, which is the
+    denominator every total here needs: "1.9M input tokens over 46 of 46
+    exchanges" and "over 2 of 46" are different evidence, and only the second
+    is a telemetry gap.
+    """
+
+    #: Where the numbers came from, so a reader never has to guess whether a
+    #: total was measured or estimated.
+    source: str = Field(default="capability_sandbox_relay", min_length=1)
+    calls: int = Field(default=0, ge=0)
+    #: Exchanges the relay forwarded, whether or not they reported usage. When
+    #: this exceeds `calls`, some traffic went unmeasured and the totals below
+    #: are a floor rather than a sum.
+    exchanges_observed: int = Field(default=0, ge=0)
+    input_tokens: int = Field(default=0, ge=0)
+    output_tokens: int = Field(default=0, ge=0)
+    cached_input_tokens: int = Field(default=0, ge=0)
+    #: The largest single prompt observed. The number that answers "did context
+    #: approach the window?", which no sum can answer.
+    peak_input_tokens: int = Field(default=0, ge=0)
+    #: Project-relative path of the per-call series written by the sandbox, for
+    #: readers who need growth across the slice rather than its total.
+    series_artifact: str | None = None
+
+    @property
+    def fully_measured(self) -> bool:
+        return self.exchanges_observed == self.calls
+
+
 class ProviderCallTelemetry(StrictModel):
     request_id: str
     response_id: str | None = None

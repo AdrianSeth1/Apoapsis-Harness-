@@ -378,12 +378,18 @@ class FakeProviderServer:
                 self.end_headers()
                 self.wfile.write(body)
 
-            def _send_stream(self, turn: dict) -> None:
+            def _send_stream(self, turn: dict, include_usage: bool = False) -> None:
                 """Emit the turn as Server-Sent Events.
 
                 Tool calls in a streamed delta carry an `index`, which a
                 non-streamed message does not. Omitting it makes the CLI
                 discard the call, so the shapes are not interchangeable.
+
+                `include_usage` mirrors the real streaming contract rather than
+                being generous with it: counts are emitted in one final frame
+                before the terminal, and only when the request asked for them.
+                A fake that always reported usage would let a telemetry path
+                pass here and report nothing against a real server.
                 """
 
                 identifier = f"chatcmpl-rehearsal-{server._served:03d}"
@@ -417,6 +423,25 @@ class FakeProviderServer:
                     if turn["content"]:
                         self.wfile.write(event({"content": turn["content"]}, None))
                     self.wfile.write(event({}, turn["finish_reason"]))
+                if include_usage:
+                    self.wfile.write(
+                        b"data: "
+                        + json.dumps(
+                            {
+                                "id": identifier,
+                                "object": "chat.completion.chunk",
+                                "created": int(time.time()),
+                                "model": server.model_name,
+                                "choices": [],
+                                "usage": {
+                                    "prompt_tokens": 13_562,
+                                    "completion_tokens": 1_127,
+                                    "total_tokens": 14_689,
+                                },
+                            }
+                        ).encode("utf-8")
+                        + b"\n\n"
+                    )
                 self.wfile.write(b"data: [DONE]\n\n")
                 self.wfile.flush()
 
@@ -473,7 +498,14 @@ class FakeProviderServer:
                 # slot silently produces no candidate -- which would look like
                 # a capability failure rather than a provider defect.
                 if request.get("stream"):
-                    self._send_stream(turn)
+                    options = request.get("stream_options")
+                    self._send_stream(
+                        turn,
+                        include_usage=bool(
+                            isinstance(options, dict)
+                            and options.get("include_usage")
+                        ),
+                    )
                     return
                 message = {"role": "assistant", "content": turn["content"]}
                 if turn["tool_calls"]:

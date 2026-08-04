@@ -42,6 +42,7 @@ from enum import StrEnum
 
 from pydantic import Field, model_validator
 
+from apoapsis.reporting.operator_schema import OperatorExplanation
 from apoapsis.specification.schema import StrictModel
 from apoapsis.workcell.behaviour import BehaviourKind, BehaviourUnit
 from apoapsis.workcell.delta import CandidateDelta, ChangeKind, PathClass
@@ -187,9 +188,41 @@ class ReadinessBlock(StrEnum):
     NO_USABLE_WITNESS = "no_usable_witness"
 
 
+#: The rule behind an unexercised addition, stated once per packet rather than
+#: once per path. Observed in CAP-4EE9F101146E4556: three new files produced
+#: three copies of this sentence in one packet, and a twelve-file checkpoint
+#: would have produced twelve -- all of it fed back into a 32K-window model.
+UNEXERCISED_EXPLANATION = (
+    "These are new in this candidate and nothing proves they are reached. "
+    "Inherited tests staying green is not evidence: they stay green because "
+    "they never reach them. Add or extend a test that calls each one."
+)
+
+#: The heuristic caveat, likewise stated once. It applies to whichever of the
+#: listed items were found by route inference rather than by parsing.
+HEURISTIC_ROUTE_EXPLANATION = (
+    "These routes were found by a heuristic. If one is not a real route, "
+    "remove it from the contract rather than widening what counts as covered."
+)
+
+MISSING_ARTIFACT_EXPLANATION = (
+    "The contract requires these paths and the candidate does not contain "
+    "them. Create each one where the contract names it, or change the "
+    "contract if the path is wrong."
+)
+
+
 class ReadinessFinding(StrictModel):
     block: ReadinessBlock
+    #: What is wrong with *this* item, and only this item.
     detail: str = Field(min_length=1)
+    #: The rule this finding is an instance of, identical across every finding
+    #: that shares it. Separated from `detail` so a repair packet can state it
+    #: once and then list what it applies to: the model needs the rule once and
+    #: the paths in full, and repeating the rule per path spends context
+    #: without adding information. Empty when the detail is already
+    #: self-contained.
+    explanation: str = ""
     path: str | None = None
     obligation_id: str | None = None
 
@@ -363,10 +396,8 @@ def evaluate_slice_readiness(
                         block=ReadinessBlock.MISSING_REQUIRED_ARTIFACT,
                         obligation_id=obligation.obligation_id,
                         path=path,
-                        detail=(
-                            f"{obligation.obligation_id} requires {path}, which the "
-                            "candidate does not contain at that path"
-                        ),
+                        detail=f"{obligation.obligation_id} requires {path}",
+                        explanation=MISSING_ARTIFACT_EXPLANATION,
                     )
                 )
         if unexercised:
@@ -435,18 +466,18 @@ def evaluate_slice_readiness(
             ReadinessFinding(
                 block=ReadinessBlock.CHANGED_BEHAVIOUR_UNEXERCISED,
                 path=unit.path,
+                # The label only. "Is new in this candidate" and the rule
+                # behind it are stated once, above, by the explanation; a
+                # `new_file` unit whose name is its own path is named once
+                # rather than twice.
                 detail=(
-                    f"{unit.unit_id} ({unit.kind.value}) is new in this candidate "
-                    "and no current-state witness proves it is reached. Inherited "
-                    "tests staying green is not evidence: they stay green because "
-                    "they never reach it."
-                    + (
-                        " This route was found by a heuristic; if it is not a real "
-                        "route, remove it from the contract rather than widening "
-                        "what counts as covered."
-                        if unit.heuristic
-                        else ""
-                    )
+                    unit.path
+                    if unit.kind == BehaviourKind.NEW_FILE
+                    else f"{unit.unit_id} ({unit.kind.value})"
+                ),
+                explanation=(
+                    UNEXERCISED_EXPLANATION
+                    + (f" {HEURISTIC_ROUTE_EXPLANATION}" if unit.heuristic else "")
                 ),
             )
         )
@@ -540,6 +571,27 @@ class CheckpointDecision(StrictModel):
     detail: str = Field(min_length=1)
     #: What to hand back to a repair context. Empty when complete.
     repair_packet: str = ""
+    #: The same verdict, written for the operator: what was attempted, what
+    #: refused it, and the one next action. `detail` above stays exactly as it
+    #: was -- this is an additional rendering, not a replacement, and the UI
+    #: shows this first with `detail` behind it.
+    operator: OperatorExplanation | None = None
+
+
+def _operator(outcome: CheckpointOutcome, detail: str) -> OperatorExplanation:
+    """Build the operator rendering for a verdict.
+
+    Imported inside the function on purpose: `reporting.operator` imports
+    `CheckpointOutcome` from this module to build its table, so a module-level
+    import here would be a cycle. The table lives there because that is where
+    the *operator vocabulary* lives -- checkpoint verdicts, session outcomes
+    and review stop reasons are written in one voice or they read as three
+    different products.
+    """
+
+    from apoapsis.reporting.operator import explain_checkpoint
+
+    return explain_checkpoint(outcome, detail)
 
 
 def evaluate_checkpoint(
@@ -568,6 +620,10 @@ def evaluate_checkpoint(
             ready=False,
             detail=f"the candidate was not admitted: {admission_detail}",
             repair_packet=admission_detail,
+            operator=_operator(
+                CheckpointOutcome.CANDIDATE_REFUSED,
+                f"the candidate was not admitted: {admission_detail}",
+            ),
         )
 
     if readiness.ready:
@@ -576,6 +632,7 @@ def evaluate_checkpoint(
             admitted=True,
             ready=True,
             detail=readiness.detail,
+            operator=_operator(CheckpointOutcome.COMPLETE, readiness.detail),
         )
 
     # An intentionally unmeasured obligation is not something the agent can
@@ -594,6 +651,9 @@ def evaluate_checkpoint(
                 f"unmeasured, so completion is a human judgement: {readiness.detail}"
             ),
             repair_packet=readiness_packet(readiness),
+            operator=_operator(
+                CheckpointOutcome.HUMAN_REVIEW_REQUIRED, readiness.detail
+            ),
         )
 
     return CheckpointDecision(
@@ -605,11 +665,25 @@ def evaluate_checkpoint(
             f"gets another turn. {readiness.detail}"
         ),
         repair_packet=readiness_packet(readiness),
+        operator=_operator(CheckpointOutcome.CONTINUE, readiness.detail),
     )
 
 
 def readiness_packet(report: SliceReadinessReport) -> str:
-    """A compact statement of what is still missing, for a repair context."""
+    """A compact statement of what is still missing, for a repair context.
+
+    Grouped by explanation, not listed per finding. This text is fed straight
+    back into a 32K-window model, and the previous shape repeated each rule
+    once per path: CAP-4EE9F101146E4556's packet carried three copies of the
+    unexercised-behaviour paragraph for three files, and a twelve-file
+    checkpoint would have carried twelve. Same information, a fraction of the
+    tokens, and easier for a small model to act on -- one rule, then the list
+    it applies to, is how a person would write it.
+
+    Grouping preserves order: the first time an explanation appears fixes its
+    position, so a packet does not reshuffle between turns for a model that is
+    reading it against the previous one.
+    """
 
     if report.ready:
         return "The slice is ready; there is nothing outstanding."
@@ -618,17 +692,38 @@ def readiness_packet(report: SliceReadinessReport) -> str:
         "condition(s):",
         "",
     ]
+
+    groups: dict[tuple[str, str], list[ReadinessFinding]] = {}
     for finding in report.findings:
-        location = f" [{finding.path or finding.obligation_id}]" if (
-            finding.path or finding.obligation_id
-        ) else ""
-        lines.append(f"- {finding.block.value}{location}: {finding.detail}")
-    if report.rejected_witnesses:
+        groups.setdefault((finding.block.value, finding.explanation), []).append(
+            finding
+        )
+
+    for (block, explanation), findings in groups.items():
+        if explanation:
+            lines.append(f"{block} ({len(findings)}): {explanation}")
+            for finding in findings:
+                location = finding.path or finding.obligation_id
+                lines.append(
+                    f"  - {finding.detail}"
+                    + (f" [{location}]" if location and location not in finding.detail
+                       else "")
+                )
+        else:
+            # No shared rule to hoist: these details stand alone, so grouping
+            # them under a heading would add a line rather than remove one.
+            for finding in findings:
+                location = f" [{finding.path or finding.obligation_id}]" if (
+                    finding.path or finding.obligation_id
+                ) else ""
+                lines.append(f"- {block}{location}: {finding.detail}")
         lines.append("")
+
+    if report.rejected_witnesses:
         lines.append("Witnesses that could not be used as evidence:")
         for rejection in report.rejected_witnesses:
             lines.append(
                 f"- {rejection.witness_id} ({rejection.problem.value}): "
                 f"{rejection.detail}"
             )
-    return "\n".join(lines)
+    return "\n".join(lines).rstrip() + "\n"

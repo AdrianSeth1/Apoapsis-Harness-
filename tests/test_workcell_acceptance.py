@@ -2,7 +2,15 @@ from __future__ import annotations
 
 import unittest
 
+from apoapsis.reporting.operator import (
+    explain_checkpoint,
+    explain_session_outcome,
+    explain_stop_reason,
+)
+from apoapsis.review.schema import StopReasonKind
+from apoapsis.workcell.session import SessionOutcome
 from apoapsis.workcell.acceptance import (
+    UNEXERCISED_EXPLANATION,
     AcceptanceObligation,
     CheckpointOutcome,
     ObligationKind,
@@ -825,3 +833,111 @@ class CheckpointTests(unittest.TestCase):
         self.assertEqual(
             parameters, {"admission_admitted", "admission_detail", "readiness"}
         )
+
+
+class RepairPacketShapeTests(unittest.TestCase):
+    """One rule, then the list it applies to -- not the rule once per path.
+
+    CAP-4EE9F101146E4556's packet repeated the unexercised-behaviour paragraph
+    once per new file: three copies for three files, and twelve for a
+    twelve-file checkpoint, all fed back into a 32K-window model.
+    """
+
+    def _contract(self) -> SliceAcceptanceContract:
+        return SliceAcceptanceContract(
+            slice_id="SLICE-1",
+            criteria=["AC-1"],
+            required_commands=[],
+            obligations=[
+                AcceptanceObligation(
+                    obligation_id="module-0",
+                    kind=ObligationKind.PRODUCTION_ARTIFACT,
+                    description="the first module exists and is reached",
+                    required_paths=["services/module_0.py"],
+                    must_be_exercised=["services/module_0.py"],
+                    criteria=["AC-1"],
+                )
+            ],
+        )
+
+    def _unexercised_packet(self, count: int) -> str:
+        delta = _delta(*[_added(f"services/module_{index}.py") for index in range(count)])
+        report = evaluate_slice_readiness(
+            self._contract(),
+            delta,
+            [],
+            candidate_paths={f"services/module_{index}.py" for index in range(count)},
+        )
+        return readiness_packet(report)
+
+    def test_one_explanation_however_many_files_it_applies_to(self) -> None:
+        for count in (1, 3, 12):
+            packet = self._unexercised_packet(count)
+            self.assertEqual(
+                packet.count(UNEXERCISED_EXPLANATION),
+                1,
+                f"the rule is repeated for {count} files",
+            )
+
+    def test_every_affected_path_is_still_named(self) -> None:
+        packet = self._unexercised_packet(12)
+        for index in range(12):
+            self.assertIn(f"services/module_{index}.py", packet)
+
+    def test_grouping_shrinks_the_packet_rather_than_the_information(self) -> None:
+        one = self._unexercised_packet(1)
+        twelve = self._unexercised_packet(12)
+        # Twelve files cost twelve short lines, not twelve paragraphs. The
+        # per-file cost is what the old shape got wrong.
+        per_extra_file = (len(twelve) - len(one)) / 11
+        self.assertLess(per_extra_file, len(UNEXERCISED_EXPLANATION) / 2)
+
+
+class OperatorExplanationTests(unittest.TestCase):
+    """Every stop an operator can land on has a rendering they can act on."""
+
+    def test_every_checkpoint_outcome_is_explained(self) -> None:
+        for outcome in CheckpointOutcome:
+            explanation = explain_checkpoint(outcome, "internal detail")
+            self.assertTrue(explanation.attempted, outcome)
+            self.assertTrue(explanation.refusal, outcome)
+            self.assertTrue(explanation.next_action, outcome)
+            self.assertEqual(explanation.detail, "internal detail")
+
+    def test_every_session_outcome_is_explained(self) -> None:
+        for outcome in SessionOutcome:
+            self.assertTrue(explain_session_outcome(outcome).next_action, outcome)
+
+    def test_every_stop_reason_is_explained(self) -> None:
+        for kind in StopReasonKind:
+            self.assertTrue(explain_stop_reason(kind).next_action, kind)
+
+    def test_the_operator_text_speaks_no_internal_vocabulary(self) -> None:
+        renderings = (
+            [explain_checkpoint(item) for item in CheckpointOutcome]
+            + [explain_session_outcome(item) for item in SessionOutcome]
+            + [explain_stop_reason(item) for item in StopReasonKind]
+        )
+        for explanation in renderings:
+            spoken = explanation.summary.lower()
+            for word in ("witness", "obligation", "behaviour unit", "exop", "capsule",
+                         "workcell", "fingerprint"):
+                self.assertNotIn(word, spoken, explanation.summary)
+
+    def test_a_checkpoint_decision_carries_its_operator_rendering(self) -> None:
+        refused = evaluate_checkpoint(
+            False,
+            "the change exceeded the changed-line ceiling",
+            SliceReadinessReport(
+                slice_id="SLICE-1",
+                contract_digest=_FP,
+                ready=False,
+                detail="not evaluated",
+            ),
+        )
+        self.assertEqual(refused.outcome, CheckpointOutcome.CANDIDATE_REFUSED)
+        self.assertIsNotNone(refused.operator)
+        # The precise wording is preserved, not replaced -- it moves behind the
+        # operator rendering rather than being dropped.
+        self.assertIn("changed-line ceiling", refused.operator.detail)
+        self.assertEqual(refused.detail, refused.detail)

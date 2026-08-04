@@ -20,14 +20,23 @@ from typing import Protocol
 
 from apoapsis.agent.session import AgentSessionOutcome, AgentSessionResult
 from apoapsis.architect.slice_schema import PlanSliceExecutionPackage
+from apoapsis.architect.slice_store import PlanSliceExecutionStore
 from apoapsis.audit.store import TaskAuditStore
 from apoapsis.config import ApoapsisConfig
 from apoapsis.context.compiler import ContextPackage
+from apoapsis.models.telemetry import RelayObservedModelUsage
 from apoapsis.specification.schema import TaskSpecification
 from apoapsis.verification.runner import VerificationRunner
 from apoapsis.verification.results import VerificationStatus
 from apoapsis.workflow.engine import SQLiteTaskStore
-from apoapsis.workcell.delta import ChangeKind, compute_delta, tree_fingerprint
+from apoapsis.workcell.delta import (
+    EXCLUDED_METADATA_NAMES,
+    ChangeKind,
+    compute_delta,
+    tree_fingerprint,
+)
+from apoapsis.workcell.orientation import SliceContribution, build_orientation_brief
+from apoapsis.workcell.parity import select_parity, slice_position
 
 
 class CapabilitySandboxError(RuntimeError):
@@ -228,6 +237,177 @@ def _promote_snapshot(
     return promoted
 
 
+
+def _project_relative(project_root: Path, path: Path) -> str | None:
+    """The path as a report reader will look for it, or `None` if unwritten.
+
+    Reported relative to the project because absolute host paths in a report
+    are unusable to anyone but the machine that produced it.
+    """
+
+    if not path.is_file():
+        return None
+    try:
+        return path.relative_to(project_root).as_posix()
+    except ValueError:
+        return None
+
+
+def _non_negative_int(value: object) -> int:
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        return 0
+    return value
+
+
+def _model_usage(
+    payload: dict, *, series_artifact: str | None
+) -> RelayObservedModelUsage | None:
+    """Read the controller's observed usage out of a sandbox result.
+
+    Returns `None` when the result carries no `model_usage` block at all --
+    a result written by an older controller. That is a genuine absence and is
+    reported as one; substituting zeros would be indistinguishable from a run
+    that spent nothing, which is exactly the reading this whole change exists
+    to make impossible.
+    """
+
+    block = payload.get("model_usage")
+    if not isinstance(block, dict):
+        return None
+    return RelayObservedModelUsage(
+        calls=_non_negative_int(block.get("calls")),
+        exchanges_observed=_non_negative_int(payload.get("relay_requests")),
+        input_tokens=_non_negative_int(block.get("input_tokens")),
+        output_tokens=_non_negative_int(block.get("output_tokens")),
+        cached_input_tokens=_non_negative_int(block.get("cached_input_tokens")),
+        peak_input_tokens=_non_negative_int(block.get("peak_input_tokens")),
+        series_artifact=series_artifact,
+    )
+
+
+def _slice_contributions(
+    project_root: Path, plan: dict, plan_id: str, slice_id: str
+) -> list[SliceContribution]:
+    """What each earlier slice of this plan actually put in the repository.
+
+    Read from artifacts the harness wrote itself: the completed slice's task
+    report for the files, and its last checkpoint record for the additions its
+    own witnesses proved. Nothing here is inferred from the code, and nothing
+    is asked of a model -- a slice's contribution is a fact the harness already
+    established when it admitted that slice.
+
+    Best effort by design. A missing or unreadable artifact costs one slice's
+    row in the brief; it must never cost the run, because orientation is a
+    convenience and the work is authorised by the package regardless.
+    """
+
+    order = [item.get("slice_id") for item in plan.get("slices", [])]
+    try:
+        position = order.index(slice_id)
+    except ValueError:
+        return []
+    titles = {
+        item.get("slice_id"): item.get("title", "")
+        for item in plan.get("slices", [])
+    }
+
+    try:
+        records = PlanSliceExecutionStore(
+            project_root / ".apoapsis" / "plan-slice-executions.db",
+            initialize=False,
+        ).list_for_plan(plan_id)
+    except Exception:  # noqa: BLE001 - see the docstring: never fail the run
+        return []
+
+    by_slice = {item.slice_id: item for item in records}
+    contributions: list[SliceContribution] = []
+    for earlier in order[:position]:
+        record = by_slice.get(earlier)
+        if record is None or record.task_id is None:
+            continue
+        task_directory = project_root / ".apoapsis" / "tasks" / record.task_id
+        paths: list[str] = []
+        report = task_directory / "report.json"
+        if not report.is_file():
+            continue
+        try:
+            payload = json.loads(report.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        # Gated on the task's own reported outcome, not on the slice record's
+        # status. Observed in `test project 6`: all four finished slices sit at
+        # `approved` in `plan-slice-executions.db` while their reports read
+        # `complete`, so trusting the record's status would have produced an
+        # empty brief on every real project -- silently, which is the worst way
+        # for an optimisation to not work. An incomplete slice's files are not
+        # inherited state, and saying they are would describe a repository that
+        # does not exist.
+        if payload.get("outcome") != "complete":
+            continue
+        # Reports written before ADR 0102 list `.git` in `files_changed`.
+        # Those reports are left exactly as they were written -- they are the
+        # record of what was observed at the time -- so the filtering happens
+        # here, at the point of reuse, rather than by rewriting history.
+        paths = [
+            item
+            for item in payload.get("files_changed", [])
+            if isinstance(item, str)
+            and item.split("/", 1)[0] not in EXCLUDED_METADATA_NAMES
+        ]
+        names: list[str] = []
+        checkpoints = sorted(
+            task_directory.glob(
+                "capability-sandbox/*/evidence/*/checkpoint-*/checkpoint.json"
+            )
+        )
+        if checkpoints:
+            try:
+                record_payload = json.loads(
+                    checkpoints[-1].read_text(encoding="utf-8")
+                )
+                names = sorted(
+                    {
+                        str(unit.get("name"))
+                        for unit in (record_payload.get("behaviour_units") or [])
+                        if unit.get("name")
+                    }
+                )
+            except (OSError, json.JSONDecodeError):
+                names = []
+        if paths or names:
+            contributions.append(
+                SliceContribution(
+                    slice_id=earlier,
+                    title=str(titles.get(earlier) or ""),
+                    paths=paths,
+                    behaviour_names=names,
+                )
+            )
+    return contributions
+
+
+def _slice_integration_contracts(plan: dict, slice_id: str) -> list[str]:
+    """The plan's own interface statements for this slice, verbatim."""
+
+    target = next(
+        (item for item in plan.get("slices", []) if item.get("slice_id") == slice_id),
+        None,
+    )
+    if target is None:
+        return []
+    wanted = set(target.get("integration_contract_ids") or [])
+    lines = [
+        f"{item['contract_id']}: {item['interface']} — {item['data_flow']}"
+        for item in plan.get("integration_contracts", [])
+        if item.get("contract_id") in wanted
+    ]
+    # The slice's own free-text interface contracts are the planner's words
+    # about this slice specifically, so they belong here too.
+    lines.extend(str(item) for item in (target.get("interface_contracts") or []))
+    return lines
+
+
+
 class NativeQwenWorkcellExecutor:
     """Launch one authorized native-Qwen product run through Ubuntu WSL.
 
@@ -293,8 +473,44 @@ class NativeQwenWorkcellExecutor:
             )
         except CapabilitySandboxError as exc:
             return self._review(str(exc))
+        sandbox_config = config.execution.capability_sandbox
+        parity = select_parity(
+            mode=sandbox_config.parity_mode,
+            slice_position=slice_position(approved_plan, slice_id),
+            sample_every=sandbox_config.parity_sample_every,
+        )
+        # Built here, on the host, because this is the side that can read what
+        # earlier slices did: their task reports and checkpoint records live in
+        # this project's audit tree, and the controller sees only this request.
+        orientation = build_orientation_brief(
+            worktree,
+            contributions=_slice_contributions(
+                Path(audit.project_root), approved_plan, plan_id, slice_id
+            ),
+            integration_contracts=_slice_integration_contracts(
+                approved_plan, slice_id
+            ),
+            commands=[
+                " ".join(item.argv) for item in config.verification.commands
+            ],
+            focus_paths=[
+                str(item)
+                for item in (
+                    next(
+                        (
+                            entry
+                            for entry in approved_plan.get("slices", [])
+                            if entry.get("slice_id") == slice_id
+                        ),
+                        {},
+                    ).get("suggested_paths")
+                    or []
+                )
+            ],
+        )
         request = {
             "schema_version": "1.0",
+            "orientation": orientation,
             "run_id": run_id,
             "task_id": specification.task_id,
             "plan_id": plan_id,
@@ -324,9 +540,12 @@ class NativeQwenWorkcellExecutor:
             "max_native_continuations": (
                 config.execution.capability_sandbox.max_native_continuations
             ),
-            "high_assurance_parity_guard": (
-                config.execution.capability_sandbox.high_assurance_parity_guard
-            ),
+            # Decided here, per slice, from the plan's own ordering (ADR 0108).
+            # The controller is told whether *this* slice pairs, and why, so it
+            # never has to re-derive a policy decision from configuration it
+            # cannot see.
+            "high_assurance_parity_guard": parity.run_control_arm,
+            "parity_selection": parity.model_dump(mode="json"),
             "runtime_profile": config.execution.capability_sandbox.runtime_profile,
             "qualified_model_alias": (
                 config.execution.capability_sandbox.qualified_model_alias
@@ -414,14 +633,27 @@ class NativeQwenWorkcellExecutor:
                 "fallback was attempted. " + detail[-1000:]
             )
         payload = json.loads(response_path.read_text(encoding="utf-8"))
+        usage = _model_usage(
+            payload,
+            series_artifact=_project_relative(
+                Path(audit.project_root),
+                task_dir / "evidence" / "sandbox" / "model-usage-series.json",
+            ),
+        )
         if payload.get("outcome") != "complete":
-            return self._review(str(payload.get("detail") or "checkpoint was not complete"))
+            return self._review(
+                str(payload.get("detail") or "checkpoint was not complete"),
+                model_usage=usage,
+            )
 
         snapshot = Path(str(payload["snapshot_path_windows"]))
         checkpoint = payload.get("checkpoint") or {}
         expected_fingerprint = checkpoint.get("candidate_fingerprint")
         if not isinstance(expected_fingerprint, str):
-            return self._review("the controller result omitted its candidate fingerprint")
+            return self._review(
+                "the controller result omitted its candidate fingerprint",
+                model_usage=usage,
+            )
         changed = _promote_snapshot(
             worktree,
             snapshot,
@@ -440,6 +672,7 @@ class NativeQwenWorkcellExecutor:
                 verification_runs=1,
                 changed_files=changed,
                 verification_results=[verification],
+                model_usage=usage,
             )
         return AgentSessionResult(
             outcome=AgentSessionOutcome.COMPLETE,
@@ -449,16 +682,23 @@ class NativeQwenWorkcellExecutor:
             verification_runs=1,
             changed_files=changed,
             verification_results=[verification],
+            model_usage=usage,
         )
 
     @staticmethod
-    def _review(reason: str) -> AgentSessionResult:
+    def _review(
+        reason: str, *, model_usage: RelayObservedModelUsage | None = None
+    ) -> AgentSessionResult:
+        # A run that stopped short still spent tokens, and a review result that
+        # dropped them would put the cost of every unsuccessful attempt at
+        # zero -- the most misleading direction for this number to be wrong in.
         return AgentSessionResult(
             outcome=AgentSessionOutcome.ESCALATION_REQUIRED,
             stop_reason=reason,
             turns=0,
             patch_attempts=0,
             verification_runs=0,
+            model_usage=model_usage,
         )
 
 

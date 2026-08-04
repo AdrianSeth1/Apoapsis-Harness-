@@ -25,6 +25,11 @@ from apoapsis.config import (
 )
 from apoapsis.execution.backend import ExecutionBackendName, SandboxUnavailableError
 from apoapsis.execution.docker_backend import DockerExecutionBackend
+from apoapsis.workcell.product import (
+    _PINNED_MANIFEST,
+    CapabilitySandboxError,
+    _harness_root,
+)
 from apoapsis.models.base import ModelOperation
 from apoapsis.models.frontier import OpenAICompatibleFrontierProvider
 from apoapsis.models.local import OllamaProvider
@@ -109,6 +114,7 @@ def run_doctor(
         checks.extend(_verification_backend_checks(config))
         checks.extend(_completion_policy_checks(config))
         checks.extend(_verification_contract_checks(config))
+        checks.extend(_capability_sandbox_checks(config))
         if probe_providers:
             checks.extend(_probe_checks(config, provider_overrides))
     return DoctorReport(
@@ -117,6 +123,129 @@ def run_doctor(
         checks=checks,
         overall_status=_overall_status(checks),
     )
+
+
+
+def _capability_sandbox_checks(config: ApoapsisConfig) -> list[DoctorCheck]:
+    """Is the default local execution path actually runnable here?
+
+    ADR 0109 names the Capability Sandbox the single local path for plan
+    slices, so `doctor` has to be able to say whether this machine can run it.
+    Before this, `doctor` reported cheerfully on a host where the default path
+    could not start at all, and the operator discovered it at the first slice.
+
+    Read-only and deliberately shallow: it checks that the launcher exists and
+    that the WSL distribution answers, not that a container builds. A doctor
+    that spent two minutes building an image would stop being run.
+    """
+
+    sandbox = config.execution.capability_sandbox
+    if not sandbox.enabled:
+        return [
+            DoctorCheck(
+                name="capability_sandbox",
+                category="execution",
+                status=DoctorCheckStatus.WARNING,
+                detail=(
+                    "the Capability Sandbox is disabled, so approved plan "
+                    "slices run the legacy compatibility path"
+                ),
+                remediation=(
+                    "set [execution.capability_sandbox] enabled = true unless "
+                    "this machine deliberately runs the legacy path"
+                ),
+            )
+        ]
+
+    checks: list[DoctorCheck] = []
+    try:
+        root = _harness_root()
+    except CapabilitySandboxError as exc:
+        return [
+            DoctorCheck(
+                name="capability_sandbox",
+                category="execution",
+                status=DoctorCheckStatus.ERROR,
+                detail=str(exc),
+                remediation="start Apoapsis with START_APOAPSIS.cmd, or set APOAPSIS_HARNESS_ROOT",
+            )
+        ]
+
+    launcher = root / "tools" / "run_capability_sandbox_task.sh"
+    manifest = root / _PINNED_MANIFEST
+    for name, path, what in (
+        ("capability_sandbox_launcher", launcher, "the sandbox launcher"),
+        ("capability_sandbox_manifest", manifest, "the pinned runtime manifest"),
+    ):
+        checks.append(
+            DoctorCheck(
+                name=name,
+                category="execution",
+                status=(
+                    DoctorCheckStatus.OK if path.is_file() else DoctorCheckStatus.ERROR
+                ),
+                detail=(
+                    f"{what} is present at {path}"
+                    if path.is_file()
+                    else f"{what} is missing at {path}"
+                ),
+                remediation=(
+                    ""
+                    if path.is_file()
+                    else "reinstall or repair the Apoapsis installation folder"
+                ),
+            )
+        )
+
+    if os.name != "nt":
+        checks.append(
+            DoctorCheck(
+                name="capability_sandbox_runtime",
+                category="execution",
+                status=DoctorCheckStatus.WARNING,
+                detail=(
+                    "the product launcher targets the Ubuntu-24.04 WSL runtime "
+                    "and this host is not Windows; the sandbox path cannot be "
+                    "checked from here"
+                ),
+                remediation="run doctor on the Windows host that launches Apoapsis",
+            )
+        )
+        return checks
+
+    try:
+        completed = subprocess.run(  # noqa: S603 - fixed executable and argv
+            ["wsl.exe", "-d", "Ubuntu-24.04", "--", "true"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+        )
+        reachable = completed.returncode == 0
+        detail = (completed.stderr or "").strip()
+    except (OSError, subprocess.SubprocessError) as exc:
+        reachable = False
+        detail = str(exc)
+    checks.append(
+        DoctorCheck(
+            name="capability_sandbox_runtime",
+            category="execution",
+            status=DoctorCheckStatus.OK if reachable else DoctorCheckStatus.ERROR,
+            detail=(
+                "the Ubuntu-24.04 WSL distribution answers"
+                if reachable
+                else f"the Ubuntu-24.04 WSL distribution did not answer: {detail[:200]}"
+            ),
+            remediation=(
+                ""
+                if reachable
+                else "install or start the Ubuntu-24.04 WSL distribution, or "
+                "select the legacy compatibility path explicitly"
+            ),
+        )
+    )
+    return checks
 
 
 def _overall_status(checks: list[DoctorCheck]) -> DoctorCheckStatus:

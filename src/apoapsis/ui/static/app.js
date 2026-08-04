@@ -30,6 +30,9 @@ const store = {
   intakeRequestText: "",
   executionOperation: null,
   executionConfirmPending: false,
+  //: MH-9's live status projection for the task currently open. Null means
+  //: "not fetched or not applicable"; the panel renders nothing either way.
+  runStatus: null,
   manualFrontierPreviews: null,
   manualFrontierExportPending: false,
   manualFrontierExport: null,
@@ -220,7 +223,9 @@ async function syncRoute() {
         store.busy = true;
         render();
         store.executionOperation = null;
+        store.runStatus = null;
         store.task = await api(`/api/tasks/${encodeURIComponent(store.route.taskId)}`);
+        store.runStatus = await fetchRunStatus(store.route.taskId);
       }
     } else if (store.route.name === "evaluations" && store.evaluations === null) {
       store.busy = true;
@@ -563,6 +568,16 @@ function modelsView() {
       ${doctor ? doctorList(doctor) : `<div class="empty"><h2>Not run in this UI session</h2><p>Readiness is never inferred from configuration alone. Run Doctor to produce a fresh, timestamped diagnostic result.</p></div>`}
     </section>
   </main>`;
+}
+
+// How often the matched control arm runs, in the operator's terms rather than
+// as a mode name. "ON" said nothing about the price; pairing every slice costs
+// roughly double the inference, which is why the default is now a sample.
+function parityLabel(capability) {
+  const mode = capability.parity_mode || (capability.high_assurance_parity_guard ? "always" : "sample");
+  if (mode === "always") return "every slice (~2x inference)";
+  if (mode === "off") return "off";
+  return `1st slice + every ${capability.parity_sample_every || 4}th`;
 }
 
 function capabilitySandboxSettings(capability, power) {
@@ -1059,12 +1074,28 @@ function reviewView() {
   return reviewDetailView(store.review);
 }
 
+// The three-part operator rendering of a stop: what was attempted, what
+// refused it, and the one next action. The harness's own precise wording is
+// kept directly underneath, behind a disclosure -- it is the record, and an
+// operator who wants it must always be able to reach it. What changed is which
+// of the two a person reads first.
+function operatorStopPanel(operator, fallbackDetail) {
+  if (!operator) return fallbackDetail ? `<p>${e(fallbackDetail)}</p>` : "";
+  return `<p>${e(operator.attempted)} ${e(operator.refusal)}</p>
+    <p class="section-title mt-14">What to do next</p>
+    <p>${e(operator.next_action)}</p>
+    ${operator.detail ? `<details class="mt-14"><summary>Exact reason recorded by the harness</summary><p class="muted mt-14">${e(operator.detail)}</p></details>` : ""}`;
+}
+
 function reviewDetailView(detail) {
   const eligible = detail.eligible_actions || [];
   const localBudget = detail.configured_local_budget;
   const frontierBudget = detail.configured_frontier_budget;
+  const operator = detail.operator;
   return `<main class="content">
-    <div class="page-heading"><div><p class="eyebrow">HUMAN REVIEW / ${e(detail.task_id)}</p><h1>${e(titleCase(detail.stop_reason_kind))}</h1><p>${e(detail.stop_reason_text)}</p></div><span class="pill warn">${e(titleCase(detail.workflow_state))}</span></div>
+    <div class="page-heading"><div><p class="eyebrow">HUMAN REVIEW / ${e(detail.task_id)}</p><h1>${e(titleCase(detail.stop_reason_kind))}</h1><p>${e(operator ? operator.attempted : detail.stop_reason_text)}</p></div><span class="pill warn">${e(titleCase(detail.workflow_state))}</span></div>
+
+    <section class="card card-pad">${operatorStopPanel(operator, detail.stop_reason_text)}</section>
 
     <div class="grid four">
       ${metric("Task version", detail.task_version, "Optimistic concurrency")}
@@ -1508,6 +1539,17 @@ async function submitExecutionStart(taskId, version, authorizationSha256) {
   }
 }
 
+// A run-status read must never be able to take the page down. A task that has
+// never run, an attempt whose journal is not there yet, and a half-written
+// line are all ordinary -- the panel simply does not render.
+async function fetchRunStatus(taskId) {
+  try {
+    return await api(`/api/tasks/${encodeURIComponent(taskId)}/run-status`);
+  } catch (error) {
+    return null;
+  }
+}
+
 let executionPollHandle = null;
 
 async function pollExecutionOperation(taskId, operationId) {
@@ -1526,6 +1568,7 @@ async function pollExecutionOperation(taskId, operationId) {
     // they were when the page loaded for the entire RUNNING duration.
     if (store.route.name === "task" && store.route.taskId === taskId) {
       store.task = await api(`/api/tasks/${encodeURIComponent(taskId)}`);
+      store.runStatus = await fetchRunStatus(taskId);
     }
     render();
     if (record.status === "recorded" || record.status === "running") {
@@ -1608,6 +1651,7 @@ function controlView(detail) {
     <div class="page-heading"><div><p class="eyebrow">CONTROL ROOM / EVENT RECORD</p><h1>Every transition is evidence.</h1><p>The timeline comes from persisted workflow events and durable operation records. Models cannot append, remove, or advance these states.</p></div><span class="pill ${statusClass(task.state)}">${e(titleCase(task.state))}</span></div>
 
     ${canStart && !operationActive ? executionStartPanel(detail) : ""}
+    ${runStatusPanel()}
     ${store.executionOperation ? executionOperationPanel(detail) : ""}
     ${task.state === "HUMAN_REVIEW_REQUIRED" ? `<div class="notice mt-16">This task stopped for a human decision. <a href="#/review/${encodeURIComponent(task.task_id)}">Open the Human Review case →</a></div>` : ""}
 
@@ -1622,6 +1666,117 @@ function controlView(detail) {
 
     ${(detail.recent_agent_turns || []).length ? `<p class="section-title">Recent tool actions · ${detail.recent_agent_turns.length}</p><section class="card card-pad"><div class="verification-list">${detail.recent_agent_turns.slice().reverse().map(agentTurnItem).join("")}</div></section>` : ""}
   </main>`;
+}
+
+// MH-9. The one page an operator watches during a run. Everything here is a
+// projection of what the run itself recorded (`/api/tasks/<id>/run-status`);
+// nothing is inferred from how long a spinner has been spinning.
+//
+// The stage list is deliberately always rendered in full, including stages
+// that have not happened yet: "building the sandbox image, then checking it is
+// sealed, then loading the model, then writing code" tells an operator how
+// long they are in for, which a single "running..." never can.
+function runStatusPanel() {
+  const status = store.runStatus;
+  if (!status || (!status.running && !(status.stages || []).length)) return "";
+  const stages = status.stages || [];
+  const context = status.context || {};
+  const checkpoint = status.last_checkpoint;
+  const headline = status.running
+    ? (status.awaiting_first_event
+        ? "Starting"
+        : (status.current_stage_label || "Working"))
+    : `Finished · ${titleCase(status.outcome || "unknown")}`;
+  return `<section class="card mt-16" data-role="run-status">
+    <div class="card-header">
+      <div>
+        <h2>${e(headline)}</h2>
+        <p>${status.running ? "Live, from the run's own record" : e(status.detail || "")}</p>
+      </div>
+      <span class="pill ${status.running ? "warn" : (status.outcome === "complete" ? "good" : "bad")}">${status.running ? "RUNNING" : "DONE"}</span>
+    </div>
+    <div class="card-body">
+      <div class="verification-list" data-role="run-stages">
+        ${stages.map(runStageItem).join("")}
+      </div>
+      <div class="grid two mt-16">
+        ${metric("Model calls", context.calls ?? 0, "Observed at the relay")}
+        ${metric(
+          "Context now",
+          contextNowLabel(context),
+          context.context_window_tokens
+            ? `Window ${compactNumber(context.context_window_tokens)}`
+            : "No window recorded"
+        )}
+        ${metric("Peak prompt", compactNumber(context.peak_input_tokens ?? 0), "Largest single call")}
+        ${metric("Elapsed", formatDuration(status.elapsed_seconds), "Since the run started")}
+      </div>
+      ${
+        context.near_window
+          ? `<div class="notice mt-14" data-role="near-window">Context is near the window. The agent will compress soon, and quality usually drops when it does mid-slice.</div>`
+          : ""
+      }
+      ${checkpoint ? runCheckpointBlock(checkpoint, status.checkpoints_seen) : ""}
+    </div>
+  </section>`;
+}
+
+function runStageItem(stage) {
+  // A skipped stage carries its reason where it has one. "No control arm ran"
+  // is not evidence of anything; "and here is why" is (ADR 0108).
+  // Pending and skipped intentionally get the neutral base pill: a stage that
+  // has not happened is not a warning, and colouring it as one is how a
+  // status page teaches an operator to ignore its own colours.
+  const badge = {
+    done: "good",
+    running: "warn",
+    failed: "bad",
+  }[stage.state] || "";
+  const timing = stage.elapsed_seconds != null ? formatDuration(stage.elapsed_seconds) : "";
+  return `<div class="file-item" data-stage="${e(stage.stage)}" data-state="${e(stage.state)}">
+    <span class="pill ${badge}">${e(titleCase(stage.state))}</span>
+    <code>${e(stage.label)}</code>
+    <span class="meta">${e(stage.detail || timing)}</span>
+  </div>`;
+}
+
+function contextNowLabel(context) {
+  if (context.last_input_tokens == null) return "—";
+  const tokens = compactNumber(context.last_input_tokens);
+  if (context.window_utilization == null) return tokens;
+  return `${tokens} · ${Math.round(context.window_utilization * 100)}%`;
+}
+
+function formatDuration(seconds) {
+  if (seconds == null) return "—";
+  const total = Math.max(0, Math.round(seconds));
+  if (total < 60) return `${total}s`;
+  const minutes = Math.floor(total / 60);
+  if (minutes < 60) return `${minutes}m ${total % 60}s`;
+  return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+}
+
+// The operator rendering first, the harness's own words second (ADR 0105).
+// The ordering is the whole change: nothing is hidden.
+function runCheckpointBlock(checkpoint, seen) {
+  const operator = checkpoint.operator;
+  const obligations =
+    checkpoint.obligations_total != null
+      ? ` · ${checkpoint.obligations_proved ?? 0} of ${checkpoint.obligations_total} proved`
+      : "";
+  return `<div class="mt-16" data-role="run-checkpoint">
+    <p class="section-title">Last check · attempt ${e(checkpoint.attempt)} of ${e(seen)}${e(obligations)}</p>
+    ${
+      operator
+        ? `<div class="notice">
+             <div><strong>${e(operator.attempted)}</strong></div>
+             <div>${e(operator.refusal)}</div>
+             <div><strong>Next:</strong> ${e(operator.next_action)}</div>
+           </div>
+           ${operator.detail ? `<details class="mt-8"><summary class="meta">What the harness recorded</summary><div class="mono mt-8">${e(operator.detail)}</div></details>` : ""}`
+        : `<div class="mono">${e(checkpoint.detail || checkpoint.outcome)}</div>`
+    }
+  </div>`;
 }
 
 function agentTurnItem(turn) {
@@ -1666,7 +1821,7 @@ function capabilitySandboxNotice(capability) {
   return `<div class="mt-14 mono" data-role="capability-sandbox-notice">
     <strong>RUN CAPABILITY SANDBOX · RECOMMENDED</strong>
     <div>${e(capability.warning || "")}</div>
-    <div>NETWORK: denied inside workcell · CONTINUATIONS: ${e(capability.max_native_continuations)} · PARITY GUARD: ${capability.high_assurance_parity_guard ? "ON" : "off"}</div>
+    <div>NETWORK: denied inside workcell · CONTINUATIONS: ${e(capability.max_native_continuations)} · PARITY: ${e(parityLabel(capability))}</div>
     <div>No silent fallback. A failed identity, containment, admission, or readiness check stops for review.</div>
   </div>`;
 }

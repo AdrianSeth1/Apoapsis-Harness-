@@ -176,8 +176,18 @@ On macOS or Linux, use `.venv/bin/python` instead.
 Run the tests:
 
 ```bash
-python -m unittest discover -s tests -v
+python -m unittest discover -s tests
 ```
+
+This exits 0 on a clean checkout. As of 2026-08-03 it is 2,141 tests in about
+19 minutes on Python 3.14.5 / Windows 11, with 49 skips and no known failures
+(ADR 0111).
+
+Every skip names the capability it needs, so `-v` tells you what your machine
+could not exercise. Most are absent Docker, Node, a pilot image, or the ability
+to create symlinks. Eight need a Unix domain socket a Linux container can
+connect to, which a Windows host cannot provide — run the suite under WSL2 or
+Linux to execute the relay and containment coverage as well.
 
 ## Start and stop local models on Windows
 
@@ -206,13 +216,46 @@ can exceed available RAM/VRAM. Warm it explicitly when needed:
 .\START_APOAPSIS.cmd --include-research
 ```
 
-When finished, double-click `STOP_APOAPSIS.cmd`. It sends an explicit zero keep-
-alive to every configured local Ollama model, including research, and releases
-their memory. The shared Ollama service remains running intentionally. A
-`llama-server` process launched from `APOAPSIS_LLAMA_SERVER_COMMAND` remains a
-normal operator-owned process for this pass; close it the same way you would
-close any other local server. Hosted providers, Docker, repositories,
-worktrees, and tasks are untouched.
+When finished, double-click `STOP_APOAPSIS.cmd`. It releases the memory of every
+configured local model, by the two different mechanisms the two providers need:
+
+- **Ollama** models get an explicit zero keep-alive, including research models.
+  The shared Ollama service stays running intentionally.
+- **A loopback `llama-server`** holds its weights until the process exits, so
+  Apoapsis stops it — but only after proving which process it is. It asks the
+  configured endpoint which model file it currently holds (`GET /props`) and
+  signals only the process whose own command line names that exact file. It
+  never kills by port. A server it cannot identify is left running and the
+  result says which endpoint and why (ADR 0115).
+
+This matters more than it sounds: a 27B model at Q4_K_M with every layer
+offloaded holds about 20 GB of a 24 GB card, and inside WSL it is invisible to
+Task Manager, `ollama ps`, and per-process `nvidia-smi`.
+
+Pass `--keep-loopback-servers` if something else is deliberately sharing that
+server; the result then says the weights still occupy VRAM.
+
+**Host RAM comes back more slowly than VRAM, and the result explains why.**
+The server's resident set goes with the process and the memory is genuinely
+free inside WSL, but Windows keeps attributing it to `vmmemWSL`, because:
+
+- reading a 16.8 GB model file fills the Linux page cache — clean, reclaimable,
+  and still counted as used by the VM; and
+- WSL2 only returns freed pages to Windows when `autoMemoryReclaim` is set,
+  which is off by default.
+
+Apoapsis reports both in the stop result's `host_memory` block rather than
+guessing. It cannot fix either: dropping caches needs root inside the
+distribution, and `wsl --shutdown` would reclaim everything while also stopping
+Docker Desktop's backend. If you want the memory back promptly, add this to
+`%USERPROFILE%\.wslconfig` and restart WSL once:
+
+```ini
+[wsl2]
+autoMemoryReclaim=gradual
+```
+
+Hosted providers, Docker, repositories, worktrees, and tasks are untouched.
 
 For terminal automation, set `APOAPSIS_NO_PAUSE=1` so the command files do not
 wait for a keypress. The last lifecycle result is recorded under the ignored
@@ -1445,13 +1488,43 @@ project's configured verification runs again. A failed preflight, unknown
 witness type, refused delta, incomplete readiness result, or relay truncation
 stops for review. There is no silent Local Power fallback.
 
+**Which local path runs what (ADR 0109).** Approved plan slices run in the
+Capability Sandbox — that is the single local execution path for slice work,
+and it is the default in a fresh project without any config edit. Ordinary
+quick-change tasks keep the bounded typed loop, deliberately: the sandbox needs
+an approved slice contract, and requiring WSL, Docker and a 16.8 GB pinned
+model for a one-line edit would be a worse harness, not a purer one. Local
+Power is a **legacy compatibility path**, reachable only by explicit opt-in;
+`apoapsis init` does not write its config table at all.
+
+`apoapsis doctor` reports whether the default path can actually run on this
+machine: whether the sandbox is enabled, whether the launcher and pinned
+runtime manifest are present, and whether the Ubuntu-24.04 WSL distribution
+answers. It checks this cheaply and read-only — it never builds an image.
+
 Open **Models & environment** to see the primary **Local coding mode** card.
 Capability Sandbox is selected by default. **Use compatibility mode** switches
 future local slices to the older typed Local Power path in one confirmed
 action; **Use Capability Sandbox** switches back. **Turn parity on** adds a
 fresh matched default-Qwen control and refuses a supervised proposal that
-proves fewer obligations. Parity is off by default because it approximately
-doubles inference time and local model resource use.
+proves fewer obligations.
+
+How often that control runs is a policy (ADR 0108), set by `parity_mode` under
+`[execution.capability_sandbox]`:
+
+| Mode | What runs | Cost |
+| --- | --- | --- |
+| `always` | Every slice pairs against an unrestricted control. | ~2× inference. |
+| `sample` (default) | The first slice of a plan, then every `parity_sample_every`th (4). | ~1.25× on a long plan. |
+| `off` | No control arm. | 1×. |
+
+Sampling changes how often the comparison is made, never what happens when one
+fails: a sampled slice that proves fewer obligations than its control, or that
+was supposed to pair and produced no scoreable control, stops for review
+exactly as it would if every slice paired. Which slices are sampled is
+determined by their position in the plan — the same plan samples the same
+slices every time — and each slice's `result.json` records whether it paired
+and why.
 
 The current product witness adapter supports Python `unittest` commands. A
 required command from another ecosystem stops at Human Review until a
@@ -1488,6 +1561,42 @@ Containment is enforced by the runtime, not the prompt: `--network none`,
 only mounts are the disposable clone (read-write, at `/workspace`) and the
 approved task document (read-only, at `/task/task.md`, deliberately outside the
 project tree so it can never be edited or committed as delivered content).
+
+The slice brief the agent reads at `/task/task.md` ends with a short statement
+of **how the slice is judged** (ADR 0103): that the harness compares files by
+content, applies the approved change limits as one unit, re-runs the approved
+commands itself while recording which lines execute, counts a criterion met
+only when those commands pass, and requires every added file, function or class
+to have a line execute in that run. The same paragraph is repeated in every
+repair packet. This is stated rather than withheld because a model that has to
+infer the rule from refusal messages spends its turns inventing proof formats
+the harness does not read — which is exactly what the first live runs show it
+doing.
+
+The model is loaded **once per run**, not once per attempt (ADR 0107). Before
+each arm Apoapsis re-checks the running server against the pinned manifest —
+the weights it has open, the alias it serves, and the command line it is
+actually running under — and reuses it only if every available check agrees. If
+anything cannot be established, that arm starts a fresh server instead, and the
+mismatch is recorded. The cache is cleared between arms so one arm never
+inherits another's warm prefix. `result.json` reports how many times the model
+was loaded, so the saving is visible rather than assumed.
+
+Each slice after the first opens with an **inherited-state brief** (ADR 0106):
+what earlier slices of the same plan added, the behaviour names their
+checkpoints recorded, this slice's interface contracts, the commands Apoapsis
+will run, and the current file tree with line counts. It is generated from the
+repository and from artifacts Apoapsis wrote itself — no model call, and
+reproducible byte-for-byte — and it is capped, degrading to the directory shape
+plus this slice's own paths rather than growing with the project. It makes
+exploration unnecessary; it never forbids it.
+
+When a slice is refused or sent back for repair, the packet the agent receives
+states each rule **once** and then lists what it applies to, rather than
+repeating the rule per file (ADR 0105). The same ADR gives every stop an
+operator rendering: what was attempted, what refused it and why in one
+sentence, and the single next action — shown first on the review page, with the
+harness's exact wording one click beneath it.
 
 The model endpoint is reached through a Unix domain socket the controller
 creates, owns, meters, and deletes, exposed inside the namespace on a loopback
@@ -1585,6 +1694,85 @@ emits witnesses against the admitted snapshot, and decides one of four
 outcomes. **`CONTINUE`** is the important one: the work was admitted,
 obligations remain, and the agent gets another turn to finish its own stated
 plan rather than the harness declaring the slice done on its behalf.
+
+## Watching a run (ADR 0112)
+
+While a slice runs, the task's Control Room page shows what it is doing —
+polled every two seconds from the run's own record, not guessed from how long
+a spinner has been spinning.
+
+The pipeline is listed in full, including the stages that have not happened
+yet, so you can see how much is left: building the sandbox image, checking it
+is sealed, loading the model, the comparison arm (when the parity policy pairs
+this slice), writing code, checking the work, running the project's own tests.
+Each stage shows how long it took. A stage that was skipped says why.
+
+Alongside it: how many model calls have happened, how large the most recent
+prompt was against the agent's context window, the largest single prompt so
+far, and elapsed time. Past 80% of the window you get an explicit warning —
+that is the point where the agent starts compressing its own context, and
+quality usually drops when that happens mid-slice.
+
+The last checkpoint is shown in three parts: what was attempted, what refused
+it, and the one thing to do next. The harness's own wording is still there,
+one click away.
+
+If a run dies, the page keeps showing the stage it was in. That is what the
+evidence says, and Apoapsis does not guess past it.
+
+The underlying record is `evidence/progress.jsonl` inside the attempt's
+directory under `.apoapsis/tasks/<task>/capability-sandbox/<attempt>/`. It is
+append-only and readable while the run writes it.
+
+### The sandbox image is built at startup, not mid-slice (ADR 0113)
+
+The Capability Sandbox runs your slice inside a controller image tagged by the
+Apoapsis commit you are running. So after you update Apoapsis, that image has
+to be rebuilt once — about 34 seconds.
+
+`START_APOAPSIS.cmd` now does that while the app is opening, rather than
+letting the first slice you run pay for it with a motionless spinner. If
+Docker is not running, Apoapsis says so and starts anyway: everything except
+the sandbox works without it.
+
+If a build does happen during a slice — because you skipped the warm step with
+`--no-prebuild-sandbox-image`, or updated Apoapsis while the app was open — it
+shows up on the status page as "Building the sandbox image", with its duration,
+instead of an unexplained pause.
+
+Old controller images are **never deleted automatically**; one of them may be
+the harness that produced a result you want to compare against. They do
+accumulate — roughly 424 MB per Apoapsis commit you have run a slice on — so
+`docker images apoapsis-product-controller` is worth a look occasionally.
+
+## Prompt ordering and the token ceiling (ADR 0110)
+
+This applies to the prompts **Apoapsis itself** assembles — the bounded agent
+loop and Local Power. The Capability Sandbox path is not affected: the Qwen CLI
+owns its own context inside the workcell.
+
+Every step prompt is emitted most-stable first and most-volatile last: static
+rules, then the task specification and constraints, then repository evidence,
+then session history, and only then the turn number, remaining budgets, and
+next-action requirements. A model server reuses the KV cache of the longest
+prefix two consecutive requests share, so putting the turn number near the top
+— as Apoapsis used to — threw away the prefill of everything after it on every
+single turn.
+
+Before dispatch, Apoapsis measures the assembled prompt against your coding
+model's declared window (`context_window_tokens`, minus `max_output_tokens`
+and a safety margin). If it does not fit, the prompt is reduced in a fixed
+order: transient observations first, then the least-justified repository
+excerpts, then the oldest history turns — each of which is kept as a one-line
+summary rather than deleted. If it still does not fit, **Apoapsis refuses to
+send it** and stops the task with `prompt exceeds model context window` rather
+than letting the server truncate the prompt silently. Both measurements are
+recorded on the turn.
+
+If your model is a local llama-server, Apoapsis uses its `/tokenize` endpoint
+for an exact count and falls back to an estimate if that call fails. If your
+provider declares no `context_window_tokens`, nothing is enforced — Apoapsis
+does not invent a limit you did not configure.
 
 ## Context, compaction, and budgets (handoff slice 5, not yet wired)
 
@@ -2208,6 +2396,26 @@ budget. If it cannot verify the task, Apoapsis stops for human review.
 Every task writes `.apoapsis/tasks/<task-id>/report.json`. `apoapsis inspect <task-id>`
 returns the persisted state/events and embeds that report when present.
 
+### Token usage for Capability Sandbox tasks
+
+A sandbox task's model calls are made by the contained agent, not by Apoapsis,
+so they are not listed one-by-one under `provider_calls` -- there is no prompt
+Apoapsis held and no per-call record it can honestly produce. Their cost is
+observed at the controller-owned relay and reported as a summary under
+`local_model_usage` (ADR 0101): how many exchanges reported usage, input,
+output and cached tokens, and the largest single prompt observed. Those totals
+are also included in the report's `input_tokens`, `output_tokens` and
+`cached_input_tokens`.
+
+Two fields are worth reading together. `calls` is how many exchanges reported
+usage; `exchanges_observed` is how many the relay forwarded. When they differ,
+some traffic went unmeasured and the totals are a floor rather than a sum.
+
+Per-call detail is written beside the slice's other evidence as
+`capability-sandbox/CAP-*/evidence/sandbox/model-usage-series.json`: one entry
+per call, in order, with its input and output tokens. The total tells you what
+a slice cost; the series tells you whether context grew across it.
+
 ### Original report versus current evidence
 
 `report.json` is written **once**, when the task first stops, and is never
@@ -2446,6 +2654,11 @@ Two things worth knowing about how that split is decided:
 - A file already tracked in Git is always treated as your work, whatever it is
   named. If you deliberately committed something under `vendor/node_modules/`,
   a change to it shows up for review.
+- Repository metadata — `.git`, whether it is a directory or the pointer file a
+  managed worktree uses — is excluded where the harness walks the tree, so it
+  never reaches the list at all (ADR 0102). Sandbox tasks that ran before this
+  fix do list `.git` in `files_changed`; those reports are left as written,
+  because a report is a record of what was observed at the time.
 
 Nothing is silently discarded. The audit trail still records every path in the
 worktree that changed, including byproducts.

@@ -31,14 +31,26 @@ from apoapsis.specification.schema import StrictModel
 #: work: the clone's history is the agent's to rewrite and is not evidence, and
 #: the caches are large, uninteresting, and regenerated on demand.
 #:
+#: Excluded **by name, whatever the entry is** -- see `_walk`. Treating these
+#: as directory names only was a real defect: a managed Git worktree's `.git`
+#: is a *file* (`gitdir: ...`), not a directory, so the directory filter never
+#: saw it, `.git` was collected as an ordinary file, and it appeared in
+#: `changed_files` on three of four live sandbox tasks. ADR 0063 requires the
+#: reviewer-facing change surface to contain only model-authored work, and a
+#: `.git` entry in it is the harness's own metadata presented as the model's.
+#:
 #: `.apoapsis` and `.sol` are deliberately **not** here. They are controller
 #: state, and an agent writing into them is a boundary violation that must be
 #: *seen and refused*, not silently dropped. Excluding them would make the
 #: delta report "clean" for exactly the change admission exists to catch --
 #: `classify_path` marks them `FORBIDDEN` and admission rejects the candidate.
-EXCLUDED_DIRECTORY_NAMES: frozenset[str] = frozenset(
+EXCLUDED_METADATA_NAMES: frozenset[str] = frozenset(
     {".git", "__pycache__", ".pytest_cache", "node_modules"}
 )
+
+#: Former name, kept because it is imported elsewhere and because the rename is
+#: the point: these were never only directories.
+EXCLUDED_DIRECTORY_NAMES = EXCLUDED_METADATA_NAMES
 
 
 class ChangeKind(StrEnum):
@@ -166,6 +178,13 @@ class CandidateDelta(StrictModel):
     #: devices. Counted rather than ignored: a symlink pointing out of the
     #: workspace is exactly the sort of thing that must not travel silently.
     skipped_non_regular: list[str] = Field(default_factory=list)
+    #: Repository metadata observed on either side and deliberately left out of
+    #: `entries` -- `.git`, caches, `node_modules`. Recorded rather than merely
+    #: dropped: "the candidate's `.git` differs from the base's" is true and
+    #: worth having in the audit trail, it is simply not *model-authored work*
+    #: and so must not reach a reviewer's change surface. An exclusion nobody
+    #: can see is indistinguishable from a walk that never encountered it.
+    excluded_metadata: list[str] = Field(default_factory=list)
 
     @property
     def paths(self) -> list[str]:
@@ -186,27 +205,43 @@ class CandidateDelta(StrictModel):
         return [item for item in self.entries if item.kind == kind]
 
 
-def _walk(root: Path) -> tuple[dict[str, Path], list[str]]:
-    """Map relative POSIX path -> absolute path, for ordinary files only."""
+def _walk(root: Path) -> tuple[dict[str, Path], list[str], list[str]]:
+    """Map relative POSIX path -> absolute path, for ordinary files only.
+
+    Returns the files, the non-regular entries skipped, and the repository
+    metadata excluded. Exclusion is by *name*, at both the directory and the
+    file level, because `.git` is a directory in a clone and a file in a
+    managed worktree and both are metadata either way.
+    """
 
     files: dict[str, Path] = {}
     skipped: list[str] = []
+    excluded: list[str] = []
     if not root.is_dir():
-        return files, skipped
+        return files, skipped, excluded
     for current, directories, names in os.walk(root, followlinks=False):
+        for item in sorted(directories):
+            if item in EXCLUDED_METADATA_NAMES:
+                excluded.append(
+                    (Path(current) / item).relative_to(root).as_posix()
+                )
         directories[:] = sorted(
-            item for item in directories if item not in EXCLUDED_DIRECTORY_NAMES
+            item for item in directories if item not in EXCLUDED_METADATA_NAMES
         )
         for name in sorted(names):
             absolute = Path(current) / name
             relative = absolute.relative_to(root).as_posix()
+            if name in EXCLUDED_METADATA_NAMES:
+                # The managed-worktree `.git` pointer file lands here.
+                excluded.append(relative)
+                continue
             if absolute.is_symlink() or not absolute.is_file():
                 # Never followed. A symlink is not content, and following one
                 # is how a delta acquires a file from outside the workspace.
                 skipped.append(relative)
                 continue
             files[relative] = absolute
-    return files, skipped
+    return files, skipped, excluded
 
 
 def _digest(path: Path) -> tuple[str, bytes]:
@@ -249,7 +284,7 @@ def tree_fingerprint(root: Path) -> str:
     freeze record can be compared without either trusting the workcell.
     """
 
-    files, _skipped = _walk(Path(root))
+    files, _skipped, _excluded = _walk(Path(root))
     digest = hashlib.sha256()
     for relative in sorted(files):
         digest.update(relative.encode("utf-8"))
@@ -273,8 +308,8 @@ def compute_delta(
 
     base_path = Path(base_root)
     candidate_path = Path(candidate_root)
-    base_files, base_skipped = _walk(base_path)
-    candidate_files, candidate_skipped = _walk(candidate_path)
+    base_files, base_skipped, base_excluded = _walk(base_path)
+    candidate_files, candidate_skipped, candidate_excluded = _walk(candidate_path)
 
     entries: list[DeltaEntry] = []
     for relative in sorted(set(base_files) | set(candidate_files)):
@@ -317,4 +352,5 @@ def compute_delta(
         candidate_fingerprint=tree_fingerprint(candidate_path),
         entries=entries,
         skipped_non_regular=sorted(set(base_skipped) | set(candidate_skipped)),
+        excluded_metadata=sorted(set(base_excluded) | set(candidate_excluded)),
     )

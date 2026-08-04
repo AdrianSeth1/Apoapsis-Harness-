@@ -208,6 +208,17 @@ class ModelRelayConfig(StrictModel):
     #: silently acquire a new refusal. A live run sets this to the same value
     #: as `ModelPin.max_output_tokens`.
     max_output_tokens: int | None = Field(default=None, ge=1, le=1_048_576)
+    #: Whether the relay may add `stream_options.include_usage` to a streaming
+    #: chat request that did not ask for usage itself (ADR 0101).
+    #:
+    #: This is the one place the relay *modifies* a forwarded body, so it is a
+    #: policy switch rather than an implementation detail, and it defaults to
+    #: off: a configuration that has not opted in keeps byte-for-byte
+    #: forwarding. What the injection buys is the only usage number the
+    #: OpenAI-compatible streaming shape ever emits -- without it a streamed
+    #: response carries no token counts at all, and the whole live path
+    #: reports zeros. What it costs is one extra SSE event the CLI ignores.
+    inject_stream_usage_options: bool = False
 
     @model_validator(mode="after")
     def validate_upstream_is_origin_only(self) -> ModelRelayConfig:
@@ -466,6 +477,171 @@ def observed_output_budget(
         if best is None or value > best.tokens:
             best = ObservedOutputBudget(tokens=value, key=key)
     return best
+
+
+class ObservedUsage(StrictModel):
+    """The token counts one exchange reported, as the relay read them.
+
+    This is *observation*, not accounting: the numbers are the upstream's own,
+    and the relay records them without adjustment. Every field is optional
+    because a provider that omits one has not reported zero -- the whole reason
+    the live path reported `input_tokens: 0` for real work was a reader
+    treating "not present" as "none used".
+    """
+
+    input_tokens: int | None = Field(default=None, ge=0)
+    output_tokens: int | None = Field(default=None, ge=0)
+    cached_input_tokens: int | None = Field(default=None, ge=0)
+    total_tokens: int | None = Field(default=None, ge=0)
+    #: `body` for a non-streamed response, `stream` for the usage event of an
+    #: SSE stream. Kept because "we saw no usage on a streamed response" and
+    #: "we saw none on a buffered one" have different causes and fixes.
+    source: str = Field(min_length=1)
+
+    @property
+    def reported(self) -> bool:
+        return any(
+            item is not None
+            for item in (
+                self.input_tokens,
+                self.output_tokens,
+                self.cached_input_tokens,
+                self.total_tokens,
+            )
+        )
+
+
+def _non_negative_int(value: object) -> int | None:
+    # `bool` is an `int` in Python, and `{"prompt_tokens": true}` is nonsense
+    # rather than a count.
+    if not isinstance(value, int) or isinstance(value, bool):
+        return None
+    if value < 0:
+        return None
+    return value
+
+
+def usage_from_payload(payload: object) -> ObservedUsage | None:
+    """Read an OpenAI-compatible `usage` object off a decoded response body."""
+
+    return _usage_from_object(payload, source="body")
+
+
+def _usage_from_object(payload: object, *, source: str) -> ObservedUsage | None:
+    if not isinstance(payload, dict):
+        return None
+    usage = payload.get("usage")
+    if not isinstance(usage, dict):
+        return None
+    details = usage.get("prompt_tokens_details")
+    cached = None
+    if isinstance(details, dict):
+        cached = _non_negative_int(details.get("cached_tokens"))
+    if cached is None:
+        # llama-server reports its prefix-cache hit under this name at the top
+        # level; both spellings are read because the relay does not get to
+        # choose which server it is pointed at.
+        cached = _non_negative_int(usage.get("cached_tokens"))
+    observed = ObservedUsage(
+        input_tokens=_non_negative_int(usage.get("prompt_tokens")),
+        output_tokens=_non_negative_int(usage.get("completion_tokens")),
+        cached_input_tokens=cached,
+        total_tokens=_non_negative_int(usage.get("total_tokens")),
+        source=source,
+    )
+    return observed if observed.reported else None
+
+
+def usage_from_body(body: bytes) -> ObservedUsage | None:
+    """Read usage off a complete, non-streamed response body."""
+
+    if not body:
+        return None
+    try:
+        payload = json.loads(body)
+    except (ValueError, UnicodeDecodeError):
+        return None
+    return usage_from_payload(payload)
+
+
+def usage_from_event_stream(buffer: bytes) -> ObservedUsage | None:
+    """Read usage off the tail of an OpenAI-shaped SSE stream.
+
+    The usage event is the last `data:` frame carrying a `usage` object, which
+    in the OpenAI shape arrives immediately before `data: [DONE]` and only when
+    the request asked for it. Frames are scanned newest-first and the first one
+    that reports anything wins, so a stream whose earlier chunks carry null
+    usage (as several servers emit) is not mistaken for a stream with none.
+    """
+
+    if not buffer:
+        return None
+    for line in reversed(buffer.split(b"\n")):
+        stripped = line.strip()
+        if not stripped.startswith(b"data:"):
+            continue
+        data = stripped[len(b"data:") :].strip()
+        if not data or data == b"[DONE]":
+            continue
+        try:
+            payload = json.loads(data)
+        except (ValueError, UnicodeDecodeError):
+            # A frame split across the buffer boundary is expected at the head
+            # of a windowed tail; it is skipped, not treated as an error.
+            continue
+        observed = _usage_from_object(payload, source="stream")
+        if observed is not None:
+            return observed
+    return None
+
+
+def usage_probe_body(
+    *, upstream_path: str, body: bytes, config: ModelRelayConfig
+) -> bytes | None:
+    """The body to forward instead, when usage must be asked for explicitly.
+
+    Returns `None` when the body should cross unmodified, which is every case
+    except: the policy switch is on, the route is a completions route, and the
+    request asked for a stream without stating a preference about usage. In
+    that one case an OpenAI-compatible streamed response reports no tokens at
+    all, and the alternative to adding `stream_options.include_usage` is having
+    no telemetry for the pathway that actually ships work.
+
+    There is no separate check on *who* the body is bound for, because the
+    relay has only one destination: the upstream its own controller configured,
+    fixed before the workcell started and unreachable by anything the client
+    says. A rewritten body therefore cannot reach a third party, and adding a
+    host test here would suggest it otherwise could.
+
+    Nothing else about the body is touched, and a body that cannot be parsed is
+    forwarded exactly as it arrived -- guessing at the shape of something the
+    relay does not understand is how a forwarder becomes a rewriter.
+    """
+
+    if not config.inject_stream_usage_options:
+        return None
+    if urlsplit(upstream_path).path not in _OUTPUT_BUDGET_ROUTES:
+        return None
+    if not body:
+        return None
+    try:
+        payload = json.loads(body)
+    except (ValueError, UnicodeDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    if payload.get("stream") is not True:
+        return None
+    options = payload.get("stream_options")
+    if isinstance(options, dict) and options.get("include_usage") is not None:
+        # The client stated its preference, including stating it as `false`.
+        # Overriding a stated preference would be the relay deciding what the
+        # client meant.
+        return None
+    merged = dict(options) if isinstance(options, dict) else {}
+    merged["include_usage"] = True
+    payload["stream_options"] = merged
+    return json.dumps(payload).encode("utf-8")
 
 
 def classify_redirect(

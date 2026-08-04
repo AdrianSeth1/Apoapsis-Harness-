@@ -12,7 +12,19 @@ from pathlib import Path
 
 from unittest import mock
 
-from apoapsis.doctor import DoctorCheckStatus, run_doctor
+from apoapsis.config import (
+    ApoapsisConfig,
+    CapabilitySandboxConfig,
+    ExecutionConfig,
+    FrontierProviderConfig,
+    ModelsConfig,
+)
+from apoapsis.doctor import (
+    DoctorCheckStatus,
+    _capability_sandbox_checks,
+    run_doctor,
+)
+from apoapsis.verification.runner import VerificationConfig
 from apoapsis.models.provider import ProviderError
 from apoapsis.models.telemetry import InstrumentedModelProvider
 from tests.fakes import FakeModelProvider
@@ -941,6 +953,72 @@ required = true
         self.assertIn("none", run_calls[0])
         self.assertIn("--read-only", run_calls[0])
         self.assertIn("--pull=never", run_calls[0])
+
+
+class CapabilitySandboxDoctorTests(unittest.TestCase):
+    """Doctor has to be able to say whether the *default* path can run here.
+
+    Before ADR 0109 it reported cheerfully on a machine where the default local
+    execution path could not start at all, and the operator found out at the
+    first slice.
+    """
+
+    def _config(self, **sandbox) -> ApoapsisConfig:
+        return ApoapsisConfig(
+            models=ModelsConfig(
+                frontier=FrontierProviderConfig(
+                    base_url="https://provider.invalid/v1", model="fake-coder-v1"
+                )
+            ),
+            verification=VerificationConfig(),
+            execution=ExecutionConfig(
+                capability_sandbox=CapabilitySandboxConfig(**sandbox)
+            ),
+        )
+
+    def test_the_legacy_path_is_reported_as_a_deliberate_choice(self) -> None:
+        checks = _capability_sandbox_checks(self._config(enabled=False))
+        self.assertEqual([item.name for item in checks], ["capability_sandbox"])
+        self.assertEqual(checks[0].status, DoctorCheckStatus.WARNING)
+        self.assertIn("legacy", checks[0].detail)
+
+    def test_a_missing_installation_is_an_error_not_a_silence(self) -> None:
+        with tempfile.TemporaryDirectory() as empty:
+            with mock.patch.dict(os.environ, {"APOAPSIS_HARNESS_ROOT": empty}):
+                checks = _capability_sandbox_checks(self._config(enabled=True))
+        by_name = {item.name: item for item in checks}
+        self.assertEqual(
+            by_name["capability_sandbox_launcher"].status, DoctorCheckStatus.ERROR
+        )
+        self.assertEqual(
+            by_name["capability_sandbox_manifest"].status, DoctorCheckStatus.ERROR
+        )
+        self.assertTrue(by_name["capability_sandbox_launcher"].remediation)
+
+    def test_a_complete_installation_reports_its_launcher_and_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            base = Path(root)
+            (base / "tools").mkdir()
+            (base / "tools" / "run_capability_sandbox_task.sh").write_text(
+                "#!/bin/sh\n", encoding="utf-8"
+            )
+            manifest = base / "docs" / "qualification"
+            manifest.mkdir(parents=True)
+            (manifest / "slice7-crisis-atlas-pilot-manifest-v8.json").write_text(
+                "{}", encoding="utf-8"
+            )
+            with mock.patch.dict(os.environ, {"APOAPSIS_HARNESS_ROOT": root}):
+                checks = _capability_sandbox_checks(self._config(enabled=True))
+        by_name = {item.name: item for item in checks}
+        self.assertEqual(
+            by_name["capability_sandbox_launcher"].status, DoctorCheckStatus.OK
+        )
+        self.assertEqual(
+            by_name["capability_sandbox_manifest"].status, DoctorCheckStatus.OK
+        )
+        # The runtime check runs either way and reports rather than raising.
+        self.assertIn("capability_sandbox_runtime", by_name)
+
 
 
 if __name__ == "__main__":

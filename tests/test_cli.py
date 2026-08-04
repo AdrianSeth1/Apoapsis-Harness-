@@ -5,6 +5,7 @@ import io
 import json
 import subprocess
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 
@@ -201,6 +202,67 @@ class CLITests(unittest.TestCase):
             config.execution.frontier_agent.max_transmitted_observation_chars,
             24_000,
         )
+
+    def test_patch_ceilings_match_adr_0104_in_class_and_template(self) -> None:
+        """One number, asserted in both places it can be written.
+
+        ADR 0049's follow-up is the reason this test exists in this shape: the
+        `apoapsis init` template was updated and the plain Pydantic class
+        default silently drifted back, so every library caller and every
+        project whose config.toml omitted the field kept the old ceiling. The
+        two are checked together here so they cannot part company again.
+        """
+
+        config = ApoapsisConfig(
+            models=ModelsConfig(
+                frontier=FrontierProviderConfig(
+                    base_url="https://provider.invalid/v1", model="fake-coder-v1"
+                )
+            ),
+            verification=VerificationConfig(),
+        )
+        self.assertEqual(config.patch.max_changed_lines, 5_000)
+        self.assertEqual(config.patch.max_files, 20)
+
+        initialized = self.invoke("init")
+        self.assertTrue(initialized)
+        written = tomllib.loads(
+            (self.root / ".apoapsis" / "config.toml").read_text(encoding="utf-8")
+        )
+        self.assertEqual(written["patch"]["max_changed_lines"], 5_000)
+        self.assertEqual(written["patch"]["max_files"], 20)
+
+    def test_the_sandbox_is_the_default_path_in_class_and_template(self) -> None:
+        """One default local path, stated the same way in both places.
+
+        ADR 0109. The class default was false while `apoapsis init` wrote true
+        and config loading migrated a missing table to true, so a library
+        caller or a test constructing `ApoapsisConfig()` silently got a
+        different execution path from every real project. Same drift shape as
+        ADR 0104's patch ceilings, same shape of test.
+        """
+
+        config = ApoapsisConfig(
+            models=ModelsConfig(
+                frontier=FrontierProviderConfig(
+                    base_url="https://provider.invalid/v1", model="fake-coder-v1"
+                )
+            ),
+            verification=VerificationConfig(),
+        )
+        self.assertTrue(config.execution.capability_sandbox.enabled)
+        # The legacy path is never selected for you.
+        self.assertFalse(config.execution.local_power.enabled)
+
+        self.invoke("init")
+        written = tomllib.loads(
+            (self.root / ".apoapsis" / "config.toml").read_text(encoding="utf-8")
+        )
+        self.assertIs(written["execution"]["capability_sandbox"]["enabled"], True)
+        # The template does not write a `[execution.local_power]` table at all.
+        # Stronger than writing `enabled = false`: a fresh project's config
+        # does not present the legacy path as an option to be toggled.
+        self.assertNotIn("local_power", written["execution"])
 
     def test_init_appends_to_an_existing_gitignore_without_duplicating(self) -> None:
         (self.root / ".gitignore").write_text("node_modules/\n", encoding="utf-8")

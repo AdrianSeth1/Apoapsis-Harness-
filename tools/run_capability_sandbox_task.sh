@@ -123,8 +123,54 @@ if test "${5:-}" = "--containment-preflight-only"; then
   CONTROLLER_EXTRA_ARGS+=("--containment-preflight-only")
 fi
 
-if ! docker image inspect "${TAG}" >/dev/null 2>&1; then
-  bash "${REPO}/docker/pilot-controller/build.sh" "${COMMIT}" "${TAG}" "${REPO}"
+# The controller image build is the one part of a slice that happens *before*
+# the controller exists, so the controller cannot record it. It is also the
+# longest opaque wait a first run can hit: the image is tagged by harness
+# commit and built `--no-cache`, so any commit to Apoapsis makes the next slice
+# pay a full build with nothing on screen to say so.
+#
+# These two lines put that stage in the same journal the controller appends to
+# (MH-9). Written in shell rather than through Python on purpose: the thing
+# that performs the build is the thing that should record it, and this runs on
+# the host before any container starts.
+EVIDENCE_DIR="$(dirname "${RESPONSE}")/evidence"
+PROGRESS="${EVIDENCE_DIR}/progress.jsonl"
+mkdir -p "${EVIDENCE_DIR}"
+
+progress_event() {
+  # $1 kind, $2 payload-json. Best-effort: a journal that cannot be written
+  # must never stop a slice that was otherwise going to run.
+  local next=1
+  # `test -f` first: redirecting stdin from a file that does not exist is a
+  # *shell* error, printed before `wc` starts, so `2>/dev/null` on `wc` cannot
+  # suppress it. Without this the very first event of every run writes a
+  # spurious "No such file or directory" into the launch log.
+  if test -f "${PROGRESS}"; then
+    next=$(( $(wc -l < "${PROGRESS}") + 1 ))
+  fi
+  printf '{"sequence": %d, "at": "%s", "kind": "%s", "stage": "controller_build", "payload": %s}\n' \
+    "${next}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "$2" \
+    >> "${PROGRESS}" 2>/dev/null || true
+}
+
+if docker image inspect "${TAG}" >/dev/null 2>&1; then
+  # Recorded even though nothing was built. "The image was already there" is
+  # the answer to "why was this run fast", and a stage that silently never
+  # appears cannot answer it.
+  progress_event stage_entered '{}'
+  progress_event stage_left "{\"elapsed_seconds\": 0, \"note\": \"image ${TAG} was already built\"}"
+else
+  progress_event stage_entered "{\"tag\": \"${TAG}\"}"
+  BUILD_STARTED="${SECONDS}"
+  if bash "${REPO}/docker/pilot-controller/build.sh" "${COMMIT}" "${TAG}" "${REPO}"; then
+    progress_event stage_left \
+      "{\"elapsed_seconds\": $(( SECONDS - BUILD_STARTED )), \"note\": \"built ${TAG}\"}"
+  else
+    BUILD_STATUS=$?
+    progress_event stage_left \
+      "{\"elapsed_seconds\": $(( SECONDS - BUILD_STARTED )), \"failed\": \"the controller image build failed\"}"
+    exit "${BUILD_STATUS}"
+  fi
 fi
 
 docker run --rm --pull never --network host --gpus all \

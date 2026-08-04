@@ -50,12 +50,16 @@ from apoapsis.workcell.platform_support import (
 )
 from apoapsis.workcell.relay_policy import (
     ModelRelayConfig,
+    ObservedUsage,
     RelayRejection,
     classify_redirect,
     classify_request,
     classify_request_body,
     observed_output_budget,
     sanitise_headers,
+    usage_from_body,
+    usage_from_event_stream,
+    usage_probe_body,
 )
 
 RELAY_VERSION = "1.1"
@@ -64,6 +68,18 @@ _CHUNK = 65_536
 #: The terminal event of an OpenAI-shaped SSE stream. A stream that ends
 #: without it is a fragment, whatever its status line said.
 SSE_TERMINAL = b"data: [DONE]"
+
+#: How much of an event stream's tail is kept so the usage frame can be read
+#: after the stream ends. The frame is a few hundred bytes and arrives directly
+#: before the terminal, so this is generous by two orders of magnitude while
+#: still being a fixed ceiling rather than "buffer the stream".
+_USAGE_TAIL_BYTES = 65_536
+
+#: How much of a *non-streamed* body is kept for the same purpose. A chat
+#: completion is small; anything larger is not a completion the relay can parse
+#: usefully, and the point of the cap is that observing tokens must never turn
+#: the relay into a memory sink for a response it is otherwise only pumping.
+_USAGE_BODY_BYTES = 2_097_152
 
 #: Rejections that mean the *upstream* failed, as opposed to the request being
 #: refused at the boundary. All three increment `upstream_failures`, because
@@ -92,6 +108,8 @@ class _Completion(StrictModel):
     terminal_observed: bool | None = None
     rejection: RelayRejection | None = None
     detail: str = ""
+    #: What the upstream said this exchange cost, if it said anything.
+    usage: ObservedUsage | None = None
 
 
 class RelayRequestRecord(StrictModel):
@@ -121,6 +139,24 @@ class RelayRequestRecord(StrictModel):
     #: The explicit output budget this request carried, or `None` if it named
     #: none. `None` and `0` are different findings; see `observed_output_budget`.
     output_budget_tokens: int | None = Field(default=None, ge=0)
+    #: What the upstream reported this exchange cost. `None` means the upstream
+    #: reported nothing -- for a streamed response that usually means the
+    #: request did not ask for usage -- and is deliberately not zero, because a
+    #: run that reports zero tokens for real work is the defect this closes.
+    usage: ObservedUsage | None = None
+    #: Whether the relay added `stream_options.include_usage` to this request
+    #: (see `usage_probe_body`). Recorded because the forwarded body then
+    #: differs from the one the workcell sent, and an audit trail that hides
+    #: that is claiming a byte-for-byte forward it did not perform.
+    usage_probe_injected: bool = False
+
+    @property
+    def input_tokens(self) -> int:
+        return (self.usage.input_tokens or 0) if self.usage else 0
+
+    @property
+    def output_tokens(self) -> int:
+        return (self.usage.output_tokens or 0) if self.usage else 0
 
 
 class RelayStats(StrictModel):
@@ -142,11 +178,39 @@ class RelayStats(StrictModel):
     bytes_from_upstream: int = Field(default=0, ge=0)
     cancellations: int = Field(default=0, ge=0)
     peak_concurrent_requests: int = Field(default=0, ge=0)
+    #: How many exchanges reported usage at all. The denominator for every
+    #: token total below: "2.1M input tokens over 46 of 46 calls" and "over 3
+    #: of 46 calls" are the same sum and completely different evidence.
+    requests_with_usage: int = Field(default=0, ge=0)
+    input_tokens: int = Field(default=0, ge=0)
+    output_tokens: int = Field(default=0, ge=0)
+    cached_input_tokens: int = Field(default=0, ge=0)
+    #: The largest single prompt any one call carried. This, not the sum, is
+    #: the number that answers "did context approach the window?".
+    peak_input_tokens: int = Field(default=0, ge=0)
     records: list[RelayRequestRecord] = Field(default_factory=list)
 
     @property
     def total_requests(self) -> int:
         return self.requests_served + self.requests_refused
+
+    @property
+    def usage_series(self) -> tuple[tuple[int, int, int], ...]:
+        """`(call index, input tokens, output tokens)` for every reporting call.
+
+        Ordered as the calls happened, so plotting it shows context growth
+        across a slice rather than a single end-of-run total. Calls that
+        reported no usage are omitted rather than plotted as zero.
+        """
+
+        series: list[tuple[int, int, int]] = []
+        index = 0
+        for item in self.records:
+            if item.usage is None:
+                continue
+            index += 1
+            series.append((index, item.input_tokens, item.output_tokens))
+        return tuple(series)
 
     @property
     def incomplete_records(self) -> tuple[RelayRequestRecord, ...]:
@@ -175,11 +239,17 @@ class _RelayState:
     """Shared counters. Guarded by one lock; the relay is not hot enough to
     need anything cleverer, and a simpler invariant is worth more here."""
 
-    def __init__(self, config: ModelRelayConfig) -> None:
+    def __init__(self, config: ModelRelayConfig, usage_observer=None) -> None:
         self.config = config
         self.lock = threading.Lock()
         self.stats = RelayStats()
         self.active = 0
+        # Called once per completed exchange that reported usage, with the
+        # running call index and that call's tokens. Exists so a live status
+        # view can answer "is context near the window *now*" -- `stats` alone
+        # answers it only after the arm is over (MH-9). Never allowed to
+        # affect the exchange: see `record`.
+        self.usage_observer = usage_observer
 
     def begin(self) -> tuple[int, int]:
         with self.lock:
@@ -197,6 +267,7 @@ class _RelayState:
             self.active = max(0, self.active - 1)
 
     def record(self, entry: RelayRequestRecord) -> None:
+        observed: tuple[int, RelayRequestRecord] | None = None
         with self.lock:
             if entry.allowed and entry.rejection is None:
                 self.stats.requests_served += 1
@@ -220,7 +291,29 @@ class _RelayState:
                     self.stats.peak_output_budget_tokens or 0,
                     entry.output_budget_tokens,
                 )
+            if entry.usage is not None:
+                self.stats.requests_with_usage += 1
+                self.stats.input_tokens += entry.input_tokens
+                self.stats.output_tokens += entry.output_tokens
+                self.stats.cached_input_tokens += (
+                    entry.usage.cached_input_tokens or 0
+                )
+                self.stats.peak_input_tokens = max(
+                    self.stats.peak_input_tokens, entry.input_tokens
+                )
+                observed = (self.stats.requests_with_usage, entry)
             self.stats.records.append(entry)
+        if observed is None or self.usage_observer is None:
+            return
+        # Called outside the lock, and swallowing everything it raises. This
+        # is an observability hook on the path every model exchange takes: a
+        # slow or throwing observer must not be able to serialise the relay or
+        # fail a slice that was otherwise going to succeed.
+        index, record = observed
+        try:
+            self.usage_observer(index, record)
+        except Exception:  # noqa: BLE001 - an observer may never break a run
+            self.usage_observer = None
 
 
 class _RelayHandler(BaseHTTPRequestHandler):
@@ -363,6 +456,18 @@ class _RelayHandler(BaseHTTPRequestHandler):
             state.record(entry)
             return
 
+        # Asked *after* the policy checks above, which must judge the body the
+        # workcell actually sent. The probe only ever adds a request for the
+        # counts the upstream already knows; it can neither widen a budget nor
+        # change what is generated.
+        probed = usage_probe_body(
+            upstream_path=upstream_path, body=body, config=config
+        )
+        if probed is not None and len(probed) <= config.max_request_bytes:
+            body = probed
+            entry.usage_probe_injected = True
+            entry.request_bytes = len(body)
+
         scheme, host, port = config.upstream_origin
         connection_class = (
             http.client.HTTPSConnection
@@ -375,6 +480,16 @@ class _RelayHandler(BaseHTTPRequestHandler):
             # The upstream's Host is the controller's business, not the
             # client's; `http.client` sets it from the connection.
             forwarded.pop("Host", None)
+            if entry.usage_probe_injected:
+                # The body is a byte longer than the client declared. Leaving
+                # the client's Content-Length in place would truncate the
+                # forwarded request at the upstream's parser -- a rewritten
+                # body and a stale length are the same bug.
+                for name in [
+                    key for key in forwarded if key.lower() == "content-length"
+                ]:
+                    forwarded.pop(name)
+                forwarded["Content-Length"] = str(len(body))
             connection.request(method, upstream_path, body=body, headers=forwarded)
             response = connection.getresponse()
         except (OSError, http.client.HTTPException) as exc:
@@ -428,6 +543,7 @@ class _RelayHandler(BaseHTTPRequestHandler):
             _close(connection)
 
         entry.response_bytes = completion.total_bytes
+        entry.usage = completion.usage
         entry.streamed = completion.streamed
         entry.client_cancelled = completion.client_cancelled
         entry.response_complete = completion.complete
@@ -490,6 +606,19 @@ class _RelayHandler(BaseHTTPRequestHandler):
         # is kept rather than testing each chunk in isolation.
         tail = b""
         truncated_at_ceiling = False
+        # Usage is read from bytes the relay is pumping anyway. For an event
+        # stream a fixed tail window is enough, because the usage frame is the
+        # last one before the terminal; for a buffered body the whole thing is
+        # kept up to a cap, because `usage` may sit anywhere in the object.
+        usage_buffer = b""
+        usage_buffer_overflowed = False
+
+        def observed_usage() -> ObservedUsage | None:
+            if usage_buffer_overflowed:
+                return None
+            if is_event_stream:
+                return usage_from_event_stream(usage_buffer)
+            return usage_from_body(usage_buffer)
 
         while True:
             try:
@@ -504,6 +633,7 @@ class _RelayHandler(BaseHTTPRequestHandler):
                 # clean finish.
                 return _Completion(
                     total_bytes=total,
+                    usage=observed_usage(),
                     streamed=chunks > 1,
                     complete=False,
                     terminal_observed=terminal_seen if is_event_stream else None,
@@ -555,6 +685,7 @@ class _RelayHandler(BaseHTTPRequestHandler):
                 )
                 return _Completion(
                     total_bytes=total,
+                    usage=observed_usage(),
                     streamed=chunks > 1,
                     client_cancelled=True,
                     complete=False,
@@ -578,6 +709,7 @@ class _RelayHandler(BaseHTTPRequestHandler):
                 # may score it -- but it is not counted against the upstream.
                 return _Completion(
                     total_bytes=total,
+                    usage=observed_usage(),
                     streamed=chunks > 1,
                     client_cancelled=True,
                     complete=False,
@@ -586,6 +718,17 @@ class _RelayHandler(BaseHTTPRequestHandler):
                 )
             total += len(chunk)
             chunks += 1
+            if is_event_stream:
+                usage_buffer = (usage_buffer + chunk)[-_USAGE_TAIL_BYTES:]
+            elif not usage_buffer_overflowed:
+                if len(usage_buffer) + len(chunk) > _USAGE_BODY_BYTES:
+                    # Deliberately dropped rather than truncated: half a JSON
+                    # object parses as nothing, and a partial parse here would
+                    # be a token count invented from a fragment.
+                    usage_buffer = b""
+                    usage_buffer_overflowed = True
+                else:
+                    usage_buffer += chunk
             if is_event_stream and not terminal_seen:
                 tail = (tail + chunk)[-len(SSE_TERMINAL) * 4 :]
                 terminal_seen = SSE_TERMINAL in tail
@@ -599,6 +742,7 @@ class _RelayHandler(BaseHTTPRequestHandler):
             # response, and saying so here keeps one meaning for the word.
             return _Completion(
                 total_bytes=total,
+                    usage=observed_usage(),
                 streamed=chunks > 1,
                 complete=False,
                 terminal_observed=terminal_seen if is_event_stream else None,
@@ -608,6 +752,7 @@ class _RelayHandler(BaseHTTPRequestHandler):
         if is_event_stream and not terminal_seen:
             return _Completion(
                 total_bytes=total,
+                    usage=observed_usage(),
                 streamed=chunks > 1,
                 complete=False,
                 terminal_observed=False,
@@ -622,6 +767,7 @@ class _RelayHandler(BaseHTTPRequestHandler):
         if declared_length is not None and total < declared_length:
             return _Completion(
                 total_bytes=total,
+                    usage=observed_usage(),
                 streamed=chunks > 1,
                 complete=False,
                 terminal_observed=None,
@@ -634,6 +780,7 @@ class _RelayHandler(BaseHTTPRequestHandler):
 
         return _Completion(
             total_bytes=total,
+                    usage=observed_usage(),
             streamed=chunks > 1,
             complete=True,
             terminal_observed=True if is_event_stream else None,
@@ -711,9 +858,9 @@ class ModelRelay:
 
     version = RELAY_VERSION
 
-    def __init__(self, config: ModelRelayConfig) -> None:
+    def __init__(self, config: ModelRelayConfig, *, usage_observer=None) -> None:
         self.config = config
-        self._state = _RelayState(config)
+        self._state = _RelayState(config, usage_observer)
         self._server: _UnixHTTPServer | None = None
         self._thread: threading.Thread | None = None
         self.platform: PlatformAssessment | None = None

@@ -54,6 +54,35 @@ REPO = Path(__file__).resolve().parents[1]
 QUALIFICATION = REPO / "docs" / "qualification"
 
 
+def _relay_sockets_are_usable_here() -> tuple[bool, str]:
+    """Ask the product's own platform rule, rather than restating it.
+
+    `assess_socket_support` is what the relay itself consults before binding,
+    so a skip driven by it can never disagree with the error the relay would
+    have raised -- and a host that becomes supported starts running these
+    tests without anyone editing a `sys.platform` check here.
+    """
+
+    from apoapsis.workcell.platform_support import assess_socket_support
+
+    assessment = assess_socket_support(
+        str(Path(tempfile.gettempdir()) / "apoapsis-probe.sock")
+    )
+    return assessment.usable, assessment.detail
+
+
+_RELAY_SOCKETS_USABLE, _RELAY_SOCKET_DETAIL = _relay_sockets_are_usable_here()
+
+#: Applied to every test that starts a real relay -- directly, or indirectly
+#: through Stage 3. On a host that cannot carry a relay socket these tests
+#: fail for a reason that has nothing to do with what they assert, which is
+#: the definition of a test worth skipping rather than reading.
+_REQUIRES_USABLE_RELAY_SOCKET = unittest.skipUnless(
+    _RELAY_SOCKETS_USABLE,
+    f"the relay cannot bind a usable socket on this host: {_RELAY_SOCKET_DETAIL}",
+)
+
+
 def _manifest() -> PilotManifest:
     """The newest committed manifest, so the arm names come from the artifact.
 
@@ -309,6 +338,10 @@ class SharedSessionLifecycleTests(unittest.TestCase):
             self.skipTest("the Crisis Atlas seed is not present")
         self.manifest = _manifest()
 
+    # Stage 3 binds a real relay socket even behind a stub session, so on a
+    # host where the relay cannot bind, this asserts nothing about the
+    # lifecycle it is named for.
+    @_REQUIRES_USABLE_RELAY_SOCKET
     def test_the_session_is_entered_before_stage_two_and_exited_after(self) -> None:
         events: list[str] = []
         session = self._Recorder(events)
@@ -327,6 +360,7 @@ class SharedSessionLifecycleTests(unittest.TestCase):
         self.assertEqual(events[-1], "exit", "the session outlived the stages")
         self.assertFalse(session.entered)
 
+    @_REQUIRES_USABLE_RELAY_SOCKET
     def test_stages_two_and_three_share_one_entered_session(self) -> None:
         events: list[str] = []
         session = self._Recorder(events)
@@ -779,11 +813,22 @@ class RealContainmentAgainstARunningWorkcellTests(unittest.TestCase):
 
         if shutil.which("docker") is None:
             self.skipTest("docker is not available")
-        if hasattr(os, "geteuid") and os.geteuid() != 0:
-            # The relay socket has to be given the workcell's group, which is a
-            # privileged operation. Skipping is honest; running as a user who
-            # cannot chown would fail for a reason that has nothing to do with
-            # containment.
+        # The relay socket has to be given the workcell's group, which is a
+        # privileged POSIX operation. Skipping is honest; running as a user
+        # who cannot chown -- or on a host with no chown at all -- would fail
+        # for a reason that has nothing to do with containment.
+        #
+        # The `hasattr` guard used to be `hasattr(...) and geteuid() != 0`,
+        # which let Windows through: no `geteuid` meant the condition was
+        # False, the test proceeded, and it died in `os.chown` with
+        # `AttributeError: module 'os' has no attribute 'chown'`. A host
+        # without POSIX ownership cannot run this at all, so say so.
+        if not hasattr(os, "geteuid"):
+            self.skipTest(
+                "a real workcell session requires POSIX socket ownership "
+                "(os.chown); run this suite under WSL or Linux"
+            )
+        if os.geteuid() != 0:
             self.skipTest("a real workcell session requires root to own the socket")
         self.seed = NegativeControlsAreExecutedNotDescribedTests._seed()
         if self.seed is None:
@@ -903,8 +948,16 @@ class NegativeControlsAreExecutedNotDescribedTests(unittest.TestCase):
                 self.assertTrue(item.correctly_detected, item.model_dump(mode="json"))
 
 
+@_REQUIRES_USABLE_RELAY_SOCKET
 class RelayFaultsAreInjectedAgainstARealRelayTests(unittest.TestCase):
     """Stage 3's fault machinery must be executable, not merely bound.
+
+    Skipped where the host cannot carry a usable relay socket at all (a
+    Windows host, or a WSL2 socket placed on DrvFs). These tests start a real
+    relay; on such a host the relay refuses to bind by design, and the
+    resulting error says nothing about the fault machinery under test. Run
+    them under WSL2 on the distro's own filesystem, or on Linux.
+
 
     `relay_faults.py` was bound as authority from v3 onward and no test had
     ever called it. It configured its relay with `["POST /v1/chat/completions"]`

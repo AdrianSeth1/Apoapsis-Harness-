@@ -103,6 +103,18 @@ class PlanSliceExecutionPackage(StrictModel):
     advisory_suggested_paths: list[str] = Field(default_factory=list)
     advisory_suggested_symbols: list[str] = Field(default_factory=list)
     advisory_context_seeds: list[str] = Field(default_factory=list)
+    # The directories this slice's own verification commands collect tests
+    # from, resolved from configuration at packaging time. Carried *in* the
+    # package rather than re-derived on read, because this is the one piece
+    # of the coder's brief that is a requirement rather than advice, and
+    # re-deriving it would let a later configuration edit silently change a
+    # fact attributed to an already-approved package.
+    #
+    # Default-empty so packages written before this field remain readable,
+    # and because an unreadable command layout legitimately yields no roots
+    # -- in both cases the coder is simply told nothing, which is the same
+    # behaviour as before the requirement existed.
+    test_discovery_roots: list[str] = Field(default_factory=list)
     repository_root: str = Field(min_length=1)
     repository_head_commit: str = Field(min_length=1)
     repository_fingerprint: str = Field(min_length=1)

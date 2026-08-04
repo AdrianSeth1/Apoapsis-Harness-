@@ -55,7 +55,10 @@ from apoapsis.config import (
 )
 from apoapsis.execution.operation_schema import ExecutionOperationStatus
 from apoapsis.execution.operation_store import ExecutionOperationStore
-from apoapsis.models.telemetry import InstrumentedModelProvider
+from apoapsis.models.telemetry import (
+    InstrumentedModelProvider,
+    RelayObservedModelUsage,
+)
 from apoapsis.reporting.current_state import project_current_task_evidence
 from apoapsis.verification.runner import VerificationCommand, VerificationConfig
 from apoapsis.workflow.engine import SQLiteTaskStore
@@ -278,6 +281,84 @@ class SlicePackagingTests(PlanSliceExecutionTestsBase):
         events = [item.event_type for item in self.task_store.events(approved.task_id)]
         self.assertIn("capability_sandbox_patch_ready", events)
         self.assertIn("capability_sandbox_verification_passed", events)
+
+    def test_capability_sandbox_usage_reaches_the_task_report(self) -> None:
+        """The live path's tokens are reported, not published as zero.
+
+        The sandbox's model traffic never passes through a harness provider
+        call, so before the relay reported usage a completed slice published
+        `input_tokens: 0` -- indistinguishable from a task that spent nothing.
+        """
+
+        record, base_config = self._approved_plan()
+        config = base_config.model_copy(
+            update={
+                "execution": ExecutionConfig(
+                    mode=ExecutionMode.AGENT,
+                    capability_sandbox=CapabilitySandboxConfig(enabled=True),
+                )
+            }
+        )
+        package = package_slice(
+            self.root, self.plan_store, self.slice_store, self.task_store,
+            self.operation_store, record.plan_id, "SLICE-1",
+            expected_plan_version=record.version, config=config,
+        )
+        approved = approve_slice(
+            self.root, self.task_store, self.slice_store, record.plan_id, "SLICE-1",
+            expected_package_sha256=package.package_sha256,
+        )
+
+        usage = RelayObservedModelUsage(
+            calls=46,
+            exchanges_observed=46,
+            input_tokens=1_978_100,
+            output_tokens=36_304,
+            cached_input_tokens=1_797_345,
+            peak_input_tokens=64_409,
+            series_artifact=".apoapsis/tasks/x/model-usage-series.json",
+        )
+
+        class FakeNativeExecutor:
+            def run(inner_self, **kwargs):
+                worktree = kwargs["worktree"]
+                source = worktree / "src" / "download_service" / "capability.py"
+                source.parent.mkdir(parents=True, exist_ok=True)
+                source.write_text("MODE = 'native-qwen'\n", encoding="utf-8")
+                verification = VerificationRunner(kwargs["config"].verification).run(
+                    kwargs["specification"].task_id, worktree
+                )
+                return AgentSessionResult(
+                    outcome=AgentSessionOutcome.COMPLETE,
+                    stop_reason="fake native checkpoint complete",
+                    turns=1,
+                    patch_attempts=1,
+                    verification_runs=1,
+                    changed_files=["src/download_service/capability.py"],
+                    verification_results=[verification],
+                    model_usage=usage,
+                )
+
+        runner = VerticalSliceRunner(
+            self.root,
+            self.task_store,
+            self._provider([]),
+            config,
+            capability_sandbox_executor=FakeNativeExecutor(),
+        )
+        report = runner.execute_approved_task(approved.task_id)
+
+        self.assertEqual(report.outcome.value, "complete")
+        self.assertEqual(report.input_tokens, 1_978_100)
+        self.assertEqual(report.output_tokens, 36_304)
+        self.assertEqual(report.cached_input_tokens, 1_797_345)
+        self.assertIsNotNone(report.local_model_usage)
+        self.assertEqual(report.local_model_usage.calls, 46)
+        self.assertEqual(report.local_model_usage.peak_input_tokens, 64_409)
+        self.assertTrue(report.local_model_usage.fully_measured)
+        # The summary is reported beside the harness's own calls, never as one
+        # of them: `number_of_calls` counts calls the harness actually made.
+        self.assertEqual(report.number_of_calls, len(report.provider_calls))
 
     def test_package_is_deterministic_and_carries_exact_inherited_records(self) -> None:
         record, config = self._approved_plan()
@@ -513,7 +594,13 @@ class SlicePackagingTests(PlanSliceExecutionTestsBase):
         the derived ``TaskSpecification`` carries no field that could
         restrict which files the bounded agent may touch."""
 
-        slice_with_hints = make_slice(suggested_paths=["src/only_this_file.py"])
+        # The test-discovery path is here only to keep the plan valid
+        # (UNASSIGNED_TEST_DISCOVERY_ROOT); the point under test is that
+        # whatever paths a slice names stay advisory, which two paths make
+        # exactly as well as one.
+        slice_with_hints = make_slice(
+            suggested_paths=["src/only_this_file.py", "tests/test_only_this_file.py"]
+        )
         record, config = self._approved_plan(slices=[slice_with_hints])
         package = package_slice(
             self.root,
@@ -527,14 +614,20 @@ class SlicePackagingTests(PlanSliceExecutionTestsBase):
             config=config,
         )
         self.assertEqual(
-            package.advisory_suggested_paths, ["src/only_this_file.py"]
+            package.advisory_suggested_paths,
+            ["src/only_this_file.py", "tests/test_only_this_file.py"],
         )
         spec_fields = set(type(package.derived_specification).model_fields)
         self.assertNotIn("suggested_paths", spec_fields)
         self.assertNotIn("allowed_paths", spec_fields)
 
     def test_derived_specification_preserves_full_approved_slice_contract(self) -> None:
-        slice_with_contract = make_slice(suggested_paths=["src/generation.py"]).model_copy(
+        slice_with_contract = make_slice(
+            # `tests/` path keeps the plan valid under
+            # UNASSIGNED_TEST_DISCOVERY_ROOT; this test is about the
+            # contract fields the derived specification preserves, not paths.
+            suggested_paths=["src/generation.py", "tests/test_generation.py"]
+        ).model_copy(
             update={
                 "interface_contracts": ["generate_reply(text: str) -> str"],
                 "exclusions": ["Do not send the message."],
@@ -583,6 +676,48 @@ class SlicePackagingTests(PlanSliceExecutionTestsBase):
             restored.verification_requirements,
             package.derived_specification.verification_requirements,
         )
+
+    def test_enrichment_restores_the_two_requirement_facts_by_name(self) -> None:
+        """The equality assertion above proves the mirror is complete, but
+        reports a drift as "lists differ" over several kilobytes. These two
+        facts are the ones that were actually missing, and they are the two
+        that exist because live slices got them wrong -- so name them, and
+        make a future regression say which one went."""
+
+        first = make_slice(slice_id="SLICE-1")
+        second = make_slice(slice_id="SLICE-2", dependencies=["SLICE-1"])
+        record, config = self._approved_plan(slices=[first, second])
+        self._complete_slice_with_patch(record, config, "SLICE-1", COMPLETE_PATCH)
+        record = self.plan_store.get_plan(record.plan_id)
+        package = package_slice(
+            self.root,
+            self.plan_store,
+            self.slice_store,
+            self.task_store,
+            self.operation_store,
+            record.plan_id,
+            "SLICE-2",
+            expected_plan_version=record.version,
+            config=config,
+        )
+
+        # Packaging resolved both from live state.
+        self.assertEqual(package.test_discovery_roots, ["tests"])
+        self.assertEqual(package.inherited_slice_ids, ["SLICE-1"])
+
+        stripped = package.derived_specification.model_copy(
+            update={"known_facts": [], "verification_requirements": []}
+        )
+        restored_facts = "\n".join(
+            item.text
+            for item in enrich_specification_with_slice_package(
+                stripped, package
+            ).known_facts
+        )
+        self.assertIn("REQUIRED test location", restored_facts)
+        self.assertIn("tests", restored_facts)
+        self.assertIn("Scope boundary", restored_facts)
+        self.assertIn("inherited work is out of scope", restored_facts)
 
 
 class DependencyEvidenceTests(PlanSliceExecutionTestsBase):
@@ -1855,6 +1990,10 @@ class DeliveredOperabilityTests(PlanSliceExecutionTestsBase):
                             "src/example.py",
                             "README.md",
                             "OPERATIONS.md",
+                            # Keeps the plan valid under
+                            # UNASSIGNED_TEST_DISCOVERY_ROOT; the missing
+                            # artifact under test is OPERATIONS.md.
+                            "tests/test_example.py",
                         ],
                     )
                 ],

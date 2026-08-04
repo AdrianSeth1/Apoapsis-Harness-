@@ -14,6 +14,7 @@ from apoapsis.architect.schema import (
 from apoapsis.architect.store import SQLitePlanStore
 from apoapsis.architect.slice_store import PlanSliceExecutionStore
 from apoapsis.config import (
+    CapabilitySandboxConfig,
     AgentLoopConfig,
     AgentRoute,
     ApoapsisConfig,
@@ -247,6 +248,12 @@ class PlanningEvaluationTestsBase(unittest.TestCase):
                 mode=ExecutionMode.AGENT,
                 route=AgentRoute.LOCAL_ONLY,
                 completion_policy=CompletionPolicy.STRICT,
+                # These fixtures measure the *bounded* loop's own prompts and
+                # actions against a fake provider. ADR 0109 made the Capability
+                # Sandbox the default, so the legacy path this exercises now
+                # has to be asked for by name -- which is the point of the
+                # decision, and is exactly how a real operator opts in.
+                capability_sandbox=CapabilitySandboxConfig(enabled=False),
                 agent=AgentLoopConfig(
                     max_turns=8,
                     max_patch_attempts=6,

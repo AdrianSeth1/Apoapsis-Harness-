@@ -29,9 +29,18 @@ from apoapsis.context.provenance import (
     EvidenceKind,
     TransmissionPolicy,
 )
+from apoapsis.context.window import (
+    PromptTooLargeError,
+    PromptWindowFit,
+    PromptWindowLimits,
+    TokenCounter,
+    fit_prompt_to_window,
+    replace_evidence,
+)
 from apoapsis.models.base import ModelOperation, ModelResponse
 from apoapsis.models.prompts import agent_step_prompt
 from apoapsis.models.provider import ModelRole
+from apoapsis.models.telemetry import RelayObservedModelUsage
 from apoapsis.patches.apply import PatchApplicationError
 from apoapsis.patches.parser import UnifiedDiffError, UnifiedDiffParser
 from apoapsis.patches.validator import PatchPolicyError
@@ -153,6 +162,11 @@ class AgentTurnRecord(StrictModel):
     observation_ledger: list[ContextEvidence] = Field(default_factory=list)
     observation_ledger_chars: int = Field(default=0, ge=0)
     transmitted_observation_chars: int = Field(default=0, ge=0)
+    #: What the prompt-window guard measured before and after fitting this
+    #: turn's prompt to the model's context window (MH-2). `None` means no
+    #: window was configured for this session, which is not the same as "the
+    #: prompt fit" -- it means nothing checked.
+    prompt_window_fit: PromptWindowFit | None = None
 
 
 class AgentSessionResult(StrictModel):
@@ -166,6 +180,11 @@ class AgentSessionResult(StrictModel):
     turn_records: list[AgentTurnRecord] = Field(default_factory=list)
     verification_results: list[VerificationResult] = Field(default_factory=list)
     acceptance_coverage: list[AcceptanceCoverage] = Field(default_factory=list)
+    #: Set only by execution paths whose model traffic the harness does not
+    #: make itself -- currently the Capability Sandbox, whose usage is read off
+    #: the relay. `None` means "this path reports its cost as provider calls
+    #: instead", which is not the same as "this path cost nothing".
+    model_usage: RelayObservedModelUsage | None = None
 
 
 AgentModelCall = Callable[..., ModelResponse]
@@ -250,6 +269,8 @@ class BoundedAgentSession:
         completion_policy: CompletionPolicy = CompletionPolicy.BASELINE,
         agent_step_prompt_fn: AgentStepPromptBuilder = agent_step_prompt,
         patch_policy: PatchPolicyConfig | None = None,
+        prompt_window: PromptWindowLimits | None = None,
+        count_prompt_tokens: TokenCounter | None = None,
     ) -> None:
         self.specification = specification
         self.worktree = Path(worktree).resolve()
@@ -269,7 +290,22 @@ class BoundedAgentSession:
         # ADR 0029) ever substitutes a different one. Ordinary product
         # callers never pass this, so `run()` is unchanged.
         self.agent_step_prompt_fn = agent_step_prompt_fn
+        # MH-2 Task B. `None` disables enforcement rather than inventing a
+        # ceiling: a caller that has not told the session what window the
+        # model has is not a caller asking for prompts to be refused.
+        self.prompt_window = prompt_window
+        self.count_prompt_tokens = count_prompt_tokens
+        # Identity keys of the compile-time evidence, so the guard can tell a
+        # base excerpt from an observation this session produced. Matches the
+        # dedup key `_context_for_turn` already uses.
+        self.base_evidence_keys = {
+            (item.path, item.start_line, item.end_line, item.content_sha256)
+            for item in initial_context.evidence
+        }
         self.last_acceptance_coverage: list[AcceptanceCoverage] = []
+        #: The most recent turn's window measurement, stamped onto every turn
+        #: record written after that dispatch.
+        self.last_prompt_window_fit: PromptWindowFit | None = None
         self.inspector = RepositoryInspector(
             self.worktree,
             max_search_results=config.max_search_results,
@@ -309,6 +345,8 @@ class BoundedAgentSession:
         audit_prefix: str = "",
         completion_policy: CompletionPolicy = CompletionPolicy.BASELINE,
         patch_policy: PatchPolicyConfig | None = None,
+        prompt_window: PromptWindowLimits | None = None,
+        count_prompt_tokens: TokenCounter | None = None,
     ) -> "BoundedAgentSession":
         """Reconstruct a session continuing from ``prior_result`` (ADR 0020).
 
@@ -338,6 +376,8 @@ class BoundedAgentSession:
             audit_prefix=audit_prefix,
             completion_policy=completion_policy,
             patch_policy=patch_policy,
+            prompt_window=prompt_window,
+            count_prompt_tokens=count_prompt_tokens,
         )
         session.records = list(prior_result.turn_records)
         if prior_result.turn_records:
@@ -367,30 +407,27 @@ class BoundedAgentSession:
                     no_progress_reason,
                 )
             context = self._context_for_turn(turn)
-            prompt = self.agent_step_prompt_fn(
-                context,
-                turn=turn,
-                remaining_budgets=self._remaining_budgets(turn),
-                verification_commands=[
-                    item.name for item in self.verification_config.commands
-                ],
-                history=[
-                    item.model_dump(mode="json", exclude={"observation_ledger"})
-                    for item in self.records
-                ],
-                patch_policy=(
-                    {
-                        "allow_dependency_changes": (
-                            self.patch_policy.allow_dependency_changes
-                        ),
-                        "allow_test_changes": self.patch_policy.allow_test_changes,
-                    }
-                    if self.patch_policy is not None
-                    else None
-                ),
-                verification_obligations=self._verification_obligations(),
-                next_action_requirements=self._next_action_requirements(),
-            )
+            try:
+                prompt, context, window_fit = self._fit_prompt(turn, context)
+            except PromptTooLargeError as exc:
+                self._record(
+                    AgentTurnRecord(
+                        turn=turn,
+                        action="prompt_window_exceeded",
+                        accepted=False,
+                        summary=str(exc)[:2_000],
+                        prompt_window_fit=exc.fit,
+                    )
+                )
+                # Named stop, not a silent send. Dispatching anyway would let
+                # the server truncate the prompt from the front, which is
+                # where the action protocol lives -- the harness would then be
+                # reasoning about a prompt the model never received.
+                return self._result(
+                    AgentSessionOutcome.ESCALATION_REQUIRED,
+                    f"prompt exceeds model context window: {exc}",
+                )
+            self.last_prompt_window_fit = window_fit
             response = self.model_call(
                 ModelOperation.AGENT_STEP,
                 prompt,
@@ -1212,6 +1249,94 @@ class BoundedAgentSession:
             evidence=unique,
         )
 
+    def _build_prompt(
+        self, turn: int, context: ContextPackage, history: list[dict[str, object]]
+    ) -> str:
+        return self.agent_step_prompt_fn(
+            context,
+            turn=turn,
+            remaining_budgets=self._remaining_budgets(turn),
+            verification_commands=[
+                item.name for item in self.verification_config.commands
+            ],
+            history=history,
+            patch_policy=(
+                {
+                    "allow_dependency_changes": (
+                        self.patch_policy.allow_dependency_changes
+                    ),
+                    "allow_test_changes": self.patch_policy.allow_test_changes,
+                }
+                if self.patch_policy is not None
+                else None
+            ),
+            verification_obligations=self._verification_obligations(),
+            next_action_requirements=self._next_action_requirements(),
+        )
+
+    def _fit_prompt(
+        self, turn: int, context: ContextPackage
+    ) -> tuple[str, ContextPackage, PromptWindowFit | None]:
+        """Assemble this turn's prompt, shrinking it if the window demands it.
+
+        Returns the prompt *and* the context package it was actually built
+        from, because the reduced package is what must be handed to
+        `model_call` -- passing the unreduced one would record transmitting
+        evidence the model never saw (MH-2 Task B).
+        """
+
+        history = [
+            item.model_dump(mode="json", exclude={"observation_ledger"})
+            for item in self.records
+        ]
+        if self.prompt_window is None:
+            return self._build_prompt(turn, context, history), context, None
+
+        def build(
+            evidence: list[ContextEvidence], turns: list[dict[str, object]]
+        ) -> str:
+            return self._build_prompt(turn, replace_evidence(context, evidence), turns)
+
+        prompt, fit = fit_prompt_to_window(
+            build,
+            evidence=list(context.evidence),
+            history=history,
+            limits=self.prompt_window,
+            is_observation=lambda item: (
+                item.path,
+                item.start_line,
+                item.end_line,
+                item.content_sha256,
+            )
+            not in self.base_evidence_keys,
+            count_tokens=self.count_prompt_tokens,
+        )
+        if fit.evidence_dropped or fit.observations_dropped:
+            # Rebuild the reduced package once more so the returned context
+            # matches the returned prompt exactly. `fit_prompt_to_window`
+            # guarantees `build` was last called with the surviving evidence,
+            # so re-deriving it here is the same list.
+            surviving = self._surviving_evidence(context, prompt)
+            context = replace_evidence(context, surviving)
+        return prompt, context, fit
+
+    @staticmethod
+    def _surviving_evidence(
+        context: ContextPackage, prompt: str
+    ) -> list[ContextEvidence]:
+        """The evidence items the assembled prompt actually carries.
+
+        Read back off the prompt by evidence id rather than tracked alongside
+        it, so the recorded context can never claim an item the transmitted
+        text does not contain.
+        """
+
+        return [
+            item
+            for item in context.evidence
+            if f"--- {item.evidence_id} " in prompt
+        ]
+
     def _remaining_budgets(self, turn: int) -> dict[str, int]:
         return {
             "turns": self.config.max_turns - turn + 1,
@@ -1227,6 +1352,9 @@ class BoundedAgentSession:
     def _record(self, record: AgentTurnRecord) -> None:
         record = record.model_copy(
             update={
+                "prompt_window_fit": (
+                    record.prompt_window_fit or self.last_prompt_window_fit
+                ),
                 "observation_ledger": list(self.observations),
                 "observation_ledger_chars": self.observation_chars,
                 "transmitted_observation_chars": sum(

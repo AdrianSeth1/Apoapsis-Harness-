@@ -7,7 +7,7 @@ from pydantic import Field, model_validator
 from apoapsis.config import AgentLoopConfig, AgentRoute, CompletionPolicy, ExecutionMode
 from apoapsis.context.measurement import ContextAttribution, ContextMeasurement
 from apoapsis.models.base import ConstraintCoverage
-from apoapsis.models.telemetry import ProviderCallTelemetry
+from apoapsis.models.telemetry import ProviderCallTelemetry, RelayObservedModelUsage
 from apoapsis.research.schemas import ResearchMode, ResearchTelemetry
 from apoapsis.specification.schema import StrictModel
 from apoapsis.verification.contract import VerificationContractAssessment
@@ -88,6 +88,15 @@ class FinalTaskReport(StrictModel):
     frontier_agent_budget: AgentLoopConfig | None = None
     frontier_available: bool = False
     rejected_tool_requests: int = Field(default=0, ge=0)
+    #: Token usage for model traffic the harness did not issue itself -- the
+    #: contained agent's own calls, observed at the relay. Its totals are
+    #: *included* in `input_tokens`/`output_tokens`/`cached_input_tokens`
+    #: above, and broken out here so a reader can always tell how much of a
+    #: total came from harness-issued provider calls (`provider_calls`, one
+    #: record each) and how much from a contained agent's traffic (summarised,
+    #: because the harness never held those prompts). `None` means this task
+    #: ran no contained agent, which is not the same as one that spent nothing.
+    local_model_usage: RelayObservedModelUsage | None = None
 
     @model_validator(mode="after")
     def validate_totals(self) -> FinalTaskReport:

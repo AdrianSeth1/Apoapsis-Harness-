@@ -46,8 +46,18 @@ def make_slice(
         # `README.md` is present by default because ADR 0076 requires the
         # plan's `primary_documentation_path` to be assigned to a slice, and
         # every fixture plan below names `README.md` as that path.
+        #
+        # `tests/test_example.py` is present by default for the same class of
+        # reason: the default `verification_commands` below is `unit-tests`,
+        # which every fixture config defines as `unittest discover -s tests`,
+        # and the default `test_obligations` is non-empty. A slice in that
+        # shape with no path inside the discovery root is an invalid plan
+        # (UNASSIGNED_TEST_DISCOVERY_ROOT) -- so a helper without it builds
+        # fixtures that cannot be validated, let alone approved. Keep it last
+        # so `make_plan`'s documentation-path fallback still prefers the
+        # source path when a caller overrides `suggested_paths`.
         suggested_paths=(
-            ["src/example.py", "README.md"]
+            ["src/example.py", "README.md", "tests/test_example.py"]
             if suggested_paths is None
             else suggested_paths
         ),

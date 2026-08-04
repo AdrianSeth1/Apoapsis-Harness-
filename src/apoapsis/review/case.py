@@ -10,6 +10,7 @@ from apoapsis.execution.worktree import WorktreeError, WorktreeManager
 from apoapsis.repository.fingerprint import compute_worktree_fingerprint
 from apoapsis.reporting.current_state import project_current_task_evidence
 from apoapsis.reporting.report import FinalTaskReport
+from apoapsis.reporting.operator import explain_stop_reason
 from apoapsis.review.classify import classify_stop_reason, eligible_actions_for
 from apoapsis.review.errors import ReviewCaseError
 from apoapsis.review.schema import ReviewActionKind, ReviewCase, StopReasonKind
@@ -317,6 +318,7 @@ def build_review_case(
         workflow_state=record.state,
         stop_reason_kind=kind,
         stop_reason_text=stop_reason_text,
+        operator=explain_stop_reason(kind, stop_reason_text),
         stop_event_type=stop_event_type,
         objective_text=record.specification.objective.text,
         worktree_path=worktree_path,

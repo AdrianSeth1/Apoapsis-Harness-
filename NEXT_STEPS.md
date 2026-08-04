@@ -53,6 +53,187 @@ priorities only. Current architecture is in `HANDOFF.md`, decision history is in
 
 ### Priority 1: finish and verify the current working-tree change
 
+- Verify ADR 0101 relay-observed model usage (MH-1) **live**. Deterministic
+  coverage is added and green: `tests/test_workcell_relay.py` (71 tests) passes
+  on Windows/py3.12 and under WSL Ubuntu-24.04, where the Linux-only end-to-end
+  usage tests actually run; `tests/test_workcell_admission.py`,
+  `test_workcell_checkpoint.py` and `test_capability_sandbox_product.py` pass on
+  both. The report-level assertion in `tests/test_architect_slice.py` is written
+  now passing (the `test_architect_slice` fixture breakage that blocked it is
+  fixed under ADR 0111). Confirm on the next
+  live sandbox run that `report.json` carries nonzero
+  `input_tokens`/`output_tokens`, that
+  `local_model_usage.calls` equals `exchanges_observed`, and that
+  `evidence/sandbox/model-usage-series.json` exists with one entry per call —
+  if `calls` is 0 on a live run, the CLI's streaming requests are not reaching
+  the injection path and that is the thing to debug first.
+- Verify ADR 0102 `.git` exclusion (MH-6): `tests/test_workcell_admission.py` and
+  `tests/test_workcell_checkpoint.py` pass on Windows and WSL. On the next live
+  sandbox run, confirm no report's `files_changed` or
+  `context_attribution.changed_files` contains `.git`, and that the checkpoint
+  record's `excluded_metadata` names it instead.
+- Verify ADR 0110 (MH-2) live on the bounded path, which is where ordinary
+  tasks still run. Two numbers are wanted and neither exists yet: (a) the
+  wall-clock effect of the prompt reordering -- run a multi-turn task against
+  llama-server and compare per-turn latency to a pre-0110 run, since the win
+  should grow with turn number rather than being flat; (b) whether the token
+  ceiling ever actually fires. If `prompt_window_fit.stage` is `none` on every
+  turn of every real task, the guard is insurance rather than a fix, and that
+  is worth knowing before MH-9's status surface decides whether to show it. If
+  it reports `irreducible` on an ordinary task, the compiler's
+  `max_total_chars` for that model profile is wrong and should be lowered
+  rather than the ceiling raised.
+- ADR 0110 leaves `[context] max_total_chars` untouched. It is now enforced
+  downstream instead of reconciled, which is the safe order to do it in but
+  not the finished job: the per-profile char budgets in `cli/app.py` should
+  eventually be derived from `context_window_tokens` rather than maintained
+  beside it.
+- ADR 0109 scoped the one-path decision to plan slices; ordinary tasks keep the
+  bounded loop. If quick changes should also run contained, that needs a
+  contract synthesised from a bare `TaskSpecification` and a decision about
+  what a machine without WSL/Docker does — it is a separate piece of work, not
+  a config flip.
+- Verify ADR 0109 on a fresh project: `apoapsis init`, approve one plan slice,
+  and confirm it runs the sandbox with no config edit. Then run `apoapsis
+  doctor` on a machine *without* the Ubuntu-24.04 distribution and confirm it
+  reports the runtime as an error rather than passing.
+- Measure ADR 0108's effect (MH-13) on the next multi-slice plan run: with the
+  default `sample` policy a 15-slice plan should pair 4 slices, and each
+  slice's `result.json` should carry `parity_guard.selection` naming the reason.
+  Confirm a non-sampled slice completes without a control arm and is not
+  reported as parity-unavailable. Combined with ADR 0107 this is the pair of
+  changes that should make runs feel fast; neither has a live number yet.
+- The UI's parity control is still a boolean mapping to `always`/`sample`. A
+  three-way selector belongs with MH-9's status surface rather than as a second
+  control bolted on beside the existing toggle.
+- Measure ADR 0107's effect (MH-12) on the next live plan run: `result.json`'s
+  `model_server_lease.server_starts` should be 1 for a whole run rather than
+  one per arm per attempt, `arms_served` should equal the number of arms, and
+  `fallbacks` should be empty. If a fallback appears, read its recorded
+  mismatch before changing anything — the point of the record is that a wrong
+  reuse is visible rather than silent. Time a two-slice run before and after
+  for the wall-clock number the ADR claims but has not yet observed.
+- Check whether this build of llama-server serves `/slots?action=erase`. If it
+  refuses, arms share a warm KV cache: not a correctness failure, but it makes
+  the paired comparison's first-prefill numbers incomparable, and the refusal
+  is recorded in the lease evidence rather than assumed away.
+- **Slice execution records never reach `COMPLETE`.** All four finished slices
+  in `test project 6` sit at `approved` in `plan-slice-executions.db` while
+  their `report.json` files read `complete`. `SliceExecutionStatus` documents
+  `RUNNING`/`COMPLETE`/`HUMAN_REVIEW`/`FAILED` as mirroring the derived task's
+  own state, so either the mirroring step is not running on this path or it
+  runs somewhere the sandbox path does not reach. Found 2026-08-03 while
+  building the orientation brief, which now gates on the task's reported
+  outcome instead (ADR 0106). Worth fixing at the source: anything else that
+  trusts the record's status has the same silent-empty failure mode.
+- Measure ADR 0106's effect (MH-11) on the next live plan run: `read_file` call
+  count and per-slice input tokens against CAP-4EE9F101146E4556's 44 calls and
+  ~2.01M cumulative input tokens, using the ADR 0101 telemetry. Check the brief
+  is present in slice 2+ `task.md` and that its content matches what the
+  earlier slices actually left in the worktree.
+- Extend ADR 0105's operator rendering to the plan view's slice card (MH-4
+  remainder). The review page now shows the three-part rendering with the
+  harness's own wording behind a disclosure; the slice card still carries its
+  own hardcoded "Coding stopped and needs your decision" string. Fold it into
+  MH-9's status surface rather than patching the card twice.
+- Measure ADR 0103's effect (MH-10). Focused coverage is green, but the point
+  of the change is behavioural: on the next live slice, compare thinking-token
+  share, turn count and per-call input tokens (ADR 0101 telemetry) against the
+  CAP-4EE9F101146E4556 baseline of 46 turns / ~2.01M cumulative input tokens,
+  and grep the new `qwen-stdout.log` for marker-invention reasoning. If the
+  speculation persists, the contract text is being compressed away mid-session
+  rather than being unclear — check whether it survives into the continuation
+  prompts before rewording it.
+- Finish the HANDOFF diet (MH-3). The mechanical, lossless half is done:
+  `HANDOFF.md` went 179 KB → ~72 KB, with every Snapshot narrative, the ADR-index
+  commentary, and the ADR 0050 desktop-shell spike moved verbatim to
+  `docs/history/handoff-archive-2026-08.md`. The 25 KB target is not reachable
+  without rewriting current-state prose, which was left alone deliberately.
+  Remaining candidates, in order: **Current architecture** (24 KB, written as a
+  per-ADR changelog in present tense — most bullets restate their ADR and could
+  become a genuine current-state description with links); **Non-negotiable
+  authority boundary** (9.5 KB); **Evidence index** (5 KB) and **Known
+  limitations** (5.5 KB), both of which could be indexes rather than prose.
+- Apply the same split to `README.md` (140 KB). It serves two audiences at once
+  — an operator's guide and a design record — and only the first belongs in a
+  file that size. Decide the audience first; MH-8's `README.public.md` may make
+  this moot.
+- **Set `autoMemoryReclaim=gradual` in `%USERPROFILE%\.wslconfig`.** Stopping
+  a model server frees its VRAM immediately (17.3 GB measured, ADR 0115) but
+  Windows keeps attributing the freed RAM to `vmmemWSL`, because WSL2 does not
+  return pages unless this is configured -- and the current `.wslconfig` sets
+  `memory=60GB` without it, so the VM can balloon and never give back. Apoapsis
+  now reports this in the stop result rather than fixing it silently; the fix
+  is one line plus one `wsl --shutdown`.
+- **Consider having `doctor` report a resident model server.** It would answer
+  "what is holding my VRAM?" before the operator has to ask, and the machinery
+  now exists (`workcell/resident_server.py`). ADR 0115 deliberately scoped
+  itself to the stop path because that is the button the operator pressed.
+- **Before publishing: remove 2.4 GB of committed build artifacts.**
+  `spikes/native-shell-tauri/src-tauri/target/` holds 3,101 tracked files
+  totalling 2,424.9 MB -- 79% of everything tracked -- from the abandoned
+  desktop-shell spike (ADR 0050). `.gitignore` already lists the path; the
+  files predate the rule and an ignore rule does not untrack. `git rm -r
+  --cached` it, or drop the spike from the published tree and let the ADR
+  describe it. This is the first item on `docs/publication-checklist.md`.
+- **Decide the licence deliberately before the first public commit.**
+  `LICENSE.txt` is PolyForm Noncommercial 1.0.0: not OSI-approved, GitHub will
+  flag it as non-standard, and a reviewer cannot try an idea from it at work.
+  Right if the goal is to be read; wrong if the goal is adoption.
+- **Record the demo.** `docs/demo-recording-script.md` is a prepared shot list
+  with the preparation made explicit -- warm the controller image first, or a
+  third of the three-minute budget is a motionless spinner. Recording is the
+  owner's task by design.
+- **Run the public quickstart on a clean clone on a machine with no GPU.** It
+  is verified here (51 tests, ~6 s) but never from a fresh clone, and a broken
+  copy-pasted quickstart is the most damaging single defect in the package.
+- **MH-9 is complete.** ADR 0113 warms the controller image at launcher start
+  and surfaces a real build as a named stage. Verified against Docker Desktop
+  and WSL2 on 2026-08-03, not just unit-tested.
+- **Reclaim the controller-image disk.** Twenty-four
+  `apoapsis-product-controller` tags at 424 MB were observed on the owner's
+  machine -- roughly ten gigabytes of one-per-commit accumulation. Nothing
+  prunes automatically, deliberately (an image the harness calls stale may be
+  the one you want to compare an old result against). To see and reclaim it:
+  `stale_controller_images(controller_image_tag(harness_root), keep=2)` lists
+  candidates and `prune_controller_images(...)` removes exactly what it is
+  given. Worth a small `apoapsis doctor` line reporting the total.
+- **Consider tagging the controller image by source-tree digest rather than
+  commit.** Most commits do not touch `src/`, so most rebuilds are avoidable
+  entirely rather than merely moved earlier -- `build.sh` already computes the
+  tree hash and the build-context sha256 it would need. Deliberately not done
+  in ADR 0113: it changes how a running slice identifies the code that judged
+  it, which needs its own decision and its own evidence rather than riding
+  along with a UX fix.
+- Confirm ADR 0112 on a live run. The projection has 25 deterministic tests
+  and has never seen a real journal. Watch for three things specifically:
+  that `progress.jsonl` appears in `evidence/` at the first stage rather than
+  at the end; that per-call events arrive during the arm rather than in a
+  burst when it finishes (a burst means the relay observer is being called
+  after the fact, not live); and that the context percentage tracks what
+  `model-usage-series.json` reports at the end. If they disagree, the series
+  is authoritative and the live path is wrong.
+- **MH-7 is done: the suite is green.** `python -m unittest discover -s tests`
+  exits 0 on a clean checkout -- 2,075 tests, 48 skips, ~975 s, py3.14.5 on
+  Windows 11 (ADR 0111). The 78 problems in the 2026-08-03 baseline were five
+  causes, and one of them was a real product defect that the fixture breakage
+  had been hiding (`enrich_specification_with_slice_package` dropped two known
+  facts). The stale "7 failures, 2 errors" inventory is retired; HANDOFF now
+  carries a Suite status table instead.
+- Run the full suite **under WSL2 or Linux** and record that result too. Eight
+  tests skip on Windows because the host cannot carry a relay socket the
+  container can connect to -- the Stage 3 relay-fault tests, the real
+  containment test, and two shared-session lifecycle tests. They are the only
+  deterministic coverage of the relay fault machinery, and this machine has
+  never executed them. A green Windows run plus a green WSL run is the pair
+  that MH-8's publication claim actually needs.
+- Watch `test_ui.UIServerTests.test_oversized_control_request_names_both_sizes`.
+  It aborted its loopback connection once during the MH-7 baseline
+  (`ConnectionAbortedError [WinError 10053]`) and has passed every run since.
+  Deliberately not skipped -- one observation is not enough to change behaviour
+  on -- but if it recurs, the test needs to tolerate the peer resetting a
+  connection it deliberately overfills, rather than the suite tolerating a
+  flake.
 - Preserve the existing ADR 0035 guided-workflow/planning-research work.
 - Verify ADR 0036 clarification, research allocation/diagnostics, execution
   preflight, patch-budget defaults, and documentation compaction.

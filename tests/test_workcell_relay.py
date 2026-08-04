@@ -34,6 +34,9 @@ from apoapsis.workcell.relay_policy import (
     classify_redirect,
     classify_request,
     sanitise_headers,
+    usage_from_body,
+    usage_from_event_stream,
+    usage_probe_body,
 )
 from apoapsis.workcell.relay_preflight import (
     ReadinessStep,
@@ -46,7 +49,10 @@ from apoapsis.workcell.relay_preflight import (
 )
 
 _LINUX_ONLY = unittest.skipUnless(
-    hasattr(socket, "AF_UNIX"), "the relay requires AF_UNIX"
+    hasattr(socket, "AF_UNIX"),
+    "the relay listens on a Unix domain socket and this Python build exposes "
+    "no socket.AF_UNIX; run this suite under WSL2 or Linux to execute these "
+    "tests",
 )
 
 
@@ -305,10 +311,13 @@ class _FakeUpstream:
             def log_message(self, *_args) -> None:
                 return
 
-            def _record(self) -> None:
+            def _record(self, body: bytes = b"") -> None:
                 outer.requests.append(
                     (self.command, self.path, dict(self.headers.items()))
                 )
+                # Kept beside `requests` rather than inside it: several tests
+                # unpack that tuple by position.
+                outer.bodies.append(body)
 
             def do_GET(self) -> None:  # noqa: N802
                 self._record()
@@ -321,9 +330,28 @@ class _FakeUpstream:
                 self._json(200, {"data": [{"id": "qwen"}]})
 
             def do_POST(self) -> None:  # noqa: N802
-                self._record()
                 length = int(self.headers.get("Content-Length") or 0)
                 body = self.rfile.read(length)
+                self._record(body)
+                if outer.usage_stream:
+                    # The OpenAI streaming shape: content chunks carry a null
+                    # usage, and the counts arrive in one final frame before
+                    # the terminal -- and only because the request asked.
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/event-stream")
+                    self.send_header("Connection", "close")
+                    self.end_headers()
+                    self.close_connection = True
+                    frames = [
+                        json.dumps({"choices": [{"delta": {"content": "."}}],
+                                    "usage": None}),
+                        json.dumps({"choices": [], "usage": outer.usage_payload}),
+                    ]
+                    for frame in frames:
+                        self.wfile.write(f"data: {frame}\n\n".encode())
+                    self.wfile.write(b"data: [DONE]\n\n")
+                    self.wfile.flush()
+                    return
                 if outer.huge_response:
                     payload = b"x" * 200_000
                     self.send_response(200)
@@ -350,13 +378,13 @@ class _FakeUpstream:
                             return
                         time.sleep(0.005)
                     return
-                self._json(
-                    200,
-                    {
-                        "choices": [{"message": {"content": "."}}],
-                        "echo_bytes": len(body),
-                    },
-                )
+                payload = {
+                    "choices": [{"message": {"content": "."}}],
+                    "echo_bytes": len(body),
+                }
+                if outer.usage_payload is not None and not outer.usage_stream:
+                    payload["usage"] = outer.usage_payload
+                self._json(200, payload)
 
             def _json(self, status: int, payload: dict) -> None:
                 body = json.dumps(payload).encode("utf-8")
@@ -366,7 +394,10 @@ class _FakeUpstream:
                 self.end_headers()
                 self.wfile.write(body)
 
+        self.bodies: list[bytes] = []
         self.stream = False
+        self.usage_stream = False
+        self.usage_payload = None
         self.huge_response = False
         self.stream_aborted = False
         self.redirect_away = False
@@ -828,6 +859,231 @@ class ForwarderPackagingTests(unittest.TestCase):
 
     def test_relay_version_is_pinned(self) -> None:
         self.assertRegex(RELAY_VERSION, r"^\d+\.\d+$")
+
+
+class RelayUsagePolicyTests(unittest.TestCase):
+    """Reading token counts off the wire, and asking for them when a streamed
+    response would otherwise report none."""
+
+    def setUp(self) -> None:
+        self.config = _config(
+            "/run/apoapsis/model.sock",
+            upstream="http://127.0.0.1:8080",
+            inject_stream_usage_options=True,
+        )
+
+    def test_usage_is_read_from_a_buffered_body(self) -> None:
+        observed = usage_from_body(
+            json.dumps(
+                {
+                    "choices": [],
+                    "usage": {
+                        "prompt_tokens": 1200,
+                        "completion_tokens": 34,
+                        "total_tokens": 1234,
+                        "prompt_tokens_details": {"cached_tokens": 1100},
+                    },
+                }
+            ).encode("utf-8")
+        )
+        self.assertIsNotNone(observed)
+        self.assertEqual(observed.input_tokens, 1200)
+        self.assertEqual(observed.output_tokens, 34)
+        self.assertEqual(observed.cached_input_tokens, 1100)
+        self.assertEqual(observed.source, "body")
+
+    def test_a_body_without_usage_reports_nothing_rather_than_zero(self) -> None:
+        self.assertIsNone(usage_from_body(b'{"choices": []}'))
+        self.assertIsNone(usage_from_body(b"not json"))
+        self.assertIsNone(usage_from_body(b""))
+
+    def test_the_usage_frame_wins_over_earlier_null_frames(self) -> None:
+        stream = (
+            b'data: {"choices": [{"delta": {"content": "x"}}], "usage": null}\n\n'
+            b'data: {"choices": [], "usage": {"prompt_tokens": 90, '
+            b'"completion_tokens": 7}}\n\n'
+            b"data: [DONE]\n\n"
+        )
+        observed = usage_from_event_stream(stream)
+        self.assertIsNotNone(observed)
+        self.assertEqual((observed.input_tokens, observed.output_tokens), (90, 7))
+        self.assertEqual(observed.source, "stream")
+
+    def test_a_frame_truncated_by_the_tail_window_is_skipped_not_guessed(self) -> None:
+        # The head of a windowed tail is half a frame by construction.
+        stream = (
+            b'ompletion_tokens": 4}}\n\n'
+            b'data: {"choices": [], "usage": {"prompt_tokens": 11, '
+            b'"completion_tokens": 2}}\n\ndata: [DONE]\n\n'
+        )
+        observed = usage_from_event_stream(stream)
+        self.assertEqual(observed.input_tokens, 11)
+
+    def test_a_stream_with_no_usage_frame_reports_nothing(self) -> None:
+        self.assertIsNone(
+            usage_from_event_stream(
+                b'data: {"choices": [{"delta": {"content": "x"}}]}\n\n'
+                b"data: [DONE]\n\n"
+            )
+        )
+
+    def test_the_probe_adds_include_usage_to_a_streaming_request(self) -> None:
+        body = json.dumps({"stream": True, "messages": []}).encode("utf-8")
+        probed = usage_probe_body(
+            upstream_path="/v1/chat/completions", body=body, config=self.config
+        )
+        self.assertIsNotNone(probed)
+        self.assertEqual(
+            json.loads(probed)["stream_options"], {"include_usage": True}
+        )
+
+    def test_the_probe_is_off_unless_the_configuration_opts_in(self) -> None:
+        config = _config(
+            "/run/apoapsis/model.sock", upstream="http://127.0.0.1:8080"
+        )
+        body = json.dumps({"stream": True, "messages": []}).encode("utf-8")
+        self.assertIsNone(
+            usage_probe_body(
+                upstream_path="/v1/chat/completions", body=body, config=config
+            )
+        )
+
+    def test_a_stated_preference_is_never_overridden(self) -> None:
+        body = json.dumps(
+            {
+                "stream": True,
+                "messages": [],
+                "stream_options": {"include_usage": False},
+            }
+        ).encode("utf-8")
+        self.assertIsNone(
+            usage_probe_body(
+                upstream_path="/v1/chat/completions", body=body, config=self.config
+            )
+        )
+
+    def test_only_completion_routes_are_rewritten(self) -> None:
+        body = json.dumps({"stream": True, "messages": []}).encode("utf-8")
+        self.assertIsNone(
+            usage_probe_body(
+                upstream_path="/v1/models", body=body, config=self.config
+            )
+        )
+
+    def test_a_non_streaming_or_unparsable_body_crosses_untouched(self) -> None:
+        for body in (
+            json.dumps({"stream": False, "messages": []}).encode("utf-8"),
+            b"{not json",
+        ):
+            self.assertIsNone(
+                usage_probe_body(
+                    upstream_path="/v1/chat/completions",
+                    body=body,
+                    config=self.config,
+                )
+            )
+
+
+@_LINUX_ONLY
+class RelayUsageTelemetryTests(unittest.TestCase):
+    """The counts the live path reports come from exchanges it actually saw."""
+
+    def setUp(self) -> None:
+        self.upstream = _FakeUpstream()
+        self.tmp = tempfile.TemporaryDirectory()
+        self.socket_path = str(Path(self.tmp.name) / "run" / "model.sock")
+        self.addCleanup(self.tmp.cleanup)
+        self.addCleanup(self.upstream.stop)
+
+    def _relay(self, **overrides) -> ModelRelay:
+        relay = ModelRelay(
+            _config(self.socket_path, upstream=self.upstream.base_url, **overrides)
+        )
+        relay.start()
+        self.addCleanup(relay.stop)
+        return relay
+
+    def _post(self, payload: dict) -> tuple[int, bytes]:
+        body = json.dumps(payload).encode("utf-8")
+        connection = _UnixHTTPConnection(self.socket_path)
+        try:
+            connection.request(
+                "POST",
+                "/v1/chat/completions",
+                body=body,
+                headers={
+                    "Content-Type": "application/json",
+                    "Content-Length": str(len(body)),
+                },
+            )
+            response = connection.getresponse()
+            return response.status, response.read()
+        finally:
+            connection.close()
+
+    def test_a_buffered_completion_records_its_usage(self) -> None:
+        self.upstream.usage_payload = {
+            "prompt_tokens": 400,
+            "completion_tokens": 20,
+            "prompt_tokens_details": {"cached_tokens": 380},
+        }
+        relay = self._relay()
+        status, _body = self._post({"messages": [], "stream": False})
+        self.assertEqual(status, 200)
+        self.assertEqual(relay.stats.requests_with_usage, 1)
+        self.assertEqual(relay.stats.input_tokens, 400)
+        self.assertEqual(relay.stats.output_tokens, 20)
+        self.assertEqual(relay.stats.cached_input_tokens, 380)
+        self.assertEqual(relay.stats.peak_input_tokens, 400)
+
+    def test_a_streamed_completion_records_the_usage_frame(self) -> None:
+        self.upstream.usage_stream = True
+        self.upstream.usage_payload = {
+            "prompt_tokens": 900,
+            "completion_tokens": 12,
+        }
+        relay = self._relay(inject_stream_usage_options=True)
+        status, body = self._post({"messages": [], "stream": True})
+        self.assertEqual(status, 200)
+        # The stream still reaches the reader intact: telemetry must not cost
+        # the caller its terminal event.
+        self.assertIn(b"[DONE]", body)
+        record = relay.stats.records[-1]
+        self.assertTrue(record.usage_probe_injected)
+        self.assertEqual(record.input_tokens, 900)
+        self.assertEqual(record.output_tokens, 12)
+        self.assertEqual(record.usage.source, "stream")
+        # The rewritten body is what actually crossed, declared length and all.
+        forwarded = json.loads(self.upstream.bodies[-1])
+        self.assertEqual(forwarded["stream_options"], {"include_usage": True})
+        self.assertEqual(
+            int(self.upstream.requests[-1][2]["Content-Length"]),
+            len(self.upstream.bodies[-1]),
+        )
+
+    def test_an_upstream_that_reports_nothing_is_not_recorded_as_zero(self) -> None:
+        relay = self._relay()
+        self._post({"messages": [], "stream": False})
+        self.assertIsNone(relay.stats.records[-1].usage)
+        self.assertEqual(relay.stats.requests_with_usage, 0)
+
+    def test_the_series_orders_calls_and_omits_unmeasured_ones(self) -> None:
+        relay = self._relay()
+        self.upstream.usage_payload = {
+            "prompt_tokens": 100,
+            "completion_tokens": 5,
+        }
+        self._post({"messages": [], "stream": False})
+        self.upstream.usage_payload = None
+        self._post({"messages": [], "stream": False})
+        self.upstream.usage_payload = {
+            "prompt_tokens": 3_000,
+            "completion_tokens": 9,
+        }
+        self._post({"messages": [], "stream": False})
+        self.assertEqual(relay.stats.usage_series, ((1, 100, 5), (2, 3_000, 9)))
+        self.assertEqual(relay.stats.requests_with_usage, 2)
+        self.assertEqual(relay.stats.peak_input_tokens, 3_000)
 
 
 if __name__ == "__main__":

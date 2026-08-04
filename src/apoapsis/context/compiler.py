@@ -78,6 +78,41 @@ _TEXT_SUFFIXES = {
 }
 
 
+#: Retrieval-reason markers in descending value order. Index 0 is the most
+#: valuable reason an evidence item can carry; index 99 means "no recognised
+#: reason". The compiler orders its selection by this, and the prompt window
+#: guard (`apoapsis.context.window`) drops by it in reverse, so a context that
+#: must shrink loses its least-justified excerpts first rather than an
+#: arbitrary tail.
+_EVIDENCE_REASON_PRIORITY_MARKERS = (
+    "explicit path",
+    "failure location",
+    "preferred path",
+    "current Git diff",
+    "Python call reference",
+    "symbol",
+    "ripgrep",
+    "imported",
+    "test",
+)
+
+UNRANKED_EVIDENCE_PRIORITY = 99
+
+
+def evidence_reason_priority(reason_included: str) -> int:
+    """Rank one evidence item's `reason_included` text. Lower is more valuable.
+
+    Accepts either a joined reason string (`ContextEvidence.reason_included`,
+    which is `"; ".join(sorted(reasons))`) or any text containing the markers,
+    so the compiler and the window guard rank the same item identically.
+    """
+
+    for index, marker in enumerate(_EVIDENCE_REASON_PRIORITY_MARKERS):
+        if marker in reason_included:
+            return index
+    return UNRANKED_EVIDENCE_PRIORITY
+
+
 @dataclass
 class _ChangedFile:
     current_lines: set[int] = field(default_factory=set)
@@ -641,23 +676,7 @@ class ContextCompiler:
 
     @staticmethod
     def _priority(reasons: set[str]) -> int:
-        joined = " ".join(reasons)
-        for index, marker in enumerate(
-            [
-                "explicit path",
-                "failure location",
-                "preferred path",
-                "current Git diff",
-                "Python call reference",
-                "symbol",
-                "ripgrep",
-                "imported",
-                "test",
-            ]
-        ):
-            if marker in joined:
-                return index
-        return 99
+        return evidence_reason_priority(" ".join(reasons))
 
     @classmethod
     def _parse_changed_files(cls, diff: str) -> dict[str, _ChangedFile]:

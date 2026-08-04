@@ -23,6 +23,7 @@ from apoapsis.config import (
     effective_config_for_specification,
 )
 from apoapsis.context.compiler import ContextCompiler, ContextPackage
+from apoapsis.context.window import PromptWindowLimits, TokenCounter
 from apoapsis.context.measurement import (
     ContextMeasurement,
     attribute_context_to_patch,
@@ -42,6 +43,7 @@ from apoapsis.models.prompts import (
     repair_prompt,
 )
 from apoapsis.models.provider import ModelRole, ProviderInvocation
+from apoapsis.models.tokenize import is_loopback_url, llama_server_token_counter
 from apoapsis.models.telemetry import (
     InstrumentedModelProvider,
     InstrumentedProviderError,
@@ -922,6 +924,37 @@ class VerticalSliceRunner:
             slice_id=slice_id,
         )
 
+    @staticmethod
+    def _prompt_window_guard(
+        provider_config: FrontierProviderConfig,
+    ) -> tuple[PromptWindowLimits | None, TokenCounter | None]:
+        """The token ceiling and (optional) exact tokenizer for one provider.
+
+        MH-2 Task B. The ceiling comes from the provider's own declared window
+        rather than from `[context] max_total_chars`, which is the disconnect
+        that let a ~45K-token char budget be configured against a 32,768-token
+        window. A provider that declares no window gets no enforcement, since
+        there is no configured limit to enforce.
+
+        The exact `/tokenize` counter is offered only for a loopback
+        OpenAI-compatible endpoint -- that is llama-server, which exposes it.
+        It is optional and non-fatal everywhere downstream, so a wrong guess
+        here costs a fallback to the heuristic, never a failed session.
+        """
+
+        limits = PromptWindowLimits.from_provider(
+            context_window_tokens=provider_config.context_window_tokens,
+            max_output_tokens=provider_config.max_output_tokens,
+        )
+        if limits is None:
+            return None, None
+        counter: TokenCounter | None = None
+        if provider_config.provider == "openai_compatible" and is_loopback_url(
+            provider_config.base_url
+        ):
+            counter = llama_server_token_counter(provider_config.base_url)
+        return limits, counter
+
     def _run_local_power_session(
         self, context: ContextPackage
     ) -> AgentSessionResult:
@@ -946,6 +979,9 @@ class VerticalSliceRunner:
                 provider_config=self.local_coder_config,
             )
 
+        prompt_window, count_prompt_tokens = self._prompt_window_guard(
+            self.local_coder_config
+        )
         session = LocalPowerSession(
             specification=self.specification,
             worktree=self.worktree_path,
@@ -956,6 +992,8 @@ class VerticalSliceRunner:
             model_call=model_call,
             model_role=ModelRole.LOCAL_CODING_AGENT,
             completion_policy=self.config.execution.completion_policy,
+            prompt_window=prompt_window,
+            count_prompt_tokens=count_prompt_tokens,
         )
         try:
             result = session.run()
@@ -1011,6 +1049,9 @@ class VerticalSliceRunner:
             completion_policy=self.config.execution.completion_policy,
             patch_policy=self.config.patch,
         )
+        prompt_window, count_prompt_tokens = self._prompt_window_guard(provider_config)
+        session_kwargs["prompt_window"] = prompt_window
+        session_kwargs["count_prompt_tokens"] = count_prompt_tokens
         if self.agent_step_prompt_fn is not None:
             session_kwargs["agent_step_prompt_fn"] = self.agent_step_prompt_fn
         session = BoundedAgentSession(**session_kwargs)
@@ -1382,6 +1423,20 @@ class VerticalSliceRunner:
         ]
         all_calls = self._all_provider_calls()
         identities = sorted({(item.provider, item.model) for item in all_calls})
+        # Model traffic the harness never issued: a contained agent's own calls,
+        # observed at the relay. It cannot be a `ProviderCallTelemetry` -- there
+        # is no prompt the harness held and no per-call record it can honestly
+        # produce -- so it is added to the token totals and broken out beside
+        # them rather than being folded into `provider_calls`, whose length is
+        # `number_of_calls` and must stay a count of calls the harness made.
+        local_model_usage = next(
+            (
+                item.model_usage
+                for item in (self.local_agent_result, self.frontier_agent_result)
+                if item is not None and item.model_usage is not None
+            ),
+            None,
+        )
         excerpts: list[TransmittedExcerpt] = []
         for call_number, context in self.contexts:
             for evidence in context.evidence:
@@ -1482,11 +1537,23 @@ class VerticalSliceRunner:
             ],
             provider_calls=all_calls,
             number_of_calls=len(all_calls),
-            input_tokens=sum(item.input_tokens for item in all_calls),
-            output_tokens=sum(item.output_tokens for item in all_calls),
-            cached_input_tokens=sum(
-                item.cached_input_tokens for item in all_calls
+            input_tokens=(
+                sum(item.input_tokens for item in all_calls)
+                + (local_model_usage.input_tokens if local_model_usage else 0)
             ),
+            output_tokens=(
+                sum(item.output_tokens for item in all_calls)
+                + (local_model_usage.output_tokens if local_model_usage else 0)
+            ),
+            cached_input_tokens=(
+                sum(item.cached_input_tokens for item in all_calls)
+                + (
+                    local_model_usage.cached_input_tokens
+                    if local_model_usage
+                    else 0
+                )
+            ),
+            local_model_usage=local_model_usage,
             estimated_cost_usd=sum(
                 item.estimated_cost_usd for item in all_calls
             ),

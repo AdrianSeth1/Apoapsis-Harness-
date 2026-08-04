@@ -213,6 +213,17 @@ def enrich_specification_with_slice_package(
 
     Existing audit artifacts are never rewritten. A continuation may enrich its
     in-memory model context from the exact immutable package the user approved.
+
+    Every argument comes from the package and nothing is re-derived from live
+    state, so this must stay a complete mirror of what ``package_slice``
+    built. It was not: `test_discovery_roots` and `inherited_slice_ids` were
+    omitted, so a task enriched from a package silently lost the two facts
+    that exist specifically because live slices got them wrong -- where tests
+    must live (PLAN-19E795D6DC4B/SLICE-002, 93 tests in an uncollected
+    directory) and that inherited code is out of scope
+    (PLAN-19E795D6DC4B/SLICE-004, nine of twenty-two turns spent editing a
+    predecessor's module). A continuation is exactly the situation where a
+    coder most needs both.
     """
 
     package_reference = f"{package.plan_id}@v{package.plan_version}/{package.slice_id}"
@@ -228,6 +239,8 @@ def enrich_specification_with_slice_package(
         suggested_symbols=package.advisory_suggested_symbols,
         test_obligations=list(package.test_obligations),
         failure_cases=list(package.failure_cases),
+        test_discovery_roots=list(package.test_discovery_roots),
+        inherited_slice_ids=list(package.inherited_slice_ids),
     )
     existing = {
         (item.source_reference, item.text) for item in specification.known_facts
@@ -758,6 +771,7 @@ def build_plan_slice_execution_package(
         advisory_suggested_paths=list(slice_obj.suggested_paths),
         advisory_suggested_symbols=list(slice_obj.suggested_symbols),
         advisory_context_seeds=list(slice_obj.context_seeds),
+        test_discovery_roots=_test_discovery_roots(slice_obj, config),
         repository_root=str(root),
         repository_head_commit=fingerprint.head_commit,
         repository_fingerprint=fingerprint.digest,

@@ -64,6 +64,14 @@ from apoapsis.context.provenance import (
     EvidenceKind,
     TransmissionPolicy,
 )
+from apoapsis.context.window import (
+    PromptTooLargeError,
+    PromptWindowFit,
+    PromptWindowLimits,
+    TokenCounter,
+    fit_prompt_to_window,
+    replace_evidence,
+)
 from apoapsis.models.base import ModelOperation, ModelResponse
 from apoapsis.models.prompts import local_power_step_prompt
 from apoapsis.models.provider import ModelRole
@@ -205,6 +213,8 @@ class LocalPowerSession:
         completion_policy: CompletionPolicy = CompletionPolicy.BASELINE,
         shell: SandboxShell | None = None,
         clock: Callable[[], float] = time.monotonic,
+        prompt_window: PromptWindowLimits | None = None,
+        count_prompt_tokens: TokenCounter | None = None,
     ) -> None:
         self.specification = specification
         self.worktree = Path(worktree).resolve()
@@ -217,6 +227,16 @@ class LocalPowerSession:
         self.audit_prefix = audit_prefix
         self.completion_policy = completion_policy
         self.clock = clock
+        # MH-2 Task B, identical contract to `BoundedAgentSession`: `None`
+        # means no window was declared, so nothing is enforced -- not that an
+        # unlimited window was declared.
+        self.prompt_window = prompt_window
+        self.count_prompt_tokens = count_prompt_tokens
+        self.last_prompt_window_fit: PromptWindowFit | None = None
+        self.base_evidence_keys = {
+            (item.path, item.start_line, item.end_line, item.content_sha256)
+            for item in initial_context.evidence
+        }
 
         self.guard = SandboxGuard(
             self.worktree,
@@ -409,10 +429,26 @@ class LocalPowerSession:
                     f"{self.config.max_seconds:.0f} seconds"
                 )
                 break
+            try:
+                prompt, context, window_fit = self._fit_prompt(turn)
+            except PromptTooLargeError as exc:
+                self._record(
+                    turn,
+                    "prompt_window_exceeded",
+                    accepted=False,
+                    summary=str(exc)[:2_000],
+                    prompt_window_fit=exc.fit,
+                )
+                # Named stop rather than a silent send: llama-server would
+                # truncate from the front, which is where the sandbox rules
+                # and action protocol live.
+                stop_reason = f"prompt exceeds model context window: {exc}"
+                break
+            self.last_prompt_window_fit = window_fit
             response = self.model_call(
                 ModelOperation.AGENT_STEP,
-                self._prompt(turn),
-                self._context_for_turn(turn),
+                prompt,
+                context,
                 requested_output="one_local_power_action_json",
                 response_schema=power_action_schema(
                     include_change_sets=self.config.atomic_change_sets
@@ -1514,6 +1550,7 @@ class LocalPowerSession:
         summary: str,
         verification_run: int | None = None,
         verification_status: VerificationStatus | None = None,
+        prompt_window_fit: PromptWindowFit | None = None,
     ) -> None:
         record = AgentTurnRecord(
             turn=turn,
@@ -1523,6 +1560,7 @@ class LocalPowerSession:
             verification_run=verification_run,
             verification_status=verification_status,
             observation_ledger_chars=self.observation_chars,
+            prompt_window_fit=prompt_window_fit or self.last_prompt_window_fit,
         )
         self.records.append(record)
         self.audit.write_json(
@@ -1546,9 +1584,66 @@ class LocalPowerSession:
 
     # -- prompt construction ------------------------------------------------
 
-    def _prompt(self, turn: int) -> str:
+    def _fit_prompt(
+        self, turn: int
+    ) -> tuple[str, ContextPackage, PromptWindowFit | None]:
+        """Assemble this turn's prompt, shrinking it if the window demands it.
+
+        Returns the context package the prompt was actually built from, so
+        `model_call` records what was transmitted rather than what was
+        compiled (MH-2 Task B).
+        """
+
+        context = self._context_for_turn(turn)
+        history = self._history()
+        if self.prompt_window is None:
+            return self._prompt(turn, context=context, history=history), context, None
+
+        def build(
+            evidence: list[ContextEvidence], turns: list[dict[str, object]]
+        ) -> str:
+            return self._prompt(
+                turn, context=replace_evidence(context, evidence), history=turns
+            )
+
+        prompt, fit = fit_prompt_to_window(
+            build,
+            evidence=list(context.evidence),
+            history=history,
+            limits=self.prompt_window,
+            is_observation=lambda item: (
+                item.path,
+                item.start_line,
+                item.end_line,
+                item.content_sha256,
+            )
+            not in self.base_evidence_keys,
+            count_tokens=self.count_prompt_tokens,
+        )
+        if fit.evidence_dropped or fit.observations_dropped:
+            surviving = [
+                item
+                for item in context.evidence
+                if f"--- {item.evidence_id} " in prompt
+            ]
+            context = replace_evidence(context, surviving)
+        return prompt, context, fit
+
+    def _history(self) -> list[dict[str, object]]:
+        return [
+            item.model_dump(mode="json", exclude={"observation_ledger"})
+            for item in self.records
+        ]
+
+    def _prompt(
+        self,
+        turn: int,
+        *,
+        context: ContextPackage | None = None,
+        history: list[dict[str, object]] | None = None,
+    ) -> str:
         return local_power_step_prompt(
-            self._context_for_turn(turn),
+            context if context is not None else self._context_for_turn(turn),
             turn=turn,
             remaining_budgets=self._remaining_budgets(turn),
             verification_commands=[
@@ -1568,10 +1663,7 @@ class LocalPowerSession:
             if self.config.allow_shell
             else [],
             network_enabled=self.config.allow_network,
-            history=[
-                item.model_dump(mode="json", exclude={"observation_ledger"})
-                for item in self.records
-            ],
+            history=history if history is not None else self._history(),
             rejected_requests=[
                 f"{item.action} {item.detail}: {item.reason}" for item in self.rejections
             ],

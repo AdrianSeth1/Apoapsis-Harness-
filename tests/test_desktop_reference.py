@@ -55,7 +55,14 @@ class DesktopReferenceServiceTests(unittest.TestCase):
         self.reference_root = self.base / "reference"
         self.reference_root.mkdir()
         _git_init(self.reference_root, filename="OTHER.md")
-        (self.reference_root / "notes.txt").write_text("reference content\n", encoding="utf-8")
+        # Written as bytes, not text: `write_text` goes through the platform
+        # newline translation, so on Windows this file would land as
+        # `reference content\r\n` while the test below asserts the sha256 of
+        # `reference content\n`. The service hashes whatever bytes are on
+        # disk and is correct either way -- it was the fixture that was
+        # platform-dependent, and only on the one file whose exact bytes are
+        # asserted.
+        (self.reference_root / "notes.txt").write_bytes(b"reference content\n")
         subprocess.run(
             ["git", "add", "notes.txt"], cwd=self.reference_root, check=True, capture_output=True
         )
